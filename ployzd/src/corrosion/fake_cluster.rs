@@ -26,7 +26,7 @@ const PUSH_ALLOCATOR_READ: &str = "INSERT INTO allocator_script (value) VALUES (
 struct ClusterKv {
     network: String,
     machines: BTreeMap<String, String>,
-    containers: BTreeMap<String, String>,
+    containers: BTreeMap<String, (String, String)>,
     container_changes: broadcast::Sender<()>,
     container_subscriptions: bool,
     allocator: Option<(String, bool)>,
@@ -101,7 +101,10 @@ async fn subscriptions(
     body: Bytes,
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    assert_eq!(statement.query, "SELECT id, container FROM containers");
+    assert_eq!(
+        statement.query,
+        "SELECT id, machine_id, container FROM containers"
+    );
     let kv = kv.lock().unwrap();
     if !kv.container_subscriptions {
         return Err(StatusCode::NOT_FOUND);
@@ -110,7 +113,7 @@ async fn subscriptions(
     drop(kv);
     let snapshot = stream::once(async {
         Ok::<_, Infallible>(Bytes::from_static(
-            b"{\"columns\":[\"id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+            b"{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ))
     });
     let changes = stream::unfold(receiver, |mut receiver| async move {
@@ -143,13 +146,22 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
             let id = text_param(&statement.params, 0);
             events(&["info"], kv.machines.get(id).map(|info| vec![json!(info)]))
         }
+        "SELECT machine_id, container FROM containers WHERE id = ?" => {
+            let id = text_param(&statement.params, 0);
+            events(
+                &["machine_id", "container"],
+                kv.containers
+                    .get(id)
+                    .map(|(owner, container)| vec![json!(owner), json!(container)]),
+            )
+        }
         "SELECT container FROM containers WHERE id = ?" => {
             let id = text_param(&statement.params, 0);
             events(
                 &["container"],
                 kv.containers
                     .get(id)
-                    .map(|container| vec![json!(container)]),
+                    .map(|(_, container)| vec![json!(container)]),
             )
         }
         "SELECT value FROM cluster WHERE key = 'network'" => {
@@ -202,7 +214,10 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             query if query.starts_with("INSERT INTO containers (id, container,") => {
                 kv.containers.insert(
                     text_param(&statement.params, 0).to_owned(),
-                    text_param(&statement.params, 1).to_owned(),
+                    (
+                        text_param(&statement.params, 2).to_owned(),
+                        text_param(&statement.params, 1).to_owned(),
+                    ),
                 );
                 let _ = kv.container_changes.send(());
             }

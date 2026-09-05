@@ -4,7 +4,7 @@ import type {
   DeployIntent,
   DeployOutcome,
   DeployPreview,
-  DockerVolumeName,
+  VolumeRemoval,
   ExecutionError,
   MachineId,
   MachineTarget,
@@ -12,7 +12,6 @@ import type {
   LocalMachineRemoved,
   DataLossConfirmation,
   ClusterTeardown,
-  PartialResult,
   PlanOptions,
   ProjectName,
   RegisterRequest,
@@ -25,6 +24,7 @@ import type {
 export * from "./generated/payloads";
 
 export type ConnectOptions = {
+  /** HTTP(S) base URL without credentials, query or fragment; validated before dialing. */
   readonly relayUrl: string;
   readonly bearer: string;
   readonly pairing: string;
@@ -105,7 +105,7 @@ export declare class Client {
   ): Promise<DeployOutcome<ExecutionError>>;
   removeVolumes(
     request: RemoveVolumesRequest,
-  ): Promise<PartialResult<DockerVolumeName, RpcError>>;
+  ): Promise<VolumeRemoval[]>;
   dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>;
   removeMachine(
     machine: MachineTarget,

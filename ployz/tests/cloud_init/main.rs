@@ -65,7 +65,7 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     assert_eq!(
         pairing_json,
         json!({
-            "relayUrl": relay.url,
+            "relayUrl": format!("{}/", relay.url),
             "secret": PAIRING,
         })
     );
@@ -1149,7 +1149,9 @@ async fn join_starts_created_ingress_before_success() {
     }))
     .await;
     let mut created = ingress_on(&joiner);
-    created.runtime = ployz_core::ContainerRuntimeObservation::Created;
+    created
+        .try_update(|parts| parts.runtime = ployz_core::ContainerRuntimeObservation::Created)
+        .unwrap();
     let daemon = JoinDaemon::new(registration).with_containers(vec![ingress_on(&founder), created]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
@@ -1283,7 +1285,8 @@ fn global_on(
         spec.to_resolved(
             ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
             ployz_core::ResolvedUpdateConfig::default(),
-        ),
+        )
+        .expect("volume graph is scoped"),
         ployz_core::ProjectName::parse(project).unwrap(),
         'b',
     )
@@ -1295,14 +1298,12 @@ fn container_on(
     project: ployz_core::ProjectName,
     hex: char,
 ) -> ployz_core::ContainerObservation {
-    ployz_core::ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ployz_core::ContainerId::parse(hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-{hex}", spec.name),
         created_at_unix_nanos: 1,
         machine_id: machine.id,
         project_name: project,
-        service_id: spec.service_id,
-        service_name: spec.name.clone(),
         kind: ployz_core::ContainerKind::ServiceContainer,
         runtime: ployz_core::ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::Healthy,
@@ -1311,5 +1312,6 @@ fn container_on(
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }

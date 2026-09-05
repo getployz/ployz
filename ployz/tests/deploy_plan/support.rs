@@ -1,6 +1,5 @@
 pub(super) use std::{
     collections::BTreeMap,
-    net::Ipv6Addr,
     num::{NonZeroU16, NonZeroU32},
 };
 
@@ -60,12 +59,12 @@ pub(super) use ployz_core::{
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
-    MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook,
-    ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
-    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, MembershipObservation,
+    PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook, ProjectName,
+    ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig,
+    RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
+    UpdateOrder, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -98,8 +97,7 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
         },
         placement: Placement::default(),
         ports: Vec::new(),
-        volume_graph: Default::default(),
-        config_graph: Default::default(),
+        mount_graph: Default::default(),
         pre_deploy: None,
         ingress_proxy_fragment: None,
         update: UpdateConfig::default(),
@@ -114,7 +112,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
@@ -149,15 +146,17 @@ pub(super) fn container_id(hex: char) -> ContainerId {
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
     let reference = ServiceVolumeReference::parse(name).unwrap();
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mut mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mut mounts = requested.volume_graph().mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: reference.clone(),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: Default::default(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     });
     mounts.push(ServiceMount {
         volume: reference,
@@ -166,27 +165,32 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
         no_copy: false,
         subpath: None,
     });
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 }
 
 pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str, bytes: u64) {
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
+    let mut volumes = spec.volume_graph().volumes().to_vec();
+    let mounts = spec.volume_graph().mounts().to_vec();
     let volume = volumes
         .iter_mut()
         .find(|volume| volume.reference.as_str() == reference)
         .expect("fixture volume exists");
-    let VolumeSource::Ordinary { name, labels, .. } = &volume.source else {
+    let ployz_core::RawVolumeSource::Ordinary { name, labels, .. } = volume.source.kind() else {
         panic!("fixture volume starts ordinary")
     };
-    volume.source = VolumeSource::Provisioned {
+    volume.source = ployz_core::RawVolumeSource::Provisioned {
         name: name.clone(),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
             std::num::NonZeroU64::new(bytes).unwrap(),
         ),
         labels: labels.clone(),
-    };
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    }
+    .admit()
+    .expect("valid volume declaration");
+    spec.set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 }
 
 pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
@@ -225,12 +229,13 @@ pub(super) fn unowned_volume(machine_id: MachineId, logical: &str) -> DockerVolu
 pub(super) fn scoped_spec(spec: &RequestedServiceSpec) -> RequestedServiceSpec {
     let project = ProjectName::parse("app").unwrap();
     let mut spec = spec.clone();
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
+    let mut volumes = spec.volume_graph().volumes().to_vec();
+    let mounts = spec.volume_graph().mounts().to_vec();
     for volume in &mut volumes {
         volume.source.scope_to_project(&project);
     }
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    spec.set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     spec
 }
 
@@ -249,27 +254,28 @@ pub(super) fn container(
     requested: &RequestedServiceSpec,
     service_id: &ServiceId,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: container_id(hex),
         display_name: format!("{}-{hex}", requested.name),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine_hex),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: *service_id,
-        service_name: requested.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },
         effective_healthcheck: None,
-        resolved_spec: scoped_spec(requested).to_resolved(
-            *service_id,
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: requested.update.monitor_millis,
-            },
-        ),
+        resolved_spec: scoped_spec(requested)
+            .to_resolved(
+                *service_id,
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: requested.update.monitor_millis,
+                },
+            )
+            .expect("volume graph is scoped"),
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }

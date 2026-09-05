@@ -235,13 +235,14 @@ async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
         Some((replicated.clone(), AdminClient::new("/no/such/admin.sock"))),
     );
 
+    let initial_id = initial.container_id;
     let waiting = tokio::spawn({
         let service = service.clone();
         async move {
             service
                 .get_container_observations(Request::new(
                     op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                        container_ids: vec![initial.container_id],
+                        container_ids: vec![initial_id],
                         wait_millis: 1_000,
                     })
                     .encode()
@@ -258,7 +259,9 @@ async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let mut changed = initial.clone();
-    changed.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+    changed
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
+        .unwrap();
     replicated.publish_container(&changed).await.unwrap();
     let response = tokio::time::timeout(std::time::Duration::from_millis(500), waiting)
         .await
@@ -276,7 +279,7 @@ async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
     let response = service
         .get_container_observations(Request::new(
             op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                container_ids: vec![initial.container_id],
+                container_ids: vec![initial_id],
                 wait_millis: 20,
             })
             .encode()
@@ -313,14 +316,12 @@ fn container_observation(id: char) -> ContainerObservation {
         "container": { "image": "example.test/api", "pull_policy": "missing" }
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -329,7 +330,8 @@ fn container_observation(id: char) -> ContainerObservation {
         resolved_spec,
         address: Some(ContainerAddress([10, 210, 1, 2].into())),
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 #[tokio::test]

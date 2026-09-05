@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::MachineId;
+use ployz_core::{MachineId, RelayEndpoint};
 use ployz_relay::{DialCredential, PairingCredential};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
@@ -280,7 +280,7 @@ pub enum Transport {
     /// Cloud Relay Dial. Not persisted. The entry Machine ID lives on
     /// [`Connection::machine_id`].
     Relay {
-        url: String,
+        url: RelayEndpoint,
         credential: DialCredential,
         pairing: PairingCredential,
     },
@@ -341,14 +341,14 @@ impl Connection {
     /// choose a Machine.
     #[must_use]
     pub fn relay(
-        url: impl Into<String>,
+        url: RelayEndpoint,
         credential: DialCredential,
         pairing: PairingCredential,
         machine_id: MachineId,
     ) -> Self {
         Self {
             transport: Transport::Relay {
-                url: url.into(),
+                url,
                 credential,
                 pairing,
             },

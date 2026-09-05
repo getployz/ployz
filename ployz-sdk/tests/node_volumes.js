@@ -59,33 +59,18 @@ function volume(machine, name) {
     volumes: [volume(machineA, "data")],
     force: false,
   });
-  if (destroyed.successes.length !== 1) {
-    throw new Error(`expected one destroyed volume, got ${JSON.stringify(destroyed)}`);
-  }
-  if (destroyed.successes[0].machine_id !== machineA) {
-    throw new Error(`destroyed volume Machine mismatch: ${JSON.stringify(destroyed)}`);
-  }
-  if (destroyed.successes[0].value !== "data") {
-    throw new Error(`destroyed volume name mismatch: ${JSON.stringify(destroyed)}`);
-  }
-  if (destroyed.failures.length !== 0 || destroyed.omissions.length !== 0) {
-    throw new Error(`successful removal must not fail or omit: ${JSON.stringify(destroyed)}`);
-  }
+  const assert = require("node:assert/strict");
+  assert.deepEqual(destroyed, [{ id: volume(machineA, "data"), outcome: { status: "removed" } }]);
 
   const partial = await client.removeVolumes({
-    volumes: [volume(machineA, "data"), volume(machineB, "data")],
+    volumes: [volume(machineA, "data"), volume(machineB, "data"), volume(machineB, "logs")],
   });
-  if (partial.successes.length !== 1 || partial.successes[0].machine_id !== machineA) {
-    throw new Error(`expected Machine A success, got ${JSON.stringify(partial)}`);
-  }
-  if (partial.failures.length !== 1 || partial.failures[0].machine_id !== machineB) {
-    throw new Error(`expected Machine B failure, got ${JSON.stringify(partial)}`);
-  }
-  if (partial.failures[0].error.code !== "unavailable") {
-    throw new Error(`expected unavailable on Machine B, got ${JSON.stringify(partial)}`);
-  }
-  if (partial.omissions.length !== 0) {
-    throw new Error(`partial failure must not omit: ${JSON.stringify(partial)}`);
+  assert.equal(partial.length, 3);
+  assert.deepEqual(partial[0], destroyed[0]);
+  for (const name of ["data", "logs"]) {
+    const failure = partial.find((entry) => entry.id.machine_id === machineB && entry.id.name === name);
+    assert.equal(failure.outcome.status, "failed");
+    assert.equal(failure.outcome.error.code, "unavailable");
   }
 
   await expectRpc(

@@ -173,6 +173,7 @@ impl Daemon {
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
         let machine_api = MachineApi::builder(Arc::clone(&store), reset.clone())
+            .with_participation(participating.clone())
             .with_cluster(
                 corrosion
                     .as_ref()
@@ -565,7 +566,7 @@ async fn start_corrosion(
         .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
-    let machine = match &record.body {
+    let machine = match record.body() {
         LocalMachineBody::Joining { machine, .. }
         | LocalMachineBody::Participating { machine, .. } => machine,
         LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
@@ -579,7 +580,7 @@ async fn start_corrosion(
         .join("corrosion");
     let bootstrap = record.bootstrap().iter().map(|machine| {
         SocketAddr::new(
-            IpAddr::V6(machine.management_address.0),
+            IpAddr::V6(machine.management_address().0),
             CORROSION_GOSSIP_PORT,
         )
     });
@@ -591,7 +592,7 @@ async fn start_corrosion(
             run_dir,
             SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
             SocketAddr::new(
-                IpAddr::V6(machine.management_address.0),
+                IpAddr::V6(machine.management_address().0),
                 CORROSION_GOSSIP_PORT,
             ),
             DEFAULT_CONTAINER_NAME,

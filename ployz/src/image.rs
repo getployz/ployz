@@ -627,8 +627,7 @@ mod tests {
     use super::*;
     use ployz_core::{
         EnsureImageIngestRequest, ImageSummary, ListImagesRequest, MachineId, MachineImages,
-        MachineName, MachineObservation, ManagementAddress, MembershipObservation, RpcErrorCode,
-        WireGuardPublicKey,
+        MachineName, MachineObservation, MembershipObservation, RpcErrorCode, WireGuardPublicKey,
     };
     use serde_json::Value;
 
@@ -638,7 +637,6 @@ mod tests {
                 id: MachineId::parse(format!("{seed:032x}")).unwrap(),
                 name: MachineName::parse(format!("machine-{seed}")).unwrap(),
                 subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-                management_address: ManagementAddress("fd00::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([seed; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),

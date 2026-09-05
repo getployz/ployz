@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{CloudPairing, PairingCredential};
+use ployz_core::{CloudPairing, PairingCredential, RelayEndpoint};
 use ployz_relay::{ClientError, Open, RegisterRequest, RelayClient, TunnelIo};
 use thiserror::Error;
 use tokio::{
@@ -40,7 +40,7 @@ pub enum Error {
 ///
 /// If the Relay is unreachable or Register is rejected.
 pub async fn hold_register(
-    url: &str,
+    url: &RelayEndpoint,
     pairing: &PairingCredential,
     machine_api: MachineApi,
 ) -> Result<RegisterHold, Error> {
@@ -198,7 +198,7 @@ mod tests {
     use ployz::connect::{ConnectError, connect_relay};
     use ployz_core::{
         CloudPairing, DescribeContractRequest, MachineId, MachineTarget, PairingCredential,
-        RpcErrorCode, op,
+        RelayEndpoint, RpcErrorCode, op,
     };
     use ployz_relay::{
         ClientError, DialCredential, PairingCredential as RelayPairing, Relay, RelayClient,
@@ -235,7 +235,7 @@ mod tests {
     async fn dropping_register_hold_ends_attached_rpc() {
         let relay = RelayListen::start().await;
         let (machine_id, api) = test_api();
-        let hold = hold_register(&relay.url, &secret(), api)
+        let hold = hold_register(&RelayEndpoint::parse(&relay.url).unwrap(), &secret(), api)
             .await
             .expect("Register hello is accepted");
         wait_for_held(&relay.url, machine_id).await;
@@ -340,7 +340,13 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_relay_fails() {
-        let error = match hold_register("not-a-url", &secret(), test_api().1).await {
+        let error = match hold_register(
+            &RelayEndpoint::parse("http://127.0.0.1:1").unwrap(),
+            &secret(),
+            test_api().1,
+        )
+        .await
+        {
             Ok(_) => panic!("expected unreachable Relay to fail"),
             Err(error) => error,
         };
@@ -420,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_cloud_pairing_retries_until_shutdown() {
-        let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
+        let pairing = CloudPairing::parse("http://127.0.0.1:1", secret()).unwrap();
         let shutdown = CancellationToken::new();
         let (_pairing_tx, pairing_rx) = watch::channel(Some(pairing));
         let hold = tokio::spawn(run(pairing_rx, test_api().1, shutdown.clone()));
@@ -432,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn closed_cloud_pairing_watch_fails_run() {
-        let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
+        let pairing = CloudPairing::parse("http://127.0.0.1:1", secret()).unwrap();
         let shutdown = CancellationToken::new();
         let (pairing_tx, pairing_rx) = watch::channel(Some(pairing));
         drop(pairing_tx);
@@ -452,9 +458,13 @@ mod tests {
         let hold = tokio::spawn(run(pairing_rx, api, shutdown.clone()));
         wait_for_held(&relay.url, machine_id).await;
 
-        let displacer = hold_register(&relay.url, &secret(), test_api().1)
-            .await
-            .expect("second Register displaces the held stream");
+        let displacer = hold_register(
+            &RelayEndpoint::parse(&relay.url).unwrap(),
+            &secret(),
+            test_api().1,
+        )
+        .await
+        .expect("second Register displaces the held stream");
         drop(displacer);
         wait_for_held(&relay.url, machine_id).await;
 
@@ -583,7 +593,7 @@ mod tests {
         async fn start() -> Self {
             let relay = RelayListen::start().await;
             let (machine_id, api) = test_api();
-            let hold = hold_register(&relay.url, &secret(), api)
+            let hold = hold_register(&RelayEndpoint::parse(&relay.url).unwrap(), &secret(), api)
                 .await
                 .expect("Register hello is accepted");
             Self {
@@ -675,6 +685,6 @@ mod tests {
     }
 
     fn client(url: &str) -> RelayClient {
-        RelayClient::new(url).expect("test Relay URL is http")
+        RelayClient::new(&RelayEndpoint::parse(url).unwrap()).expect("test Relay URL is http")
     }
 }

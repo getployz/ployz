@@ -5,12 +5,15 @@ fn spec_comparison_distinguishes_mutable_resources_from_recreation() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     let current_service_id = service_id('a');
-    let current = container('b', '1', &requested, &current_service_id).resolved_spec;
+    let current = container('b', '1', &requested, &current_service_id)
+        .into_parts()
+        .resolved_spec;
 
     assert_eq!(compare_specs(&current, &requested), SpecChange::UpToDate);
 
     let mut resources_changed = requested.clone();
-    resources_changed.container.resources.memory_bytes = Some(512 * 1024 * 1024);
+    resources_changed.container.resources.memory_bytes =
+        Some(ployz_core::ByteQuantity::try_from(512 * 1024 * 1024).unwrap());
     assert_eq!(
         compare_specs(&current, &resources_changed),
         SpecChange::NeedsUpdate
@@ -36,7 +39,9 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    let current = container('b', '1', &requested, &service_id('a')).resolved_spec;
+    let current = container('b', '1', &requested, &service_id('a'))
+        .into_parts()
+        .resolved_spec;
     let mut changes = Vec::new();
 
     let mut changed = requested.clone();
@@ -122,31 +127,36 @@ fn spec_comparison_handles_resource_precedence_and_unordered_volumes() {
     });
     add_named_volume(&mut requested, "first");
     add_named_volume(&mut requested, "second");
-    let current = container('b', '1', &requested, &service_id('a')).resolved_spec;
+    let current = container('b', '1', &requested, &service_id('a'))
+        .into_parts()
+        .resolved_spec;
 
     let mut reordered = requested.clone();
     let volumes = reordered
-        .volume_graph
+        .volume_graph()
         .volumes()
         .iter()
         .rev()
         .cloned()
         .collect();
     let mounts = reordered
-        .volume_graph
+        .volume_graph()
         .mounts()
         .iter()
         .rev()
         .cloned()
         .collect();
-    reordered.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    reordered
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     assert_eq!(
         compare_specs(&current, &scoped_spec(&reordered)),
         SpecChange::UpToDate
     );
 
     let mut mutable = requested.clone();
-    mutable.container.resources.cpu_nanos = Some(1_000_000_000);
+    mutable.container.resources.cpu_nanos =
+        Some(ployz_core::CpuNanos::try_from(1_000_000_000).unwrap());
     assert_eq!(
         compare_specs(&current, &scoped_spec(&mutable)),
         SpecChange::NeedsUpdate
@@ -165,7 +175,9 @@ fn spec_comparison_treats_all_disabled_healthchecks_as_identical() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
-    let mut current = container('b', '1', &requested, &service_id('a')).resolved_spec;
+    let mut current = container('b', '1', &requested, &service_id('a'))
+        .into_parts()
+        .resolved_spec;
     current.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
     assert_eq!(compare_specs(&current, &requested), SpecChange::UpToDate);
 

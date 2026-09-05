@@ -147,8 +147,8 @@ impl ContainerRuntime {
             .map_err(docker_status)?;
         let metadata = LogMetadata {
             origin: LogOrigin::Service {
-                service_id: observation.service_id,
-                service_name: observation.service_name,
+                service_id: observation.service_id(),
+                service_name: observation.resolved_spec.name.clone(),
                 container_id: observation.container_id,
                 hook: observation.labels.get(super::LABEL_HOOK).cloned(),
             },

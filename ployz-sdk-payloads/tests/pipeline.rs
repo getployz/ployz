@@ -219,19 +219,19 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert!(intent.target.is_empty());
     let external: VolumeSource = decode_fixture(fixture(&fixtures, "external_volume_source"));
     assert!(matches!(
-        external,
-        VolumeSource::External { name } if name.as_str() == "shared"
+        external.kind(),
+        ployz_core::RawVolumeSource::External { name } if name.as_str() == "shared"
     ));
     let ordinary: VolumeSource = decode_fixture(fixture(&fixtures, "ordinary_volume_source"));
     assert!(matches!(
-        ordinary,
-        VolumeSource::Ordinary { driver, labels, .. }
+        ordinary.kind(),
+        ployz_core::RawVolumeSource::Ordinary { driver, labels, .. }
             if driver.name() == "local" && driver.options().is_empty() && labels.is_empty()
     ));
     let provisioned: VolumeSource = decode_fixture(fixture(&fixtures, "provisioned_volume_source"));
     assert!(matches!(
-        provisioned,
-        VolumeSource::Provisioned { maximum_bytes, labels, .. }
+        provisioned.kind(),
+        ployz_core::RawVolumeSource::Provisioned { maximum_bytes, labels, .. }
             if maximum_bytes.get() == 1_073_741_824
                 && labels.get("backup").map(String::as_str) == Some("daily")
     ));
@@ -348,11 +348,11 @@ fn json_fixtures_round_trip_through_rust_types() {
         .first()
         .expect("runtime_watch_frame fixture has one Container");
     assert_eq!(container.project_name.as_str(), "app");
-    assert_eq!(container.service_name.as_str(), "api");
-    assert_eq!(frame.services.len(), 1);
+    assert_eq!(container.resolved_spec.name.as_str(), "api");
+    assert_eq!(frame.services().len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame)).unwrap(),
         *fixture(&fixtures, "runtime_watch_frame")
     );
     let text = fixture(&fixtures, "runtime_watch_frame").to_string();
@@ -408,7 +408,7 @@ fn unknown_fields_are_accepted_on_public_payloads() {
         "runtime_watch_frame_unknown_fields",
     ));
     assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame)).unwrap(),
         *fixture(&fixtures, "runtime_watch_frame")
     );
 }
@@ -472,8 +472,14 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
     assert_eq!(config.name, "settings");
     assert_eq!(config.content, b"port = 8080");
     assert_eq!(requested.config_mounts().len(), 2);
-    match requested.volumes().first().map(|volume| &volume.source) {
-        Some(VolumeSource::Ordinary { driver, .. }) => assert_eq!(driver.name(), "nfs"),
+    match requested
+        .volumes()
+        .first()
+        .map(|volume| volume.source.kind())
+    {
+        Some(ployz_core::RawVolumeSource::Ordinary { driver, .. }) => {
+            assert_eq!(driver.name(), "nfs")
+        }
         other => panic!("typed requested spec must nest VolumeDriver, got {other:?}"),
     }
     assert_eq!(requested.container.resources.devices.len(), 1);
@@ -555,4 +561,34 @@ fn write_generated_fails_when_the_package_root_is_a_file() {
     std::fs::write(&path, b"not a directory").unwrap();
     assert!(write_generated(&path).is_err());
     std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn sdk_intent_and_resolved_spec_reject_negative_resource_quantities() {
+    let fixtures = fixtures();
+    for field in [
+        "cpu_nanos",
+        "memory_bytes",
+        "memory_reservation_bytes",
+        "shared_memory_bytes",
+    ] {
+        let mut spec = fixture(&fixtures, "requested_service_spec").clone();
+        *spec
+            .pointer_mut(&format!("/container/resources/{field}"))
+            .unwrap() = serde_json::json!(-1);
+        let mut intent = fixture(&fixtures, "deploy_intent").clone();
+        *intent.get_mut("target").unwrap() = serde_json::json!([spec]);
+        assert!(
+            serde_json::from_value::<DeployIntent>(intent).is_err(),
+            "{field}"
+        );
+        let mut resolved = fixture(&fixtures, "resolved_service_spec_typed").clone();
+        *resolved
+            .pointer_mut(&format!("/container/resources/{field}"))
+            .unwrap() = serde_json::json!(-1);
+        assert!(
+            serde_json::from_value::<ResolvedServiceSpec>(resolved).is_err(),
+            "{field}"
+        );
+    }
 }

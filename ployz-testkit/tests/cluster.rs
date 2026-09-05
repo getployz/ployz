@@ -261,7 +261,7 @@ async fn updates_removes_and_inspects_machine_network_state() {
         .unwrap();
     assert_eq!(updated.id, original.id);
     assert_eq!(updated.subnet, original.subnet);
-    assert_eq!(updated.management_address, original.management_address);
+    assert_eq!(updated.management_address(), original.management_address());
     assert_eq!(updated.public_key, original.public_key);
     wait_for(&cluster, 0, Duration::from_secs(60), |machines| {
         machines.iter().any(|machine| {
@@ -358,10 +358,9 @@ async fn updates_removes_and_inspects_machine_network_state() {
             .find(|wireguard_peer| wireguard_peer.public_key == peer.public_key)
             .unwrap();
         assert!(
-            wireguard_peer
-                .allowed_ips
-                .iter()
-                .any(|address| address.to_string() == format!("{}/128", peer.management_address.0))
+            wireguard_peer.allowed_ips.iter().any(
+                |address| address.to_string() == format!("{}/128", peer.management_address().0)
+            )
         );
         assert!(wireguard_peer.allowed_ips.contains(&peer.subnet.into()));
     }
@@ -477,7 +476,7 @@ async fn assert_partitioned_field_collisions_survive_convergence(
                 && machines
                     .iter()
                     .filter(|machine| {
-                        machine.machine.management_address == first.management_address
+                        machine.machine.management_address() == first.management_address()
                     })
                     .count()
                     == 2
@@ -623,8 +622,8 @@ async fn direct_image_transfer_reconciles_and_stays_machine_only() {
     }
     let machines = cluster.initialize_two().await.unwrap();
     let addresses = [
-        machines[0].management_address,
-        machines[1].management_address,
+        machines[0].management_address(),
+        machines[1].management_address(),
     ];
     for (index, address) in addresses.into_iter().enumerate() {
         assert!(
@@ -866,7 +865,7 @@ async fn daemon_stays_ready_when_image_ingest_cannot_open() {
     let disabled_address = disabled_machines
         .first()
         .expect("initialized two machines")
-        .management_address;
+        .management_address();
     assert!(!disabled.images(0, None).await.unwrap().containerd_store);
     assert!(!image_ingest_catalog(&disabled, 0, disabled_address));
     disabled
@@ -892,7 +891,7 @@ async fn daemon_stays_ready_when_image_ingest_cannot_open() {
     let missing_address = missing_machines
         .first()
         .expect("initialized two machines")
-        .management_address;
+        .management_address();
     assert!(missing.images(0, None).await.unwrap().containerd_store);
     assert!(!image_ingest_catalog(&missing, 0, missing_address));
     missing

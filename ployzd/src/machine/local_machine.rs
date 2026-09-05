@@ -18,7 +18,7 @@ use ployz_core::{
     synthesize_membership,
 };
 use thiserror::Error;
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::sync::watch;
 
 use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 
@@ -26,10 +26,7 @@ use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
     host_capacity,
-    network::{
-        NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
-        management_address,
-    },
+    network::{NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device},
 };
 
 /// Live Observation and membership operations for this Machine.
@@ -39,7 +36,7 @@ pub struct LocalMachine {
     restart: watch::Sender<bool>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
-    global_slot_lock: Arc<AsyncMutex<()>>,
+    participating: Option<watch::Sender<bool>>,
 }
 
 mod container;
@@ -112,6 +109,8 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
+    #[error("local operation task failed: {0}")]
+    OperationTask(#[from] tokio::task::JoinError),
     #[error("Allocator is not quiet")]
     AllocatorNotQuiet,
     #[error("this Machine is not the Allocator")]
@@ -129,7 +128,7 @@ impl LocalMachine {
             restart,
             cluster: None,
             containers: None,
-            global_slot_lock: Arc::new(AsyncMutex::new(())),
+            participating: None,
         }
     }
 
@@ -143,6 +142,18 @@ impl LocalMachine {
     pub(crate) fn with_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.containers = containers;
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
+        self.participating = Some(participating);
+        self
+    }
+
+    fn stop_participation(&self) {
+        if let Some(participating) = &self.participating {
+            participating.send_replace(false);
+        }
     }
 
     pub(crate) fn has_cluster(&self) -> bool {
@@ -465,7 +476,6 @@ impl LocalMachine {
                         network,
                         snapshot.observations.iter().map(|machine| machine.subnet),
                     )?,
-                    management_address: management_address(request.public_key),
                     public_key: request.public_key,
                     public_ip: request.public_ip,
                     advertised_endpoints: request.advertised_endpoints,
@@ -606,16 +616,32 @@ impl LocalMachine {
     }
 
     /// Remove this Machine: clean managed containers, persist reset, and
-    /// best-effort delete the replicated row.
+    /// best-effort delete the replicated row. Once admitted, cleanup and phase commit
+    /// continue if the caller disconnects.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
     /// missing, [`Error::DockerUnavailable`] when Docker is missing,
     /// [`Error::Cleanup`] when managed container removal fails,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned, and
-    /// [`Error::Store`] when reset cannot be prepared or committed.
+    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::Store`] when reset cannot be prepared or committed, and
+    /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn remove_local(
+        &self,
+        request: RemoveLocalMachineRequest,
+    ) -> Result<LocalMachineRemoved, Error> {
+        let admission = self.lock_store()?.admission_lock.clone();
+        let guard = admission.lock_owned().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            local.remove_local_admitted(request).await
+        })
+        .await?
+    }
+
+    async fn remove_local_admitted(
         &self,
         request: RemoveLocalMachineRequest,
     ) -> Result<LocalMachineRemoved, Error> {
@@ -638,6 +664,7 @@ impl LocalMachine {
             let mut store = self.lock_store()?;
             prepared_reset.commit(&mut store)?;
         }
+        self.stop_participation();
         let reset_warning = publication
             .remove(&machine_id)
             .await
@@ -651,17 +678,34 @@ impl LocalMachine {
     }
 
     /// Begin a Local Machine Phase reset and request daemon restart.
+    /// Once admitted, cleanup and phase commit continue if the caller disconnects.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Docker`] when managed container cleanup fails,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned, and
-    /// [`Error::Store`] when reset is not legal in the current phase.
+    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::Store`] when reset is not legal in the current phase, and
+    /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn reset(&self) -> Result<ResetAccepted, Error> {
+        let admission = self.lock_store()?.admission_lock.clone();
+        let guard = admission.lock_owned().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            local.reset_admitted().await
+        })
+        .await?
+    }
+
+    async fn reset_admitted(&self) -> Result<ResetAccepted, Error> {
         if let Some(containers) = &self.containers {
             containers.remove_all_managed().await?;
         }
-        self.lock_store()?.begin_reset()?;
+        {
+            let mut store = self.lock_store()?;
+            store.begin_reset()?;
+            self.stop_participation();
+        }
         self.restart.send_replace(true);
         Ok(ResetAccepted {})
     }
@@ -706,7 +750,7 @@ async fn machine_rtts(
     let machines = replicated.machines().await?.observations;
     let identities = unique_identities(machines.into_iter().map(|machine| {
         (
-            IpAddr::V6(machine.management_address.0),
+            IpAddr::V6(machine.management_address().0),
             MachineIdentity {
                 id: machine.id,
                 name: machine.name,
@@ -742,7 +786,7 @@ fn rtts_by_machine(
     let identities = unique_identities(
         machines
             .iter()
-            .map(|machine| (IpAddr::V6(machine.management_address.0), machine.id)),
+            .map(|machine| (IpAddr::V6(machine.management_address().0), machine.id)),
     );
     rtts.iter()
         .filter_map(|observation| {
@@ -763,7 +807,7 @@ fn isolation_lock(
         && machines.iter().all(|machine| {
             machine.id == *me
                 || !states
-                    .get(&machine.management_address)
+                    .get(&machine.management_address())
                     .is_some_and(MembershipObservation::invites_rpc)
         })
 }
@@ -803,8 +847,8 @@ mod tests {
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
-        MachineName, MachineRuntime, ManagementAddress, MembershipObservation, RttObservation,
-        RttStatistics, SelectedEndpoint, WireGuardPublicKey,
+        MachineName, MachineRuntime, MembershipObservation, RttObservation, RttStatistics,
+        SelectedEndpoint, WireGuardPublicKey,
     };
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
@@ -858,11 +902,11 @@ mod tests {
             population_stddev_ns: 250_000,
         };
         let observations = RuntimeWatchTelemetry {
-            states: BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]),
+            states: BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]),
             selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
             rtts: vec![RttObservation {
                 peer_id: "peer".into(),
-                address: format!("[{}]:{CORROSION_GOSSIP_PORT}", peer.management_address.0)
+                address: format!("[{}]:{CORROSION_GOSSIP_PORT}", peer.management_address().0)
                     .parse()
                     .unwrap(),
                 machine: None,
@@ -917,8 +961,8 @@ mod tests {
     fn isolation_lock_does_not_fire_when_a_peer_invites_rpc() {
         let [me, peer, third, fourth] = four_machines();
         let machines = [me.clone(), peer.clone(), third, fourth];
-        let up = BTreeMap::from([(peer.management_address, MembershipObservation::Up)]);
-        let suspect = BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]);
+        let up = BTreeMap::from([(peer.management_address(), MembershipObservation::Up)]);
+        let suspect = BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]);
         assert!(!isolation_lock(&me.id, &machines, &up));
         assert!(!isolation_lock(&me.id, &machines, &suspect));
     }
@@ -943,7 +987,6 @@ mod tests {
             id: MachineId::parse(id).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-            management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
             public_key: WireGuardPublicKey([seed; 32]),
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint(

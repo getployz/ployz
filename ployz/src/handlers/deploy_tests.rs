@@ -37,8 +37,8 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         spec.ports.first(),
         Some(PortPublication::Host { .. })
     ));
-    assert!(!spec.volume_graph.mounts().is_empty());
-    assert!(spec.config_graph.mounts().is_empty());
+    assert!(!spec.volume_graph().mounts().is_empty());
+    assert!(spec.config_graph().mounts().is_empty());
     assert!(spec.mounts().first().is_some_and(|mount| mount.read_only));
     assert!(spec.mounts().get(1).is_some_and(|mount| mount.no_copy));
 
@@ -273,4 +273,38 @@ fn deploy_loads_every_profile_and_leaves_named_services_for_the_planner() {
     assert!(!has_explicit_nondefault_compose_file(&deploy_load(
         super::leaf_matches(&default_name)
     )));
+}
+
+#[test]
+fn run_rejects_cpu_overflow_and_preserves_fractional_quantities() {
+    for invalid in ["1e20", "NaN", "inf", "9223372036.854776"] {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "run", "--cpu", invalid, "alpine"])
+            .unwrap();
+        assert!(
+            run_spec(super::leaf_matches(&matches)).is_err(),
+            "{invalid}"
+        );
+    }
+    let matches = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--cpu",
+            "0.125",
+            "--memory",
+            "9223372036854775807",
+            "alpine",
+        ])
+        .unwrap();
+    let spec = run_spec(super::leaf_matches(&matches)).unwrap();
+    let resources = serde_json::to_value(spec.container.resources).unwrap();
+    assert_eq!(
+        resources.get("cpu_nanos"),
+        Some(&serde_json::json!(125_000_000))
+    );
+    assert_eq!(
+        resources.get("memory_bytes"),
+        Some(&serde_json::json!(9_223_372_036_854_775_807_i64))
+    );
 }

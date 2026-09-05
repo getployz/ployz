@@ -224,8 +224,11 @@ mod tests {
             },
             Some([10, 210, 1, 2]),
         );
-        v3.created_at_unix_nanos = 1;
-        v3.resolved_spec.container.image = "api:3".into();
+        v3.try_update(|parts| {
+            parts.created_at_unix_nanos = 1;
+            parts.resolved_spec.container.image = "api:3".into();
+        })
+        .unwrap();
         let mut v4 = serving_observation(
             '2',
             &service_id,
@@ -235,8 +238,11 @@ mod tests {
             },
             Some([10, 210, 1, 3]),
         );
-        v4.created_at_unix_nanos = 2;
-        v4.resolved_spec.container.image = "api:4".into();
+        v4.try_update(|parts| {
+            parts.created_at_unix_nanos = 2;
+            parts.resolved_spec.container.image = "api:4".into();
+        })
+        .unwrap();
         let mut unready_v4 = serving_observation(
             '3',
             &service_id,
@@ -246,8 +252,12 @@ mod tests {
             },
             Some([10, 210, 1, 4]),
         );
-        unready_v4.created_at_unix_nanos = 3;
-        unready_v4.resolved_spec.container.image = "api:4".into();
+        unready_v4
+            .try_update(|parts| {
+                parts.created_at_unix_nanos = 3;
+                parts.resolved_spec.container.image = "api:4".into();
+            })
+            .unwrap();
 
         let mixed = service_containers([v3.clone(), v4.clone()]);
         let serving = serving_containers(&mixed);
@@ -273,9 +283,12 @@ mod tests {
             ContainerKind::ServiceContainer,
             "api:3",
         );
-        v3.runtime = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
+        v3.try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            }
+        })
+        .unwrap();
         let wanted = {
             let mut spec = v3.resolved_spec.clone();
             spec.container.image = "api:4".into();
@@ -297,9 +310,12 @@ mod tests {
             ContainerKind::ServiceContainer,
             "api:4",
         );
-        v4.runtime = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
+        v4.try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            }
+        })
+        .unwrap();
         let wanted = v4.resolved_spec.serving_shape();
         assert!(matches!(
             SlotOccupancy::classify([v4], wanted),
@@ -331,8 +347,14 @@ mod tests {
         address: Option<[u8; 4]>,
     ) -> ContainerObservation {
         let mut observation = observation(id, service_id, "api", kind, "api");
-        observation.runtime = runtime;
-        observation.address = address.map(|octets| ContainerAddress(octets.into()));
+        observation
+            .try_update(|parts| parts.runtime = runtime)
+            .unwrap();
+        observation
+            .try_update(|parts| {
+                parts.address = address.map(|octets| ContainerAddress(octets.into()))
+            })
+            .unwrap();
         observation
     }
 
@@ -351,20 +373,19 @@ mod tests {
             "container": { "image": image, "pull_policy": "missing" }
         }))
         .unwrap();
-        ContainerObservation {
+        ContainerObservation::try_from(crate::ContainerObservationParts {
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
             project_name: ProjectName::parse("app").unwrap(),
-            service_id: *service_id,
-            service_name,
             kind,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
-        }
+        })
+        .unwrap()
     }
 }

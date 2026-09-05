@@ -131,7 +131,9 @@ fn two_applied_specs_that_expand_to_the_same_hostname_conflict() {
 fn visible_owner_of_an_expanded_automatic_hostname_conflicts() {
     let spec = assigned_web();
     let mut owner = other_project_container(&expanded_owner(&spec), 1);
-    owner.resolved_spec.ports = expanded_owner(&spec).ports;
+    owner
+        .try_update(|parts| parts.resolved_spec.ports = expanded_owner(&spec).ports)
+        .unwrap();
     let error = plan_ingress([&spec], &snapshot_with(vec![owner])).unwrap_err();
     assert_eq!(
         error,
@@ -289,8 +291,12 @@ fn ingress_web(hostname: IngressHostname) -> RequestedServiceSpec {
 
 fn other_project_container(spec: &RequestedServiceSpec, created_at: i64) -> ContainerObservation {
     let mut observation = container('d', '1', spec, &service_id('b'));
-    observation.project_name = ProjectName::parse("blog").unwrap();
-    observation.created_at_unix_nanos = created_at;
+    observation
+        .try_update(|parts| {
+            parts.project_name = ProjectName::parse("blog").unwrap();
+            parts.created_at_unix_nanos = created_at;
+        })
+        .unwrap();
     observation
 }
 

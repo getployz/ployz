@@ -182,7 +182,7 @@ impl ContainerRuntime {
             .filter(|observation| {
                 observation.kind == ContainerKind::ServiceContainer
                     && &observation.project_name == project_name
-                    && observation.service_name == spec.name
+                    && observation.resolved_spec.name == spec.name
             })
             .collect::<Vec<_>>();
         match self
@@ -207,7 +207,7 @@ impl ContainerRuntime {
                 }
                 return Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
                     container_id: slot.container_id,
-                    display_name: slot.display_name,
+                    display_name: slot.into_parts().display_name,
                 }));
             }
             SlotOccupancy::OtherShape | SlotOccupancy::Empty => {}
@@ -286,7 +286,7 @@ impl ContainerRuntime {
                             }
                             return Ok(ContainerCreated {
                                 container_id: existing.container_id,
-                                display_name: existing.display_name,
+                                display_name: existing.into_parts().display_name,
                             });
                         }
                         Err(error) => return Err(error),
@@ -360,7 +360,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
     ) -> Result<ServicePlacementEligibility, Error> {
-        let storage = if spec.volume_graph.has_mounted_provisioned_volume() {
+        let storage = if spec.volume_graph().has_mounted_provisioned_volume() {
             storage.await
         } else {
             None
@@ -533,18 +533,14 @@ async fn docker_config_mounts(
     configs: &mut ConfigOperation<'_>,
     spec: &ResolvedServiceSpec,
 ) -> Result<Vec<Mount>, Error> {
-    let mut mounts = Vec::with_capacity(spec.config_graph.mounts().len());
-    for mount in spec.config_graph.mounts() {
-        let config = spec.config_graph.config_for(mount);
+    let mut mounts = Vec::with_capacity(spec.config_graph().mounts().len());
+    for mount in spec.config_graph().mounts() {
+        let config = spec.config_graph().config_for(mount);
         let target = mount
             .target
             .as_ref()
-            .map_or_else(|| format!("/{}", mount.config_name), ToString::to_string);
-        if target == "/" {
-            return Err(Error::InvalidContainerConfig(format!(
-                "invalid config target {target:?}"
-            )));
-        }
+            .expect("mount admission resolves config destinations")
+            .to_string();
         let source = configs.materialize_config(config, mount).await?;
         let source = source.to_str().ok_or_else(|| {
             Error::InvalidContainerConfig("config path is not valid UTF-8".into())
@@ -611,16 +607,13 @@ fn unknown_error(reason: ServicePlacementUnknownReason) -> Error {
 
 #[cfg(test)]
 pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Machine {
-    use std::net::Ipv6Addr;
-
-    use ployz_core::{MachineName, ManagementAddress, WireGuardPublicKey};
+    use ployz_core::{MachineName, WireGuardPublicKey};
 
     let [a, b, c, _] = gateway.0.octets();
     Machine {
         id: machine_id,
         name: MachineName::parse("docker-test").unwrap(),
         subnet: format!("{a}.{b}.{c}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
         public_key: WireGuardPublicKey([0; 32]),
         public_ip: None,
         advertised_endpoints: Vec::new(),

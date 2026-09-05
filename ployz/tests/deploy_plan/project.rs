@@ -156,8 +156,12 @@ fn volume_only_project_still_plans_preservation() {
 fn other_project_resources_are_left_alone() {
     let spec = requested(ServiceMode::Global);
     let mut other = container('c', '1', &spec, &service_id('c'));
-    other.project_name = ProjectName::parse("other").unwrap();
-    other.service_name = ServiceName::parse("web").unwrap();
+    other
+        .try_update(|parts| {
+            parts.project_name = ProjectName::parse("other").unwrap();
+            parts.resolved_spec.name = ServiceName::parse("web").unwrap();
+        })
+        .unwrap();
     let mut other_volume = owned_volume(machine_id('1'), "data");
     other_volume
         .labels
@@ -198,8 +202,12 @@ fn other_project_resources_are_left_alone() {
 fn planner_does_not_refuse_reserved_names() {
     let spec = requested(ServiceMode::Global);
     let mut ingress = container('b', '1', &spec, &service_id('a'));
-    ingress.project_name = ProjectName::system();
-    ingress.service_name = ServiceName::parse("ingress").unwrap();
+    ingress
+        .try_update(|parts| {
+            parts.project_name = ProjectName::system();
+            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+        })
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![ingress],

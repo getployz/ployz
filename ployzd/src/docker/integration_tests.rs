@@ -112,7 +112,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     assert_eq!(inspected.resolved_spec, spec);
     assert_eq!(inspected.kind, ContainerKind::ServiceContainer);
     assert_eq!(inspected.project_name.as_str(), "app");
-    assert_eq!(inspected.service_name.as_str(), "default-api");
+    assert_eq!(inspected.resolved_spec.name.as_str(), "default-api");
     assert_eq!(
         inspected.labels.get(LABEL_PROJECT_NAME).map(String::as_str),
         Some("app")
@@ -624,8 +624,11 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     };
     let published_port = unused_address().port();
     let machine_id = MachineId::random();
-    let name =
+    let logical_name =
         ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{machine_id}")).unwrap();
+    let name = ProjectName::parse("app")
+        .unwrap()
+        .volume_name(&logical_name);
     runtime
         .create_volume(
             &machine_id,
@@ -633,7 +636,10 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
                 name: name.clone(),
                 driver: "local".into(),
                 options: BTreeMap::new(),
-                labels: BTreeMap::new(),
+                labels: BTreeMap::from([
+                    (ployz_core::MANAGED_LABEL.into(), String::new()),
+                    (ployz_core::PROJECT_NAME_LABEL.into(), "app".into()),
+                ]),
             },
         )
         .await
@@ -661,7 +667,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         }],
         "volumes": [
             {"reference":"host","source":{"kind":"bind","machine_path":root.0.join("bind")}},
-            {"reference":"data","source":{"kind":"ordinary","name":name,"driver":{"name":"local","options":{}}}},
+            {"reference":"data","source":{"kind":"ordinary","name":name,"scope":{"project":"app","logical_name":logical_name},"driver":{"name":"local","options":{}}}},
             {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
         ],
         "mounts": [
@@ -921,8 +927,8 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     assert_eq!(hook_observation.kind, ContainerKind::PreDeployHook);
     assert_eq!(service_observation.project_name.as_str(), "app");
     assert_eq!(hook_observation.project_name.as_str(), "app");
-    assert_eq!(service_observation.service_name.as_str(), "api");
-    assert_eq!(hook_observation.service_name.as_str(), "api");
+    assert_eq!(service_observation.resolved_spec.name.as_str(), "api");
+    assert_eq!(hook_observation.resolved_spec.name.as_str(), "api");
     assert_eq!(
         service_observation.runtime,
         ContainerRuntimeObservation::Created
@@ -1128,13 +1134,11 @@ fn fixture_observation(
     service_id: ServiceId,
     service_name: ServiceName,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         display_name: format!("{service_name}-stale"),
         created_at_unix_nanos: 0,
         machine_id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Created,
         effective_healthcheck: None,
@@ -1142,7 +1146,8 @@ fn fixture_observation(
         address: None,
         labels: BTreeMap::new(),
         container_id,
-    }
+    })
+    .unwrap()
 }
 
 async fn wait_for<F, Fut>(timeout: Duration, mut condition: F)

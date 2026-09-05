@@ -1,21 +1,17 @@
-mod echo_service;
-
-use std::net::Ipv6Addr;
-
+use crate::machine_api::{
+    MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route,
+};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use ployz_core::{
     FanoutOutcome, FanoutResponse, FanoutSelector, Machine, MachineId, MachineName, MachineTarget,
-    ManagementAddress, WireGuardPublicKey, encode_grpc_frame, grpc_frames,
-};
-use ployzd::machine_api::{
-    MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route,
+    WireGuardPublicKey, encode_grpc_frame, grpc_frames,
 };
 use tokio::{net::TcpListener, sync::oneshot};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{body::Body, codegen::http, service::Routes, transport::Server};
 
-use echo_service::EchoService;
+use super::echo_service::EchoService;
 
 #[test]
 fn routing_resolves_visible_targets_without_repairing_ambiguity() {
@@ -102,13 +98,18 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
     ));
 
     let local = machine('1', "local", 1);
-    let mut remote = remote_machine;
-    remote.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    let remote = remote_machine;
     let proxy = MachineProxy::new(
         Routes::new(EchoService::default()),
         local.id,
         remote_port,
         None,
+    );
+    proxy.remote_backends.lock().unwrap().insert(
+        remote.management_address(),
+        tonic::transport::Endpoint::from_shared(format!("http://[::1]:{remote_port}"))
+            .unwrap()
+            .connect_lazy(),
     );
     let opaque = br#"{\"future_field\":{\"raw\":[0,255]}}"#;
     let framed = ployz_core::encode_grpc_frame(opaque);
@@ -148,14 +149,19 @@ async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
     ));
 
     let local = machine('1', "local", 1);
-    let mut reachable = target_machine;
-    reachable.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    let reachable = target_machine;
     let unreachable = machine('3', "unreachable", 3);
     let proxy = MachineProxy::new(
         Routes::new(EchoService::default()),
         local.id,
         remote_port,
         None,
+    );
+    proxy.remote_backends.lock().unwrap().insert(
+        reachable.management_address(),
+        tonic::transport::Endpoint::from_shared(format!("http://[::1]:{remote_port}"))
+            .unwrap()
+            .connect_lazy(),
     );
     let request_frames = [encode_grpc_frame(b"opaque"), encode_grpc_frame(b"future")];
     let request_body = request_frames.concat();
@@ -248,9 +254,6 @@ fn machine(id: char, name: &str, subnet: u8) -> Machine {
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{subnet}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(Ipv6Addr::from([
-            0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, subnet,
-        ])),
         public_key: WireGuardPublicKey([subnet; 32]),
         public_ip: None,
         advertised_endpoints: Vec::new(),

@@ -4,10 +4,10 @@ use std::{collections::BTreeMap, num::NonZeroU16};
 
 use crate::{
     ContainerPath, ContainerResources, HostBind, IngressProxyFragment, MachinePath, MachineTarget,
-    Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceMount,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig,
-    VolumeSource,
+    Placement, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
+    RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode,
+    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol,
+    UpdateConfig,
 };
 
 const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/Caddyfile"];
@@ -38,8 +38,8 @@ pub fn caddy_service_spec(
         container: caddy_container(image),
         placement: Placement { machines },
         ports: caddy_ports(),
-        volume_graph: caddy_volume_graph(),
-        config_graph: Default::default(),
+        mount_graph: crate::ServiceMountGraph::parse(caddy_volume_graph(), Default::default())
+            .expect("built-in Caddy mounts are valid"),
         pre_deploy: None,
         ingress_proxy_fragment: fragment,
         update: UpdateConfig::default(),
@@ -80,7 +80,8 @@ pub fn validate_ingress_service_spec(
         spec.placement.machines.clone(),
         spec.ingress_proxy_fragment.clone(),
     )
-    .to_resolved(spec.service_id, spec.update.clone());
+    .to_resolved(spec.service_id, spec.update.clone())
+    .expect("built-in Caddy mounts are resolved");
     (expected == *spec)
         .then_some(())
         .ok_or(IngressProxyServiceSpecError)
@@ -151,12 +152,14 @@ fn bind_volume(
 ) -> ServiceVolume {
     ServiceVolume {
         reference,
-        source: VolumeSource::Bind {
+        source: RawVolumeSource::Bind {
             machine_path: MachinePath::parse(machine_path).expect("static data path is valid"),
             create_machine_path: true,
             propagation: None,
             recursive: None,
-        },
+        }
+        .admit()
+        .expect("built-in Caddy volume is valid"),
     }
 }
 
@@ -188,13 +191,15 @@ mod tests {
 
         assert!(validate_requested_ingress_service_spec(&requested).is_ok());
         for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
-            let resolved = requested.to_resolved(
-                ServiceId::random(),
-                ResolvedUpdateConfig {
-                    order,
-                    monitor_millis: None,
-                },
-            );
+            let resolved = requested
+                .to_resolved(
+                    ServiceId::random(),
+                    ResolvedUpdateConfig {
+                        order,
+                        monitor_millis: None,
+                    },
+                )
+                .expect("built-in Caddy mounts are resolved");
             assert!(validate_ingress_service_spec(&resolved).is_ok());
         }
         assert!(
@@ -225,16 +230,22 @@ mod tests {
         let mut wrong_ports = requested.clone();
         wrong_ports.ports.pop();
         let mut wrong_volume_graph = requested.clone();
-        wrong_volume_graph.volume_graph = ServiceVolumeGraph::default();
+        wrong_volume_graph
+            .set_volume_graph(ServiceVolumeGraph::default())
+            .unwrap();
         let mut wrong_config_graph = requested.clone();
-        wrong_config_graph.config_graph = ServiceConfigGraph::parse(
-            vec![ConfigSpec {
-                name: "unexpected".into(),
-                content: Vec::new(),
-            }],
-            Vec::new(),
-        )
-        .unwrap();
+        wrong_config_graph
+            .set_config_graph(
+                ServiceConfigGraph::parse(
+                    vec![ConfigSpec {
+                        name: "unexpected".into(),
+                        content: Vec::new(),
+                    }],
+                    Vec::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let mut wrong_requested_update = requested.clone();
         wrong_requested_update.update.order = Some(UpdateOrder::StopFirst);
 
@@ -251,8 +262,9 @@ mod tests {
             assert!(validate_requested_ingress_service_spec(&malformed).is_err());
         }
 
-        let mut wrong_resolved_update =
-            requested.to_resolved(ServiceId::random(), ResolvedUpdateConfig::default());
+        let mut wrong_resolved_update = requested
+            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+            .expect("built-in Caddy mounts are resolved");
         wrong_resolved_update.update.monitor_millis = Some(1);
         assert!(validate_ingress_service_spec(&wrong_resolved_update).is_err());
     }

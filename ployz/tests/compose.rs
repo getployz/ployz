@@ -17,7 +17,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname,
     IngressProxyFragment, MANAGED_LABEL, MachineFailure, MachineStorageObservation,
     PROJECT_NAME_LABEL, PortPublication, ProjectName, RestartPolicy, RpcError, RpcErrorCode,
-    ServiceMode, TransportProtocol, UpdateOrder, VolumeObservationFailure, VolumeSource,
+    ServiceMode, TransportProtocol, UpdateOrder, VolumeObservationFailure,
 };
 
 #[path = "compose/support.rs"]
@@ -142,14 +142,29 @@ configs:
             ("EMPTY".into(), String::new())
         ])
     );
-    assert_eq!(api.container.resources.cpu_nanos, Some(500_000_000));
-    assert_eq!(api.container.resources.memory_bytes, Some(104_857_600));
     assert_eq!(
-        api.container.resources.memory_reservation_bytes,
+        api.container.resources.cpu_nanos.map(|value| value.get()),
+        Some(500_000_000)
+    );
+    assert_eq!(
+        api.container
+            .resources
+            .memory_bytes
+            .map(|value| value.get()),
+        Some(104_857_600)
+    );
+    assert_eq!(
+        api.container
+            .resources
+            .memory_reservation_bytes
+            .map(|value| value.get()),
         Some(52_428_800)
     );
     assert_eq!(
-        api.container.resources.shared_memory_bytes,
+        api.container
+            .resources
+            .shared_memory_bytes
+            .map(|value| value.get()),
         Some(268_435_456)
     );
     assert_eq!(api.container.resources.devices.len(), 1);
@@ -213,7 +228,7 @@ configs:
         } if published_port.get() == 5000 && container_port.get() == 3000
     ));
     let pre_deploy = api.pre_deploy.as_ref().unwrap();
-    assert_eq!(pre_deploy.command, ["sh", "-c", "migrate"]);
+    assert_eq!(pre_deploy.command.as_slice(), ["sh", "-c", "migrate"]);
     assert_eq!(
         pre_deploy.environment,
         BTreeMap::from([("DB_HOST".into(), "db".into())])
@@ -225,8 +240,8 @@ configs:
     assert_eq!(api.config_mounts().first().unwrap().mode, Some(0o640));
     assert_eq!(api.volumes().len(), 3);
     assert!(api.volumes().iter().any(|volume| matches!(
-        &volume.source,
-        VolumeSource::Bind {
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Bind {
             create_machine_path: true,
             propagation: Some(ployz_core::BindPropagation::Rprivate),
             recursive: Some(ployz_core::BindRecursive::Disabled),
@@ -234,8 +249,8 @@ configs:
         }
     )));
     assert!(api.volumes().iter().any(|volume| matches!(
-        &volume.source,
-        VolumeSource::Ordinary { name, .. } if name.as_str() == "data"
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { name, .. } if name.as_str() == "data"
     )));
     assert!(api.container.image.starts_with("registry.example/api:"));
     assert_eq!(
@@ -539,7 +554,7 @@ secrets:
         ),
         (
             "services: {app: {image: app, x-pre_deploy: {}}}",
-            "required attribute 'command'",
+            "non-empty command",
         ),
         (
             "services: {app: {image: app, configs: [settings]}}\nconfigs: {settings: {content: ok}}",
@@ -634,8 +649,8 @@ fn compose_normalizes_an_omitted_ordinary_volume_driver_to_local() {
     .unwrap();
     let source = &service(&project, "app").volumes().first().unwrap().source;
     assert!(matches!(
-        source,
-        VolumeSource::Ordinary { driver, .. }
+        source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { driver, .. }
             if driver.name() == "local" && driver.options().is_empty()
     ));
 }
@@ -737,8 +752,9 @@ volumes:
             .volumes()
             .first()
             .unwrap()
-            .source,
-        VolumeSource::External { .. }
+            .source
+            .kind(),
+        ployz_core::RawVolumeSource::External { .. }
     ));
     let existing = machine('a', "one");
     let plan = plan_compose(
@@ -1334,15 +1350,20 @@ secrets: {token: {x-command: "printf resolved"}}
     let volume = plan_operations
         .iter()
         .filter_map(DeployOperation::spec)
-        .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { .. }))
+        .flat_map(|spec| spec.volume_graph().volumes())
+        .find(|volume| {
+            matches!(
+                volume.source.kind(),
+                ployz_core::RawVolumeSource::Ordinary { .. }
+            )
+        })
         .expect("run operation carries the managed Volume");
     assert!(matches!(
-        &volume.source,
-        VolumeSource::Ordinary { name, labels, .. }
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { name, labels, .. }
             if name.as_str() == "app_data"
-                && labels.get(MANAGED_LABEL) == Some(&String::new())
-                && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
+                && volume.source.creation_labels().get(MANAGED_LABEL) == Some(&String::new())
+                && volume.source.creation_labels().get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
     ));
     assert_eq!(volume.reference, requested_volume.reference);
     assert_eq!(previewed_volume.name.as_str(), "app_data");
@@ -1450,8 +1471,8 @@ fn mounted_x_volume_resolves_to_a_provisioned_source() {
         .first()
         .expect("fixture mounts one volume");
     assert!(matches!(
-        &volume.source,
-        VolumeSource::Provisioned { name, maximum_bytes, labels }
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Provisioned { name, maximum_bytes, labels }
             if name.as_str() == "data"
                 && maximum_bytes.get() == 10 * 1024_u64.pow(3)
                 && labels.is_empty()
@@ -1525,11 +1546,12 @@ fn compose_x_volume_size_stays_in_resolved_service_spec() {
 
     let source_bound = |spec: &ployz_core::ResolvedServiceSpec| {
         let volume = spec
-            .volume_graph
+            .volume_graph()
             .volumes()
             .first()
             .expect("fixture mounts one volume");
-        let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
+        let ployz_core::RawVolumeSource::Provisioned { maximum_bytes, .. } = volume.source.kind()
+        else {
             panic!("x-volume did not remain provisioned in resolved spec")
         };
         maximum_bytes.get()
@@ -1705,18 +1727,25 @@ fn created_named_volume(
     let volume = plan_operations
         .iter()
         .filter_map(DeployOperation::spec)
-        .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { name, .. } if name == &previewed.name))
+        .flat_map(|spec| spec.volume_graph().volumes())
+        .find(|volume| matches!(volume.source.kind(), ployz_core::RawVolumeSource::Ordinary { name, .. } if name == &previewed.name))
         .expect("container operation carries the previewed Volume");
-    let VolumeSource::Ordinary { name, labels, .. } = &volume.source else {
+    let ployz_core::RawVolumeSource::Ordinary { name, .. } = volume.source.kind() else {
         panic!(
             "expected an ordinary Docker Volume, got {:?}",
             volume.source
         );
     };
-    assert_eq!(labels.get(MANAGED_LABEL), Some(&String::new()));
     assert_eq!(
-        labels.get(PROJECT_NAME_LABEL).map(String::as_str),
+        volume.source.creation_labels().get(MANAGED_LABEL),
+        Some(&String::new())
+    );
+    assert_eq!(
+        volume
+            .source
+            .creation_labels()
+            .get(PROJECT_NAME_LABEL)
+            .map(String::as_str),
         Some(project)
     );
     assert_eq!(name, &previewed.name);
@@ -2098,5 +2127,44 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn cpu_quantities_reject_invalid_normalized_input() {
+    for field in [
+        "    cpus:",
+        "    deploy:\n      resources:\n        limits:\n          cpus:",
+    ] {
+        for invalid in ["1e20", "-0.5", "NaN", "inf", "9223372036.854776"] {
+            let yaml = format!("services:\n  api:\n    image: alpine\n{field} '{invalid}'\n");
+            assert!(parse_normalized(&yaml, ".").is_err(), "{yaml}");
+        }
+        for (valid, expected) in [("0", 0), ("0.125", 125_000_000), ("1.5", 1_500_000_000)] {
+            let yaml = format!("services:\n  api:\n    image: alpine\n{field} '{valid}'\n");
+            let project = parse_normalized(&yaml, ".").unwrap();
+            assert_eq!(
+                service(&project, "api")
+                    .container
+                    .resources
+                    .cpu_nanos
+                    .unwrap()
+                    .get(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn normalized_volume_declarations_reject_forged_project_ownership() {
+    for owner in ["app", "foreign"] {
+        for key in [PROJECT_NAME_LABEL, MANAGED_LABEL] {
+            let yaml = format!(
+                "name: app\nservices:\n  db:\n    image: postgres:17\n    volumes: [data:/data]\nvolumes:\n  data:\n    labels:\n      {key}: {owner}\n"
+            );
+            let error = parse_normalized(&yaml, ".").unwrap_err().to_string();
+            assert!(error.contains("non-reserved user label"), "{error}");
+        }
     }
 }

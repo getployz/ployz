@@ -20,7 +20,7 @@ pub fn hostname_owners<'a>(
             continue;
         }
         let created_at = observation.created_at_unix_nanos;
-        let service_id = observation.service_id;
+        let service_id = observation.service_id();
         let identity = observation.identity();
         for hostname in explicit_ingress_hosts(&observation.resolved_spec.ports) {
             let better = match winners.get(hostname) {
@@ -130,21 +130,30 @@ mod tests {
     #[test]
     fn hooks_and_unassigned_ingress_do_not_claim_a_hostname() {
         let mut hook = observation("shop", "web", '1', 'a', 1, "api.example.com");
-        hook.kind = ContainerKind::PreDeployHook;
+        hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+            .unwrap();
         let mut assigned = observation("blog", "web", '2', 'b', 2, "api.example.com");
-        assigned.resolved_spec.ports = vec![PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain(),
-            load_balancer_port: NonZeroU16::new(80).unwrap(),
-            container_port: NonZeroU16::new(80).unwrap(),
-            http_protocol: HttpProtocol::Http,
-        }];
+        assigned
+            .try_update(|parts| {
+                parts.resolved_spec.ports = vec![PortPublication::Ingress {
+                    hostname: IngressHostname::cluster_domain(),
+                    load_balancer_port: NonZeroU16::new(80).unwrap(),
+                    container_port: NonZeroU16::new(80).unwrap(),
+                    http_protocol: HttpProtocol::Http,
+                }]
+            })
+            .unwrap();
         let mut chosen = observation("shop", "api", '3', 'c', 3, "api.example.com");
-        chosen.resolved_spec.ports = vec![PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
-            load_balancer_port: NonZeroU16::new(80).unwrap(),
-            container_port: NonZeroU16::new(80).unwrap(),
-            http_protocol: HttpProtocol::Http,
-        }];
+        chosen
+            .try_update(|parts| {
+                parts.resolved_spec.ports = vec![PortPublication::Ingress {
+                    hostname: IngressHostname::cluster_domain_label("api").unwrap(),
+                    load_balancer_port: NonZeroU16::new(80).unwrap(),
+                    container_port: NonZeroU16::new(80).unwrap(),
+                    http_protocol: HttpProtocol::Http,
+                }]
+            })
+            .unwrap();
         assert!(hostname_owners([&hook, &assigned, &chosen]).is_empty());
     }
 
@@ -176,20 +185,19 @@ mod tests {
             }]
         }))
         .unwrap();
-        ContainerObservation {
+        ContainerObservation::try_from(crate::ContainerObservationParts {
             container_id: ContainerId::parse(container.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{container}"),
             created_at_unix_nanos: created_at,
             machine_id: MachineId::parse("1".repeat(32)).unwrap(),
             project_name: ProjectName::parse(project).unwrap(),
-            service_id,
-            service_name,
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
-        }
+        })
+        .unwrap()
     }
 }

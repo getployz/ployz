@@ -9,7 +9,7 @@ use std::{
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use super::NameMatches;
+use super::{NameMatches, RelayEndpoint};
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
     ManagementAddress, PairingCredential, Placement, QualifiedService, SelectedEndpoint,
@@ -39,7 +39,6 @@ pub struct Machine {
     pub id: MachineId,
     pub name: MachineName,
     pub subnet: MachineSubnet,
-    pub management_address: ManagementAddress,
     pub public_key: WireGuardPublicKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<IpAddr>,
@@ -47,6 +46,23 @@ pub struct Machine {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
+}
+
+impl Machine {
+    /// Management-plane address derived solely from this Machine's public key.
+    #[must_use]
+    pub fn management_address(&self) -> ManagementAddress {
+        management_address(self.public_key)
+    }
+}
+
+/// Deterministic management-plane address for a WireGuard identity.
+#[must_use]
+pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
+    let mut address = [0_u8; 16];
+    address[..2].copy_from_slice(&[0xfd, 0xcc]);
+    address[2..].copy_from_slice(&public_key.0[..14]);
+    ManagementAddress(std::net::Ipv6Addr::from(address))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -363,10 +379,10 @@ pub fn resolve_machine_selectors(
                 }
                 NameMatches::One(_) => {}
                 NameMatches::None => missing.push(target.clone()),
-                NameMatches::Ambiguous(matches) => {
+                matches @ NameMatches::Ambiguous { .. } => {
                     return Err(MachineSelectorError::Ambiguous {
                         selector: target.clone(),
-                        matches: matches.into_iter().map(|machine| machine.id).collect(),
+                        matches: matches.iter().map(|machine| machine.id).collect(),
                     });
                 }
             },
@@ -413,7 +429,7 @@ pub fn synthesize_membership(
                 MembershipObservation::Up
             } else {
                 states
-                    .get(&machine.management_address)
+                    .get(&machine.management_address())
                     .cloned()
                     .unwrap_or(MembershipObservation::Down)
             };
@@ -552,7 +568,7 @@ pub const DIAL_IN_PAIRING: &str = "Cloud Pairing must not carry a Dial Credentia
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudPairing {
-    relay_url: String,
+    relay_url: RelayEndpoint,
     secret: PairingCredential,
 }
 
@@ -572,25 +588,18 @@ impl CloudPairing {
     ///
     /// # Errors
     ///
-    /// Returns [`ValueError`] when `relay_url` is empty.
+    /// Returns [`ValueError`] when `relay_url` is not a usable HTTP(S) endpoint.
     pub fn parse(
         relay_url: impl Into<String>,
         secret: PairingCredential,
     ) -> Result<Self, ValueError> {
-        let relay_url = relay_url.into();
-        if relay_url.is_empty() {
-            return Err(ValueError::new(
-                "Cloud Pairing relay URL",
-                relay_url,
-                "a non-empty URL",
-            ));
-        }
+        let relay_url = RelayEndpoint::parse(relay_url.into())?;
         Ok(Self { relay_url, secret })
     }
 
     /// Cloud Relay endpoint this Machine should dial. Not `--cloud-url`.
     #[must_use]
-    pub fn relay_url(&self) -> &str {
+    pub fn relay_url(&self) -> &RelayEndpoint {
         &self.relay_url
     }
 
@@ -630,7 +639,7 @@ mod cloud_pairing_tests {
         assert_eq!(
             value,
             json!({
-                "relayUrl": "https://relay.example.invalid",
+                "relayUrl": "https://relay.example.invalid/",
                 "secret": "pairing-secret",
             })
         );
@@ -663,6 +672,55 @@ mod cloud_pairing_tests {
     }
 
     #[test]
+    fn cloud_pairing_rejects_unusable_relay_endpoints() {
+        for endpoint in [
+            "not-a-url",
+            "ws://relay.example",
+            "https://",
+            "https://host:bad",
+            "https://host:0",
+            "https://host/?query",
+            "https://user:pass@host",
+            "https://host/#fragment",
+        ] {
+            assert!(
+                CloudPairing::parse(endpoint, PairingCredential::parse("secret").unwrap()).is_err(),
+                "{endpoint}"
+            );
+            assert!(
+                serde_json::from_value::<CloudPairing>(
+                    json!({"relayUrl": endpoint, "secret": "secret"})
+                )
+                .is_err(),
+                "{endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_endpoint_admission_is_syntax_only_and_round_trips() {
+        for endpoint in [
+            "http://127.0.0.1:1/",
+            "https://unavailable.invalid/base/",
+            "https://[::1]:8443/",
+        ] {
+            let endpoint = RelayEndpoint::parse(endpoint).unwrap();
+            let encoded = serde_json::to_string(&endpoint).unwrap();
+            assert_eq!(
+                serde_json::from_str::<RelayEndpoint>(&encoded).unwrap(),
+                endpoint
+            );
+            let pairing = CloudPairing::parse(
+                endpoint.as_str(),
+                PairingCredential::parse("secret").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(pairing.relay_url(), &endpoint);
+        }
+        assert!(serde_json::from_str::<RelayEndpoint>("\"not-a-url\"").is_err());
+    }
+
+    #[test]
     fn pairing_credential_and_relay_url_must_be_non_empty() {
         assert!(PairingCredential::parse("").is_err());
         assert!(
@@ -680,11 +738,9 @@ mod cloud_pairing_tests {
 
 #[cfg(test)]
 mod placement_tests {
-    use std::net::Ipv6Addr;
 
     use crate::{
-        MachineId, MachineName, MachineSubnet, MachineTarget, ManagementAddress, Placement,
-        WireGuardPublicKey,
+        MachineId, MachineName, MachineSubnet, MachineTarget, Placement, WireGuardPublicKey,
     };
 
     use super::{Machine, machine_matches_placement};
@@ -694,7 +750,6 @@ mod placement_tests {
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: MachineSubnet::parse("10.210.0.0/24").unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

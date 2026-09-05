@@ -255,6 +255,10 @@ pub(crate) enum Error {
     Acme(#[from] instant_acme::Error),
     #[error("certificate authority did not issue material")]
     MissingMaterial,
+    #[error("certificate authority returned invalid or mismatched certificate material")]
+    InvalidMaterial,
+    #[error("certificate authority returned an invalid HTTP-01 challenge")]
+    InvalidChallenge,
     #[error("HTTP-01 challenge was not served by the proxy")]
     ChallengeNotServed,
     #[error("authorization for {hostname} is {status:?}")]
@@ -595,11 +599,11 @@ where
         let mut challenge = authz
             .challenge(ChallengeType::Http01)
             .ok_or_else(|| Error::NoHttp01(hostname.clone()))?;
-        let presented = CertificateChallenge::new(
+        let presented = CertificateChallenge::parse(
             challenge.token.clone(),
             challenge.key_authorization().as_str(),
         )
-        .ok_or(Error::MissingMaterial)?;
+        .map_err(|_| Error::InvalidChallenge)?;
         present(presented).await?;
         challenge.set_ready().await?;
     }
@@ -621,7 +625,7 @@ where
         }
     };
     let certificate = order.poll_certificate(&RetryPolicy::default()).await?;
-    CertificateMaterial::new(certificate, private_key).ok_or(Error::MissingMaterial)
+    CertificateMaterial::parse(certificate, private_key).map_err(|_| Error::InvalidMaterial)
 }
 
 fn certificate_request(

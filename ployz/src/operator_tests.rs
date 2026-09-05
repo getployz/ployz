@@ -104,7 +104,9 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     let mut duplicate_names = service.clone();
     if let Some(slot) = duplicate_names.containers.get_mut(1) {
         let mut observation = slot.clone().into_observation();
-        observation.display_name = "api-one".into();
+        observation
+            .try_update(|parts| parts.display_name = "api-one".into())
+            .unwrap();
         *slot = ServiceContainer::try_from(observation).unwrap();
     }
     assert!(matches!(
@@ -541,7 +543,6 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
             id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-            management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
             public_key: ployz_core::WireGuardPublicKey([seed; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),
@@ -596,14 +597,12 @@ fn container(
     service_id: ServiceId,
     kind: ContainerKind,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name: ServiceName::parse("api").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -642,13 +641,13 @@ fn container(
             },
             placement: Default::default(),
             ports: vec![],
-            volume_graph: Default::default(),
-            config_graph: Default::default(),
+            mount_graph: Default::default(),
             pre_deploy: None,
             ingress_proxy_fragment: None,
             update: Default::default(),
         },
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }

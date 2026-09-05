@@ -41,7 +41,7 @@ pub(super) async fn hold_register(
     machine_id: &MachineId,
     slot: &Mutex<Option<JoinHandle<()>>>,
 ) -> Result<(), Status> {
-    let mut ws = RelayClient::new(url)
+    let mut ws = RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
         .map_err(status_from_client)?
         .register(pairing.as_str(), machine_id)
         .await

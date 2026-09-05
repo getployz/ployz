@@ -22,6 +22,8 @@ pub(super) enum Shape {
 }
 
 pub(super) const PAYLOADS: &[(&str, Shape)] = &[
+    ("CpuNanos", Shape::Alias("number")),
+    ("ByteQuantity", Shape::Alias("number")),
     ("MachineId", Shape::Branded),
     ("ContainerId", Shape::Branded),
     ("ServiceId", Shape::Branded),
@@ -279,10 +281,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Object {
             params: "",
             fields: &[
-                ("cpu_nanos", "number?"),
-                ("memory_bytes", "number?"),
-                ("memory_reservation_bytes", "number?"),
-                ("shared_memory_bytes", "number?"),
+                ("cpu_nanos", "CpuNanos?"),
+                ("memory_bytes", "ByteQuantity?"),
+                ("memory_reservation_bytes", "ByteQuantity?"),
+                ("shared_memory_bytes", "ByteQuantity?"),
                 ("devices", "DeviceMapping[]?"),
                 ("device_reservations", "DeviceReservation[]?"),
                 ("ulimits", "{ readonly [key: string]: Ulimit }?"),
@@ -315,7 +317,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Object {
             params: "",
             fields: &[
-                ("command", "string[]"),
+                ("command", "readonly [string, ...string[]]"),
                 ("environment", "{ readonly [key: string]: string }?"),
                 ("privileged", "boolean?"),
                 ("timeout_millis", "number?"),
@@ -343,6 +345,32 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             fields: &[
                 ("reference", "ServiceVolumeReference"),
                 ("source", "VolumeSource"),
+            ],
+        },
+    ),
+    (
+        "ScopedVolumeSource",
+        Shape::Object {
+            params: "",
+            fields: &[
+                ("project", "ProjectName"),
+                ("logical_name", "DockerVolumeName"),
+            ],
+        },
+    ),
+    (
+        "ResolvedVolumeSource",
+        Shape::Alias(
+            "(Extract<VolumeSource, { kind: \"ordinary\" | \"provisioned\" }> & { scope: ScopedVolumeSource }) | (Exclude<VolumeSource, { kind: \"ordinary\" | \"provisioned\" }> & { scope?: null })",
+        ),
+    ),
+    (
+        "ResolvedServiceVolume",
+        Shape::Object {
+            params: "",
+            fields: &[
+                ("reference", "ServiceVolumeReference"),
+                ("source", "ResolvedVolumeSource"),
             ],
         },
     ),
@@ -428,7 +456,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("container", "ServiceContainerSpec"),
                 ("placement", "Placement?"),
                 ("ports", "PortPublication[]?"),
-                ("volumes", "ServiceVolume[]?"),
+                ("volumes", "ResolvedServiceVolume[]?"),
                 ("mounts", "ServiceMount[]?"),
                 ("configs", "ConfigSpec[]?"),
                 ("pre_deploy", "PreDeployHook?"),
@@ -526,6 +554,28 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     "unverified",
                     &[("id", "DockerVolumeId"), ("error", "RpcError")],
                 ),
+            ],
+        },
+    ),
+    (
+        "VolumeRemoval",
+        Shape::Object {
+            params: "",
+            fields: &[
+                ("id", "DockerVolumeId"),
+                ("outcome", "VolumeRemovalOutcome"),
+            ],
+        },
+    ),
+    (
+        "VolumeRemovalOutcome",
+        Shape::InternallyTagged {
+            tag: "status",
+            params: "",
+            variants: &[
+                ("removed", &[]),
+                ("failed", &[("error", "RpcError")]),
+                ("omitted", &[]),
             ],
         },
     ),
@@ -1099,7 +1149,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("id", "MachineId"),
                 ("name", "MachineName"),
                 ("subnet", "MachineSubnet"),
-                ("management_address", "ManagementAddress"),
                 ("public_key", "WireGuardPublicKey"),
                 ("public_ip", "string?"),
                 ("advertised_endpoints", "AdvertisedEndpoint[]"),
@@ -1177,8 +1226,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("created_at_unix_nanos", "number"),
                 ("machine_id", "MachineId"),
                 ("project_name", "ProjectName"),
-                ("service_id", "ServiceId"),
-                ("service_name", "ServiceName"),
                 ("kind", "ContainerKind"),
                 ("runtime", "ContainerRuntimeObservation"),
                 ("effective_healthcheck", "HealthcheckSpec | null"),

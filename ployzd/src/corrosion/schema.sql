@@ -21,9 +21,9 @@ CREATE TABLE containers (
   id TEXT PRIMARY KEY NOT NULL,
   container TEXT NOT NULL CHECK (json_valid(container)) DEFAULT '{}',
   machine_id TEXT NOT NULL DEFAULT '',
-  service_id TEXT GENERATED ALWAYS AS (json_extract(container, '$.service_id')) VIRTUAL,
+  service_id TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.service_id')) VIRTUAL,
   project_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.project_name')) VIRTUAL,
-  service_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.service_name')) VIRTUAL,
+  service_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.name')) VIRTUAL,
   updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
 );
 

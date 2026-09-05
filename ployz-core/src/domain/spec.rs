@@ -1,3 +1,8 @@
+//! Requested and resolved Service configuration with admitted mount graphs.
+
+mod wire;
+use wire::{RequestedServiceSpecWire, ResolvedServiceSpecWire};
+
 use std::{
     collections::BTreeMap,
     net::IpAddr,
@@ -7,7 +12,9 @@ use std::{
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
+use super::{
+    ByteQuantity, CpuNanos, ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph,
+};
 use crate::{
     ClusterDomainLabel, ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost,
     MachinePath, MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName,
@@ -172,6 +179,7 @@ pub struct ConfigSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConfigMount {
     pub config_name: String,
+    /// Omission defaults to `/{config_name}`. Admitted specs retain the canonical target.
     #[serde(default)]
     pub target: Option<ContainerPath>,
     #[serde(default)]
@@ -317,13 +325,13 @@ pub struct Ulimit {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContainerResources {
     #[serde(default)]
-    pub cpu_nanos: Option<i64>,
+    pub cpu_nanos: Option<CpuNanos>,
     #[serde(default)]
-    pub memory_bytes: Option<i64>,
+    pub memory_bytes: Option<ByteQuantity>,
     #[serde(default)]
-    pub memory_reservation_bytes: Option<i64>,
+    pub memory_reservation_bytes: Option<ByteQuantity>,
     #[serde(default)]
-    pub shared_memory_bytes: Option<i64>,
+    pub shared_memory_bytes: Option<ByteQuantity>,
     #[serde(default)]
     pub devices: Vec<DeviceMapping>,
     #[serde(default)]
@@ -332,9 +340,57 @@ pub struct ContainerResources {
     pub ulimits: BTreeMap<String, Ulimit>,
 }
 
+/// A pre-deploy hook command with at least one argument.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct PreDeployCommand(Vec<String>);
+
+impl PreDeployCommand {
+    /// Parse a hook command without applying healthcheck sentinel rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the command has no arguments.
+    pub fn parse<I, S>(command: I) -> Result<Self, ValueError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let command = command.into_iter().map(Into::into).collect::<Vec<_>>();
+        if command.is_empty() {
+            return Err(ValueError::new(
+                "pre-deploy command",
+                "",
+                "a non-empty command",
+            ));
+        }
+        Ok(Self(command))
+    }
+
+    /// Borrow the command arguments.
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<PreDeployCommand> for Vec<String> {
+    fn from(command: PreDeployCommand) -> Self {
+        command.0
+    }
+}
+
+impl TryFrom<Vec<String>> for PreDeployCommand {
+    type Error = ValueError;
+
+    fn try_from(command: Vec<String>) -> Result<Self, Self::Error> {
+        Self::parse(command)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PreDeployHook {
-    pub command: Vec<String>,
+    pub command: PreDeployCommand,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
     #[serde(default)]
@@ -458,8 +514,7 @@ pub struct RequestedServiceSpec {
     pub container: ServiceContainerSpec,
     pub placement: Placement,
     pub ports: Vec<PortPublication>,
-    pub volume_graph: ServiceVolumeGraph,
-    pub config_graph: ServiceConfigGraph,
+    pub mount_graph: crate::ServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
     /// Custom Caddy configuration for the reserved Ingress Proxy Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
@@ -476,226 +531,146 @@ pub struct ResolvedServiceSpec {
     pub container: ServiceContainerSpec,
     pub placement: Placement,
     pub ports: Vec<PortPublication>,
-    pub volume_graph: ServiceVolumeGraph,
-    pub config_graph: ServiceConfigGraph,
+    pub mount_graph: crate::ResolvedServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
     /// Custom Caddy configuration for the reserved Ingress Proxy Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: ResolvedUpdateConfig,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ServiceContainerSpecWire {
-    #[serde(flatten)]
-    spec: ServiceContainerSpec,
-    #[serde(default)]
-    config_mounts: Vec<ConfigMount>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct RequestedServiceSpecWire {
-    name: ServiceName,
-    mode: ServiceMode,
-    container: ServiceContainerSpecWire,
-    #[serde(default)]
-    placement: Placement,
-    #[serde(default)]
-    ports: Vec<PortPublication>,
-    #[serde(default)]
-    volumes: Vec<ServiceVolume>,
-    #[serde(default)]
-    mounts: Vec<ServiceMount>,
-    #[serde(default)]
-    configs: Vec<ConfigSpec>,
-    #[serde(default)]
-    pre_deploy: Option<PreDeployHook>,
-    #[serde(default)]
-    ingress_proxy_fragment: Option<IngressProxyFragment>,
-    #[serde(default)]
-    update: UpdateConfig,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ResolvedServiceSpecWire {
-    service_id: ServiceId,
-    name: ServiceName,
-    mode: ServiceMode,
-    container: ServiceContainerSpecWire,
-    #[serde(default)]
-    placement: Placement,
-    #[serde(default)]
-    ports: Vec<PortPublication>,
-    #[serde(default)]
-    volumes: Vec<ServiceVolume>,
-    #[serde(default)]
-    mounts: Vec<ServiceMount>,
-    #[serde(default)]
-    configs: Vec<ConfigSpec>,
-    #[serde(default)]
-    pre_deploy: Option<PreDeployHook>,
-    #[serde(default)]
-    ingress_proxy_fragment: Option<IngressProxyFragment>,
-    #[serde(default)]
-    update: ResolvedUpdateConfig,
-}
-
-impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
-    type Error = ServiceSpecGraphError;
-
-    fn try_from(wire: RequestedServiceSpecWire) -> Result<Self, Self::Error> {
-        Ok(Self {
-            name: wire.name,
-            mode: wire.mode,
-            container: wire.container.spec,
-            placement: wire.placement,
-            ports: wire.ports,
-            volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
-            config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
-            pre_deploy: wire.pre_deploy,
-            ingress_proxy_fragment: wire.ingress_proxy_fragment,
-            update: wire.update,
-        })
-    }
-}
-
-impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
-    fn from(spec: RequestedServiceSpec) -> Self {
-        let (volumes, mounts) = spec.volume_graph.into_parts();
-        let (configs, config_mounts) = spec.config_graph.into_parts();
-        Self {
-            name: spec.name,
-            mode: spec.mode,
-            container: ServiceContainerSpecWire {
-                spec: spec.container,
-                config_mounts,
-            },
-            placement: spec.placement,
-            ports: spec.ports,
-            volumes,
-            mounts,
-            configs,
-            pre_deploy: spec.pre_deploy,
-            ingress_proxy_fragment: spec.ingress_proxy_fragment,
-            update: spec.update,
-        }
-    }
-}
-
-impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
-    type Error = ServiceSpecGraphError;
-
-    fn try_from(wire: ResolvedServiceSpecWire) -> Result<Self, Self::Error> {
-        Ok(Self {
-            service_id: wire.service_id,
-            name: wire.name,
-            mode: wire.mode,
-            container: wire.container.spec,
-            placement: wire.placement,
-            ports: wire.ports,
-            volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
-            config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
-            pre_deploy: wire.pre_deploy,
-            ingress_proxy_fragment: wire.ingress_proxy_fragment,
-            update: wire.update,
-        })
-    }
-}
-
-impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
-    fn from(spec: ResolvedServiceSpec) -> Self {
-        let (volumes, mounts) = spec.volume_graph.into_parts();
-        let (configs, config_mounts) = spec.config_graph.into_parts();
-        Self {
-            service_id: spec.service_id,
-            name: spec.name,
-            mode: spec.mode,
-            container: ServiceContainerSpecWire {
-                spec: spec.container,
-                config_mounts,
-            },
-            placement: spec.placement,
-            ports: spec.ports,
-            volumes,
-            mounts,
-            configs,
-            pre_deploy: spec.pre_deploy,
-            ingress_proxy_fragment: spec.ingress_proxy_fragment,
-            update: spec.update,
-        }
-    }
-}
-
 impl RequestedServiceSpec {
+    /// Admitted Volume declarations and mounts.
+    #[must_use]
+    pub fn volume_graph(&self) -> &ServiceVolumeGraph {
+        self.mount_graph.volume_graph()
+    }
+    /// Admitted Config declarations and mounts.
+    #[must_use]
+    pub fn config_graph(&self) -> &ServiceConfigGraph {
+        self.mount_graph.config_graph()
+    }
+
+    /// Replace Volume declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_volume_graph(
+        &mut self,
+        volumes: ServiceVolumeGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph = crate::ServiceMountGraph::parse(volumes, self.config_graph().clone())?;
+        Ok(())
+    }
+
+    /// Replace Config declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_config_graph(
+        &mut self,
+        configs: ServiceConfigGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph = crate::ServiceMountGraph::parse(self.volume_graph().clone(), configs)?;
+        Ok(())
+    }
+
     /// Service Volume definitions in this spec's graph.
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
-        self.volume_graph.volumes()
+        self.volume_graph().volumes()
     }
 
     /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
-        self.volume_graph.mounts()
+        self.volume_graph().mounts()
     }
 
     /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
-        self.config_graph.configs()
+        self.config_graph().configs()
     }
 
     /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
-        self.config_graph.mounts()
+        self.config_graph().mounts()
     }
 
     /// Copy this spec onto a Service Container after placement.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Rejects managed sources that have not been scoped to a Project.
     pub fn to_resolved(
         &self,
         service_id: ServiceId,
         update: ResolvedUpdateConfig,
-    ) -> ResolvedServiceSpec {
-        ResolvedServiceSpec {
+    ) -> Result<ResolvedServiceSpec, crate::ServiceVolumeGraphError> {
+        Ok(ResolvedServiceSpec {
             service_id,
             name: self.name.clone(),
             mode: self.mode.clone(),
             container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volume_graph: self.volume_graph.clone(),
-            config_graph: self.config_graph.clone(),
+            mount_graph: self.mount_graph.clone().try_into()?,
             pre_deploy: self.pre_deploy.clone(),
             ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update,
-        }
+        })
     }
 }
 
 impl ResolvedServiceSpec {
+    /// Admitted Volume declarations and mounts.
+    #[must_use]
+    pub fn volume_graph(&self) -> &crate::ResolvedServiceVolumeGraph {
+        self.mount_graph.volume_graph()
+    }
+    /// Admitted Config declarations and mounts.
+    #[must_use]
+    pub fn config_graph(&self) -> &ServiceConfigGraph {
+        self.mount_graph.config_graph()
+    }
+
+    /// Replace Volume declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_volume_graph(
+        &mut self,
+        volumes: crate::ResolvedServiceVolumeGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph =
+            crate::ServiceMountGraph::parse(volumes.into_requested(), self.config_graph().clone())?
+                .try_into()?;
+        Ok(())
+    }
+
     /// Service Volume definitions in this spec's graph.
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
-        self.volume_graph.volumes()
+        self.volume_graph().volumes()
     }
 
     /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
-        self.volume_graph.mounts()
+        self.volume_graph().mounts()
     }
 
     /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
-        self.config_graph.configs()
+        self.config_graph().configs()
     }
 
     /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
-        self.config_graph.mounts()
+        self.config_graph().mounts()
     }
 
     /// Rebuild the deploy input this resolved spec came from.
@@ -707,8 +682,7 @@ impl ResolvedServiceSpec {
             container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volume_graph: self.volume_graph.clone(),
-            config_graph: self.config_graph.clone(),
+            mount_graph: self.mount_graph.to_requested(),
             pre_deploy: self.pre_deploy.clone(),
             ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update: UpdateConfig {
@@ -776,6 +750,62 @@ fn resource_change(current: &ContainerResources, requested: &ContainerResources)
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn resource_quantities_reject_negative_and_overflow_on_the_wire() {
+        for field in [
+            "cpu_nanos",
+            "memory_bytes",
+            "memory_reservation_bytes",
+            "shared_memory_bytes",
+        ] {
+            for invalid in [json!(-1), json!(9_223_372_036_854_775_808_u64)] {
+                assert!(
+                    serde_json::from_value::<ContainerResources>(json!({field: invalid})).is_err(),
+                    "{field}"
+                );
+            }
+            for valid in [json!(0), json!(9_223_372_036_854_775_807_i64)] {
+                let resources: ContainerResources =
+                    serde_json::from_value(json!({field: valid})).unwrap();
+                assert_eq!(
+                    serde_json::to_value(resources).unwrap().get(field),
+                    Some(&valid)
+                );
+            }
+        }
+        let resources: ContainerResources = serde_json::from_value(json!({
+            "ulimits": {"nofile": {"soft": -1, "hard": -1}},
+            "device_reservations": [{"count": -1}]
+        }))
+        .unwrap();
+        assert_eq!(resources.ulimits.get("nofile").unwrap().soft, -1);
+        assert_eq!(
+            resources.device_reservations.first().unwrap().count,
+            Some(-1)
+        );
+    }
+
+    #[test]
+    fn pre_deploy_hook_rejects_empty_command_on_the_wire() {
+        assert!(PreDeployCommand::parse(Vec::<String>::new()).is_err());
+        assert!(serde_json::from_value::<PreDeployHook>(json!({"command": []})).is_err());
+        let mut requested = json!({
+            "name": "api", "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "alpine", "pull_policy": "missing"},
+            "pre_deploy": {"command": ["migrate"]}
+        });
+        serde_json::from_value::<RequestedServiceSpec>(requested.clone()).unwrap();
+        *requested.pointer_mut("/pre_deploy/command").unwrap() = json!([]);
+        assert!(serde_json::from_value::<RequestedServiceSpec>(requested).is_err());
+        for command in [json!(["NONE"]), json!(["sh", "-c", "migrate"])] {
+            let hook: PreDeployHook = serde_json::from_value(json!({"command": command})).unwrap();
+            assert_eq!(
+                serde_json::to_value(hook).unwrap().get("command").unwrap(),
+                &command
+            );
+        }
+    }
 
     fn configured(test: &[&str]) -> HealthcheckSpec {
         HealthcheckSpec::Configured(ConfiguredHealthcheck {

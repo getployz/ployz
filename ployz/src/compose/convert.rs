@@ -5,12 +5,13 @@ use std::{
 };
 
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerHostname, ContainerLabels, ContainerPath, ContainerResources,
-    DependencyCondition, DeviceMapping, DeviceReservation, ExtraHost, HEALTHCHECK_DISABLE_SENTINEL,
-    HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath, MachineTarget, Placement,
-    PortPublication, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
-    RestartPolicy, ServiceConfigGraph, ServiceContainerSpec, ServiceDependency, ServiceMode,
-    ServiceName, ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig, UpdateOrder,
+    ByteQuantity, ConfiguredHealthcheck, ContainerHostname, ContainerLabels, ContainerPath,
+    ContainerResources, CpuNanos, DependencyCondition, DeviceMapping, DeviceReservation, ExtraHost,
+    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
+    MachineTarget, Placement, PortPublication, ProvisionedVolumeMaximumBytes, PullPolicy,
+    RequestedServiceSpec, RestartPolicy, ServiceConfigGraph, ServiceContainerSpec,
+    ServiceDependency, ServiceMode, ServiceName, ServiceVolumeGraph, ServiceVolumeReference,
+    Ulimit, UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -319,8 +320,8 @@ fn convert_service(
             container,
             placement,
             ports,
-            volume_graph,
-            config_graph,
+            mount_graph: ployz_core::ServiceMountGraph::parse(volume_graph, config_graph)
+                .map_err(invalid)?,
             pre_deploy: pre_deploy(raw.pre_deploy.as_ref())?,
             ingress_proxy_fragment,
             update: update(raw.deploy.as_ref())?,
@@ -336,7 +337,9 @@ fn resources(raw: &RawService) -> Result<ContainerResources, ComposeError> {
             .as_ref()
             .map(|value| number(value).ok_or_else(|| invalid("cpus must be numeric")))
             .transpose()?
-            .map(|cpus| (cpus * 1e9) as i64),
+            .map(CpuNanos::from_cpus)
+            .transpose()
+            .map_err(invalid)?,
         memory_bytes: optional_bytes(raw.mem_limit.as_ref(), "mem_limit")?,
         memory_reservation_bytes: optional_bytes(raw.mem_reservation.as_ref(), "mem_reservation")?,
         shared_memory_bytes: optional_bytes(raw.shm_size.as_ref(), "shm_size")?,
@@ -423,8 +426,11 @@ fn resources(raw: &RawService) -> Result<ContainerResources, ComposeError> {
         if let Some(limits) = &deploy.limits {
             if let Some(cpus) = &limits.cpus {
                 resources.cpu_nanos = Some(
-                    (number(cpus).ok_or_else(|| invalid("deploy.limits.cpus must be numeric"))?
-                        * 1e9) as i64,
+                    CpuNanos::from_cpus(
+                        number(cpus)
+                            .ok_or_else(|| invalid("deploy.limits.cpus must be numeric"))?,
+                    )
+                    .map_err(invalid)?,
                 );
             }
             if let Some(memory) = &limits.memory {
@@ -887,11 +893,16 @@ pub(super) fn integer(value: &Value) -> Option<i64> {
     scalar(value)?.parse().ok()
 }
 
-fn bytes(value: &Value) -> Option<i64> {
-    bytes_u64(value).and_then(|value| i64::try_from(value).ok())
+fn bytes(value: &Value) -> Option<ByteQuantity> {
+    bytes_u64(value)
+        .and_then(|value| i64::try_from(value).ok())
+        .and_then(|value| ByteQuantity::try_from(value).ok())
 }
 
-fn optional_bytes(value: Option<&Value>, field: &str) -> Result<Option<i64>, ComposeError> {
+fn optional_bytes(
+    value: Option<&Value>,
+    field: &str,
+) -> Result<Option<ByteQuantity>, ComposeError> {
     value
         .map(|value| bytes(value).ok_or_else(|| invalid(format!("{field} must be a byte size"))))
         .transpose()

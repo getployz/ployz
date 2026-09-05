@@ -41,6 +41,8 @@ pub struct MachineService {
     ingress_data_dir: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
+    #[cfg(test)]
+    allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     global_reconcile: GlobalReconcileObservations,
 }
@@ -58,9 +60,17 @@ impl MachineService {
             ingress_data_dir: None,
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
+            #[cfg(test)]
+            allocator_endpoint: None,
             cloud_pairing: None,
             global_reconcile: global_reconcile_observation_channel().1,
         }
+    }
+
+    #[must_use]
+    pub(super) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
+        self.local = self.local.with_participation(participating);
+        self
     }
 
     #[must_use]
@@ -118,6 +128,17 @@ impl MachineService {
     #[must_use]
     pub(crate) fn with_machine_api_port(mut self, port: u16) -> Self {
         self.machine_api_port = port;
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_allocator_endpoint(
+        mut self,
+        machine: MachineId,
+        address: std::net::SocketAddr,
+    ) -> Self {
+        self.allocator_endpoint = Some((machine, address));
         self
     }
 
@@ -212,12 +233,16 @@ impl MachineService {
         }) else {
             return Ok(None);
         };
-        let endpoint = Endpoint::from_shared(format!(
-            "http://[{}]:{}",
-            target.management_address.0, self.machine_api_port
-        ))
-        .map_err(|error| Status::internal(error.to_string()))?
-        .connect_timeout(Duration::from_secs(10));
+        let address =
+            std::net::SocketAddr::new(target.management_address().0.into(), self.machine_api_port);
+        #[cfg(test)]
+        let address = self
+            .allocator_endpoint
+            .filter(|(id, _)| *id == target.id)
+            .map_or(address, |(_, address)| address);
+        let endpoint = Endpoint::from_shared(format!("http://{address}"))
+            .map_err(|error| Status::internal(error.to_string()))?
+            .connect_timeout(Duration::from_secs(10));
         let mut client = MachineRpcClient::new(match endpoint.connect().await {
             Ok(channel) => channel,
             Err(_) => return Ok(None),
@@ -712,7 +737,7 @@ impl MachineRpc for MachineService {
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
             );
         };
-        match self.ingest.open(machine.management_address).await {
+        match self.ingest.open(machine.management_address()).await {
             Ok(opened) => respond(opened),
             Err(error) => respond(error),
         }
@@ -914,6 +939,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::LockPoisoned => {
             Err(Status::internal("local Machine record lock poisoned"))
         }
+        LocalMachineError::OperationTask(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::IngressProxyServiceSpec(error) => respond(RpcError {
             code: RpcErrorCode::InvalidArgument,
@@ -964,6 +990,8 @@ fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
         | crate::hosted_dns::Error::Http(_)
         | crate::hosted_dns::Error::Json(_)
         | crate::hosted_dns::Error::InvalidEndpoint(_)
+        | crate::hosted_dns::Error::InvalidReservation(_)
+        | crate::hosted_dns::Error::InvalidReservationCleared
         | crate::hosted_dns::Error::Status(_, _) => (RpcErrorCode::Internal, Value::Null),
     };
     RpcError {

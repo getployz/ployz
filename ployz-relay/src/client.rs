@@ -14,7 +14,7 @@ use crate::{
 };
 use futures_util::{SinkExt, StreamExt};
 use http::{HeaderName, HeaderValue, StatusCode};
-use ployz_core::MachineId;
+use ployz_core::{MachineId, RelayEndpoint};
 use prost::Message;
 use reqwest::Url;
 use thiserror::Error;
@@ -77,9 +77,9 @@ impl RelayClient {
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError::Transport`] when `relay_url` is not `http` or `https`.
-    pub fn new(relay_url: impl AsRef<str>) -> Result<Self, ClientError> {
-        let base = parse_relay_url(relay_url.as_ref())?;
+    /// Returns [`ClientError::Transport`] when the HTTP client cannot be built.
+    pub fn new(relay_url: &RelayEndpoint) -> Result<Self, ClientError> {
+        let base = relay_url.as_url().clone();
         let http = reqwest::Client::builder()
             .timeout(CONNECT_TIMEOUT)
             .build()
@@ -405,48 +405,44 @@ fn join_url(base: &Url, path: &str, websocket: bool) -> Result<Url, ClientError>
     Ok(url)
 }
 
-fn parse_relay_url(relay_url: &str) -> Result<Url, ClientError> {
-    let url = Url::parse(relay_url).map_err(ClientError::transport)?;
-    match url.scheme() {
-        "http" | "https" => Ok(url),
-        _ => Err(ClientError::transport("relayUrl must be http or https")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn https_relay_url_maps_to_wss_and_keeps_https_for_post() {
-        let base = parse_relay_url("https://relay.ployz.dev").unwrap();
+        let base = RelayEndpoint::parse("https://relay.ployz.dev").unwrap();
         assert_eq!(
-            join_url(&base, REGISTER_PATH, true).unwrap().as_str(),
+            join_url(base.as_url(), REGISTER_PATH, true)
+                .unwrap()
+                .as_str(),
             "wss://relay.ployz.dev/register"
         );
         assert_eq!(
-            join_url(&base, LIST_PATH, false).unwrap().as_str(),
+            join_url(base.as_url(), LIST_PATH, false).unwrap().as_str(),
             "https://relay.ployz.dev/list"
         );
     }
 
     #[test]
     fn http_relay_url_maps_to_ws() {
-        let base = parse_relay_url("http://127.0.0.1:8080").unwrap();
+        let base = RelayEndpoint::parse("http://127.0.0.1:8080").unwrap();
         assert_eq!(
-            join_url(&base, REGISTER_PATH, true).unwrap().as_str(),
+            join_url(base.as_url(), REGISTER_PATH, true)
+                .unwrap()
+                .as_str(),
             "ws://127.0.0.1:8080/register"
         );
-        let base = parse_relay_url("http://127.0.0.1:8080/").unwrap();
+        let base = RelayEndpoint::parse("http://127.0.0.1:8080/").unwrap();
         assert_eq!(
-            join_url(&base, DIAL_PATH, true).unwrap().as_str(),
+            join_url(base.as_url(), DIAL_PATH, true).unwrap().as_str(),
             "ws://127.0.0.1:8080/dial"
         );
     }
 
     #[test]
     fn other_schemes_are_rejected() {
-        assert!(RelayClient::new("ws://relay.example").is_err());
-        assert!(RelayClient::new("not-a-url").is_err());
+        assert!(RelayEndpoint::parse("ws://relay.example").is_err());
+        assert!(RelayEndpoint::parse("not-a-url").is_err());
     }
 }

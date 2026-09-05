@@ -85,7 +85,16 @@ pub(crate) async fn run(
             _ = interval.tick() => *participating.borrow(),
         };
         if reconcile {
-            reconcile_store(&store, &reconciler, &observations).await;
+            tokio::select! {
+                () = reconcile_store(&store, &reconciler, &observations) => {}
+                changed = participating.wait_for(|value| !*value) => {
+                    if let Err(error) = changed {
+                        return Err(RunError::ParticipationSignalClosed(error));
+                    }
+                    observations.send_replace(Vec::new());
+                }
+                () = shutdown.cancelled() => return Ok(()),
+            }
         }
     }
 }
@@ -102,6 +111,9 @@ async fn reconcile_store(
             return;
         }
     };
+    if record.phase() != ployz_core::LocalMachinePhase::Participating {
+        return;
+    }
     let Some(machine) = record.machine().cloned() else {
         eprintln!(
             "failed to read local Machine for Global reconciliation: Machine is not participating"
@@ -165,16 +177,12 @@ fn reconcile_failure(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::Ipv6Addr,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation, MachineId,
-        MachineName, ManagementAddress, Placement, ProjectName, QualifiedService,
-        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceName,
-        WireGuardPublicKey,
+        MachineName, Placement, ProjectName, QualifiedService, ResolvedServiceSpec, RpcError,
+        RpcErrorCode, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
     };
     use serde_json::json;
     use tokio::sync::watch;
@@ -221,7 +229,8 @@ mod tests {
             ServiceMode::Global,
             Placement::default(),
         );
-        add_provisioned_mount(&mut slot.resolved_spec);
+        slot.try_update(|parts| add_provisioned_mount(&mut parts.resolved_spec))
+            .unwrap();
         let reconciler = FakeReconciler::default();
 
         let unknown = reconcile_global_slots(
@@ -304,28 +313,37 @@ mod tests {
 
         use ployz_core::{
             ContainerPath, DockerVolumeName, ProvisionedVolumeMaximumBytes, ServiceMount,
-            ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+            ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
         };
 
         let reference = ServiceVolumeReference::parse("data").unwrap();
-        spec.volume_graph = ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference: reference.clone(),
-                source: VolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("app_data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(100).unwrap(),
-                    ),
-                    labels: Default::default(),
-                },
-            }],
-            vec![ServiceMount {
-                volume: reference,
-                target: ContainerPath::parse("/data").unwrap(),
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            }],
+        spec.set_volume_graph(
+            ServiceVolumeGraph::parse(
+                vec![ServiceVolume {
+                    reference: reference.clone(),
+                    source: ployz_core::RawVolumeSource::Provisioned {
+                        name: DockerVolumeName::parse("data").unwrap(),
+                        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                            NonZeroU64::new(100).unwrap(),
+                        ),
+                        labels: Default::default(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                }],
+                vec![ServiceMount {
+                    volume: reference,
+                    target: ContainerPath::parse("/data").unwrap(),
+                    read_only: false,
+                    no_copy: false,
+                    subpath: None,
+                }],
+            )
+            .unwrap()
+            .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
         )
         .unwrap();
     }
@@ -364,7 +382,6 @@ mod tests {
             subnet: format!("10.210.{}.0/24", id.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([id as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),
@@ -391,14 +408,12 @@ mod tests {
         }))
         .unwrap();
         spec.placement = placement;
-        ContainerObservation {
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 1,
             machine_id: machine.id,
             project_name: ProjectName::parse(project).unwrap(),
-            service_id,
-            service_name,
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
@@ -407,6 +422,7 @@ mod tests {
             resolved_spec: spec,
             address: None,
             labels: Default::default(),
-        }
+        })
+        .unwrap()
     }
 }

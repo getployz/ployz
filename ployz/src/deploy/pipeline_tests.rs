@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
-    ManagementAddress, MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec,
-    RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
+    MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec, RpcError,
+    RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -118,7 +118,8 @@ fn scale_plan_accepts_only_service_containers() {
         replicas: replicas(1),
     };
     let mut hook = observation(&service_id, replicated.clone(), "hook", '2');
-    hook.kind = ContainerKind::PreDeployHook;
+    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
         machines: vec![machine()],
         containers,
@@ -154,7 +155,9 @@ fn scale_does_not_select_a_service_owned_by_another_project() {
         replicas: NonZeroU32::new(1).unwrap(),
     };
     let mut system = observation(&service_id, replicated, "v1", '1');
-    system.project_name = ProjectName::system();
+    system
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine()],
         containers: vec![system],
@@ -187,13 +190,23 @@ fn scale_uses_the_selected_qualified_service_project() {
         replicas: replicas(1),
     };
     let mut staging = observation(&ServiceId::random(), replicated.clone(), "v1", '1');
-    staging.project_name = ProjectName::parse("shop-staging").unwrap();
-    staging.service_name = ployz_core::ServiceName::parse("web").unwrap();
-    staging.resolved_spec.name = staging.service_name.clone();
+    staging
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
+        .unwrap();
+    staging
+        .try_update(|parts| {
+            parts.resolved_spec.name = ployz_core::ServiceName::parse("web").unwrap()
+        })
+        .unwrap();
+
     let mut prod = observation(&ServiceId::random(), replicated, "v2", '2');
-    prod.project_name = ProjectName::parse("shop-prod").unwrap();
-    prod.service_name = ployz_core::ServiceName::parse("web").unwrap();
-    prod.resolved_spec.name = prod.service_name.clone();
+    prod.try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .unwrap();
+    prod.try_update(|parts| {
+        parts.resolved_spec.name = ployz_core::ServiceName::parse("web").unwrap()
+    })
+    .unwrap();
+
     let snapshot = DeploySnapshot {
         machines: vec![machine()],
         containers: vec![staging, prod],
@@ -228,7 +241,9 @@ fn resolved_scale_input_changes_only_replicas() {
         "container": { "image": "alpine", "pull_policy": "missing" }
     }))
     .unwrap();
-    let resolved = requested.to_resolved(ServiceId::random(), Default::default());
+    let resolved = requested
+        .to_resolved(ServiceId::random(), Default::default())
+        .expect("volume graph is scoped");
     let mut scaled = resolved.to_requested();
     scaled.mode = ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
@@ -324,7 +339,6 @@ fn machine() -> ployz_core::MachineObservation {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-1").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress("::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
@@ -346,15 +360,15 @@ fn observation(
         "container": { "image": image, "pull_policy": "missing" }
     }))
     .unwrap();
-    let resolved = requested.to_resolved(*service_id, Default::default());
-    ContainerObservation {
+    let resolved = requested
+        .to_resolved(*service_id, Default::default())
+        .expect("volume graph is scoped");
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: *service_id,
-        service_name: requested.name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::NotConfigured,
@@ -363,5 +377,6 @@ fn observation(
         resolved_spec: resolved,
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }

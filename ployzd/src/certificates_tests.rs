@@ -70,7 +70,8 @@ fn wanted_hosts_are_https_ingress_only() {
                 "api",
                 vec![ingress("hook.example.com", HttpProtocol::Https)],
             );
-            hook.kind = ContainerKind::PreDeployHook;
+            hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+                .unwrap();
             hook
         },
     ];
@@ -168,12 +169,13 @@ fn renew_does_not_contact_the_authority_when_dns_refuses() {
 }
 
 #[test]
-fn unparseable_material_does_not_renew() {
-    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
-    let row = CertificateRow::from_parts(Some(material), None);
+fn unparseable_stored_material_does_not_suppress_repair() {
+    let row = CertificateRow::decode(r#"{"certificate":"CERT","private_key":"KEY"}"#).unwrap();
+    assert!(row.material().is_none());
+    assert!(row.last_error().unwrap().contains("invalid"));
     assert_eq!(
         decide(Some(&row), 0, Duration::from_secs(60)),
-        IssuanceAction::Nothing
+        IssuanceAction::Order
     );
 }
 
@@ -375,16 +377,24 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
     let local = machine_with_endpoint("a", "192.0.2.1");
     let remote = machine_with_endpoint("b", "192.0.2.2");
     let mut ingress = observation(1, "ingress", Vec::new());
-    ingress.machine_id = local.id;
-    ingress.service_name = ServiceName::parse("ingress").unwrap();
-    ingress.project_name = ProjectName::system();
+    ingress
+        .try_update(|parts| {
+            parts.machine_id = local.id;
+            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+            parts.project_name = ProjectName::system();
+        })
+        .unwrap();
     let mut down = observation(2, "ingress", Vec::new());
-    down.machine_id = remote.id;
-    down.service_name = ServiceName::parse("ingress").unwrap();
-    down.project_name = ProjectName::system();
-    down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+    down.try_update(|parts| {
+        parts.machine_id = remote.id;
+        parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+        parts.project_name = ProjectName::system();
+        parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+    })
+    .unwrap();
     let mut user = observation(3, "caddy", Vec::new());
-    user.machine_id = remote.id;
+    user.try_update(|parts| parts.machine_id = remote.id)
+        .unwrap();
     assert_eq!(
         ingress_challenge_ips(&[local, remote], &[ingress, down, user]),
         BTreeSet::from([ip("192.0.2.1")])
@@ -394,10 +404,15 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
 #[tokio::test]
 async fn challenge_must_be_answerable_on_every_probe_address() {
     let hostname = host("app.example.com");
-    let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+    let challenge = CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
     let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::from([(
-        "tok".to_owned(),
-        "tok.thumb".to_owned(),
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0".to_owned(),
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            .to_owned(),
     )])));
     let (first_stop, first_port) =
         ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
@@ -419,7 +434,11 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
 #[tokio::test]
 async fn empty_probe_addresses_fail_without_waiting() {
     let hostname = host("app.example.com");
-    let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+    let challenge = CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
         wait_for_http01(&hostname, &challenge, &[], CHALLENGE_WAIT),
@@ -603,7 +622,7 @@ fn machine_id(seed: &str) -> MachineId {
 fn row_with_lifetime(not_before: SystemTime, not_after: SystemTime) -> CertificateRow {
     let (certificate, private_key) =
         ployz_testkit::fake_acme::self_signed_material("app.example.com", not_before, not_after);
-    let material = CertificateMaterial::new(certificate, private_key).unwrap();
+    let material = CertificateMaterial::parse(certificate, private_key).unwrap();
     CertificateRow::from_parts(Some(material), None)
 }
 
@@ -624,7 +643,6 @@ fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
         "id": seed.repeat(32),
         "name": format!("machine-{seed}"),
         "subnet": "10.210.1.0/24",
-        "management_address": "fdcc::1",
         "public_key": vec![3; 32],
         "advertised_endpoints": [format!("{address}:{MACHINE_API_PORT}")],
     }))
@@ -673,14 +691,12 @@ fn observation(
         "ports": ports,
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("a".repeat(32)).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -689,5 +705,6 @@ fn observation(
         resolved_spec,
         address: Some(ContainerAddress([10, 210, 1, 2].into())),
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }

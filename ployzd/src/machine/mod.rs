@@ -8,6 +8,7 @@ use std::{
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -22,7 +23,10 @@ use thiserror::Error;
 
 use crate::machine_pool;
 use crate::network::WireGuardPrivateKey;
-use crate::network::{allocate_machine_subnet, management_address};
+use crate::network::allocate_machine_subnet;
+
+mod record_wire;
+use record_wire::LocalMachineRecordWire;
 
 mod ingress;
 mod local_machine;
@@ -128,11 +132,12 @@ pub enum LocalMachinePrior {
 /// Persisted local Machine record: a phase-tagged body plus the key material
 /// every phase requires.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "LocalMachineRecordWire")]
 pub struct LocalMachineRecord {
     /// Phase-tagged lifecycle body.
-    pub body: LocalMachineBody,
+    body: LocalMachineBody,
     /// WireGuard private key; required in every phase.
-    pub wireguard_private_key: WireGuardPrivateKey,
+    wireguard_private_key: WireGuardPrivateKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -259,6 +264,48 @@ impl LocalMachineBody {
 }
 
 impl LocalMachineRecord {
+    /// Admit a local lifecycle body whose advertised identity matches its key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched keys, empty local endpoints, and empty join bootstrap peers,
+    /// including a Resetting record's retained prior state.
+    pub fn parse(
+        body: LocalMachineBody,
+        wireguard_private_key: WireGuardPrivateKey,
+    ) -> Result<Self, StoreError> {
+        if let Some(machine) = body.machine() {
+            if machine.public_key != wireguard_private_key.public_key() {
+                return Err(StoreError::KeyMismatch);
+            }
+            if machine.advertised_endpoints.is_empty() {
+                return Err(StoreError::MissingEndpoints);
+            }
+            if body.cluster_network().is_none() && body.bootstrap().is_empty() {
+                return Err(StoreError::MissingPeers);
+            }
+        }
+        Ok(Self {
+            body,
+            wireguard_private_key,
+            wireguard_mtu: None,
+            cloud_pairing: None,
+            selected_endpoints: BTreeMap::new(),
+        })
+    }
+
+    /// Inspect phase-specific fields without changing lifecycle or key identity.
+    #[must_use]
+    pub fn body(&self) -> &LocalMachineBody {
+        &self.body
+    }
+
+    /// Private material corresponding to the local advertised public key.
+    #[must_use]
+    pub fn private_key(&self) -> &WireGuardPrivateKey {
+        &self.wireguard_private_key
+    }
+
     /// Durable identity of this local Machine.
     #[must_use]
     pub fn id(&self) -> MachineId {
@@ -312,6 +359,10 @@ pub struct LocalMachineStore {
     data_dir: PathBuf,
     record: LocalMachineRecord,
     _lock: File,
+    // Lock order: admission, then publication/ingress/Docker, then short store locks.
+    // Reset waits for admitted operations, including Docker streams with no total deadline.
+    // ponytail: serialize local creates; use shared admission reads if throughput requires it.
+    admission_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub(crate) struct PreparedReset {
@@ -402,6 +453,7 @@ impl LocalMachineStore {
             data_dir,
             record,
             _lock: lock,
+            admission_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         if store.record.phase() == LocalMachinePhase::Resetting {
             let data_dir = store.data_dir.clone();
@@ -481,7 +533,6 @@ impl LocalMachineStore {
             name,
             subnet: allocate_machine_subnet(founding_cluster.network, [])
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
-            management_address: management_address(public_key),
             public_key,
             public_ip,
             advertised_endpoints,
@@ -515,6 +566,9 @@ impl LocalMachineStore {
         }
         if self.record.wireguard_private_key.public_key() != assigned_machine.public_key {
             return Err(StoreError::KeyMismatch);
+        }
+        if assigned_machine.advertised_endpoints.is_empty() {
+            return Err(StoreError::MissingEndpoints);
         }
         assigned_machine.runtime = local_runtime();
         let mut joining = self.record.clone();

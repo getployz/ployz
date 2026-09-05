@@ -10,7 +10,7 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, IngressHost, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineId,
-    MachineName, ManagementAddress, WireGuardPublicKey,
+    MachineName,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -159,17 +159,15 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let local_dir = root.0.join("local-machine");
     write_record(
         &local_dir,
-        &LocalMachineRecord {
-            body: LocalMachineBody::Joining {
+        &LocalMachineRecord::parse(
+            LocalMachineBody::Joining {
                 machine: published.clone(),
-                bootstrap: Vec::new(),
+                bootstrap: vec![machine("bootstrap", 8)],
                 min_store_version: store.version().await.unwrap(),
             },
-            wireguard_private_key: WireGuardPrivateKey::generate(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
+            WireGuardPrivateKey::from_bytes([3; 32]),
+        )
+        .unwrap(),
     );
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
     let published = local.lock().unwrap().record().machine().cloned().unwrap();
@@ -215,17 +213,15 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);
     write_record(
         &interrupted_dir,
-        &LocalMachineRecord {
-            body: LocalMachineBody::Joining {
+        &LocalMachineRecord::parse(
+            LocalMachineBody::Joining {
                 machine: machine("interrupted", 4),
-                bootstrap: Vec::new(),
+                bootstrap: vec![machine("bootstrap", 8)],
                 min_store_version: target.clone(),
             },
-            wireguard_private_key: WireGuardPrivateKey::generate(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
+            WireGuardPrivateKey::from_bytes([4; 32]),
+        )
+        .unwrap(),
     );
     let interrupted = Arc::new(Mutex::new(
         LocalMachineStore::open(&interrupted_dir).unwrap(),
@@ -269,7 +265,10 @@ async fn certificates_round_trip_and_notify_on_change() {
     .unwrap();
     let store = running.store().clone();
     let hostname = IngressHost::parse("app.example.com").unwrap();
-    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
+    let material = {
+        let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    };
     let mut changes = store.subscribe_certificate_changes().await.unwrap();
 
     store
@@ -293,7 +292,10 @@ async fn certificates_round_trip_and_notify_on_change() {
         .publish_certificate(&hostname, &material)
         .await
         .unwrap();
-    let updated = CertificateMaterial::new("CERT-2", "KEY-2").unwrap();
+    let updated = {
+        let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    };
     store
         .publish_certificate(&hostname, &updated)
         .await
@@ -428,8 +430,8 @@ async fn founder_publisher_backdates_allocator() {
     let published = machine("founder", 1);
     write_record(
         &local_dir,
-        &LocalMachineRecord {
-            body: LocalMachineBody::Participating {
+        &LocalMachineRecord::parse(
+            LocalMachineBody::Participating {
                 machine: published.clone(),
                 origin: ParticipationOrigin::Founder {
                     cluster: crate::machine::FoundingCluster {
@@ -437,11 +439,9 @@ async fn founder_publisher_backdates_allocator() {
                     },
                 },
             },
-            wireguard_private_key: WireGuardPrivateKey::generate(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
+            WireGuardPrivateKey::from_bytes([1; 32]),
+        )
+        .unwrap(),
     );
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
     let shutdown = CancellationToken::new();
@@ -517,8 +517,7 @@ fn machine(name: &str, seed: u8) -> Machine {
         id: MachineId::random(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
-        public_key: WireGuardPublicKey([seed; 32]),
+        public_key: WireGuardPrivateKey::from_bytes([seed; 32]).public_key(),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
             format!("192.0.2.{seed}:{MACHINE_API_PORT}")
@@ -549,8 +548,6 @@ fn container(machine_id: &MachineId, suffix: &str) -> ContainerObservation {
         "display_name": format!("service-{suffix}"),
         "machine_id": machine_id,
         "project_name": "app",
-        "service_id": format!("{suffix:0<32}"),
-        "service_name": "service",
         "kind": "service_container",
         "runtime": { "state": "created" },
         "resolved_spec": {

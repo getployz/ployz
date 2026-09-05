@@ -14,12 +14,16 @@ import type {
   MachineId,
   LocalMachineRemoved,
   ProjectName,
+  PreDeployHook,
   Registered,
   RequestedServiceSpec,
   RestartPolicy,
   ResolvedServiceSpec,
+  ResolvedVolumeSource,
+  VolumeSource,
   ServiceMode,
   ServiceName,
+  ServiceObservation,
   RuntimeWatchFrame,
   Ulimit,
   VolumeDriver,
@@ -34,6 +38,10 @@ import {
   RpcError,
 } from "../index";
 import type { HeldRegister, PreparedDeploy } from "../index";
+
+({ command: ["NONE"] }) satisfies PreDeployHook;
+// @ts-expect-error a pre-deploy hook requires at least one command argument
+({ command: [] }) satisfies PreDeployHook;
 
 new RpcError({
   code: "unavailable",
@@ -168,6 +176,11 @@ const futureState: ContainerRuntimeObservation = { state: "hibernating" };
 // @ts-expect-error identity fields do not spread beside the kind
 const flatLoss: DataLoss = { kind: "docker_volume", machine_id: "m" as MachineId, name: "data" };
 
+({ kind: "ordinary", name: "data", driver: { name: "local", options: {} } }) satisfies VolumeSource;
+({ kind: "ordinary", name: "app_data", driver: { name: "local", options: {} }, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
+// @ts-expect-error resolved managed volumes require their scoped ownership
+const unscopedVolume: ResolvedVolumeSource = { kind: "ordinary", name: "data", driver: { name: "local", options: {} } };
+
 // The facade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;
 const connectOptions = {
@@ -208,3 +221,6 @@ client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
 client.removeMachine("machine", []);
 // @ts-expect-error MachineId is branded; a plain string cannot cross the facade
 connect({ ...connectOptions, machineId: "machine" });
+
+declare const watchFrame: RuntimeWatchFrame;
+watchFrame.services satisfies ServiceObservation[];

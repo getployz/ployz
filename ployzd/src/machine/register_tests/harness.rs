@@ -1,14 +1,12 @@
 use std::{
     io,
-    net::Ipv6Addr,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineName, MachineRpc,
-    MachineRuntime, ManagementAddress, RegisterRequest, Registered, RpcError, RpcResponseBody,
-    WireGuardPublicKey, op,
+    MachineRuntime, RegisterRequest, Registered, RpcError, RpcResponseBody, WireGuardPublicKey, op,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -98,7 +96,6 @@ pub(super) async fn publish_peers(replicated: &ReplicatedStore, count: usize) ->
             id: MachineId::random(),
             name: MachineName::parse(format!("peer-{seed}")).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-            management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
             public_key: WireGuardPublicKey([seed; 32]),
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint(
@@ -119,7 +116,10 @@ pub(super) async fn serve_membership(
         .iter()
         .map(|&(machine, state)| {
             (
-                format!("[{}]:{CORROSION_GOSSIP_PORT}", machine.management_address.0),
+                format!(
+                    "[{}]:{CORROSION_GOSSIP_PORT}",
+                    machine.management_address().0
+                ),
                 state,
             )
         })
@@ -170,7 +170,6 @@ pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
         id,
         name: MachineName::parse("allocator").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),
-        management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
         public_key: WireGuardPublicKey([3; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.3:51820".parse().unwrap())],

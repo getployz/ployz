@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    Machine, MachineId, MachineName, MachineRuntime, ManagementAddress, ProjectName,
-    ResolvedServiceSpec, ServiceId, ServiceName, WireGuardPublicKey,
+    Machine, MachineId, MachineName, MachineRuntime, ProjectName, ResolvedServiceSpec, ServiceId,
+    ServiceName, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::net::UnixListener;
@@ -22,7 +22,6 @@ async fn run_reports_subscription_failure() {
         id: MachineId::random(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: SUBNET.parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: Vec::new(),
@@ -541,7 +540,11 @@ fn replica_observations(count: u16) -> Vec<ContainerObservation> {
                 running(HealthObservation::Healthy),
                 Some([10, 210, 1, host]),
             );
-            observation.container_id = ContainerId::parse(format!("{i:064x}")).unwrap();
+            observation
+                .try_update(|parts| {
+                    parts.container_id = ContainerId::parse(format!("{i:064x}")).unwrap()
+                })
+                .unwrap();
             observation
         })
         .collect()
@@ -576,25 +579,26 @@ fn observation(
     runtime: ContainerRuntimeObservation,
     address: Option<[u8; 4]>,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: *service_id,
-        service_name: service_name.clone(),
         kind,
         runtime,
         effective_healthcheck: None,
         resolved_spec: fixture_spec(service_id, service_name),
         address: address.map(|octets| ContainerAddress(octets.into())),
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 fn in_project(mut observation: ContainerObservation, project: &str) -> ContainerObservation {
-    observation.project_name = ProjectName::parse(project).unwrap();
+    observation
+        .try_update(|parts| parts.project_name = ProjectName::parse(project).unwrap())
+        .unwrap();
     observation
 }
 

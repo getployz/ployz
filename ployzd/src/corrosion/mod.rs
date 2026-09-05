@@ -18,7 +18,10 @@ pub(crate) use admin::membership_states_by_address;
 pub use admin::{AdminClient, MembershipState};
 use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};
-pub use certificate::{CertificateChallenge, CertificateMaterial, CertificateRow};
+pub use certificate::{
+    CertificateChallenge, CertificateChallengeError, CertificateMaterial, CertificateMaterialError,
+    CertificateRow,
+};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};
 pub use service::{CorrosionConfig, DEFAULT_CONTAINER_NAME, RunningCorrosion};
 pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
@@ -36,6 +39,8 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("Corrosion JSON failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid stored hosted DNS reservation: {0}")]
+    InvalidDomainReservation(serde_json::Error),
     #[error(transparent)]
     Value(#[from] ployz_core::ValueError),
     #[error("Corrosion TOML failed: {0}")]

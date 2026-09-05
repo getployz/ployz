@@ -669,14 +669,12 @@ fn listing_container(
 ) -> ployz_core::ContainerObservation {
     let service_id = ployz_core::ServiceId::parse(service_hex.to_string().repeat(32)).unwrap();
     let service_name = ployz_core::ServiceName::parse(name).unwrap();
-    ployz_core::ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ployz_core::ContainerId::parse(container_hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
         machine_id: machine_id('a'),
         project_name: ployz_core::ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name: service_name.clone(),
         kind,
         runtime,
         effective_healthcheck: None,
@@ -689,7 +687,8 @@ fn listing_container(
         .unwrap(),
         address: None,
         labels: BTreeMap::from([("detail".into(), "preserved".into())]),
-    }
+    })
+    .unwrap()
 }
 
 #[tokio::test]
@@ -785,7 +784,8 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
     assert!(!failed.status.success(), "{failed:?}");
     assert!(removed_volumes.lock().unwrap().is_empty());
     assert!(
-        String::from_utf8_lossy(&failed.stderr).contains("volume is in use"),
+        String::from_utf8_lossy(&failed.stderr)
+            .contains(&format!("{}/busy: volume is in use", machine_id('a'))),
         "{failed:?}"
     );
 

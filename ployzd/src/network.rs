@@ -1,14 +1,13 @@
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     process::{Command, Output},
     time::{Duration, SystemTime},
 };
 
 use ipnet::{IpNet, Ipv4Net};
 use ployz_core::{
-    AdvertisedEndpoint, Machine, MachineId, MachineSubnet, ManagementAddress, SelectedEndpoint,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, Machine, MachineId, MachineSubnet, SelectedEndpoint, WireGuardPublicKey,
 };
 pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT};
 use serde::{Deserialize, Serialize};
@@ -73,10 +72,6 @@ pub enum NetworkError {
     NoFreeSubnet,
     #[error("configured Machine has no WireGuard private key")]
     MissingPrivateKey,
-    #[error("WireGuard private key does not match the Machine public key")]
-    KeyMismatch,
-    #[error("Management Address is not derived from the Machine public key")]
-    ManagementAddressMismatch,
     #[error(
         "refusing to replace the existing Docker network: {reason}; expected: {expected}; observed: {observed}; safe recovery: {recovery}"
     )]
@@ -105,13 +100,7 @@ pub fn default_cluster_network() -> Ipv4Net {
     "10.210.0.0/16".parse().expect("static network is valid")
 }
 
-#[must_use]
-pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
-    let mut address = [0_u8; 16];
-    address[..2].copy_from_slice(&[0xfd, 0xcc]);
-    address[2..].copy_from_slice(&public_key.0[..14]);
-    ManagementAddress(Ipv6Addr::from(address))
-}
+pub use ployz_core::management_address;
 
 pub fn allocate_machine_subnet(
     cluster_network: Ipv4Net,
@@ -163,7 +152,7 @@ pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer>
             machine_id: machine.id,
             public_key: machine.public_key,
             allowed_ips: [
-                IpNet::new(IpAddr::V6(machine.management_address.0), 128)
+                IpNet::new(IpAddr::V6(machine.management_address().0), 128)
                     .expect("IPv6 /128 is valid"),
                 machine.subnet.into(),
             ],
@@ -397,10 +386,7 @@ fn checked_command(program: &str, args: &[&str]) -> Result<Output, NetworkError>
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        net::{Ipv6Addr, SocketAddr},
-    };
+    use std::{collections::BTreeMap, net::SocketAddr};
 
     use ployz_core::{MachineName, MachineRuntime};
 
@@ -415,9 +401,6 @@ mod tests {
             id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             name: MachineName::parse(format!("machine-{seed}")).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::from([
-                0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, seed,
-            ])),
             public_key: WireGuardPublicKey([seed; 32]),
             public_ip: None,
             advertised_endpoints: advertised,

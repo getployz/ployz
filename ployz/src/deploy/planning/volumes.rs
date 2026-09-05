@@ -12,7 +12,9 @@ use crate::deploy::{
 };
 
 use super::capacity::CapacityBudget;
-use super::placement::{ReplicatedCapacityReservation, reserve_replicated_service_demand};
+use super::placement::{
+    HostSockets, ReplicatedCapacityReservation, reserve_replicated_service_demand,
+};
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -84,8 +86,8 @@ impl VolumePins {
                 operations.iter().any(|operation| {
                     operation.machine_id() == *machine_id
                         && operation.spec().is_some_and(|spec| {
-                            spec.volume_graph.mounts().iter().any(|mount| {
-                                managed_volume_name(spec.volume_graph.volume_for(mount))
+                            spec.volume_graph().mounts().iter().any(|mount| {
+                                managed_volume_name(spec.volume_graph().volume_for(mount))
                                     == managed_volume_name(volume)
                             })
                         })
@@ -105,12 +107,7 @@ pub(super) fn scope_requested(
     mut spec: RequestedServiceSpec,
     project: &ProjectName,
 ) -> Result<RequestedServiceSpec, PlanError> {
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
-    for volume in &mut volumes {
-        volume.source.scope_to_project(project);
-    }
-    spec.volume_graph = match ServiceVolumeGraph::parse(volumes, mounts) {
+    spec.mount_graph = match spec.mount_graph.scope_to_project(project) {
         Ok(graph) => graph,
         Err(ployz_core::ServiceVolumeGraphError::IncompatibleVolumeAliases { name }) => {
             return Err(PlanError::ConflictingDockerVolumeDefinitions { name });
@@ -128,7 +125,7 @@ impl VolumePins {
     ) -> Result<(), PlanError> {
         let name_errors_with_service = target.len() > 1;
         for spec in target {
-            if !spec.volume_graph.has_mounted_provisioned_volume() {
+            if !spec.volume_graph().has_mounted_provisioned_volume() {
                 continue;
             }
             let result = (|| {
@@ -160,8 +157,8 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
-        for volume in spec.volume_graph.mounted_provisioned_volumes() {
-            let VolumeSource::Provisioned { name, .. } = &volume.source else {
+        for volume in spec.volume_graph().mounted_provisioned_volumes() {
+            let ployz_core::RawVolumeSource::Provisioned { name, .. } = volume.source.kind() else {
                 unreachable!("mounted_provisioned_volumes filters source kinds")
             };
             for machine in machines {
@@ -188,12 +185,12 @@ impl VolumePins {
         machines: &[&MachineObservation],
         snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
-        for volume in spec.volume_graph.mounted_provisioned_volumes() {
-            let VolumeSource::Provisioned {
+        for volume in spec.volume_graph().mounted_provisioned_volumes() {
+            let ployz_core::RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes,
                 ..
-            } = &volume.source
+            } = volume.source.kind()
             else {
                 unreachable!("mounted_provisioned_volumes filters source kinds")
             };
@@ -269,14 +266,13 @@ pub(super) fn preserved_owned_volumes(
 fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVolumeName> {
     target
         .iter()
-        .flat_map(|spec| spec.volume_graph.mounted_volumes())
-        .filter_map(|volume| match &volume.source {
-            VolumeSource::Ordinary { name, .. } | VolumeSource::Provisioned { name, .. } => {
-                Some(name.clone())
-            }
-            VolumeSource::External { .. }
-            | VolumeSource::Bind { .. }
-            | VolumeSource::Tmpfs { .. } => None,
+        .flat_map(|spec| spec.volume_graph().mounted_volumes())
+        .filter_map(|volume| match volume.source.kind() {
+            ployz_core::RawVolumeSource::Ordinary { name, .. }
+            | ployz_core::RawVolumeSource::Provisioned { name, .. } => Some(name.clone()),
+            ployz_core::RawVolumeSource::External { .. }
+            | ployz_core::RawVolumeSource::Bind { .. }
+            | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
         })
         .collect()
 }
@@ -333,8 +329,8 @@ pub(super) fn managed_volume_uses(
     let mut uses = BTreeMap::<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>::new();
     for spec in requested {
         let service_name = spec.name.as_str();
-        for mount in spec.volume_graph.mounts() {
-            let volume = spec.volume_graph.volume_for(mount);
+        for mount in spec.volume_graph().mounts() {
+            let volume = spec.volume_graph().volume_for(mount);
             let Some(name) = managed_volume_name(volume) else {
                 continue;
             };
@@ -425,6 +421,7 @@ pub(super) fn prepare_shared_replicated_volumes(
     options: &PlanOptions,
 ) -> Result<Vec<(ServiceName, ReplicatedCapacityReservation)>, PlanError> {
     let mut reservations = Vec::new();
+    let mut sockets = HostSockets::from_snapshot(snapshot);
     for component in shared_volume_components(volume_uses) {
         let anchor = shared_component_anchor(
             &component,
@@ -432,7 +429,7 @@ pub(super) fn prepare_shared_replicated_volumes(
             requested,
             observed_services,
             pins,
-            capacity,
+            (capacity, &mut sockets),
             options,
         )?;
         reservations.extend(anchor.capacity_reservations);
@@ -452,9 +449,10 @@ fn shared_component_anchor(
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &VolumePins,
-    capacity: &mut CapacityBudget,
+    budget: (&mut CapacityBudget, &mut HostSockets),
     options: &PlanOptions,
 ) -> Result<SharedAnchor, PlanError> {
+    let (capacity, sockets) = budget;
     let services = component
         .volumes
         .iter()
@@ -479,9 +477,10 @@ fn shared_component_anchor(
             no_eligible_shared(component, snapshot, pins),
         ));
     }
-    let capacity_error = capacity.error_for(&eligible);
+    let mut admission_error = capacity.error_for(&eligible);
     for machine_id in eligible {
         let mut projected = capacity.clone();
+        let mut projected_sockets = sockets.clone();
         let projected_services = requested
             .iter()
             .filter(|spec| services.contains_key(spec.name.as_str()))
@@ -491,6 +490,7 @@ fn shared_component_anchor(
                     .find(|service| service.identity.name == spec.name);
                 reserve_replicated_service_demand(
                     &mut projected,
+                    &mut projected_sockets,
                     spec,
                     observed,
                     machine_id,
@@ -499,18 +499,24 @@ fn shared_component_anchor(
                 .map(|reservation| (spec.name.clone(), reservation))
             })
             .collect::<Result<Vec<_>, _>>();
-        if let Ok(capacity_reservations) = projected_services {
-            *capacity = projected;
-            return Ok(SharedAnchor {
-                machine_id,
-                capacity_reservations,
-            });
-        }
+        let capacity_reservations = match projected_services {
+            Ok(reservations) => reservations,
+            Err(error) => {
+                admission_error = error;
+                continue;
+            }
+        };
+        *capacity = projected;
+        *sockets = projected_sockets;
+        return Ok(SharedAnchor {
+            machine_id,
+            capacity_reservations,
+        });
     }
     Err(super::service_error(
         true,
         first_service_name,
-        capacity_error,
+        admission_error,
     ))
 }
 
@@ -615,7 +621,7 @@ fn volume_constraints<'spec>(
     pins: &VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
-    let mounted_volumes = mounted_managed_volumes(&spec.volume_graph);
+    let mounted_volumes = mounted_managed_volumes(spec.volume_graph());
     let incomplete = machines.iter().find_map(|machine| {
         snapshot
             .volume_snapshot
@@ -779,11 +785,12 @@ fn volume_anchor(
 }
 
 fn managed_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
-    match &volume.source {
-        VolumeSource::Ordinary { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
-        VolumeSource::External { .. } | VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
-            None
-        }
+    match volume.source.kind() {
+        ployz_core::RawVolumeSource::Ordinary { name, .. }
+        | ployz_core::RawVolumeSource::Provisioned { name, .. } => Some(name),
+        ployz_core::RawVolumeSource::External { .. }
+        | ployz_core::RawVolumeSource::Bind { .. }
+        | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
     }
 }
 

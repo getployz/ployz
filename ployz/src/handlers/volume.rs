@@ -7,7 +7,8 @@ use clap::ArgMatches;
 use ployz_core::{
     CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
     ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
+    RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, VolumeRemoval,
+    VolumeRemovalOutcome, op, resolve_machine_selectors,
 };
 
 use crate::{
@@ -181,7 +182,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     println!("{}", serde_json::to_string_pretty(&volume)?);
                     Ok(())
                 }
-                NameMatches::Ambiguous(volumes) => Err(Error::usage(format!(
+                volumes @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
                     "Docker Volume {name:?} is ambiguous; select one Machine: {}",
                     volumes
                         .iter()
@@ -255,10 +256,13 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     force,
                 })
                 .await?;
-            if removal.all_targets_succeeded() {
+            if removal
+                .iter()
+                .all(|removal| matches!(removal.outcome, VolumeRemovalOutcome::Removed))
+            {
                 Ok(())
             } else {
-                Err(Error::usage(failure_summary(&removal)))
+                Err(Error::usage(removal_failure_summary(&removal)))
             }
         })
     })
@@ -324,7 +328,7 @@ fn select_create_machine(
                     .clone(),
             )),
             NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
-            NameMatches::Ambiguous(_) => Err(Error::usage(format!(
+            NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
                 "Machine Target {selector:?} matched multiple Machines"
             ))),
         };
@@ -428,6 +432,27 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
     format!("one or more Docker Volume observations failed: {failures}")
 }
 
+fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
+    let failures = removals
+        .iter()
+        .filter_map(|removal| {
+            let message = match &removal.outcome {
+                VolumeRemovalOutcome::Removed => return None,
+                VolumeRemovalOutcome::Failed { error } => error.message.as_str(),
+                VolumeRemovalOutcome::Omitted => {
+                    "not attempted: Machine absent or not inviting RPC"
+                }
+            };
+            Some(format!(
+                "{}/{}: {message}",
+                removal.id.machine_id, removal.id.name
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("one or more Docker Volume removals failed or were omitted: {failures}")
+}
+
 fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
     let failures = crate::failure::partial_failure_details(result);
     format!("one or more Machines failed: {failures}")
@@ -437,7 +462,7 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
 mod tests {
     use ployz_core::{
         DockerVolumeStorageObservation, Machine, MachineId, MachineName, MachineObservation,
-        ManagementAddress, MembershipObservation, WireGuardPublicKey,
+        MembershipObservation, WireGuardPublicKey,
     };
 
     use super::*;
@@ -499,7 +524,6 @@ mod tests {
                 id: MachineId::parse(format!("{seed:032x}")).unwrap(),
                 name: MachineName::parse(name).unwrap(),
                 subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-                management_address: ManagementAddress("fd00::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([seed; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),

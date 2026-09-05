@@ -11,6 +11,7 @@ use crate::{DockerVolumeName, ServiceVolumeReference};
 ///
 /// Duplicate references and dangling mounts are rejected. Unused definitions,
 /// repeated mounts, and compatible aliases for one Docker Volume stay legal.
+/// [`ServiceMountGraph`] additionally admits destinations across Volumes and Configs.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ServiceVolumeGraph {
     volumes: Vec<ServiceVolume>,
@@ -26,6 +27,8 @@ pub enum ServiceVolumeGraphError {
     /// Two references describe incompatible sources for one physical Docker Volume.
     #[error("incompatible Service Volume aliases use Docker Volume {name}")]
     IncompatibleVolumeAliases { name: DockerVolumeName },
+    #[error("resolved Service Volume {reference} has no Project scope")]
+    UnscopedVolume { reference: ServiceVolumeReference },
 }
 
 impl ServiceVolumeGraph {
@@ -70,6 +73,22 @@ impl ServiceVolumeGraph {
         Ok(Self { volumes, mounts })
     }
 
+    /// Scope managed declarations and revalidate aliases after physical names change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an incompatible-alias error if scoping creates a physical-name collision.
+    pub fn scope_to_project(
+        self,
+        project: &crate::ProjectName,
+    ) -> Result<Self, ServiceVolumeGraphError> {
+        let (mut volumes, mounts) = self.into_parts();
+        for volume in &mut volumes {
+            volume.source.scope_to_project(project);
+        }
+        Self::parse(volumes, mounts)
+    }
+
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
         &self.volumes
@@ -101,8 +120,12 @@ impl ServiceVolumeGraph {
 
     /// Mounted Provisioned Volume definitions, including repeated mounts.
     pub fn mounted_provisioned_volumes(&self) -> impl Iterator<Item = &ServiceVolume> {
-        self.mounted_volumes()
-            .filter(|volume| matches!(volume.source, VolumeSource::Provisioned { .. }))
+        self.mounted_volumes().filter(|volume| {
+            matches!(
+                volume.source.kind(),
+                crate::RawVolumeSource::Provisioned { .. }
+            )
+        })
     }
 
     /// Whether any mounted source requires Provisioned storage capability.
@@ -137,7 +160,7 @@ impl<'de> Deserialize<'de> for ServiceVolumeGraph {
 /// Config definitions together with the mounts that refer to them.
 ///
 /// Duplicate names and dangling mounts are rejected. Unused definitions and
-/// repeated mounts stay legal.
+/// repeated mounts stay legal. Destination admission belongs to [`ServiceMountGraph`].
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ServiceConfigGraph {
     configs: Vec<ConfigSpec>,
@@ -231,8 +254,184 @@ impl<'de> Deserialize<'de> for ServiceConfigGraph {
 /// Failure to read a Service spec as validated Volume and Config graphs.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ServiceSpecGraphError {
+    #[error("mount target resolves to root /")]
+    RootMountTarget,
+    #[error("duplicate effective mount target: {target}")]
+    DuplicateMountTarget { target: crate::ContainerPath },
     #[error(transparent)]
     Volume(#[from] ServiceVolumeGraphError),
     #[error(transparent)]
     Config(#[from] ServiceConfigGraphError),
+}
+
+/// A graph whose managed sources all carry privately established Project scope.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResolvedServiceVolumeGraph(ServiceVolumeGraph);
+
+impl TryFrom<ServiceVolumeGraph> for ResolvedServiceVolumeGraph {
+    type Error = ServiceVolumeGraphError;
+    fn try_from(graph: ServiceVolumeGraph) -> Result<Self, Self::Error> {
+        if let Some(volume) = graph
+            .volumes()
+            .iter()
+            .find(|volume| !volume.source.is_resolved())
+        {
+            return Err(ServiceVolumeGraphError::UnscopedVolume {
+                reference: volume.reference.clone(),
+            });
+        }
+        Ok(Self(graph))
+    }
+}
+impl std::ops::Deref for ResolvedServiceVolumeGraph {
+    type Target = ServiceVolumeGraph;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl ResolvedServiceVolumeGraph {
+    /// Preserve exact scoped source identity for an observed scale request.
+    #[must_use]
+    pub fn to_requested(&self) -> ServiceVolumeGraph {
+        self.0.clone()
+    }
+    /// Consume this graph while retaining its scoped sources.
+    #[must_use]
+    pub fn into_requested(self) -> ServiceVolumeGraph {
+        self.0
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<ServiceVolume>, Vec<ServiceMount>) {
+        self.0.into_parts()
+    }
+}
+
+/// Volume and Config graphs admitted together with unique effective destinations.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServiceMountGraph {
+    volumes: ServiceVolumeGraph,
+    configs: ServiceConfigGraph,
+}
+
+impl ServiceMountGraph {
+    /// Admit the combined mounts and retain their canonical Linux destinations.
+    ///
+    /// # Errors
+    /// Rejects root destinations and repeated effective destinations.
+    pub fn parse(
+        mut volumes: ServiceVolumeGraph,
+        mut configs: ServiceConfigGraph,
+    ) -> Result<Self, ServiceSpecGraphError> {
+        let mut destinations = BTreeSet::new();
+        for mount in &mut volumes.mounts {
+            mount.target = admit_target(mount.target.as_str(), &mut destinations)?;
+        }
+        for mount in &mut configs.mounts {
+            let default = format!("/{}", mount.config_name);
+            mount.target = Some(admit_target(
+                mount
+                    .target
+                    .as_ref()
+                    .map_or(default.as_str(), |target| target.as_str()),
+                &mut destinations,
+            )?);
+        }
+        Ok(Self { volumes, configs })
+    }
+
+    /// Admitted Volume declarations and mounts.
+    #[must_use]
+    pub fn volume_graph(&self) -> &ServiceVolumeGraph {
+        &self.volumes
+    }
+    /// Admitted Config declarations and mounts.
+    #[must_use]
+    pub fn config_graph(&self) -> &ServiceConfigGraph {
+        &self.configs
+    }
+
+    /// Scope sources without changing the admitted destinations.
+    ///
+    /// # Errors
+    /// Rejects physical volume aliases made incompatible by scoping.
+    pub fn scope_to_project(
+        self,
+        project: &crate::ProjectName,
+    ) -> Result<Self, ServiceVolumeGraphError> {
+        Ok(Self {
+            volumes: self.volumes.scope_to_project(project)?,
+            configs: self.configs,
+        })
+    }
+
+    pub(crate) fn into_parts(self) -> (ServiceVolumeGraph, ServiceConfigGraph) {
+        (self.volumes, self.configs)
+    }
+}
+
+/// Admitted mounts whose managed Volume sources also have Project scope.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResolvedServiceMountGraph {
+    volumes: ResolvedServiceVolumeGraph,
+    configs: ServiceConfigGraph,
+}
+
+impl TryFrom<ServiceMountGraph> for ResolvedServiceMountGraph {
+    type Error = ServiceVolumeGraphError;
+    fn try_from(graph: ServiceMountGraph) -> Result<Self, Self::Error> {
+        Ok(Self {
+            volumes: graph.volumes.try_into()?,
+            configs: graph.configs,
+        })
+    }
+}
+
+impl ResolvedServiceMountGraph {
+    /// Admitted Volume declarations and mounts.
+    #[must_use]
+    pub fn volume_graph(&self) -> &ResolvedServiceVolumeGraph {
+        &self.volumes
+    }
+    /// Admitted Config declarations and mounts.
+    #[must_use]
+    pub fn config_graph(&self) -> &ServiceConfigGraph {
+        &self.configs
+    }
+    /// Copy the admitted mounts, retaining exact scoped source identity.
+    #[must_use]
+    pub fn to_requested(&self) -> ServiceMountGraph {
+        ServiceMountGraph {
+            volumes: self.volumes.to_requested(),
+            configs: self.configs.clone(),
+        }
+    }
+    pub(crate) fn into_parts(self) -> (ResolvedServiceVolumeGraph, ServiceConfigGraph) {
+        (self.volumes, self.configs)
+    }
+}
+
+// Linux destination keys are lexical: no filesystem or symlink resolution.
+fn admit_target(
+    raw: &str,
+    destinations: &mut BTreeSet<crate::ContainerPath>,
+) -> Result<crate::ContainerPath, ServiceSpecGraphError> {
+    let mut parts = Vec::new();
+    for part in raw.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        return Err(ServiceSpecGraphError::RootMountTarget);
+    }
+    let target = crate::ContainerPath::parse(format!("/{}", parts.join("/")))
+        .expect("canonical target is absolute");
+    if !destinations.insert(target.clone()) {
+        return Err(ServiceSpecGraphError::DuplicateMountTarget { target });
+    }
+    Ok(target)
 }

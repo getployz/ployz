@@ -401,11 +401,11 @@ pub enum DeployOperation {
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
 ///
-/// Live Observation shaped for a decision, not persisted state. Confirming executes
-/// these operations; it does not re-plan.
+/// Live Observation shaped for a decision, not persisted state or execution authority.
+/// The client retains a separately admitted plan for confirmation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeployPreview {
-    /// Project this preview was planned for. Confirm uses this name; it does not re-plan.
+    /// Project this preview describes.
     pub project_name: ProjectName,
     /// Pending rows for the operations this snapshot would execute.
     pub operations: Vec<OperationRow>,

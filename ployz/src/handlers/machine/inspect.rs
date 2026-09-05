@@ -485,7 +485,6 @@ mod tests {
                 id: "0".repeat(32).parse().unwrap(),
                 name: "node-a".parse().unwrap(),
                 subnet: "10.210.7.0/24".parse().unwrap(),
-                management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
                 public_key: ployz_core::WireGuardPublicKey([7; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),

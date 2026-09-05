@@ -197,12 +197,20 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
 fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {
     let ingress = ingress_on(machine);
     let mut worker = ingress.clone();
-    worker.container_id = ContainerId::parse("d".repeat(64)).unwrap();
-    worker.display_name = "worker-a".into();
-    worker.project_name = ProjectName::parse("shop").unwrap();
-    worker.service_id = ServiceId::parse("e".repeat(32)).unwrap();
-    worker.service_name = ServiceName::parse("worker").unwrap();
-    worker.resolved_spec.service_id = worker.service_id;
-    worker.resolved_spec.name = worker.service_name.clone();
+    worker
+        .try_update(|parts| {
+            parts.container_id = ContainerId::parse("d".repeat(64)).unwrap();
+            parts.display_name = "worker-a".into();
+            parts.project_name = ProjectName::parse("shop").unwrap();
+        })
+        .unwrap();
+    worker
+        .try_update(|parts| {
+            parts.resolved_spec.service_id = ServiceId::parse("e".repeat(32)).unwrap()
+        })
+        .unwrap();
+    worker
+        .try_update(|parts| parts.resolved_spec.name = ServiceName::parse("worker").unwrap())
+        .unwrap();
     vec![ingress, worker]
 }

@@ -11,7 +11,7 @@ use ployz::deploy::{
 };
 use ployz_core::{
     ContainerId, MachineId, MachineStorageObservation, OperationPhase, ProjectName,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, VolumeSource,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -301,7 +301,8 @@ async fn service_lifecycle_commands_wait_for_their_successful_service_containers
             service = service.with_dropped_observations();
         }
         let mut api = running_container(&machine, &spec("api"));
-        api.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+        api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
+            .unwrap();
         service
             .listed_containers()
             .lock()
@@ -353,25 +354,31 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     let (mut client, server) = connected(service).await;
     let mut requested = spec("web");
     add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mounts = requested.volume_graph().mounts().to_vec();
     let source = &mut volumes
         .first_mut()
         .expect("fixture mounts one volume")
         .source;
-    let (name, labels) = match source {
-        VolumeSource::Ordinary { name, labels, .. } => (name.clone(), labels.clone()),
-        VolumeSource::External { .. }
-        | VolumeSource::Bind { .. }
-        | VolumeSource::Provisioned { .. }
-        | VolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
+    let (name, labels) = match source.kind() {
+        ployz_core::RawVolumeSource::Ordinary { name, labels, .. } => {
+            (name.clone(), labels.clone())
+        }
+        ployz_core::RawVolumeSource::External { .. }
+        | ployz_core::RawVolumeSource::Bind { .. }
+        | ployz_core::RawVolumeSource::Provisioned { .. }
+        | ployz_core::RawVolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
     };
-    *source = VolumeSource::Provisioned {
+    *source = ployz_core::RawVolumeSource::Provisioned {
         name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
         labels,
-    };
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    }
+    .admit()
+    .expect("valid volume declaration");
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     let intent =
         DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
 
@@ -731,7 +738,9 @@ async fn preview_rejects_a_visible_owner_of_an_expanded_chosen_label() {
     }))
     .unwrap();
     let mut owner = running_container(&machine, &owner_spec);
-    owner.project_name = ProjectName::parse("blog").unwrap();
+    owner
+        .try_update(|parts| parts.project_name = ProjectName::parse("blog").unwrap())
+        .unwrap();
     service.listed_containers().lock().unwrap().push(owner);
     let (mut client, server) = connected(service).await;
     owner_spec.name = ployz_core::ServiceName::parse("api").unwrap();
@@ -835,10 +844,13 @@ async fn preview_project_removal_refuses_the_reserved_project() {
 }
 
 #[tokio::test]
-async fn confirm_emits_all_pending_before_any_machine_rpc() {
+async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_rows() {
     let machine = machine('a', "one");
-    let (mut client, server) = connected(DeployService::new(machine)).await;
-    let preview = client
+    let target = machine.machine.id;
+    let service = DeployService::new(machine);
+    let created = service.created_specs();
+    let (mut client, server) = connected(service).await;
+    let plan = client
         .preview(DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
             spec("web"),
@@ -846,25 +858,55 @@ async fn confirm_emits_all_pending_before_any_machine_rpc() {
         ))
         .await
         .unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let outcome = client
-        .confirm(&preview, &CancellationToken::new(), Some(tx))
-        .await;
-    let first = rx.recv().await.expect("first progress event");
-    let DeployEvent::Progress {
-        rows, completed, ..
-    } = &first
-    else {
-        panic!("expected progress: {first:?}");
+    let mut displayed: ployz_core::DeployPreview =
+        serde_json::from_value(serde_json::to_value(plan.preview()).unwrap()).unwrap();
+    displayed.project_name = ProjectName::parse("forged").unwrap();
+    let row = displayed.operations.first_mut().unwrap();
+    row.machine_id = MachineId::random();
+    row.index = 42;
+    row.status = OperationStatus::Completed;
+    row.operation = DeployOperation::RemoveContainer {
+        machine_id: row.machine_id,
+        container_id: ContainerId::parse("f".repeat(64)).unwrap(),
     };
-    assert_eq!(*completed, 0);
-    assert!(
-        rows.iter()
-            .all(|row| matches!(row.status, OperationStatus::Pending)),
-        "first event must be all pending: {rows:?}"
-    );
-    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+
+    for _ in 0..2 {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = client
+            .confirm(&plan, &CancellationToken::new(), Some(tx))
+            .await;
+        let first = rx.recv().await.expect("first progress event");
+        let DeployEvent::Progress {
+            rows,
+            completed,
+            total,
+        } = first
+        else {
+            panic!("expected initial progress");
+        };
+        assert_eq!((completed, total), (0, 1));
+        let row = rows.first().unwrap();
+        assert_eq!(row.index, 0);
+        assert_eq!(row.machine_id, target);
+        assert_eq!(row.operation.machine_id(), target);
+        assert_eq!(row.status, OperationStatus::Pending);
+        assert!(matches!(
+            row.operation,
+            DeployOperation::RunContainer { .. }
+        ));
+        assert!(matches!(outcome, DeployOutcome::Success { .. }));
+        while let Ok(event) = rx.try_recv() {
+            if let DeployEvent::Progress { rows, .. } = event {
+                assert!(
+                    rows.iter()
+                        .all(|row| row.machine_id == target && row.index == 0)
+                );
+            }
+        }
+    }
+    let created = created.lock().unwrap();
+    assert_eq!(created.len(), 2);
+    assert!(created.iter().all(|spec| spec.name.as_str() == "web"));
     server.abort();
 }
 
@@ -899,7 +941,9 @@ async fn full_preview_confirms_prune_operations_without_replanning() {
     let machine = machine('a', "one");
     let service = DeployService::new(machine.clone());
     let mut debug = running_container(&machine, &spec("debug"));
-    debug.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    debug
+        .try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
+        .unwrap();
     service.listed_containers().lock().unwrap().push(debug);
     let (mut client, server) = connected(service).await;
     let preview = client
@@ -939,7 +983,9 @@ async fn partial_preview_does_not_prune_an_unselected_imperative_service() {
     let machine = machine('a', "one");
     let service = DeployService::new(machine.clone());
     let mut debug = running_container(&machine, &spec("debug"));
-    debug.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    debug
+        .try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
+        .unwrap();
     service.listed_containers().lock().unwrap().push(debug);
     let (mut client, server) = connected(service).await;
     let preview = client

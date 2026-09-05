@@ -371,7 +371,6 @@ mod tests {
                 id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
                 name: MachineName::parse("joiner").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),
-                management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([1; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
@@ -453,6 +452,12 @@ mod tests {
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
         assert!(error.to_string().contains("Dial Credential"), "{error}");
+    }
+
+    #[test]
+    fn enrollment_rejects_invalid_relay_endpoint() {
+        let error = parse_enroll(br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"not-a-url","secret":"pairing-secret"}}"#).unwrap_err();
+        assert!(error.to_string().contains("Relay endpoint"), "{error}");
     }
 
     #[test]

@@ -27,8 +27,7 @@ impl ServingShape {
             container,
             placement,
             ports,
-            volume_graph,
-            config_graph,
+            mount_graph,
             pre_deploy: _,
             ingress_proxy_fragment,
             update: _,
@@ -39,10 +38,10 @@ impl ServingShape {
             container,
             placement,
             ports,
-            volume_graph.volumes(),
-            volume_graph.mounts(),
-            config_graph.configs(),
-            config_graph.mounts(),
+            mount_graph.volume_graph().volumes(),
+            mount_graph.volume_graph().mounts(),
+            mount_graph.config_graph().configs(),
+            mount_graph.config_graph().mounts(),
             ingress_proxy_fragment.as_ref(),
         )
     }
@@ -56,8 +55,7 @@ impl ServingShape {
             container,
             placement,
             ports,
-            volume_graph,
-            config_graph,
+            mount_graph,
             pre_deploy: _,
             ingress_proxy_fragment,
             update: _,
@@ -68,10 +66,10 @@ impl ServingShape {
             container,
             placement,
             ports,
-            volume_graph.volumes(),
-            volume_graph.mounts(),
-            config_graph.configs(),
-            config_graph.mounts(),
+            mount_graph.volume_graph().volumes(),
+            mount_graph.volume_graph().mounts(),
+            mount_graph.config_graph().configs(),
+            mount_graph.config_graph().mounts(),
             ingress_proxy_fragment.as_ref(),
         )
     }
@@ -149,7 +147,7 @@ impl ServingShape {
             "restart": restart,
             "placement": placement,
             "ports": sorted_json(ports),
-            "volumes": sorted_json(volumes),
+            "volumes": sorted_json(volumes.iter().map(|volume| (&volume.reference, volume.source.kind(), volume.source.creation_labels()))),
             "mounts": sorted_json(mounts),
             "configs": sorted_json(configs),
             "config_mounts": sorted_json(config_mounts),
@@ -183,9 +181,9 @@ fn service_mode_kind(mode: &ServiceMode) -> &'static str {
     }
 }
 
-fn sorted_json<T: Serialize>(items: &[T]) -> Vec<serde_json::Value> {
+fn sorted_json<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<serde_json::Value> {
     let mut values = items
-        .iter()
+        .into_iter()
         .map(|item| serde_json::to_value(item).expect("serving shape JSON is serializable"))
         .collect::<Vec<_>>();
     values.sort_by_cached_key(ToString::to_string);
@@ -222,7 +220,7 @@ mod tests {
 
         let mut other = spec.clone();
         other.service_id = ServiceId::parse("b".repeat(32)).unwrap();
-        other.container.resources.memory_bytes = Some(64);
+        other.container.resources.memory_bytes = Some(crate::ByteQuantity::try_from(64).unwrap());
         other.container.pull_policy = PullPolicy::Always;
         other.mode = ServiceMode::Replicated {
             replicas: NonZeroU32::new(3).unwrap(),

@@ -929,12 +929,14 @@ mod tests {
             "container": { "image": image, "pull_policy": "missing" }
         }))
         .unwrap();
-        requested.to_resolved(
-            ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
-            ployz_core::ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: None,
-            },
-        )
+        requested
+            .to_resolved(
+                ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped")
     }
 }

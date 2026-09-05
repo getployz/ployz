@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     num::{NonZeroU16, NonZeroU32, NonZeroU64},
 };
 
@@ -16,22 +16,22 @@ use ployz_core::{
     DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ExecutionError,
     FailedOperation, GlobalReconcileFailureObservation, HealthFailure, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol,
-    IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved,
-    LogDriver, Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
-    MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
-    OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
-    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
-    ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
-    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt,
-    StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
-    UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory, VolumeObservationFailure,
-    VolumeSource, VolumeToCreate, WireGuardPublicKey,
+    HealthcheckCommand, HealthcheckSpec, HookFailure, HostBind, HttpProtocol, IngressHost,
+    IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved, LogDriver,
+    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
+    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, MembershipObservation,
+    ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
+    PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
+    PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal, PullPolicy,
+    QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
+    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, StopAttempt, StopContainerPurpose, StorageChoice, TransportProtocol,
+    Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory,
+    VolumeObservationFailure, VolumeRemoval, VolumeRemovalOutcome, VolumeSource, VolumeToCreate,
+    WireGuardPublicKey,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -154,9 +154,14 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert(
         "external_volume_source".into(),
-        to_value(&VolumeSource::External {
-            name: DockerVolumeName::parse("shared").expect("fixture external Volume name is valid"),
-        }),
+        to_value(
+            &ployz_core::RawVolumeSource::External {
+                name: DockerVolumeName::parse("shared")
+                    .expect("fixture external Volume name is valid"),
+            }
+            .admit()
+            .expect("valid volume declaration"),
+        ),
     );
     fixtures.insert(
         "ordinary_volume_source".into(),
@@ -222,12 +227,12 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert(
         "runtime_watch_frame".into(),
-        to_value(&runtime_watch_frame()),
+        to_value(&crate::runtime_watch_view(&runtime_watch_frame())),
     );
     fixtures.insert(
         "runtime_watch_frame_unknown_fields".into(),
         with_unknown_field(
-            to_value(&runtime_watch_frame()),
+            to_value(&crate::runtime_watch_view(&runtime_watch_frame())),
             "future_lens",
             json!({ "vendor": true }),
         ),
@@ -245,8 +250,8 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         .containers
         .first()
         .expect("RuntimeWatchFrame fixture includes a Container Observation");
-    let service = frame
-        .services
+    let services = frame.services();
+    let service = services
         .first()
         .expect("RuntimeWatchFrame fixture includes a Service Observation");
     let certificate = frame
@@ -279,6 +284,13 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
             ),
         ),
         ("VolumeInventory", to_value(&volume_inventory())),
+        (
+            "VolumeRemoval",
+            to_value(&VolumeRemoval {
+                id: docker_volume().id,
+                outcome: VolumeRemovalOutcome::Removed,
+            }),
+        ),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("ObservedDataLoss", to_value(&observed_data_loss())),
         ("DataLossConfirmation", to_value(&data_loss_confirmation())),
@@ -297,6 +309,20 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         ("RequestedServiceSpec", to_value(&requested_spec())),
         ("ResolvedServiceSpec", to_value(&resolved_spec())),
         ("ServiceVolume", to_value(&service_volume())),
+        (
+            "ResolvedServiceVolume",
+            to_value(&typed_resolved_spec())
+                .pointer("/volumes/0")
+                .expect("Resolved Service fixture includes a Volume")
+                .clone(),
+        ),
+        (
+            "ScopedVolumeSource",
+            to_value(&typed_resolved_spec())
+                .pointer("/volumes/0/source/scope")
+                .expect("Resolved Service fixture includes a scoped Volume")
+                .clone(),
+        ),
         ("ServiceMount", to_value(&service_mount())),
         ("VolumeDriver", to_value(&volume_driver())),
         ("ConfigSpec", to_value(&config_spec())),
@@ -334,7 +360,9 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         (
             "PreDeployHook",
             to_value(&PreDeployHook {
-                command: vec!["echo".into()],
+                command: vec!["echo".into()]
+                    .try_into()
+                    .expect("fixture hook command is non-empty"),
                 environment: BTreeMap::new(),
                 privileged: None,
                 timeout_millis: None,
@@ -390,7 +418,10 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         ),
         ("CertificateObservation", to_value(certificate)),
         ("RuntimeWatchIncompleteIds", to_value(&frame.incomplete_ids)),
-        ("RuntimeWatchFrame", to_value(&frame)),
+        (
+            "RuntimeWatchFrame",
+            to_value(&crate::runtime_watch_view(&frame)),
+        ),
     ])
 }
 
@@ -421,6 +452,7 @@ pub(super) fn tagged_decoders() -> BTreeMap<&'static str, Decodes> {
             "DockerVolumeStorageObservation",
             decodes::<DockerVolumeStorageObservation>,
         ),
+        ("VolumeRemovalOutcome", decodes::<VolumeRemovalOutcome>),
         ("CreateVolumeReport", decodes::<CreateVolumeReport>),
         ("DataLoss", decodes::<DataLoss>),
         (
@@ -459,6 +491,14 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         panic!("failed fixture is Failed");
     };
     BTreeMap::from([
+        (
+            "VolumeRemovalOutcome",
+            vec![
+                to_value(&VolumeRemovalOutcome::Removed),
+                to_value(&VolumeRemovalOutcome::Failed { error: rpc_error() }),
+                to_value(&VolumeRemovalOutcome::Omitted),
+            ],
+        ),
         ("DataLoss", vec![to_value(&data_loss())]),
         (
             "CreateVolumeReport",
@@ -562,7 +602,8 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                     failure: HealthFailure::TimedOut,
                 }),
                 to_value(&ExecutionError::DependencyHealth {
-                    dependency: QualifiedService::parse("app/db").unwrap(),
+                    dependency: QualifiedService::parse("app/db")
+                        .expect("fixture has a valid qualified Service name"),
                     failure: DependencyHealthFailure::NoContainers,
                 }),
                 to_value(&ExecutionError::Hook {
@@ -656,24 +697,37 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "VolumeSource",
             vec![
-                to_value(&VolumeSource::Bind {
-                    machine_path: MachinePath::parse("/data").expect("fixture bind path is valid"),
-                    create_machine_path: false,
-                    propagation: Some(BindPropagation::Private),
-                    recursive: Some(BindRecursive::Disabled),
-                }),
-                to_value(&VolumeSource::External {
-                    name: DockerVolumeName::parse("shared")
-                        .expect("fixture external Volume name is valid"),
-                }),
+                to_value(
+                    &ployz_core::RawVolumeSource::Bind {
+                        machine_path: MachinePath::parse("/data")
+                            .expect("fixture bind path is valid"),
+                        create_machine_path: false,
+                        propagation: Some(BindPropagation::Private),
+                        recursive: Some(BindRecursive::Disabled),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ),
+                to_value(
+                    &ployz_core::RawVolumeSource::External {
+                        name: DockerVolumeName::parse("shared")
+                            .expect("fixture external Volume name is valid"),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ),
                 to_value(&service_volume().source),
                 to_value(&named_volume_with_driver().source),
                 to_value(&provisioned_volume_source()),
-                to_value(&VolumeSource::Tmpfs {
-                    size_bytes: Some(64),
-                    mode: Some(0o755),
-                    options: Vec::new(),
-                }),
+                to_value(
+                    &ployz_core::RawVolumeSource::Tmpfs {
+                        size_bytes: Some(64),
+                        mode: Some(0o755),
+                        options: Vec::new(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ),
             ],
         ),
         (
@@ -918,18 +972,20 @@ fn service_attempt() -> ServiceAttempt {
 }
 
 fn provisioned_volume_source() -> VolumeSource {
-    VolumeSource::Provisioned {
+    ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
             NonZeroU64::new(1_073_741_824).expect("fixture Provisioned Volume bound is positive"),
         ),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
+    .admit()
+    .expect("valid volume declaration")
 }
 
 fn deploy_intent() -> DeployIntent {
     DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        ProjectName::parse("app").expect("fixture Project name is valid"),
         Vec::new(),
         PlanOptions::default(),
     )
@@ -949,7 +1005,7 @@ fn deploy_preview() -> DeployPreview {
             Some(ServiceName::parse("api").expect("fixture Service Name is valid")),
         )],
         deploy_warnings().to_vec(),
-        ProjectName::parse("app").unwrap(),
+        ProjectName::parse("app").expect("fixture Project name is valid"),
     );
     preview.volumes_to_create = vec![volume_to_create()];
     preview
@@ -991,8 +1047,10 @@ fn deploy_warnings() -> [DeployWarning; 6] {
         },
         DeployWarning::ObserverRelativeHostnameConflict,
         DeployWarning::SkippedDependencyHealth {
-            dependent: QualifiedService::parse("app/web").unwrap(),
-            dependency: QualifiedService::parse("app/db").unwrap(),
+            dependent: QualifiedService::parse("app/web")
+                .expect("fixture has a valid qualified Service name"),
+            dependency: QualifiedService::parse("app/db")
+                .expect("fixture has a valid qualified Service name"),
         },
     ]
 }
@@ -1048,7 +1106,7 @@ fn volume_to_create() -> VolumeToCreate {
         machine_name: Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
         name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: Some(ProvisionedVolumeMaximumBytes::new(
-            NonZeroU64::new(1_073_741_824).unwrap(),
+            NonZeroU64::new(1_073_741_824).expect("fixture Volume bound is positive"),
         )),
     }
 }
@@ -1059,8 +1117,10 @@ fn deploy_operations() -> [DeployOperation; 8] {
     [
         DeployOperation::WaitHealthy {
             machine_id,
-            dependent: QualifiedService::parse("app/web").unwrap(),
-            dependency: QualifiedService::parse("app/db").unwrap(),
+            dependent: QualifiedService::parse("app/web")
+                .expect("fixture has a valid qualified Service name"),
+            dependency: QualifiedService::parse("app/db")
+                .expect("fixture has a valid qualified Service name"),
         },
         DeployOperation::RunContainer {
             machine_id,
@@ -1099,12 +1159,14 @@ fn service_volume() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
             driver: VolumeDriver::parse("local", BTreeMap::new())
                 .expect("local is an ordinary Volume driver"),
             labels: BTreeMap::new(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 
@@ -1112,11 +1174,13 @@ fn named_volume_with_driver() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
             driver: volume_driver(),
             labels: BTreeMap::from([("keep".into(), "1".into())]),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 
@@ -1206,20 +1270,37 @@ fn typed_requested_spec() -> RequestedServiceSpec {
     spec.ingress_proxy_fragment = Some(
         IngressProxyFragment::parse("reverse_proxy localhost:8080").expect("fixture is non-empty"),
     );
-    spec.volume_graph =
+    spec.set_volume_graph(
         ServiceVolumeGraph::parse(vec![named_volume_with_driver()], vec![service_mount()])
-            .expect("typed volume graph is valid");
-    spec.config_graph = ServiceConfigGraph::parse(
-        vec![config_spec()],
-        vec![config_mount(), config_mount_defaults()],
+            .expect("typed volume graph is valid"),
     )
-    .expect("typed config graph is valid");
+    .expect("fixture mount destinations are distinct and non-root");
+    spec.set_config_graph(
+        ServiceConfigGraph::parse(
+            vec![config_spec()],
+            vec![config_mount(), config_mount_defaults()],
+        )
+        .expect("typed config graph is valid"),
+    )
+    .expect("fixture mount destinations are distinct and non-root");
     spec.container.healthcheck = Some(configured_healthcheck());
     spec.container.resources = ContainerResources {
-        cpu_nanos: Some(1_000_000),
-        memory_bytes: Some(64 * 1024 * 1024),
-        memory_reservation_bytes: Some(32 * 1024 * 1024),
-        shared_memory_bytes: Some(8 * 1024 * 1024),
+        cpu_nanos: Some(
+            ployz_core::CpuNanos::try_from(1_000_000)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
+        memory_bytes: Some(
+            ployz_core::ByteQuantity::try_from(64 * 1024 * 1024)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
+        memory_reservation_bytes: Some(
+            ployz_core::ByteQuantity::try_from(32 * 1024 * 1024)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
+        shared_memory_bytes: Some(
+            ployz_core::ByteQuantity::try_from(8 * 1024 * 1024)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
         devices: vec![device_mapping()],
         device_reservations: vec![device_reservation(), device_reservation_sparse()],
         ulimits: BTreeMap::from([("nofile".into(), ulimit())]),
@@ -1228,12 +1309,28 @@ fn typed_requested_spec() -> RequestedServiceSpec {
 }
 
 fn typed_resolved_spec() -> ResolvedServiceSpec {
-    typed_requested_spec().to_resolved(service_id(), ResolvedUpdateConfig::default())
+    let mut requested = typed_requested_spec();
+    requested
+        .set_volume_graph(
+            requested
+                .volume_graph()
+                .clone()
+                .scope_to_project(
+                    &ProjectName::parse("app").expect("fixture Project name is valid"),
+                )
+                .expect("fixture Volume definitions retain compatible scoped identities"),
+        )
+        .expect("fixture mount destinations are distinct and non-root");
+    requested
+        .to_resolved(service_id(), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped")
 }
 
 fn container_observation_disabled_healthcheck() -> ContainerObservation {
     let mut observation = container_observation();
-    observation.effective_healthcheck = Some(HealthcheckSpec::Disabled);
+    observation
+        .try_update(|parts| parts.effective_healthcheck = Some(HealthcheckSpec::Disabled))
+        .expect("fixture healthcheck update preserves observation identity");
     observation
 }
 
@@ -1247,11 +1344,6 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 subnet: "10.210.1.0/24"
                     .parse()
                     .expect("fixture Machine Subnet is valid"),
-                management_address: ManagementAddress(
-                    "::1"
-                        .parse::<Ipv6Addr>()
-                        .expect("fixture management address is valid"),
-                ),
                 public_key: WireGuardPublicKey([0; 32]),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint(endpoint())],
@@ -1277,14 +1369,7 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 observed_at: "2024-01-01T00:00:00Z".into(),
             }],
         }],
-        containers: vec![container.clone()],
-        services: vec![ServiceObservation {
-            identity: container.identity(),
-            service_id: service_id(),
-            containers: vec![ServiceContainer::try_from(container)
-                .expect("fixture container is a Service Container")],
-            hook_containers: Vec::<HookContainer>::new(),
-        }],
+        containers: vec![container],
         volumes: vec![docker_volume()],
         certificates: vec![
             CertificateObservation {
@@ -1323,14 +1408,12 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
 }
 
 fn container_observation() -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("1".repeat(64)).expect("fixture Container ID is valid"),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: machine_id(MACHINE_ID_HEX),
-        project_name: ProjectName::parse("app").unwrap(),
-        service_id: service_id(),
-        service_name: ServiceName::parse("api").expect("fixture Service Name is valid"),
+        project_name: ProjectName::parse("app").expect("fixture Project name is valid"),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -1339,7 +1422,8 @@ fn container_observation() -> ContainerObservation {
         resolved_spec: resolved_spec(),
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .expect("fixture Container observation has a matching Service identity")
 }
 
 fn requested_spec() -> RequestedServiceSpec {
@@ -1448,7 +1532,7 @@ fn partial_result() -> PartialResult<DockerVolume, RpcError> {
 
 fn cluster_teardown() -> ClusterTeardown {
     ClusterTeardown {
-        destroyed_projects: vec![ProjectName::parse("app").unwrap()],
+        destroyed_projects: vec![ProjectName::parse("app").expect("fixture Project name is valid")],
         machines: PartialResult {
             successes: vec![MachineSuccess {
                 machine_id: machine_id(MACHINE_ID_HEX),

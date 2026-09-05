@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    net::{Ipv6Addr, SocketAddr},
+    net::SocketAddr,
     num::NonZeroU64,
     path::PathBuf,
     process::Command,
@@ -22,11 +22,11 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
     LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineList, MachineName,
     MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineStorageObservation, ManagementAddress, MembershipObservation, ObservedDataLoss,
-    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, op,
+    MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
+    PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RemoveMachineRequest, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
+    encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -377,7 +377,6 @@ impl MachineRpc for DiscoveryService {
             id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
             name: body.name,
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: body.public_key,
             public_ip: body.public_ip,
             advertised_endpoints: body.advertised_endpoints,
@@ -633,6 +632,9 @@ impl MachineRpc for DiscoveryService {
         let RpcRequestBody::RemoveVolume(remove) = request.body else {
             return Err(Status::invalid_argument("expected remove_volume"));
         };
+        if remove.name.as_str() == "slow" {
+            std::future::pending::<()>().await;
+        }
         let response = if machine_id.as_str().starts_with('b') {
             RpcResponse::from(RpcError {
                 code: RpcErrorCode::Unavailable,
@@ -893,7 +895,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),

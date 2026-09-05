@@ -34,13 +34,13 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
         ployz_core::MachineId::random()
     ));
     let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    let public_key = local.record().wireguard_private_key.public_key();
+    let public_key = local.record().private_key().public_key();
     let machine: Machine = serde_json::from_value(json!({
         "id": "b".repeat(32),
         "name": "joining",
         "subnet": "10.210.1.0/24",
-        "management_address": "fdcc::1",
         "public_key": public_key.0,
+        "advertised_endpoints": ["192.0.2.1:51820"],
     }))
     .unwrap();
     local
@@ -277,8 +277,8 @@ fn only_a_participating_founder_claims_allocator() {
     let (machine, joined) = participating_record();
     assert_eq!(founder_allocator_id(&joined), None);
 
-    let founder = LocalMachineRecord {
-        body: LocalMachineBody::Participating {
+    let founder = LocalMachineRecord::parse(
+        LocalMachineBody::Participating {
             machine: machine.clone(),
             origin: ParticipationOrigin::Founder {
                 cluster: crate::machine::FoundingCluster {
@@ -286,12 +286,13 @@ fn only_a_participating_founder_claims_allocator() {
                 },
             },
         },
-        ..joined.clone()
-    };
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&founder), Some(machine.id));
 
-    let resetting = LocalMachineRecord {
-        body: LocalMachineBody::Resetting {
+    let resetting = LocalMachineRecord::parse(
+        LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: machine.clone(),
                 origin: ParticipationOrigin::Founder {
@@ -301,24 +302,27 @@ fn only_a_participating_founder_claims_allocator() {
                 },
             }),
         },
-        ..joined.clone()
-    };
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&resetting), None);
 
-    let uninitialized = LocalMachineRecord {
-        body: LocalMachineBody::Uninitialized { id: machine.id },
-        ..joined.clone()
-    };
+    let uninitialized = LocalMachineRecord::parse(
+        LocalMachineBody::Uninitialized { id: machine.id },
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&uninitialized), None);
 
-    let joining = LocalMachineRecord {
-        body: LocalMachineBody::Joining {
-            machine,
-            bootstrap: Vec::new(),
+    let joining = LocalMachineRecord::parse(
+        LocalMachineBody::Joining {
+            machine: machine.clone(),
+            bootstrap: vec![machine.clone()],
             min_store_version: BTreeMap::new(),
         },
-        ..joined
-    };
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&joining), None);
 }
 
@@ -360,19 +364,20 @@ async fn publication_guard_rechecks_the_local_phase() {
     let LocalMachineBody::Participating {
         machine: body_machine,
         origin,
-    } = local.body
+    } = local.body().clone()
     else {
         panic!("fixture is participating");
     };
-    let local = LocalMachineRecord {
-        body: LocalMachineBody::Resetting {
+    let local = LocalMachineRecord::parse(
+        LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: body_machine,
                 origin,
             }),
         },
-        ..local
-    };
+        local.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(publication.publishable_machine(&local), None);
 }
 
@@ -381,21 +386,379 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         "id": "b".repeat(32),
         "name": "machine",
         "subnet": "10.210.1.0/24",
-        "management_address": "fdcc::1",
-        "public_key": vec![3; 32],
+        "public_key": crate::network::WireGuardPrivateKey::from_bytes([0; 32]).public_key(),
+        "advertised_endpoints": ["192.0.2.1:51820"],
     }))
     .unwrap();
-    let local = LocalMachineRecord {
-        body: LocalMachineBody::Participating {
+    let local = LocalMachineRecord::parse(
+        LocalMachineBody::Participating {
             machine: machine.clone(),
             origin: ParticipationOrigin::Join {
-                bootstrap: Vec::new(),
+                bootstrap: vec![machine.clone()],
             },
         },
-        wireguard_private_key: crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
-        wireguard_mtu: None,
-        cloud_pairing: None,
-        selected_endpoints: BTreeMap::new(),
-    };
+        crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
+    )
+    .unwrap();
     (machine, local)
+}
+// Exercise the store API against real SQL rows, including corrupt imported documents.
+async fn identity_store(
+    db: rusqlite::Connection,
+) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    use axum::{Router, body::Bytes, extract::State, routing::post};
+    async fn query(State(db): State<Arc<Mutex<rusqlite::Connection>>>, body: Bytes) -> Vec<u8> {
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let db = db.lock().unwrap();
+        let mut statement = db
+            .prepare(request.get("query").unwrap().as_str().unwrap())
+            .unwrap();
+        let columns = statement
+            .column_names()
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>();
+        let params = request
+            .get("params")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap());
+        let mut rows = statement.query(rusqlite::params_from_iter(params)).unwrap();
+        let mut response = serde_json::to_vec(&json!({"columns": columns})).unwrap();
+        let mut index = 0;
+        while let Some(row) = rows.next().unwrap() {
+            index += 1;
+            let values = (0..columns.len())
+                .map(|i| row.get::<_, Option<String>>(i).unwrap())
+                .collect::<Vec<_>>();
+            response.extend(serde_json::to_vec(&json!({"row": [index, values]})).unwrap());
+        }
+        response.extend(br#"{"eoq":{"time":0.0}}"#);
+        response
+    }
+    async fn transact(State(db): State<Arc<Mutex<rusqlite::Connection>>>, body: Bytes) -> Vec<u8> {
+        let requests: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        let db = db.lock().unwrap();
+        let results = requests
+            .iter()
+            .map(|request| {
+                let params = request
+                    .get("params")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_str().unwrap());
+                let affected = db
+                    .execute(
+                        request.get("query").unwrap().as_str().unwrap(),
+                        rusqlite::params_from_iter(params),
+                    )
+                    .unwrap();
+                json!({"rows_affected": affected, "time": 0.0})
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_vec(&json!({"results": results, "time": 0.0})).unwrap()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let store = ReplicatedStore::new(
+        ApiClient::http1(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
+    );
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/v1/queries", post(query))
+                .route("/v1/transactions", post(transact))
+                .with_state(Arc::new(Mutex::new(db))),
+        )
+        .await
+        .unwrap();
+    });
+    (store, task)
+}
+
+#[tokio::test]
+async fn machine_reads_reject_document_identity_different_from_row_key() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let key = MachineId::parse("a".repeat(32)).unwrap();
+    let document = json!({"id": "b".repeat(32), "name": "peer", "subnet": "10.210.1.0/24", "public_key": vec![1; 32], "advertised_endpoints": []}).to_string();
+    db.execute(
+        "INSERT INTO machines (id, info) VALUES (?, ?)",
+        rusqlite::params![key.as_str(), document],
+    )
+    .unwrap();
+    let (store, task) = identity_store(db).await;
+    assert!(store.machine(key.as_str()).await.is_err());
+    assert!(store.machines().await.is_err());
+    task.abort();
+}
+
+fn identity_container(machine_id: MachineId) -> ployz_core::ContainerObservation {
+    serde_json::from_value(json!({
+        "container_id": "c".repeat(64),
+        "display_name": "service-c",
+        "machine_id": machine_id,
+        "project_name": "app",
+        "kind": "service_container",
+        "runtime": { "state": "created" },
+        "resolved_spec": {
+            "service_id": "d".repeat(32),
+            "name": "service",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "busybox", "pull_policy": "missing" }
+        }
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn container_reads_reject_row_identity_and_owner_mismatches() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let container = identity_container(machine);
+    for (id, owner) in [
+        ("b".repeat(64), machine.to_string()),
+        (container.container_id.to_string(), "b".repeat(32)),
+        (container.container_id.to_string(), String::new()),
+    ] {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("schema.sql")).unwrap();
+        db.execute(
+            "INSERT INTO containers (id, machine_id, container) VALUES (?, ?, ?)",
+            rusqlite::params![id, owner, serde_json::to_string(&container).unwrap()],
+        )
+        .unwrap();
+        let (store, task) = identity_store(db).await;
+        let id = ployz_core::ContainerId::parse(id).unwrap();
+        assert!(
+            store.container(&id).await.is_err(),
+            "single row accepted {id}/{owner}"
+        );
+        assert!(
+            store.containers().await.is_err(),
+            "list accepted {id}/{owner}"
+        );
+        if let Ok(owner) = MachineId::parse(&owner) {
+            assert!(
+                store
+                    .machine_publication()
+                    .await
+                    .local_containers(&owner)
+                    .await
+                    .is_err(),
+                "local inventory accepted {id}/{owner}"
+            );
+        }
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn volume_reads_reject_machine_qualified_identity_mismatches() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let volume = DockerVolume {
+        id: DockerVolumeId {
+            machine_id: machine,
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+        options: BTreeMap::new(),
+        labels: BTreeMap::new(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    };
+    for (owner, name) in [
+        (machine, "other"),
+        (MachineId::parse("b".repeat(32)).unwrap(), "data"),
+    ] {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("schema.sql")).unwrap();
+        db.execute(
+            "INSERT INTO volumes (machine_id, name, volume) VALUES (?, ?, ?)",
+            rusqlite::params![
+                owner.as_str(),
+                name,
+                serde_json::to_string(&volume).unwrap()
+            ],
+        )
+        .unwrap();
+        let (store, task) = identity_store(db).await;
+        let id = DockerVolumeId {
+            machine_id: owner,
+            name: DockerVolumeName::parse(name).unwrap(),
+        };
+        assert!(
+            store.volume(&id).await.is_err(),
+            "single row accepted {owner}/{name}"
+        );
+        assert!(
+            store.volumes().await.is_err(),
+            "list accepted {owner}/{name}"
+        );
+        assert!(
+            store
+                .machine_publication()
+                .await
+                .local_volumes(&owner)
+                .await
+                .is_err(),
+            "local inventory accepted {owner}/{name}"
+        );
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn store_preserves_published_identities_and_keyed_incomplete_rows() {
+    let machine: Machine = serde_json::from_value(json!({
+        "id": "a".repeat(32), "name": "peer", "subnet": "10.210.1.0/24",
+        "public_key": vec![1; 32], "advertised_endpoints": []
+    }))
+    .unwrap();
+    let container = identity_container(machine.id);
+    let volume = DockerVolume {
+        id: DockerVolumeId {
+            machine_id: machine.id,
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+        options: BTreeMap::new(),
+        labels: BTreeMap::new(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    };
+    let incomplete_machine = MachineId::parse("b".repeat(32)).unwrap();
+    let incomplete_container = ployz_core::ContainerId::parse("e".repeat(64)).unwrap();
+    let unowned_container = ployz_core::ContainerId::parse("f".repeat(64)).unwrap();
+    let incomplete_volume = DockerVolumeId {
+        machine_id: machine.id,
+        name: DockerVolumeName::parse("pending").unwrap(),
+    };
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    db.execute(
+        "INSERT INTO machines (id) VALUES (?)",
+        [incomplete_machine.as_str()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO containers (id, machine_id) VALUES (?, ?)",
+        rusqlite::params![incomplete_container.as_str(), machine.id.as_str()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO containers (id) VALUES (?)",
+        [unowned_container.as_str()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO volumes (machine_id, name) VALUES (?, ?)",
+        rusqlite::params![machine.id.as_str(), incomplete_volume.name.as_str()],
+    )
+    .unwrap();
+    let (store, task) = identity_store(db).await;
+    store.publish_local_machine(&machine).await.unwrap();
+    store.publish_container(&container).await.unwrap();
+    store.publish_volume(&volume).await.unwrap();
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine.clone())
+    );
+    assert_eq!(
+        store.container(&container.container_id).await.unwrap(),
+        Some(container.clone())
+    );
+    assert_eq!(
+        store.volume(&volume.id).await.unwrap(),
+        Some(volume.clone())
+    );
+    assert_eq!(
+        store.machine(incomplete_machine.as_str()).await.unwrap(),
+        None
+    );
+    assert_eq!(store.container(&incomplete_container).await.unwrap(), None);
+    assert_eq!(store.container(&unowned_container).await.unwrap(), None);
+    assert_eq!(store.volume(&incomplete_volume).await.unwrap(), None);
+    assert_eq!(
+        store.machines().await.unwrap(),
+        super::ReplicatedObservations {
+            observations: vec![machine.clone()],
+            incomplete_ids: vec![incomplete_machine]
+        }
+    );
+    assert_eq!(
+        store.containers().await.unwrap(),
+        super::ReplicatedObservations {
+            observations: vec![container.clone()],
+            incomplete_ids: vec![incomplete_container, unowned_container]
+        }
+    );
+    assert_eq!(
+        store.volumes().await.unwrap(),
+        super::ReplicatedObservations {
+            observations: vec![volume.clone()],
+            incomplete_ids: vec![incomplete_volume.clone()]
+        }
+    );
+    let publication = store.machine_publication().await;
+    let local_containers = publication.local_containers(&machine.id).await.unwrap();
+    assert_eq!(
+        local_containers.ids().copied().collect::<Vec<_>>(),
+        vec![container.container_id, incomplete_container]
+    );
+    assert_eq!(
+        local_containers.observations.get(&container.container_id),
+        Some(&container)
+    );
+    let local_volumes = publication.local_volumes(&machine.id).await.unwrap();
+    assert_eq!(local_volumes.get(&volume.id.name), Some(Some(&volume)));
+    assert_eq!(local_volumes.get(&incomplete_volume.name), Some(None));
+    let index = store
+        .api()
+        .query(super::Statement::new(
+            "SELECT service_id, service_name FROM containers WHERE id = ?",
+            [json!(container.container_id)],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        index.rows(["service_id", "service_name"]).unwrap(),
+        vec![[json!("d".repeat(32)), json!("service")]]
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn invalid_hosted_reservation_is_unavailable_and_explicit_release_recovers() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    db.execute(
+        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
+        [json!({"endpoint": "https://dns.example", "name": "", "token": ""}).to_string()],
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    let client = crate::hosted_dns::HostedDns::new();
+    assert!(store.domain_reservation().await.is_err());
+    assert!(client.domain(&store).await.is_err());
+    let error = client.release_domain(&store).await.unwrap_err();
+    assert!(error.to_string().contains("cleared locally"), "{error}");
+    assert!(store.domain_reservation().await.unwrap().is_none());
+    let valid = crate::hosted_dns::Reservation::parse(
+        "http://127.0.0.1:1".into(),
+        "cluster.example".into(),
+        "opaque-token".into(),
+    )
+    .unwrap();
+    store.publish_domain_reservation(&valid).await.unwrap();
+    assert_eq!(client.domain(&store).await.unwrap(), "cluster.example");
+    assert_eq!(
+        client.release_domain(&store).await.unwrap(),
+        "cluster.example"
+    );
+    assert!(store.domain_reservation().await.unwrap().is_none());
+    server.abort();
 }

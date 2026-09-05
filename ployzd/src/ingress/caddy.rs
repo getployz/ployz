@@ -472,9 +472,10 @@ fn write_site(
     let handle = challenge
         .map(|challenge| {
             format!(
-                "\thandle /.well-known/acme-challenge/{} {{\n\t\trespond \"{}\" 200\n\t}}\n",
+                "\thandle /.well-known/acme-challenge/{} {{\n\t\trespond {} 200\n\t}}\n",
                 challenge.token(),
-                challenge.response()
+                serde_json::to_string(challenge.response())
+                    .expect("string serialization cannot fail")
             )
         })
         .unwrap_or_default();

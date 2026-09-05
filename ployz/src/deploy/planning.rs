@@ -5,7 +5,7 @@ use ployz_core::{
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    VolumeSource, VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_target,
     same_service_mode_kind,
 };
 
@@ -61,6 +61,87 @@ struct Planned {
     warnings: Vec<DeployWarning>,
 }
 
+/// An admitted, immutable sequence of Deploy operations and its informational preview.
+///
+/// Created by planning; serialized preview rows cannot be confirmed.
+///
+/// ```compile_fail
+/// use ployz::{connect::Client, deploy::DeployPreview};
+/// use tokio_util::sync::CancellationToken;
+/// async fn forged(client: &Client, preview: DeployPreview) {
+///     client.confirm(&preview, &CancellationToken::new(), None).await;
+/// }
+/// ```
+///
+/// ```compile_fail
+/// let plan: ployz::deploy::DeployPlan = serde_json::from_str("{}").unwrap();
+/// ```
+#[derive(Clone, Debug)]
+pub struct DeployPlan {
+    operations: Vec<DeployOperation>,
+    preview: DeployPreview,
+}
+
+impl DeployPlan {
+    /// Informational output, never an input to execution.
+    #[must_use]
+    pub fn preview(&self) -> &DeployPreview {
+        &self.preview
+    }
+
+    pub(super) fn operations(&self) -> &[DeployOperation] {
+        &self.operations
+    }
+
+    pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
+        self.operations
+            .iter()
+            .zip(&self.preview.operations)
+            .enumerate()
+            .map(|(index, (operation, row))| {
+                super::OperationRow::pending(
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                    operation.clone(),
+                    row.machine_name.clone(),
+                    row.display_name.clone(),
+                    row.service_name.clone(),
+                )
+            })
+            .collect()
+    }
+
+    pub(super) fn prepend_warnings(&mut self, warnings: Vec<DeployWarning>) {
+        self.preview.warnings.splice(0..0, warnings);
+    }
+
+    pub(super) fn empty(project: ProjectName, warnings: Vec<DeployWarning>) -> Self {
+        Self {
+            operations: Vec::new(),
+            preview: DeployPreview::new(Vec::new(), warnings, project),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_execution_test(
+        operations: Vec<DeployOperation>,
+        project: ProjectName,
+    ) -> Self {
+        let rows = super::pending_rows(&operations, &DeploySnapshot::default());
+        Self {
+            operations,
+            preview: DeployPreview::new(rows, Vec::new(), project),
+        }
+    }
+}
+
+impl std::ops::Deref for DeployPlan {
+    type Target = DeployPreview;
+
+    fn deref(&self) -> &Self::Target {
+        self.preview()
+    }
+}
+
 /// Plan removal of observer-visible compute for `project`.
 ///
 /// Empty target is full reconciliation of nothing: owned Services are obsolete.
@@ -77,6 +158,14 @@ pub fn plan_project_removal(
     snapshot: &DeploySnapshot,
     volumes: VolumeFate,
 ) -> Result<DeployPreview, PlanError> {
+    Ok(prepare_project_removal(project, snapshot, volumes)?.preview)
+}
+
+pub(super) fn prepare_project_removal(
+    project: &ProjectName,
+    snapshot: &DeploySnapshot,
+    volumes: VolumeFate,
+) -> Result<DeployPlan, PlanError> {
     let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
     let mut planned = plan_operations(&intent, snapshot, IngressContext::default())?;
     if volumes == VolumeFate::Destroy && planned.prune_refusal.is_none() {
@@ -87,7 +176,7 @@ pub fn plan_project_removal(
                 .map(|volume| DeployOperation::RemoveVolume { id: volume.id }),
         );
     }
-    Ok(preview_from(planned, snapshot, project))
+    Ok(seal_plan(planned, snapshot, project))
 }
 
 /// Data Loss implied by a Project-removal preview.
@@ -135,16 +224,28 @@ pub fn preview_deploy(
     snapshot: &DeploySnapshot,
     ingress: IngressContext<'_>,
 ) -> Result<DeployPreview, PlanError> {
-    let planned = plan_operations(intent, snapshot, ingress)?;
-    Ok(preview_from(planned, snapshot, &intent.project_name))
+    Ok(plan_deploy(intent, snapshot, ingress)?.preview)
 }
 
-fn preview_from(
+/// Admit a Deploy for confirmation against this observer-relative snapshot.
+///
+/// # Errors
+/// Returns the same admission failures as [`preview_deploy`].
+pub fn plan_deploy(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+    ingress: IngressContext<'_>,
+) -> Result<DeployPlan, PlanError> {
+    let planned = plan_operations(intent, snapshot, ingress)?;
+    Ok(seal_plan(planned, snapshot, &intent.project_name))
+}
+
+fn seal_plan(
     planned: Planned,
     snapshot: &DeploySnapshot,
     project_name: &ProjectName,
-) -> DeployPreview {
-    DeployPreview {
+) -> DeployPlan {
+    let preview = DeployPreview {
         project_name: project_name.clone(),
         operations: super::pending_rows(&planned.operations, snapshot),
         warnings: planned.warnings,
@@ -152,16 +253,16 @@ fn preview_from(
             .volumes_to_create
             .into_iter()
             .filter_map(|(machine_id, volume)| {
-                let (name, maximum_bytes) = match volume.source {
-                    VolumeSource::Ordinary { name, .. } => (name, None),
-                    VolumeSource::Provisioned {
+                let (name, maximum_bytes) = match volume.source.kind() {
+                    ployz_core::RawVolumeSource::Ordinary { name, .. } => (name.clone(), None),
+                    ployz_core::RawVolumeSource::Provisioned {
                         name,
                         maximum_bytes,
                         ..
-                    } => (name, Some(maximum_bytes)),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Bind { .. }
-                    | VolumeSource::Tmpfs { .. } => return None,
+                    } => (name.clone(), Some(*maximum_bytes)),
+                    ployz_core::RawVolumeSource::External { .. }
+                    | ployz_core::RawVolumeSource::Bind { .. }
+                    | ployz_core::RawVolumeSource::Tmpfs { .. } => return None,
                 };
                 Some(VolumeToCreate {
                     machine_id,
@@ -178,6 +279,10 @@ fn preview_from(
         would_remove: planned.would_remove,
         preserved_volumes: planned.preserved_volumes,
         prune_refusal: planned.prune_refusal,
+    };
+    DeployPlan {
+        operations: planned.operations,
+        preview,
     }
 }
 
@@ -241,7 +346,9 @@ fn assemble_plan(
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
     warnings.extend(storage_eligibility_warnings(&requested, snapshot));
-    // TODO: preserve the missing within-spec port-conflict validation.
+    for spec in &requested {
+        placement::validate_host_ports(spec)?;
+    }
     let volume_uses = managed_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::new();
@@ -258,7 +365,11 @@ fn assemble_plan(
         &mut capacity,
         &intent.options,
     )?;
-    let mut placement = PlacementState::new(capacity, reservations);
+    let mut placement = PlacementState::new(
+        capacity,
+        placement::HostSockets::from_snapshot(snapshot),
+        reservations,
+    );
     let mut service_operations = Vec::new();
     for spec in &requested {
         let operations = plan_one_service(

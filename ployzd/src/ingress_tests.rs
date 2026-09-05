@@ -5,8 +5,8 @@ use super::{
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial};
 use ployz_core::{
-    ContainerAddress, IngressHost, Machine, MachineId, MachineName, ManagementAddress,
-    QualifiedService, WireGuardPublicKey,
+    ContainerAddress, IngressHost, Machine, MachineId, MachineName, QualifiedService,
+    WireGuardPublicKey,
 };
 use std::{collections::BTreeMap, num::NonZeroU16};
 
@@ -30,7 +30,6 @@ pub(crate) fn renderer_projection() -> IngressProjection {
             id: machine_id,
             name: MachineName::parse("node-a").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress("fdcc::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),
@@ -52,7 +51,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                     None,
                 ),
                 certificate: Some(ProjectedCertificate {
-                    challenge: CertificateChallenge::new("token", "token.thumbprint"),
+                    challenge: Some(CertificateChallenge::parse(
+                        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    ).unwrap()),
                     material: None,
                     last_error: None,
                 }),
@@ -62,7 +64,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                 publication: publication(None, Some(vec![endpoint("10.210.1.3", 8443)])),
                 certificate: Some(ProjectedCertificate {
                     challenge: None,
-                    material: CertificateMaterial::new("CERT", "KEY"),
+                    material: Some(CertificateMaterial::parse(
+                        include_str!("../tests/fixtures/certificate-test-rsa.pem"),
+                        include_str!("../tests/fixtures/certificate-test-rsa-key.pem"),
+                    ).unwrap()),
                     last_error: None,
                 }),
             },
@@ -77,4 +82,9 @@ pub(crate) fn renderer_projection() -> IngressProjection {
         global_fragment: None,
         service_fragments: BTreeMap::new(),
     }
+}
+
+pub(crate) fn test_material() -> CertificateMaterial {
+    let pair = rcgen::generate_simple_self_signed(["secure.example.com".to_owned()]).unwrap();
+    CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
 }

@@ -5,7 +5,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -15,13 +15,23 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
     current.container.image = "ghcr.io/getployz/api:old".into();
     let current_service_id = service_id('a');
     let mut running_hook = container('c', '1', &current, &current_service_id);
-    running_hook.kind = ContainerKind::PreDeployHook;
+    running_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let mut stopped_hook = container('d', '1', &current, &current_service_id);
-    stopped_hook.kind = ContainerKind::PreDeployHook;
-    stopped_hook.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+    stopped_hook
+        .try_update(|parts| {
+            parts.kind = ContainerKind::PreDeployHook;
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+        })
+        .unwrap();
     let mut paused_hook = container('e', '1', &current, &current_service_id);
-    paused_hook.kind = ContainerKind::PreDeployHook;
-    paused_hook.runtime = ContainerRuntimeObservation::Paused;
+    paused_hook
+        .try_update(|parts| {
+            parts.kind = ContainerKind::PreDeployHook;
+            parts.runtime = ContainerRuntimeObservation::Paused;
+        })
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![
@@ -80,7 +90,7 @@ fn hook_and_replacement_each_require_a_spare_endpoint() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -115,7 +125,7 @@ fn replaced_hooks_credit_all_reclaimed_endpoints() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -125,9 +135,13 @@ fn replaced_hooks_credit_all_reclaimed_endpoints() {
     current.container.image = "ghcr.io/getployz/api:old".into();
     let current_service_id = service_id('a');
     let mut old_hook = container('c', '1', &current, &current_service_id);
-    old_hook.kind = ContainerKind::PreDeployHook;
+    old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let mut other_old_hook = container('d', '1', &current, &current_service_id);
-    other_old_hook.kind = ContainerKind::PreDeployHook;
+    other_old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let plan = plan_deploy(
         [&requested],
         &DeploySnapshot {
@@ -161,7 +175,7 @@ fn hook_capacity_is_charged_only_to_its_selected_machine() {
         replicas: NonZeroU32::new(2).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -192,7 +206,7 @@ fn hook_capacity_is_charged_only_to_its_selected_machine() {
 fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
     let mut requested = requested(ServiceMode::Global);
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -251,7 +265,8 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
     });
     let current_service_id = service_id('a');
     let mut hook = container('c', '1', &requested, &current_service_id);
-    hook.kind = ContainerKind::PreDeployHook;
+    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &requested, &current_service_id), hook],
@@ -267,7 +282,9 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
 fn two_projects_can_each_own_the_same_service_name() {
     let requested = requested(ServiceMode::Global);
     let mut other = container('c', '1', &requested, &service_id('d'));
-    other.project_name = ProjectName::parse("shop-prod").unwrap();
+    other
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .unwrap();
     let plan = plan_deploy(
         [&requested],
         &DeploySnapshot {
@@ -364,7 +381,7 @@ fn force_recreate_replaces_an_otherwise_matching_container() {
 fn no_op_plan_does_not_run_a_pre_deploy_hook() {
     let mut requested = requested(ServiceMode::Global);
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -413,13 +430,17 @@ fn incompatible_volume_excludes_only_its_machine() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
-    let VolumeSource::Ordinary { driver, .. } = &mut volumes.first_mut().unwrap().source else {
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mounts = requested.volume_graph().mounts().to_vec();
+    let mut raw = volumes.first().unwrap().source.kind().clone();
+    let ployz_core::RawVolumeSource::Ordinary { driver, .. } = &mut raw else {
         unreachable!();
     };
     *driver = ployz_core::VolumeDriver::parse("nfs", Default::default()).unwrap();
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    volumes.first_mut().unwrap().source = raw.admit().unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 
     let plan = plan_deploy(
         [&requested],

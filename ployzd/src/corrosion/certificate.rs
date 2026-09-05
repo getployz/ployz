@@ -9,29 +9,82 @@ use serde_json::json;
 
 use super::Error;
 
-/// Certificate and private key held in cluster state for one Ingress Hostname.
+/// Parseable certificate chain paired with its private key.
+///
+/// Admission does not prove trust, hostname coverage, validity dates, or proxy adoption.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CertificateMaterial {
     certificate: String,
     private_key: String,
 }
 
+/// Why certificate material cannot be admitted; errors never include key material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum CertificateMaterialError {
+    /// The private key is not supported PEM key material.
+    #[error("invalid certificate private key")]
+    InvalidPrivateKey,
+    /// The certificate chain is empty or malformed.
+    #[error("invalid certificate chain")]
+    InvalidChain,
+    /// The leaf certificate belongs to another key.
+    #[error("certificate does not match its private key")]
+    KeyMismatch,
+}
+
 impl CertificateMaterial {
-    #[must_use]
-    pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Option<Self> {
+    /// Admit a parseable chain whose leaf matches the private key.
+    ///
+    /// # Errors
+    /// Returns the invalid component or key mismatch without exposing supplied material.
+    pub fn parse(
+        certificate: impl Into<String>,
+        private_key: impl Into<String>,
+    ) -> Result<Self, CertificateMaterialError> {
+        use CertificateMaterialError::{InvalidChain, InvalidPrivateKey, KeyMismatch};
+        use rcgen::PublicKeyData as _;
+        use x509_parser::pem::Pem;
+
         let certificate = certificate.into();
         let private_key = private_key.into();
-        (!certificate.is_empty() && !private_key.is_empty()).then_some(Self {
+        let key = rcgen::KeyPair::from_pem(&private_key).map_err(|_| InvalidPrivateKey)?;
+        let mut chain = Pem::iter_from_buffer(certificate.as_bytes());
+        let leaf = chain
+            .next()
+            .ok_or(InvalidChain)?
+            .map_err(|_| InvalidChain)?;
+        if leaf.label != "CERTIFICATE" {
+            return Err(InvalidChain);
+        }
+        if leaf
+            .parse_x509()
+            .map_err(|_| InvalidChain)?
+            .public_key()
+            .raw
+            != key.subject_public_key_info()
+        {
+            return Err(KeyMismatch);
+        }
+        for certificate in chain {
+            let certificate = certificate.map_err(|_| InvalidChain)?;
+            if certificate.label != "CERTIFICATE" {
+                return Err(InvalidChain);
+            }
+            certificate.parse_x509().map_err(|_| InvalidChain)?;
+        }
+        Ok(Self {
             certificate,
             private_key,
         })
     }
 
+    /// Borrow the admitted PEM certificate chain.
     #[must_use]
     pub fn certificate(&self) -> &str {
         &self.certificate
     }
 
+    /// Borrow the corresponding PEM private key.
     #[must_use]
     pub fn private_key(&self) -> &str {
         &self.private_key
@@ -45,19 +98,70 @@ pub struct CertificateChallenge {
     response: String,
 }
 
+/// Why an HTTP-01 challenge cannot be admitted, without its supplied values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum CertificateChallengeError {
+    /// The token is too short or contains forbidden characters.
+    #[error("invalid HTTP-01 token")]
+    InvalidToken,
+    /// The key authorization does not contain a valid thumbprint.
+    #[error("invalid HTTP-01 key authorization")]
+    InvalidResponse,
+    /// The key authorization names a different token.
+    #[error("HTTP-01 key authorization token mismatch")]
+    TokenMismatch,
+}
+
 impl CertificateChallenge {
-    #[must_use]
-    pub fn new(token: impl Into<String>, response: impl Into<String>) -> Option<Self> {
+    /// Admit an HTTP-01 token and matching key authorization.
+    ///
+    /// # Errors
+    /// Rejects malformed tokens, malformed thumbprints, or mismatched token prefixes.
+    pub fn parse(
+        token: impl Into<String>,
+        response: impl Into<String>,
+    ) -> Result<Self, CertificateChallengeError> {
         let token = token.into();
         let response = response.into();
-        (!token.is_empty() && !response.is_empty()).then_some(Self { token, response })
+        // RFC 8555 §§8.1, 8.3: token + '.' + base64url(SHA-256 JWK thumbprint).
+        // Length bounds token capacity; neither entropy nor account-key ownership
+        // can be established from the stored challenge alone.
+        let base64url = |value: &str| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        };
+        let (prefix, thumbprint) = response
+            .split_once('.')
+            .ok_or(CertificateChallengeError::InvalidResponse)?;
+        // The final base64 symbol of a 32-byte digest has two zero padding bits.
+        if token.len() < 22 || !base64url(&token) {
+            return Err(CertificateChallengeError::InvalidToken);
+        }
+        if prefix != token {
+            return Err(CertificateChallengeError::TokenMismatch);
+        }
+        if thumbprint.len() != 43
+            || !base64url(thumbprint)
+            || !b"AEIMQUYcgkosw048".contains(
+                thumbprint
+                    .as_bytes()
+                    .last()
+                    .ok_or(CertificateChallengeError::InvalidResponse)?,
+            )
+        {
+            return Err(CertificateChallengeError::InvalidResponse);
+        }
+        Ok(Self { token, response })
     }
 
+    /// Borrow the admitted HTTP-01 token.
     #[must_use]
     pub fn token(&self) -> &str {
         &self.token
     }
 
+    /// Borrow the matching key authorization.
     #[must_use]
     pub fn response(&self) -> &str {
         &self.response
@@ -176,11 +280,31 @@ impl CertificateRow {
         }
         let body: CertificateBody = serde_json::from_str(encoded)?;
         let clock = decode_clock(&body.next_attempt_at, body.failures, &body.last_failure);
+        let has_material = !body.certificate.is_empty() || !body.private_key.is_empty();
+        let material = CertificateMaterial::parse(body.certificate, body.private_key).ok();
+        let mut last_error = body.last_error;
+        if has_material && material.is_none() {
+            if !last_error.is_empty() {
+                last_error.push_str("; ");
+            }
+            last_error.push_str(
+                "stored certificate material is invalid or does not match its private key",
+            );
+        }
+        let has_challenge = !body.challenge_token.is_empty() || !body.challenge_response.is_empty();
+        let challenge =
+            CertificateChallenge::parse(body.challenge_token, body.challenge_response).ok();
+        if has_challenge && challenge.is_none() {
+            if !last_error.is_empty() {
+                last_error.push_str("; ");
+            }
+            last_error.push_str("stored HTTP-01 challenge is invalid");
+        }
         Ok(Self {
-            material: CertificateMaterial::new(body.certificate, body.private_key),
-            challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-            refusal: (!body.last_error.is_empty()).then_some(RecordedRefusal {
-                reason: body.last_error,
+            material,
+            challenge,
+            refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
+                reason: last_error,
                 clock,
             }),
         })
@@ -263,10 +387,129 @@ mod tests {
 
     use ployz_core::{IssuanceClock, IssuanceFailure};
 
-    use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
+    use super::{
+        CertificateChallenge, CertificateChallengeError, CertificateMaterial,
+        CertificateMaterialError, CertificateRow,
+    };
+
+    #[test]
+    fn challenge_admission_rejects_invalid_grammar_and_token_mismatch() {
+        let token = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+        let thumbprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let response = format!("{token}.{thumbprint}");
+        assert!(CertificateChallenge::parse(token, &response).is_ok());
+        assert_eq!(
+            CertificateChallenge::parse("short", &response),
+            Err(CertificateChallengeError::InvalidToken)
+        );
+        assert_eq!(
+            CertificateChallenge::parse(token, format!("other.{thumbprint}")),
+            Err(CertificateChallengeError::TokenMismatch)
+        );
+        assert_eq!(
+            CertificateChallenge::parse(token, format!("{token}.short")),
+            Err(CertificateChallengeError::InvalidResponse)
+        );
+        let minimum_token = "_-0123456789abcdefghij";
+        assert!(
+            CertificateChallenge::parse(minimum_token, format!("{minimum_token}.{thumbprint}"))
+                .is_ok()
+        );
+        for bad_token in [
+            String::new(),
+            "short".to_owned(),
+            format!("../{token}"),
+            format!("{token}\n}}"),
+            format!("{token}\""),
+            format!("{token}="),
+            format!("{token}é"),
+        ] {
+            assert!(
+                CertificateChallenge::parse(&bad_token, format!("{bad_token}.{thumbprint}"))
+                    .is_err(),
+                "{bad_token:?}"
+            );
+        }
+        for bad_response in [
+            String::new(),
+            format!("other.{thumbprint}"),
+            format!("{token}.short"),
+            format!("{response}="),
+            format!("{response}\n"),
+            format!("{response}.extra"),
+            format!("{token}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"),
+        ] {
+            assert!(
+                CertificateChallenge::parse(token, &bad_response).is_err(),
+                "{bad_response:?}"
+            );
+            let encoded = serde_json::json!({"challenge_token":token,"challenge_response":bad_response,"last_error":"authority refused"}).to_string();
+            let row = CertificateRow::decode(&encoded).unwrap();
+            assert!(row.challenge().is_none());
+            assert!(row.last_error().unwrap().contains("authority refused"));
+        }
+    }
+
+    fn issued_material() -> CertificateMaterial {
+        let pair = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    }
 
     fn decode_material(encoded: &str) -> Result<Option<CertificateMaterial>, super::Error> {
         Ok(CertificateRow::decode(encoded)?.into_material())
+    }
+
+    #[test]
+    fn certificate_material_rejects_garbage_and_mismatched_keys() {
+        assert_eq!(
+            CertificateMaterial::parse("CERT", "KEY"),
+            Err(CertificateMaterialError::InvalidPrivateKey)
+        );
+        let first = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
+        let second = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
+        assert_eq!(
+            CertificateMaterial::parse(first.cert.pem(), second.signing_key.serialize_pem()),
+            Err(CertificateMaterialError::KeyMismatch)
+        );
+        assert_eq!(
+            CertificateMaterial::parse("CERT", first.signing_key.serialize_pem()),
+            Err(CertificateMaterialError::InvalidChain)
+        );
+    }
+
+    #[test]
+    fn certificate_material_accepts_policy_key_types_and_parseable_chains() {
+        let keys = [
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap(),
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384).unwrap(),
+            rcgen::KeyPair::from_pem(include_str!(
+                "../../tests/fixtures/certificate-test-rsa-key.pem"
+            ))
+            .unwrap(),
+        ];
+        for key in keys {
+            let params = rcgen::CertificateParams::new(vec!["example.com".to_owned()]).unwrap();
+            let certificate = params.self_signed(&key).unwrap().pem();
+            let private_key = key.serialize_pem();
+            assert!(CertificateMaterial::parse(certificate.clone(), private_key.clone()).is_ok());
+            let chain = format!("{certificate}{certificate}");
+            assert!(CertificateMaterial::parse(chain, private_key.clone()).is_ok());
+            let broken_chain = format!(
+                "{certificate}-----BEGIN CERTIFICATE-----\nZ2FyYmFnZQ==\n-----END CERTIFICATE-----\n"
+            );
+            assert!(CertificateMaterial::parse(broken_chain, private_key).is_err());
+        }
+    }
+
+    #[test]
+    fn invalid_stored_material_keeps_challenge_and_refusal_evidence() {
+        let row = CertificateRow::decode(r#"{"certificate":"CERT","private_key":"KEY",
+            "challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","last_error":"authority refused"}"#).unwrap();
+        assert!(row.material().is_none());
+        assert!(row.challenge().is_some());
+        assert!(row.last_error().unwrap().contains("authority refused"));
+        assert!(row.last_error().unwrap().contains("invalid"));
+        assert_eq!(CertificateRow::decode(&row.encode().unwrap()).unwrap(), row);
     }
 
     #[test]
@@ -277,8 +520,8 @@ mod tests {
 
     #[test]
     fn empty_certificate_body_is_not_present() {
-        assert_eq!(CertificateMaterial::new("", ""), None);
-        assert_eq!(CertificateMaterial::new("CERT", ""), None);
+        assert!(CertificateMaterial::parse("", "").is_err());
+        assert!(CertificateMaterial::parse("CERT", "").is_err());
         assert_eq!(decode_material("").unwrap(), None);
         assert_eq!(decode_material("{}").unwrap(), None);
         assert_eq!(
@@ -289,13 +532,18 @@ mod tests {
 
     #[test]
     fn certificate_material_reads_known_fields_and_ignores_the_rest() {
+        let issued = issued_material();
         let row = CertificateRow::decode(
-            r#"{"certificate":"CERT","private_key":"KEY","last_error":"refused","future":1}"#,
+            &serde_json::json!({
+                "certificate": issued.certificate(), "private_key": issued.private_key(),
+                "last_error": "refused", "future": 1
+            })
+            .to_string(),
         )
         .unwrap();
         let material = row.material().unwrap();
-        assert_eq!(material.certificate(), "CERT");
-        assert_eq!(material.private_key(), "KEY");
+        assert_eq!(material.certificate(), issued.certificate());
+        assert_eq!(material.private_key(), issued.private_key());
         assert_eq!(row.last_error(), Some("refused"));
     }
 
@@ -313,14 +561,20 @@ mod tests {
     #[test]
     fn certificate_challenge_reads_from_the_row_body() {
         let row = CertificateRow::decode(
-            r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
+            r#"{"certificate":"","private_key":"","challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
         )
         .unwrap();
         assert_eq!(row.material(), None);
         let challenge = row.challenge().unwrap();
-        assert_eq!(challenge.token(), "tok");
-        assert_eq!(challenge.response(), "tok.thumb");
-        assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
+        assert_eq!(
+            challenge.token(),
+            "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"
+        );
+        assert_eq!(
+            challenge.response(),
+            "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
+        assert!(CertificateChallenge::parse("", "").is_err());
         assert_eq!(CertificateRow::decode("{}").unwrap().challenge(), None);
     }
 
@@ -355,17 +609,40 @@ mod tests {
 
     #[test]
     fn challenge_write_keeps_issued_material() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let issued = issued_material();
         let latest = CertificateRow::from_parts(Some(issued.clone()), None);
-        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+        let challenge = CertificateChallenge::parse("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0", "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
         let row = latest.with_challenge(challenge.clone());
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.challenge(), Some(&challenge));
     }
 
     #[test]
+    fn invalid_stored_challenge_keeps_material_and_refusal_clock() {
+        let material = issued_material();
+        let clock = IssuanceClock::new(
+            3,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            IssuanceFailure::DoesNotResolve,
+        );
+        let row = CertificateRow::issued(material.clone()).with_backoff("authority refused", clock);
+        let mut body: serde_json::Value = serde_json::from_str(&row.encode().unwrap()).unwrap();
+        let fields = body.as_object_mut().unwrap();
+        fields.insert("challenge_token".to_owned(), "../escape".into());
+        fields.insert("challenge_response".to_owned(), "injected\n}".into());
+        let decoded = CertificateRow::decode(&body.to_string()).unwrap();
+        assert_eq!(decoded.material(), Some(&material));
+        assert!(decoded.challenge().is_none());
+        assert_eq!(decoded.clock(), Some(clock));
+        assert_eq!(
+            decoded.last_error(),
+            Some("authority refused; stored HTTP-01 challenge is invalid")
+        );
+    }
+
+    #[test]
     fn issued_write_replaces_the_row() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let issued = issued_material();
         let row = CertificateRow::issued(issued.clone());
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.challenge(), None);
@@ -375,7 +652,7 @@ mod tests {
 
     #[test]
     fn error_write_keeps_issued_material() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let issued = issued_material();
         let row = CertificateRow::issued(issued.clone()).with_error("refused");
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.last_error(), Some("refused"));

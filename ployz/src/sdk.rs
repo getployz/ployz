@@ -14,13 +14,13 @@ use crate::connect::{
     Client, ConnectError, DialCredential, HeldRegister, PairingCredential, TransportError,
     connect_relay, list_held as list_held_relay, revoke_cloud_pairing,
 };
-use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
+use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
-    DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
-    MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
-    RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, decode_runtime_watch_frame, op,
+    DescribeContractRequest, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
+    ObservedDataLoss, OpaquePayload, ProjectName, RUNTIME_WATCH_CAPABILITY, RegisterRequest,
+    Registered, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
 struct SessionInner {
@@ -45,7 +45,7 @@ pub struct Watch {
 
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
 pub struct PreparedDeploy {
-    preview: DeployPreview,
+    preview: DeployPlan,
     client: Client,
     session_cancel: CancellationToken,
     confirmed: AtomicBool,
@@ -310,11 +310,11 @@ impl Session {
     ///
     /// Returns a generated [`RpcError`] when the session is closed or listing
     /// Machines fails. Already-absent Volumes count as successful removals;
-    /// other Machine errors stay in the Partial Result.
+    /// every failure or omission retains its Docker Volume identity.
     pub async fn remove_volumes(
         &self,
         request: RemoveVolumesRequest,
-    ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
+    ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let mut client = self.client().await?;
         client.remove_volumes(request).await
     }
@@ -475,6 +475,12 @@ impl std::fmt::Debug for PreparedDeploy {
 }
 
 impl PreparedDeploy {
+    /// Informational preview; execution remains bound to this prepared handle.
+    #[must_use]
+    pub fn preview(&self) -> &DeployPreview {
+        self.preview.preview()
+    }
+
     /// True when this preview planned no operations.
     #[must_use]
     pub fn noop(&self) -> bool {

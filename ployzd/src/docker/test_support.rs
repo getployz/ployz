@@ -22,14 +22,16 @@ use super::*;
 use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, VolumeSource};
 
 #[derive(Clone, Default)]
-pub(super) struct FakeDocker {
-    pub(super) requests: Arc<Mutex<Vec<(Method, String)>>>,
-    pub(super) request_bodies: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
-    pub(super) volumes: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
-    pub(super) fail_after_create: Arc<Mutex<BTreeSet<String>>>,
-    pub(super) fail_inspect_once: Arc<Mutex<BTreeSet<String>>>,
-    pub(super) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
-    pub(super) reject_list: Arc<AtomicBool>,
+pub(crate) struct FakeDocker {
+    pub(crate) requests: Arc<Mutex<Vec<(Method, String)>>>,
+    pub(crate) request_bodies: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    pub(crate) volumes: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
+    pub(crate) fail_after_create: Arc<Mutex<BTreeSet<String>>>,
+    pub(crate) fail_inspect_once: Arc<Mutex<BTreeSet<String>>>,
+    pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
+    pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub(crate) reject_list: Arc<AtomicBool>,
 }
 
 async fn fake_docker(
@@ -49,12 +51,24 @@ async fn fake_docker(
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         ));
     }
-    let response = if method == Method::GET && path.contains("/networks/") {
+    let response = if method == Method::POST
+        && path.ends_with("/containers/create")
+        && (fake.create_barrier.is_some() || fake.image_barrier.is_some())
+    {
+        if let Some(barrier) = &fake.create_barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+        let id = "a".repeat(64);
+        *fake.existing_container.lock().unwrap() = Some(serde_json::json!({"Id": id}));
+        (
+            StatusCode::CREATED,
+            serde_json::json!({"Id": id, "Warnings": []}),
+        )
+    } else if method == Method::GET && path.contains("/networks/") {
         (
             StatusCode::OK,
-            serde_json::json!({
-                "IPAM": {"Config":[{"Subnet":"10.210.0.0/24","Gateway":"10.210.0.1"}]}
-            }),
+            serde_json::json!({"IPAM":{"Config":[{"Subnet":"10.210.0.0/24","Gateway":"10.210.0.1"}]}}),
         )
     } else if method == Method::GET && path.ends_with("/containers/json") {
         let listed = fake
@@ -78,6 +92,10 @@ async fn fake_docker(
             |container| (StatusCode::OK, container),
         )
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
+        if let Some(barrier) = &fake.image_barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         (StatusCode::OK, serde_json::json!({}))
     } else if method == Method::GET
         && path.ends_with("/volumes")
@@ -222,9 +240,12 @@ async fn fake_docker(
 }
 
 pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
+    fake_runtime_with(FakeDocker::default()).await
+}
+
+pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, FakeDocker) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let fake = FakeDocker::default();
     tokio::spawn(
         axum::serve(
             listener,
@@ -288,17 +309,21 @@ pub(super) fn global_slot_request<'spec, Storage>(
 }
 
 pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
-    VolumeSource::Provisioned {
+    let mut source = ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse(name).unwrap(),
         maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
             std::num::NonZeroU64::new(maximum_bytes).unwrap(),
         ),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
+    .admit()
+    .expect("valid volume declaration");
+    source.scope_to_project(&ProjectName::parse("app").unwrap());
+    source
 }
 
 pub(super) fn ordinary_source(name: &str) -> VolumeSource {
-    VolumeSource::Ordinary {
+    let mut source = ployz_core::RawVolumeSource::Ordinary {
         name: DockerVolumeName::parse(name).unwrap(),
         driver: ployz_core::VolumeDriver::parse(
             "example-driver",
@@ -307,6 +332,10 @@ pub(super) fn ordinary_source(name: &str) -> VolumeSource {
         .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
+    .admit()
+    .expect("valid volume declaration");
+    source.scope_to_project(&ProjectName::parse("app").unwrap());
+    source
 }
 
 pub(super) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSpec {
@@ -337,6 +366,14 @@ pub(super) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSp
             subpath: None,
         })
         .collect();
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    spec.set_volume_graph(
+        ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+            .unwrap()
+            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    )
+    .unwrap();
     spec
 }

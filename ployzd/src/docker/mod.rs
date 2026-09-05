@@ -12,7 +12,7 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use std::{
     collections::HashMap,
@@ -224,35 +224,31 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
-        let ManagedLabels {
-            identity,
-            service_id,
-            kind,
-        } = ManagedLabels::parse(labels)?;
+        let ManagedLabels { identity, kind } = ManagedLabels::parse(labels)?;
         let resolved_spec = self
             .specs
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
 
-        Ok(ContainerObservation {
-            container_id: *container_id,
-            display_name: display_name(inspected.name.as_deref()),
-            created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
-            machine_id: *machine_id,
-            project_name: identity.project,
-            service_id,
-            service_name: identity.name,
-            kind,
-            runtime: runtime_observation(inspected.state.as_ref()),
-            effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
-            resolved_spec,
-            address: container_address(&inspected),
-            labels: labels
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        })
+        Ok(ployz_core::ContainerObservation::try_from(
+            ployz_core::ContainerObservationParts {
+                container_id: *container_id,
+                display_name: display_name(inspected.name.as_deref()),
+                created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
+                machine_id: *machine_id,
+                project_name: identity.project,
+                kind,
+                runtime: runtime_observation(inspected.state.as_ref()),
+                effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
+                resolved_spec,
+                address: container_address(&inspected),
+                labels: labels
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            },
+        )?)
     }
 }
 
@@ -282,7 +278,8 @@ fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Er
 fn malformed_container(error: &Error) -> bool {
     matches!(
         error,
-        Error::Json(_)
+        Error::Observation(_)
+            | Error::Json(_)
             | Error::SpecStore(SpecStoreError::Json(_))
             | Error::MissingField(_)
             | Error::MissingLabel(_)
@@ -386,7 +383,6 @@ fn created_at_unix_nanos(created: Option<&str>) -> i64 {
 
 struct ManagedLabels {
     identity: QualifiedService,
-    service_id: ServiceId,
     kind: ContainerKind,
 }
 
@@ -398,6 +394,10 @@ impl ManagedLabels {
         let project_name = required_label(labels, LABEL_PROJECT_NAME)?;
         let service_id = required_label(labels, LABEL_SERVICE_ID)?;
         let service_name = required_label(labels, LABEL_SERVICE_NAME)?;
+        ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
+            field: LABEL_SERVICE_ID,
+            source,
+        })?;
         Ok(Self {
             identity: QualifiedService::new(
                 ProjectName::parse(project_name).map_err(|source| Error::InvalidValue {
@@ -409,10 +409,6 @@ impl ManagedLabels {
                     source,
                 })?,
             ),
-            service_id: ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
-                field: LABEL_SERVICE_ID,
-                source,
-            })?,
             kind: match labels.get(LABEL_HOOK) {
                 None => ContainerKind::ServiceContainer,
                 Some(_) => ContainerKind::PreDeployHook,
@@ -552,6 +548,8 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Observation(#[from] ployz_core::ContainerObservationError),
     /// A required host telemetry read failed.
     #[error("host telemetry failed: {0}")]
     Io(#[from] std::io::Error),
@@ -688,7 +686,8 @@ impl Error {
             | Self::PeerPull(_)
             | Self::UnregistryNotReady { .. }
             | Self::InvalidVolumeStatus(_)
-            | Self::UnexpectedVolumeName { .. } => RpcErrorCode::Internal,
+            | Self::UnexpectedVolumeName { .. }
+            | Self::Observation(_) => RpcErrorCode::Internal,
         }
     }
 }
@@ -777,6 +776,7 @@ mod tests {
             "container": {
                 "image": "alpine:3.23.3",
                 "command": ["serve"],
+                "entrypoint": ["/entrypoint"],
                 "environment": { "TOKEN": "service" },
                 "labels": { "example.empty": "", "example.value": "unchanged" },
                 "hostname": "shared-host",
@@ -869,6 +869,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
+        assert_eq!(hook.entrypoint, Some(vec!["/entrypoint".into()]));
         assert_eq!(hook.hostname.as_deref(), Some("shared-host"));
         assert_eq!(hook.user.as_deref(), Some("1000"));
         let hook_env = hook.env.as_ref().unwrap();
@@ -964,7 +965,7 @@ mod tests {
                 "reference": "host",
                 "source": { "kind": "bind", "machine_path": "/etc/os-release" }
             }],
-            "mounts": [{ "volume": "host", "target": "/host-os" }]
+            "mounts": [{ "volume": "host", "target": "/x/..//host-os/./" }]
         }))
         .unwrap();
 
@@ -1002,7 +1003,7 @@ mod tests {
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [
                 {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
-                {"reference":"alias","source":{"kind":"ordinary","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"alias","source":{"kind":"ordinary","name":"app_database","scope":{"project":"app","logical_name":"database"},"driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
                 {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
             ],
             "mounts": [
@@ -1014,7 +1015,7 @@ mod tests {
         }))
         .unwrap();
 
-        let mounts = docker_mounts(&spec.volume_graph).unwrap();
+        let mounts = docker_mounts(spec.volume_graph()).unwrap();
         let [bind_mount, named_mount, archive_mount, tmpfs_mount] = mounts.as_slice() else {
             panic!("expected four mounts: {mounts:?}")
         };
@@ -1041,21 +1042,26 @@ mod tests {
             ),
         ] {
             let mut recursive_spec = spec.clone();
-            let mut volumes = recursive_spec.volume_graph.volumes().to_vec();
-            let mounts = recursive_spec.volume_graph.mounts().to_vec();
-            let ployz_core::VolumeSource::Bind {
+            let mut volumes = recursive_spec.volume_graph().volumes().to_vec();
+            let mounts = recursive_spec.volume_graph().mounts().to_vec();
+            let mut raw = volumes.first().unwrap().source.kind().clone();
+            let ployz_core::RawVolumeSource::Bind {
                 recursive: setting, ..
-            } = &mut volumes
-                .first_mut()
-                .expect("fixture has a bind volume")
-                .source
+            } = &mut raw
             else {
                 panic!("expected bind volume")
             };
             *setting = Some(recursive);
-            recursive_spec.volume_graph =
-                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-            let translated = docker_mounts(&recursive_spec.volume_graph)
+            volumes.first_mut().unwrap().source = raw.admit().unwrap();
+            recursive_spec
+                .set_volume_graph(
+                    ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                )
+                .unwrap();
+            let translated = docker_mounts(recursive_spec.volume_graph())
                 .unwrap()
                 .remove(0)
                 .bind_options
@@ -1097,22 +1103,27 @@ mod tests {
             ),
         ] {
             let mut propagation_spec = spec.clone();
-            let mut volumes = propagation_spec.volume_graph.volumes().to_vec();
-            let mounts = propagation_spec.volume_graph.mounts().to_vec();
-            let ployz_core::VolumeSource::Bind {
+            let mut volumes = propagation_spec.volume_graph().volumes().to_vec();
+            let mounts = propagation_spec.volume_graph().mounts().to_vec();
+            let mut raw = volumes.first().unwrap().source.kind().clone();
+            let ployz_core::RawVolumeSource::Bind {
                 propagation: setting,
                 ..
-            } = &mut volumes
-                .first_mut()
-                .expect("fixture has a bind volume")
-                .source
+            } = &mut raw
             else {
                 panic!("expected bind volume")
             };
             *setting = Some(propagation);
-            propagation_spec.volume_graph =
-                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-            let translated = docker_mounts(&propagation_spec.volume_graph)
+            volumes.first_mut().unwrap().source = raw.admit().unwrap();
+            propagation_spec
+                .set_volume_graph(
+                    ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                )
+                .unwrap();
+            let translated = docker_mounts(propagation_spec.volume_graph())
                 .unwrap()
                 .remove(0)
                 .bind_options
@@ -1120,7 +1131,7 @@ mod tests {
             assert_eq!(translated.propagation, expected);
         }
         assert_eq!(named_mount.typ, Some(MountType::VOLUME));
-        assert_eq!(named_mount.source.as_deref(), Some("database"));
+        assert_eq!(named_mount.source.as_deref(), Some("app_database"));
         assert_eq!(named_mount.read_only, Some(true));
         let named_options = named_mount.volume_options.as_ref().unwrap();
         assert_eq!(named_options.no_copy, Some(true));
@@ -1134,7 +1145,7 @@ mod tests {
                 .as_deref(),
             Some("local")
         );
-        assert_eq!(archive_mount.source.as_deref(), Some("database"));
+        assert_eq!(archive_mount.source.as_deref(), Some("app_database"));
         let archive_options = archive_mount.volume_options.as_ref().unwrap();
         assert_eq!(archive_options.no_copy, Some(false));
         assert_eq!(archive_options.subpath.as_deref(), Some("archive"));
@@ -1165,16 +1176,16 @@ mod tests {
                 "name": "api",
                 "mode": { "mode": "replicated", "replicas": 1 },
                 "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
-                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"missing","driver":{"name":"local","options":{}}}}],
+                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"app_missing","scope":{"project":"app","logical_name":"missing"},"driver":{"name":"local","options":{}}}}],
                 "mounts": [{"volume":"data","target":"/data"}]
             }))
             .unwrap();
-        let mounts = docker_mounts(&missing_docker_volume.volume_graph).unwrap();
+        let mounts = docker_mounts(missing_docker_volume.volume_graph()).unwrap();
         let [named] = mounts.as_slice() else {
             panic!("valid Service Volume graph still maps a named Docker Volume")
         };
         assert_eq!(named.typ, Some(MountType::VOLUME));
-        assert_eq!(named.source.as_deref(), Some("missing"));
+        assert_eq!(named.source.as_deref(), Some("app_missing"));
 
         let external: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
             "service_id": "11111111111111111111111111111111",
@@ -1193,7 +1204,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let external = docker_mounts(&external.volume_graph).unwrap().remove(0);
+        let external = docker_mounts(external.volume_graph()).unwrap().remove(0);
         assert_eq!(external.source.as_deref(), Some("external-data"));
         assert_eq!(
             external.volume_options,

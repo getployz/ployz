@@ -208,8 +208,8 @@ fn referenced_config_names(connection: &Connection) -> Result<HashSet<String>, E
     let encoded = statement.query_map([], |row| row.get::<_, String>(0))?;
     for encoded in encoded {
         let spec: ResolvedServiceSpec = serde_json::from_str(&encoded?)?;
-        for mount in spec.config_graph.mounts() {
-            let config = spec.config_graph.config_for(mount);
+        for mount in spec.config_graph().mounts() {
+            let config = spec.config_graph().config_for(mount);
             referenced.insert(config_identity(config, mount)?.0);
         }
     }

@@ -10,6 +10,10 @@ export type JsonValue =
 
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
+export type CpuNanos = number;
+
+export type ByteQuantity = number;
+
 export type MachineId = string & { readonly __brand: "MachineId" };
 
 export type ContainerId = string & { readonly __brand: "ContainerId" };
@@ -145,10 +149,10 @@ export type Ulimit = {
 };
 
 export type ContainerResources = {
-  cpu_nanos?: number;
-  memory_bytes?: number;
-  memory_reservation_bytes?: number;
-  shared_memory_bytes?: number;
+  cpu_nanos?: CpuNanos;
+  memory_bytes?: ByteQuantity;
+  memory_reservation_bytes?: ByteQuantity;
+  shared_memory_bytes?: ByteQuantity;
   devices?: DeviceMapping[];
   device_reservations?: DeviceReservation[];
   ulimits?: { readonly [key: string]: Ulimit };
@@ -169,7 +173,7 @@ export type Placement = {
 };
 
 export type PreDeployHook = {
-  command: string[];
+  command: readonly [string, ...string[]];
   environment?: { readonly [key: string]: string };
   privileged?: boolean;
   timeout_millis?: number;
@@ -187,6 +191,18 @@ export type ServiceMount = {
 export type ServiceVolume = {
   reference: ServiceVolumeReference;
   source: VolumeSource;
+};
+
+export type ScopedVolumeSource = {
+  project: ProjectName;
+  logical_name: DockerVolumeName;
+};
+
+export type ResolvedVolumeSource = (Extract<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope: ScopedVolumeSource }) | (Exclude<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope?: null });
+
+export type ResolvedServiceVolume = {
+  reference: ServiceVolumeReference;
+  source: ResolvedVolumeSource;
 };
 
 export type ConfigSpec = {
@@ -250,7 +266,7 @@ export type ResolvedServiceSpec = {
   container: ServiceContainerSpec;
   placement?: Placement;
   ports?: PortPublication[];
-  volumes?: ServiceVolume[];
+  volumes?: ResolvedServiceVolume[];
   mounts?: ServiceMount[];
   configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
@@ -299,6 +315,16 @@ export type VolumeInventory = {
 export type CreateVolumeReport =
   | { verification: "verified"; volume: DockerVolume }
   | { verification: "unverified"; id: DockerVolumeId; error: RpcError };
+
+export type VolumeRemoval = {
+  id: DockerVolumeId;
+  outcome: VolumeRemovalOutcome;
+};
+
+export type VolumeRemovalOutcome =
+  | { status: "removed" }
+  | { status: "failed"; error: RpcError }
+  | { status: "omitted" };
 
 export type RemoveVolumesRequest = {
   volumes: DockerVolumeId[];
@@ -530,7 +556,6 @@ export type Machine = {
   id: MachineId;
   name: MachineName;
   subnet: MachineSubnet;
-  management_address: ManagementAddress;
   public_key: WireGuardPublicKey;
   public_ip?: string;
   advertised_endpoints: AdvertisedEndpoint[];
@@ -578,8 +603,6 @@ export type ContainerObservation = {
   created_at_unix_nanos: number;
   machine_id: MachineId;
   project_name: ProjectName;
-  service_id: ServiceId;
-  service_name: ServiceName;
   kind: ContainerKind;
   runtime: ContainerRuntimeObservation;
   effective_healthcheck: HealthcheckSpec | null;

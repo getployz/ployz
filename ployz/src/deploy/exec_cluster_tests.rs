@@ -1,18 +1,18 @@
 use std::{process, time::Duration};
 
-use ployz::{
+use crate::{
     connect::Client,
     deploy::{
-        DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
-        HookFailure, ReplacementCompensation, ReplacementOperation,
+        DeployOperation, DeployOutcome, DeployPlan, ExecutionError, FailedOperation, HookFailure,
+        ReplacementCompensation, ReplacementOperation,
     },
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRuntimeObservation,
-    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, OperationRow,
-    ProjectName, RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, VolumeSource, op,
+    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, ProjectName,
+    RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest, StopContainerRequest,
+    UpdateOrder, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -24,7 +24,7 @@ async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
     let direct = cluster.api_address(0).unwrap();
-    let mut client = ployz::connect::connect(
+    let mut client = crate::connect::connect(
         std::path::Path::new("/missing-ployz-test-config"),
         Some(&direct),
         None,
@@ -50,7 +50,7 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
         .await;
     assert!(matches!(
         healthy_outcome,
-        ployz::deploy::DeployOutcome::Success { .. }
+        crate::deploy::DeployOutcome::Success { .. }
     ));
     let healthy_containers = wait_for_service(client, &healthy_id, 1).await;
     assert!(matches!(
@@ -136,15 +136,22 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
     let service_id = ServiceId::random();
     let mut spec = service_spec(&service_id, "volume-owner");
     let reference = volume.reference.clone();
-    spec.volume_graph = ServiceVolumeGraph::parse(
-        vec![volume],
-        vec![ServiceMount {
-            volume: reference,
-            target: ContainerPath::parse("/data").unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        }],
+    spec.set_volume_graph(
+        ServiceVolumeGraph::parse(
+            vec![volume],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap()
+        .scope_to_project(&ProjectName::parse("app").unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap(),
     )
     .unwrap();
     let plan = deploy_plan(vec![run_without_health_monitor(machine, &spec)]);
@@ -153,16 +160,16 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
 
     assert!(matches!(
         outcome,
-        ployz::deploy::DeployOutcome::Success { .. }
+        crate::deploy::DeployOutcome::Success { .. }
     ));
     assert!(
         cluster
-            .machine_shell(1, "docker volume inspect ployz-l3-deploy-data")
+            .machine_shell(1, "docker volume inspect app_ployz-l3-deploy-data")
             .is_ok()
     );
     assert!(
         cluster
-            .machine_shell(0, "docker volume inspect ployz-l3-deploy-data")
+            .machine_shell(0, "docker volume inspect app_ployz-l3-deploy-data")
             .is_err()
     );
     let containers = wait_for_service(client, &service_id, 1).await;
@@ -313,7 +320,9 @@ async fn assert_failed_hooks_are_retained_and_rerun(
     let nonzero_id = ServiceId::random();
     let mut nonzero = service_spec(&nonzero_id, "hook-nonzero");
     nonzero.pre_deploy = Some(ployz_core::PreDeployHook {
-        command: vec!["sh".into(), "-c".into(), "exit 7".into()],
+        command: vec!["sh".into(), "-c".into(), "exit 7".into()]
+            .try_into()
+            .unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: Some(5_000),
@@ -334,7 +343,7 @@ async fn assert_failed_hooks_are_retained_and_rerun(
     let timeout_id = ServiceId::random();
     let mut timeout = service_spec(&timeout_id, "hook-timeout");
     timeout.pre_deploy = Some(ployz_core::PreDeployHook {
-        command: vec!["sleep".into(), "30".into()],
+        command: vec!["sleep".into(), "30".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: Some(50),
@@ -393,7 +402,7 @@ async fn assert_unhealthy_service_is_not_repaired(
 }
 
 fn failed_hook_id(
-    outcome: &ployz::deploy::DeployOutcome<ExecutionError>,
+    outcome: &crate::deploy::DeployOutcome<ExecutionError>,
     suffix: &DeployOperation,
 ) -> ContainerId {
     let DeployOutcome::Failed {
@@ -416,32 +425,20 @@ fn failed_hook_id(
     *container_id
 }
 
-fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPreview {
-    DeployPreview {
-        project_name: ProjectName::parse("app").unwrap(),
-        operations: operations
-            .into_iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                OperationRow::pending(u32::try_from(index).unwrap(), operation, None, None, None)
-            })
-            .collect(),
-        warnings: Vec::new(),
-        volumes_to_create: Vec::new(),
-        would_remove: Vec::new(),
-        preserved_volumes: Vec::new(),
-        prune_refusal: None,
-    }
+fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPlan {
+    DeployPlan::for_execution_test(operations, ProjectName::parse("app").unwrap())
 }
 
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse(reference).unwrap(),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 
@@ -584,7 +581,7 @@ async fn inspect_container(
     client: &mut Client,
     machine_id: MachineId,
     container_id: ContainerId,
-) -> Result<ContainerObservation, ployz::connect::ConnectError> {
+) -> Result<ContainerObservation, crate::connect::ConnectError> {
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },

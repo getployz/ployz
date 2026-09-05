@@ -6,7 +6,7 @@ use ployz_core::{
     ServiceName,
 };
 
-use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
+use crate::deploy::{DeployOutcome, FailedOperation};
 
 use super::health::parse_monitor_period;
 use super::*;
@@ -32,11 +32,10 @@ async fn execute_with<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
     super::execute_operation_sequence(
-        crate::deploy::pending_rows(plan, &DeploySnapshot::default()),
+        &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_project()),
         client,
         cancellation,
         None,
-        &test_project(),
     )
     .await
 }
@@ -172,7 +171,9 @@ impl MachineOperations for Scripted {
         match self.next(Call::Inspect(*machine_id, *container_id)) {
             Reply::Observed(runtime, healthcheck) => {
                 let mut observation = observation(machine_id, container_id, runtime);
-                observation.effective_healthcheck = healthcheck;
+                observation
+                    .try_update(|parts| parts.effective_healthcheck = healthcheck)
+                    .unwrap();
                 Ok(observation)
             }
             Reply::Pending => std::future::pending().await,
@@ -312,7 +313,7 @@ fn spec(
     }))
     .unwrap();
     spec.pre_deploy = hook_timeout_millis.map(|timeout_millis| ployz_core::PreDeployHook {
-        command: vec!["true".into()],
+        command: vec!["true".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: Some(timeout_millis),
@@ -342,21 +343,20 @@ fn observation(
     runtime: ContainerRuntimeObservation,
 ) -> ContainerObservation {
     let spec = spec(None, None, None);
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: *container_id,
         display_name: container_id.to_string(),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
         project_name: test_project(),
-        service_id: spec.service_id,
-        service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime,
         effective_healthcheck: None,
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }
 
 fn machine(hex: char) -> MachineId {

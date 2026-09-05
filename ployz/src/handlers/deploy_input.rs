@@ -2,10 +2,11 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerPath, ContainerResources, DockerVolumeName, IngressProxyFragment, MachineTarget,
-    Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
+    ByteQuantity, ContainerPath, ContainerResources, CpuNanos, DockerVolumeName,
+    IngressProxyFragment, MachineTarget, Placement, PortPublication, PullPolicy,
+    RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, Ulimit,
+    UpdateConfig,
 };
 
 use crate::{
@@ -117,8 +118,8 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                 .collect::<Result<_, _>>()?,
         },
         ports,
-        volume_graph,
-        config_graph: Default::default(),
+        mount_graph: ployz_core::ServiceMountGraph::parse(volume_graph, Default::default())
+            .map_err(|error| Error::usage(error.to_string()))?,
         pre_deploy: None,
         ingress_proxy_fragment: caddy_config
             .filter(|config| !config.trim().is_empty())
@@ -204,18 +205,22 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
                     "volume-nocopy requires a named volume in '{value}'"
                 )));
             }
-            VolumeSource::Bind {
+            ployz_core::RawVolumeSource::Bind {
                 machine_path: ployz_core::MachinePath::parse(source)?,
                 create_machine_path: true,
                 propagation: None,
                 recursive: None,
             }
+            .admit()
+            .expect("valid volume declaration")
         } else {
-            VolumeSource::Ordinary {
+            ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse(source)?,
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new())?,
                 labels: BTreeMap::new(),
             }
+            .admit()
+            .expect("valid volume declaration")
         };
         volumes.push(ServiceVolume {
             reference: reference.clone(),
@@ -253,22 +258,20 @@ fn parse_ulimits(values: &[String]) -> Result<BTreeMap<String, Ulimit>, Error> {
         .collect()
 }
 
-fn parse_cpu(value: &str) -> Result<i64, Error> {
+fn parse_cpu(value: &str) -> Result<CpuNanos, Error> {
     let cpu = value
         .parse::<f64>()
         .map_err(|_| Error::usage("cpu must be numeric"))?;
-    if !cpu.is_finite() || cpu < 0.0 {
-        return Err(Error::usage("cpu must be a non-negative finite number"));
-    }
-    Ok((cpu * 1e9) as i64)
+    CpuNanos::from_cpus(cpu).map_err(|error| Error::usage(error.to_string()))
 }
 
-fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<i64>, Error> {
+fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<ByteQuantity>, Error> {
     matches
         .get_one::<String>(name)
         .map(|value| {
             parse_bytes(value)
                 .and_then(|value| i64::try_from(value).ok())
+                .and_then(|value| ByteQuantity::try_from(value).ok())
                 .ok_or_else(|| Error::usage(format!("{name} must be a byte size")))
         })
         .transpose()

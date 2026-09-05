@@ -274,16 +274,17 @@ impl ContainerRuntime {
 }
 
 fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
-    let mut observation = observation.clone();
-    observation
+    let mut parts = observation.clone().into_parts();
+    parts
         .resolved_spec
         .container
         .environment
         .retain(|key, _| key == CADDY_ADMIN_ENV);
-    if let Some(hook) = &mut observation.resolved_spec.pre_deploy {
+    if let Some(hook) = &mut parts.resolved_spec.pre_deploy {
         hook.environment.clear();
     }
-    observation
+    ContainerObservation::try_from(parts)
+        .expect("environment redaction preserves Container identity")
 }
 
 struct LocalContainerChanges {
@@ -362,8 +363,6 @@ mod tests {
             "display_name": "api-test",
             "machine_id": "b".repeat(32),
             "project_name": "app",
-            "service_id": "c".repeat(32),
-            "service_name": "api",
             "kind": "service_container",
             "runtime": { "state": "created" },
             "resolved_spec": {
@@ -389,6 +388,7 @@ mod tests {
             redacted
                 .resolved_spec
                 .pre_deploy
+                .as_ref()
                 .unwrap()
                 .environment
                 .is_empty()
@@ -410,25 +410,26 @@ mod tests {
             .to_resolved(
                 ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
                 ployz_core::ResolvedUpdateConfig::default(),
-            );
+            )
+            .expect("volume graph is scoped");
         spec.container
             .environment
             .insert("TOKEN".into(), "service-secret".into());
-        let observation = ContainerObservation {
-            container_id: ContainerId::parse("a".repeat(64)).unwrap(),
-            display_name: "ingress-test".into(),
-            created_at_unix_nanos: 1,
-            machine_id: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
-            project_name: ployz_core::ProjectName::system(),
-            service_id: spec.service_id,
-            service_name: spec.name.clone(),
-            kind: ployz_core::ContainerKind::ServiceContainer,
-            runtime: ployz_core::ContainerRuntimeObservation::Created,
-            effective_healthcheck: None,
-            resolved_spec: spec,
-            address: None,
-            labels: Default::default(),
-        };
+        let observation =
+            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                display_name: "ingress-test".into(),
+                created_at_unix_nanos: 1,
+                machine_id: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
+                project_name: ployz_core::ProjectName::system(),
+                kind: ployz_core::ContainerKind::ServiceContainer,
+                runtime: ployz_core::ContainerRuntimeObservation::Created,
+                effective_healthcheck: None,
+                resolved_spec: spec,
+                address: None,
+                labels: Default::default(),
+            })
+            .unwrap();
 
         let redacted = redacted_container(&observation);
 
@@ -458,8 +459,6 @@ mod tests {
             "display_name": "api-test",
             "machine_id": "b".repeat(32),
             "project_name": "app",
-            "service_id": "c".repeat(32),
-            "service_name": "api",
             "kind": "service_container",
             "runtime": { "state": "created" },
             "resolved_spec": {
@@ -472,13 +471,20 @@ mod tests {
         .unwrap();
         let stable = observation.clone();
         let mut stale = observation.clone();
-        stale.container_id = ContainerId::parse("b".repeat(64)).unwrap();
+        stale
+            .try_update(|parts| parts.container_id = ContainerId::parse("b".repeat(64)).unwrap())
+            .unwrap();
         let mut old_changed = observation.clone();
-        old_changed.container_id = ContainerId::parse("c".repeat(64)).unwrap();
+        old_changed
+            .try_update(|parts| parts.container_id = ContainerId::parse("c".repeat(64)).unwrap())
+            .unwrap();
         let mut changed = old_changed.clone();
-        changed.display_name = "renamed".into();
+        changed
+            .try_update(|parts| parts.display_name = "renamed".into())
+            .unwrap();
         let mut new = observation.clone();
-        new.container_id = ContainerId::parse("d".repeat(64)).unwrap();
+        new.try_update(|parts| parts.container_id = ContainerId::parse("d".repeat(64)).unwrap())
+            .unwrap();
 
         let existing = LocalContainerSnapshot {
             inventory: [stable.clone(), stale.clone(), old_changed.clone()]

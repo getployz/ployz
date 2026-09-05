@@ -32,7 +32,8 @@ pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
-    IngressContext, VolumeFate, data_loss_from_plan, plan_project_removal, preview_deploy,
+    DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
+    preview_deploy,
 };
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
@@ -451,6 +452,12 @@ impl fmt::Display for EliminatingConstraints {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
+    /// The Service declares overlapping exclusive host publications.
+    #[error("Service {service} declares conflicting host socket publications")]
+    ConflictingHostPublications { service: ServiceName },
+    /// Observed or earlier planned Containers occupy a required host socket.
+    #[error("Service {service} cannot fit because of known host socket conflicts")]
+    HostPortConflict { service: ServiceName },
     /// At least one relevant Machine did not return a fresh capacity observation.
     #[error("capacity unknown: an eligible Machine did not return fresh bridge telemetry")]
     CapacityUnknown,

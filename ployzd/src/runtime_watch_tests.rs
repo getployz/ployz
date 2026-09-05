@@ -13,7 +13,7 @@ use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, GlobalReconcileFailureObservation, HealthObservation, IngressHost,
     IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName, MachineObservation,
-    MachineRuntime, ManagementAddress, MembershipObservation, ProjectName, QualifiedService,
+    MachineRuntime, MembershipObservation, ProjectName, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -24,9 +24,7 @@ use super::{
     LatestSample, RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame,
     serve_runtime_watch,
 };
-use crate::corrosion::{
-    CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
-};
+use crate::corrosion::{CertificateChallenge, CertificateRow, Error, ReplicatedObservations};
 use crate::global_reconcile::global_reconcile_observation_channel;
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
@@ -40,10 +38,9 @@ const HOOK_ID: &str = "333333333333333333333333333333333333333333333333333333333
 const INCOMPLETE_CONTAINER_ID: &str =
     "2222222222222222222222222222222222222222222222222222222222222222";
 const OBSERVED_AT: &str = "2024-01-01T00:00:00Z";
-const CERT: &str = "-----BEGIN CERTIFICATE-----\nSECRETCERT\n-----END CERTIFICATE-----";
-const KEY: &str = "-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----";
-const CHALLENGE_TOKEN: &str = "http-01-token-secret";
-const CHALLENGE_RESPONSE: &str = "http-01-response-secret";
+const CHALLENGE_TOKEN: &str = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+const CHALLENGE_RESPONSE: &str =
+    "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const DNS_TOKEN: &str = "dns-renewal-token-secret";
 const DNS_ENDPOINT: &str = "https://dns.example.invalid/v1";
 const PAIRING: &str = "pairing-credential-secret";
@@ -62,7 +59,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         population_stddev_ns: 250_000,
     };
     let telemetry = RuntimeWatchTelemetry {
-        states: BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]),
+        states: BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]),
         selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
         rtts: vec![rtt_on(&entry, rtt.clone())],
     };
@@ -75,7 +72,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             certificates: ReplicatedObservations {
                 observations: vec![(
                     IngressHost::parse("ok.example.com").unwrap(),
-                    CertificateRow::issued(CertificateMaterial::new(CERT, KEY).unwrap()),
+                    CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: Vec::new(),
             },
@@ -100,7 +97,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     );
     assert_eq!(frame.containers, vec![service.clone(), hook.clone()]);
     assert_eq!(
-        frame.services,
+        frame.services(),
         derive_services(frame.containers.iter().cloned())
     );
     assert_eq!(frame.volumes, vec![volume]);
@@ -176,7 +173,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
             certificates: ReplicatedObservations {
                 observations: vec![(
                     IngressHost::parse("ok.example.com").unwrap(),
-                    CertificateRow::issued(CertificateMaterial::new(CERT, KEY).unwrap()),
+                    CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: vec![incomplete_cert.clone()],
             },
@@ -213,7 +210,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
     let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_704_067_200);
     let clock = IssuanceClock::new(2, at, IssuanceFailure::DoesNotResolve);
     let pending = CertificateRow::from_parts(None, None)
-        .with_challenge(CertificateChallenge::new(CHALLENGE_TOKEN, CHALLENGE_RESPONSE).unwrap());
+        .with_challenge(CertificateChallenge::parse(CHALLENGE_TOKEN, CHALLENGE_RESPONSE).unwrap());
     let failed = CertificateRow::from_parts(None, None).with_backoff(
         "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
         clock,
@@ -227,7 +224,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 observations: vec![
                     (
                         IngressHost::parse("ok.example.com").unwrap(),
-                        CertificateRow::issued(CertificateMaterial::new(CERT, KEY).unwrap()),
+                        CertificateRow::issued(crate::ingress::tests::test_material()),
                     ),
                     (IngressHost::parse("new.example.com").unwrap(), pending),
                     (IngressHost::parse("app.example.com").unwrap(), failed),
@@ -343,11 +340,12 @@ fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
 }
 
 fn reservation() -> Reservation {
-    Reservation {
-        endpoint: DNS_ENDPOINT.into(),
-        name: "cluster.example.ts.net".into(),
-        token: DNS_TOKEN.into(),
-    }
+    Reservation::parse(
+        DNS_ENDPOINT.into(),
+        "cluster.example.ts.net".into(),
+        DNS_TOKEN.into(),
+    )
+    .unwrap()
 }
 
 fn machine(name: &str, id: &str, seed: u8) -> Machine {
@@ -355,7 +353,6 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
         id: MachineId::parse(id).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
@@ -368,9 +365,12 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
 fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
     RttObservation {
         peer_id: machine.name.as_str().into(),
-        address: format!("[{}]:{CORROSION_GOSSIP_PORT}", machine.management_address.0)
-            .parse()
-            .unwrap(),
+        address: format!(
+            "[{}]:{CORROSION_GOSSIP_PORT}",
+            machine.management_address().0
+        )
+        .parse()
+        .unwrap(),
         machine: None,
         statistics,
     }
@@ -382,7 +382,7 @@ fn peer_sample(
     rtt: Option<RttStatistics>,
 ) -> RuntimeWatchTelemetry {
     RuntimeWatchTelemetry {
-        states: BTreeMap::from([(peer.management_address, membership)]),
+        states: BTreeMap::from([(peer.management_address(), membership)]),
         selected_endpoints: BTreeMap::new(),
         rtts: rtt
             .map(|statistics| vec![rtt_on(peer, statistics)])
@@ -414,14 +414,12 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         "container": { "image": "api:1", "pull_policy": "missing" }
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: MachineId::parse(ENTRY_ID).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -430,15 +428,14 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         resolved_spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }
 
 fn assert_no_secret_material(text: &str) {
     for forbidden in [
         "BEGIN CERTIFICATE",
         "BEGIN PRIVATE KEY",
-        "SECRETCERT",
-        "SECRETKEY",
         CHALLENGE_TOKEN,
         CHALLENGE_RESPONSE,
         DNS_TOKEN,

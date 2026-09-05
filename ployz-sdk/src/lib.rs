@@ -139,7 +139,7 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when `request` is not
     /// [`RemoveVolumesRequest`] data, the session is closed, or listing
     /// Machines fails. Already-absent Volumes count as successful removals;
-    /// other Machine errors stay in the Partial Result.
+    /// every failure or omission retains its Docker Volume identity.
     #[napi]
     pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
         let request: RemoveVolumesRequest =
@@ -315,7 +315,8 @@ impl DeployPreviewHandle {
     /// Returns when the preview cannot be encoded as JSON.
     #[napi]
     pub fn payload(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(&*self.inner).map_err(|error| Error::from_reason(error.to_string()))
+        serde_json::to_value(self.inner.preview())
+            .map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Execute these operations. Illegal after a previous confirm.
@@ -377,7 +378,7 @@ impl WatchStream {
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
-            Ok(Some(frame)) => serde_json::to_value(&frame)
+            Ok(Some(frame)) => serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame))
                 .map(Some)
                 .map_err(|error| Error::from_reason(error.to_string())),
             Ok(None) => Ok(None),

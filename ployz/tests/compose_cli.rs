@@ -6,7 +6,7 @@ use std::{
 };
 
 use ployz::compose::{ComposeError, LoadOptions, load_project};
-use ployz_core::{IngressProxyFragment, VolumeSource};
+use ployz_core::IngressProxyFragment;
 
 #[test]
 fn compose_failures_probe_the_plugin_once_and_preserve_project_diagnostics() {
@@ -363,8 +363,8 @@ x-volumes:
             .volumes()
             .first()
             .unwrap()
-            .source,
-        VolumeSource::Provisioned {
+            .source.kind(),
+        ployz_core::RawVolumeSource::Provisioned {
             name,
             maximum_bytes,
             labels,
@@ -539,7 +539,9 @@ volumes:
     );
     assert_eq!(service.container.command, ["echo", "a$b"]);
     assert_eq!(service.container.entrypoint, ["/bin/sh", "-c", "echo a$b"]);
-    let VolumeSource::Ordinary { labels, .. } = &service.volumes().first().unwrap().source else {
+    let ployz_core::RawVolumeSource::Ordinary { labels, .. } =
+        service.volumes().first().unwrap().source.kind()
+    else {
         panic!("expected an ordinary volume");
     };
     assert_eq!(labels.get("tier").map(String::as_str), Some("a$b"));

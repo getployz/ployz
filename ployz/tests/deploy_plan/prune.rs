@@ -349,7 +349,9 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
     let mut system_ingress = spec("ingress");
     system_ingress.mode = ServiceMode::Global;
     let mut leftover = container('c', '1', &system_ingress, &service_id('a'));
-    leftover.project_name = ProjectName::system();
+    leftover
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
     let shop = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("shop").unwrap(),
@@ -369,8 +371,12 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
 
     let metrics = spec("metrics");
     let mut extra = container('3', '1', &metrics, &service_id('b'));
-    extra.project_name = ProjectName::system();
-    leftover.project_name = ProjectName::system();
+    extra
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
+    leftover
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
     let system = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::system(),
@@ -395,7 +401,9 @@ fn other_project_services_are_not_removed_by_a_user_project_reconcile() {
     let web = spec("web");
     let other_web = spec("web");
     let mut other = container('9', '1', &other_web, &service_id('c'));
-    other.project_name = ProjectName::parse("other").unwrap();
+    other
+        .try_update(|parts| parts.project_name = ProjectName::parse("other").unwrap())
+        .unwrap();
     let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
@@ -419,7 +427,8 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
     let web = spec("web");
     let debug = spec("debug");
     let mut hook = container('8', '1', &debug, &service_id('b'));
-    hook.kind = ContainerKind::PreDeployHook;
+    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),

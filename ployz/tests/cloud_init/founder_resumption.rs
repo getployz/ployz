@@ -204,13 +204,15 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let requested = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Vec::new(), None);
     let ingress = container_on(
         &founder,
-        requested.to_resolved(
-            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
-            ployz_core::ResolvedUpdateConfig {
-                order: ployz_core::UpdateOrder::StopFirst,
-                monitor_millis: None,
-            },
-        ),
+        requested
+            .to_resolved(
+                ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig {
+                    order: ployz_core::UpdateOrder::StopFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped"),
         ployz_core::ProjectName::system(),
         'c',
     );
@@ -358,7 +360,10 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
     assert_eq!(daemon.founder_tail_attempts(), [2, 2, 2, 2]);
     let containers = daemon.containers();
     assert_eq!(containers.len(), 1);
-    assert_eq!(containers.first().unwrap().service_name.as_str(), "ingress");
+    assert_eq!(
+        containers.first().unwrap().service_name().as_str(),
+        "ingress"
+    );
     assert_eq!(
         serde_json::to_value(daemon.domain_record_requests()).unwrap(),
         json!([{

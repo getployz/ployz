@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use hex::encode as hex_encode;
 use ployz_core::{
     ContainerPath, DockerVolumeName, MachinePath, ProvisionedVolumeMaximumBytes, ServiceMount,
-    ServiceVolume, ServiceVolumeReference, VolumeDriver, VolumeSource,
+    ServiceVolume, ServiceVolumeReference, VolumeDriver,
 };
 use sha2::{Digest, Sha256};
 
@@ -65,7 +65,7 @@ pub(super) fn volumes(
             kind => return Err(invalid(format!("unsupported volume type: '{kind}'"))),
         };
         let volume_source = match kind {
-            "bind" => VolumeSource::Bind {
+            "bind" => ployz_core::RawVolumeSource::Bind {
                 machine_path: MachinePath::parse(
                     source.ok_or_else(|| invalid("bind mount requires source"))?,
                 )
@@ -82,7 +82,7 @@ pub(super) fn volumes(
                     .transpose()
                     .map_err(invalid)?,
             },
-            "tmpfs" => VolumeSource::Tmpfs {
+            "tmpfs" => ployz_core::RawVolumeSource::Tmpfs {
                 size_bytes: tmpfs
                     .and_then(|tmpfs| tmpfs.size.as_ref())
                     .map(|size| {
@@ -132,15 +132,15 @@ pub(super) fn volumes(
                 let name = DockerVolumeName::parse(docker_name).map_err(invalid)?;
                 let reference = ServiceVolumeReference::parse(key).map_err(invalid)?;
                 if let Some(maximum_bytes) = provisioned_volume_bounds.get(&reference) {
-                    VolumeSource::Provisioned {
+                    ployz_core::RawVolumeSource::Provisioned {
                         name,
                         maximum_bytes: *maximum_bytes,
                         labels: BTreeMap::new(),
                     }
                 } else if external {
-                    VolumeSource::External { name }
+                    ployz_core::RawVolumeSource::External { name }
                 } else {
-                    VolumeSource::Ordinary {
+                    ployz_core::RawVolumeSource::Ordinary {
                         name,
                         driver: VolumeDriver::parse(
                             declared.driver.as_deref().unwrap_or("local"),
@@ -152,7 +152,9 @@ pub(super) fn volumes(
                 }
             }
             _ => unreachable!("validated volume kind"),
-        };
+        }
+        .admit()
+        .map_err(invalid)?;
         let reference = ServiceVolumeReference::parse(reference).map_err(invalid)?;
         if let Some(existing) = specs.get(&reference) {
             if existing != &volume_source {

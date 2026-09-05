@@ -56,9 +56,9 @@ pub fn resolve_route(
         RoutingRequest::One(target) => match target.resolve(visible) {
             NameMatches::One(machine) => Ok(ProxyRoute::One(Box::new(machine.clone()))),
             NameMatches::None => Err(TargetResolutionError::NotFound(vec![target])),
-            NameMatches::Ambiguous(matches) => Err(TargetResolutionError::Ambiguous {
+            matches @ NameMatches::Ambiguous { .. } => Err(TargetResolutionError::Ambiguous {
                 selector: target,
-                matches: matches.into_iter().map(|machine| machine.id).collect(),
+                matches: matches.iter().map(|machine| machine.id).collect(),
             }),
         },
         RoutingRequest::Many(selectors) => {
@@ -133,7 +133,7 @@ impl MachineProxy {
         if target.id == self.local_id {
             return self.call_local(request).await;
         }
-        match self.call_remote(request, target.management_address).await {
+        match self.call_remote(request, target.management_address()).await {
             Ok(response) => response,
             Err(status) => status.into_http(),
         }
@@ -412,3 +412,15 @@ mod tests {
         assert_eq!(proxy.remote_backends.lock().unwrap().len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "routing_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
+#[path = "routing_cluster_tests.rs"]
+mod cluster_tests;
+
+#[cfg(test)]
+#[path = "../../tests/echo_service/mod.rs"]
+mod echo_service;

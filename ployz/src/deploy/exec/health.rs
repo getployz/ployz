@@ -51,7 +51,7 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
         containers.retain(|container| {
             container.kind == ployz_core::ContainerKind::ServiceContainer
                 && container.project_name == dependency.project
-                && container.service_name == dependency.name
+                && container.resolved_spec.name == dependency.name
         });
         if containers.is_empty() {
             return Err(dependency_health_error(

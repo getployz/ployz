@@ -651,7 +651,7 @@ async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: us
             let live = client.live_services().await.unwrap();
             if let Some(service) = live.services().into_iter().find(|service| {
                 service.containers.first().is_some_and(|container| {
-                    container.as_observation().service_name.as_str() == name
+                    container.as_observation().resolved_spec.name.as_str() == name
                 }) && service.containers.len() == count
             }) {
                 return service.service_id;

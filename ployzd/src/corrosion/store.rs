@@ -1,3 +1,11 @@
+//! Replicated publication, subscriptions, and observer-relative reads.
+
+mod decode;
+use decode::{
+    INCOMPLETE_JSON_DOCUMENT, actor_id, decode_container, decode_machine, decode_observations,
+    decode_volume, id_and_json, is_incomplete_document, text,
+};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -9,7 +17,6 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
 };
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
@@ -35,7 +42,6 @@ pub(crate) const STEAL_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updat
 pub(crate) const AGE_ALLOCATOR: &str =
     "UPDATE cluster SET updated_at = datetime('now', '-5 seconds') WHERE key = 'allocator'";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
-const INCOMPLETE_JSON_DOCUMENT: &str = "{}";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AllocatorRow {
@@ -53,7 +59,7 @@ impl MachinePublicationGuard<'_> {
         &self,
         local: &mut LocalMachineStore,
     ) -> Result<bool, StoreError> {
-        if !matches!(local.record().body, LocalMachineBody::Joining { .. }) {
+        if !matches!(local.record().body(), LocalMachineBody::Joining { .. }) {
             return Ok(false);
         }
         local.complete_catch_up()?;
@@ -61,7 +67,7 @@ impl MachinePublicationGuard<'_> {
     }
 
     pub(crate) fn publishable_machine(&self, local: &LocalMachineRecord) -> Option<Machine> {
-        match &local.body {
+        match local.body() {
             LocalMachineBody::Participating { machine, .. } => Some(machine.clone()),
             LocalMachineBody::Uninitialized { .. }
             | LocalMachineBody::Joining { .. }
@@ -298,10 +304,10 @@ impl ReplicatedStore {
         let Some([value]) = rows.first() else {
             return Ok(None);
         };
-        Ok(Some(serde_json::from_str(text(
-            value,
-            "hosted DNS reservation",
-        )?)?))
+        let document = text(value, "hosted DNS reservation")?;
+        serde_json::from_str(document)
+            .map(Some)
+            .map_err(Error::InvalidDomainReservation)
     }
 
     pub(crate) async fn publish_domain_reservation(
@@ -337,7 +343,7 @@ impl ReplicatedStore {
         let Some([info]) = rows.first() else {
             return Ok(None);
         };
-        decode_json_document(text(info, "machine info")?)
+        decode_machine(id, text(info, "machine info")?)
     }
 
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
@@ -348,9 +354,10 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(id_and_json(query.rows(["id", "info"])?, |id| {
-            Ok(MachineId::parse(id)?)
-        })?)
+        decode_observations(
+            id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
+            |id, encoded| decode_machine(id.as_str(), encoded),
+        )
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
@@ -365,15 +372,19 @@ impl ReplicatedStore {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT container FROM containers WHERE id = ?",
+                "SELECT machine_id, container FROM containers WHERE id = ?",
                 [json!(id)],
             ))
             .await?;
-        let rows = query.rows(["container"])?;
-        let Some([encoded]) = rows.first() else {
+        let rows = query.rows(["machine_id", "container"])?;
+        let Some([machine_id, encoded]) = rows.first() else {
             return Ok(None);
         };
-        decode_json_document(text(encoded, "replicated container JSON")?)
+        decode_container(
+            id,
+            text(machine_id, "container Machine ID")?,
+            text(encoded, "replicated container JSON")?,
+        )
     }
 
     #[cfg(test)]
@@ -406,7 +417,11 @@ impl ReplicatedStore {
         let mut snapshot = LocalContainerSnapshot::default();
         for [id, encoded] in query.rows(["id", "container"])? {
             let id = ContainerId::parse(text(&id, "container ID")?)?;
-            let observation = decode_json_document(text(&encoded, "replicated container JSON")?)?;
+            let observation = decode_container(
+                &id,
+                machine_id.as_str(),
+                text(&encoded, "replicated container JSON")?,
+            )?;
             snapshot.inventory.insert(id);
             if let Some(observation) = observation {
                 snapshot.observations.insert(id, observation);
@@ -421,18 +436,35 @@ impl ReplicatedStore {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT id, container FROM containers ORDER BY id",
+                "SELECT id, machine_id, container FROM containers ORDER BY id",
                 [],
             ))
             .await?;
-        decode_observations(id_and_json(query.rows(["id", "container"])?, |id| {
-            Ok(ContainerId::parse(id)?)
-        })?)
+        let mut observations = Vec::new();
+        let mut incomplete_ids = Vec::new();
+        for [id, machine_id, encoded] in query.rows(["id", "machine_id", "container"])? {
+            let id = ContainerId::parse(text(&id, "container ID")?)?;
+            match decode_container(
+                &id,
+                text(&machine_id, "container Machine ID")?,
+                text(&encoded, "replicated container JSON")?,
+            )? {
+                Some(observation) => observations.push(observation),
+                None => incomplete_ids.push(id),
+            }
+        }
+        Ok(ReplicatedObservations {
+            observations,
+            incomplete_ids,
+        })
     }
 
     pub(crate) async fn subscribe_container_changes(&self) -> Result<Subscription, Error> {
         self.api
-            .subscribe(Statement::new("SELECT id, container FROM containers", []))
+            .subscribe(Statement::new(
+                "SELECT id, machine_id, container FROM containers",
+                [],
+            ))
             .await
     }
 
@@ -466,7 +498,7 @@ impl ReplicatedStore {
         let Some([encoded]) = rows.first() else {
             return Ok(None);
         };
-        decode_json_document(text(encoded, "replicated volume JSON")?)
+        decode_volume(id, text(encoded, "replicated volume JSON")?)
     }
 
     /// Return decoded Docker Volume observations and typed incomplete volume IDs.
@@ -496,7 +528,7 @@ impl ReplicatedStore {
                 text(&encoded, "replicated volume JSON")?.to_owned(),
             ));
         }
-        decode_observations(rows)
+        decode_observations(rows, decode_volume)
     }
 
     async fn local_volumes(&self, machine_id: &MachineId) -> Result<LocalVolumeSnapshot, Error> {
@@ -511,7 +543,13 @@ impl ReplicatedStore {
         let mut observations = Vec::new();
         for [name, encoded] in query.rows(["name", "volume"])? {
             let name = DockerVolumeName::parse(text(&name, "Docker Volume name")?)?;
-            let observation = decode_json_document(text(&encoded, "replicated volume JSON")?)?;
+            let observation = decode_volume(
+                &DockerVolumeId {
+                    machine_id: *machine_id,
+                    name: name.clone(),
+                },
+                text(&encoded, "replicated volume JSON")?,
+            )?;
             names.push(name);
             if let Some(observation) = observation {
                 observations.push(observation);
@@ -889,73 +927,6 @@ impl RuntimeWatchChanges {
             result = self.volumes.changed() => result,
             result = self.certificates.changed() => result,
             result = self.cluster.changed() => result,
-        }
-    }
-}
-
-fn is_incomplete_document(encoded: &str) -> bool {
-    encoded == INCOMPLETE_JSON_DOCUMENT
-}
-
-fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>, Error> {
-    if is_incomplete_document(encoded) {
-        Ok(None)
-    } else {
-        Ok(Some(serde_json::from_str(encoded)?))
-    }
-}
-
-fn id_and_json<Id>(
-    rows: Vec<[Value; 2]>,
-    parse_id: impl Fn(&str) -> Result<Id, Error>,
-) -> Result<Vec<(Id, String)>, Error> {
-    rows.into_iter()
-        .map(|[id, encoded]| {
-            Ok((
-                parse_id(text(&id, "row ID")?)?,
-                text(&encoded, "replicated JSON")?.to_owned(),
-            ))
-        })
-        .collect()
-}
-
-fn decode_observations<T: DeserializeOwned, Id>(
-    rows: Vec<(Id, String)>,
-) -> Result<ReplicatedObservations<T, Id>, Error> {
-    let mut observations = Vec::new();
-    let mut incomplete_ids = Vec::new();
-    for (id, encoded) in rows {
-        match decode_json_document(&encoded)? {
-            Some(observation) => observations.push(observation),
-            None => incomplete_ids.push(id),
-        }
-    }
-    Ok(ReplicatedObservations {
-        observations,
-        incomplete_ids,
-    })
-}
-
-fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
-    value
-        .as_str()
-        .ok_or_else(|| Error::Protocol(format!("invalid {field}")))
-}
-
-fn actor_id(value: &Value) -> Result<String, Error> {
-    match value {
-        Value::String(value) => Ok(value.clone()),
-        Value::Array(bytes) => bytes
-            .iter()
-            .map(|byte| {
-                byte.as_u64()
-                    .and_then(|byte| u8::try_from(byte).ok())
-                    .map(|byte| format!("{byte:02x}"))
-                    .ok_or_else(|| Error::Protocol("invalid actor ID byte".into()))
-            })
-            .collect(),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
-            Err(Error::Protocol("invalid actor ID".into()))
         }
     }
 }

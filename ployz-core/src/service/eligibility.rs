@@ -43,7 +43,7 @@ impl RequestedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, &self.volume_graph, machine, storage)
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
     }
 }
 
@@ -58,7 +58,7 @@ impl ResolvedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, &self.volume_graph, machine, storage)
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
     }
 }
 
@@ -96,16 +96,15 @@ fn placement_eligibility(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, net::Ipv6Addr, num::NonZeroU64};
+    use std::{collections::BTreeMap, num::NonZeroU64};
 
     use serde_json::json;
 
     use crate::{
         ContainerPath, DockerVolumeName, Machine, MachineId, MachineName,
-        MachineStorageObservation, ManagementAddress, Placement, ProvisionedVolumeMaximumBytes,
-        RequestedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount,
-        ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
-        WireGuardPublicKey,
+        MachineStorageObservation, Placement, ProvisionedVolumeMaximumBytes, RequestedServiceSpec,
+        ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount, ServiceVolume,
+        ServiceVolumeGraph, ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
     };
 
     use super::{
@@ -120,25 +119,31 @@ mod tests {
             machines: vec![crate::MachineTarget::parse("other").unwrap()],
         };
         let provisioned = volume_graph(
-            VolumeSource::Provisioned {
+            crate::RawVolumeSource::Provisioned {
                 name: DockerVolumeName::parse("data").unwrap(),
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(100).unwrap()),
                 labels: BTreeMap::new(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
             true,
         );
         let unused_provisioned = volume_graph(
-            VolumeSource::Provisioned {
+            crate::RawVolumeSource::Provisioned {
                 name: DockerVolumeName::parse("unused").unwrap(),
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(100).unwrap()),
                 labels: BTreeMap::new(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
             false,
         );
         let external = volume_graph(
-            VolumeSource::External {
+            crate::RawVolumeSource::External {
                 name: DockerVolumeName::parse("external").unwrap(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
             true,
         );
         let pool = MachineStorageObservation::Pool {
@@ -195,7 +200,16 @@ mod tests {
             ),
         ];
 
-        for (requested, storage, expected) in cases {
+        for (mut requested, storage, expected) in cases {
+            requested
+                .set_volume_graph(
+                    requested
+                        .volume_graph()
+                        .clone()
+                        .scope_to_project(&crate::ProjectName::parse("shop").unwrap())
+                        .unwrap(),
+                )
+                .unwrap();
             assert_eq!(
                 requested.placement_eligibility(&machine, storage.as_ref()),
                 expected
@@ -203,6 +217,7 @@ mod tests {
             assert_eq!(
                 requested
                     .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                    .expect("volume graph is scoped")
                     .placement_eligibility(&machine, storage.as_ref()),
                 expected
             );
@@ -214,7 +229,6 @@ mod tests {
             id: MachineId::parse("1".repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),
@@ -252,7 +266,7 @@ mod tests {
         }))
         .unwrap();
         spec.placement = placement;
-        spec.volume_graph = volume_graph;
+        spec.set_volume_graph(volume_graph).unwrap();
         spec
     }
 }

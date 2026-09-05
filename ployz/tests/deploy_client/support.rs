@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::Ipv6Addr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -21,11 +20,11 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, Domain, ExecResponseFrame,
     GET_CONTAINER_OBSERVATIONS_CAPABILITY, HealthObservation, LocalMachinePhase,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
-    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress,
+    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    UpdateOrder, VolumeInventory, VolumeSource, WireGuardPublicKey,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -455,33 +454,36 @@ impl MachineRpc for DeployService {
         } else {
             HealthObservation::Healthy
         };
-        let spec = spec("web").to_resolved(
-            ServiceId::random(),
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: None,
-            },
-        );
+        let spec = spec("web")
+            .to_resolved(
+                ServiceId::random(),
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped");
         encoded(RpcResponse::from(ContainerDetails {
-            container: ployz_core::ContainerObservation {
-                container_id: inspect.container_id,
-                display_name: "web-1".into(),
-                created_at_unix_nanos: 0,
-                machine_id: self
-                    .machines
-                    .first()
-                    .map(|machine| machine.machine.id)
-                    .unwrap_or_else(MachineId::random),
-                project_name: ProjectName::parse("app").unwrap(),
-                service_id: spec.service_id,
-                service_name: spec.name.clone(),
-                kind: ContainerKind::ServiceContainer,
-                runtime: ContainerRuntimeObservation::Running { health },
-                effective_healthcheck: None,
-                resolved_spec: spec,
-                address: None,
-                labels: BTreeMap::new(),
-            },
+            container: ployz_core::ContainerObservation::try_from(
+                ployz_core::ContainerObservationParts {
+                    container_id: inspect.container_id,
+                    display_name: "web-1".into(),
+                    created_at_unix_nanos: 0,
+                    machine_id: self
+                        .machines
+                        .first()
+                        .map(|machine| machine.machine.id)
+                        .unwrap_or_else(MachineId::random),
+                    project_name: ProjectName::parse("app").unwrap(),
+                    kind: ContainerKind::ServiceContainer,
+                    runtime: ContainerRuntimeObservation::Running { health },
+                    effective_healthcheck: None,
+                    resolved_spec: spec,
+                    address: None,
+                    labels: BTreeMap::new(),
+                },
+            )
+            .unwrap(),
         }))
     }
     async fn get_container_observations(
@@ -518,37 +520,41 @@ impl MachineRpc for DeployService {
                 *rounds = rounds.saturating_sub(1);
                 ready
             });
-        let spec = spec("web").to_resolved(
-            ServiceId::random(),
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: None,
-            },
-        );
+        let spec = spec("web")
+            .to_resolved(
+                ServiceId::random(),
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped");
         let containers = get
             .container_ids
             .into_iter()
             .map(|container_id| {
                 (
                     container_id,
-                    self.observation_serving
-                        .then(|| ployz_core::ContainerObservation {
-                            container_id,
-                            display_name: "web-1".into(),
-                            created_at_unix_nanos: 0,
-                            machine_id,
-                            project_name: ProjectName::parse("app").unwrap(),
-                            service_id: spec.service_id,
-                            service_name: spec.name.clone(),
-                            kind: ContainerKind::ServiceContainer,
-                            runtime: ContainerRuntimeObservation::Running {
-                                health: HealthObservation::Healthy,
+                    self.observation_serving.then(|| {
+                        ployz_core::ContainerObservation::try_from(
+                            ployz_core::ContainerObservationParts {
+                                container_id,
+                                display_name: "web-1".into(),
+                                created_at_unix_nanos: 0,
+                                machine_id,
+                                project_name: ProjectName::parse("app").unwrap(),
+                                kind: ContainerKind::ServiceContainer,
+                                runtime: ContainerRuntimeObservation::Running {
+                                    health: HealthObservation::Healthy,
+                                },
+                                effective_healthcheck: None,
+                                resolved_spec: spec.clone(),
+                                address: ready.then_some(ContainerAddress([10, 210, 1, 2].into())),
+                                labels: BTreeMap::new(),
                             },
-                            effective_healthcheck: None,
-                            resolved_spec: spec.clone(),
-                            address: ready.then_some(ContainerAddress([10, 210, 1, 2].into())),
-                            labels: BTreeMap::new(),
-                        }),
+                        )
+                        .unwrap()
+                    }),
                 )
             })
             .collect();
@@ -818,21 +824,29 @@ pub(super) fn running_container(
     machine: &MachineObservation,
     spec: &RequestedServiceSpec,
 ) -> ployz_core::ContainerObservation {
-    let resolved = spec.to_resolved(
-        ServiceId::random(),
-        ResolvedUpdateConfig {
-            order: UpdateOrder::StartFirst,
-            monitor_millis: spec.update.monitor_millis,
-        },
-    );
-    ployz_core::ContainerObservation {
+    let mut spec = spec.clone();
+    spec.set_volume_graph(
+        spec.volume_graph()
+            .clone()
+            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let resolved = spec
+        .to_resolved(
+            ServiceId::random(),
+            ResolvedUpdateConfig {
+                order: UpdateOrder::StartFirst,
+                monitor_millis: spec.update.monitor_millis,
+            },
+        )
+        .expect("volume graph is scoped");
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("1".repeat(64)).unwrap(),
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: resolved.service_id,
-        service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
@@ -841,29 +855,36 @@ pub(super) fn running_container(
         resolved_spec: resolved,
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
     let reference = ServiceVolumeReference::parse(name).unwrap();
-    requested.volume_graph = ServiceVolumeGraph::parse(
-        vec![ServiceVolume {
-            reference: reference.clone(),
-            source: VolumeSource::Ordinary {
-                name: DockerVolumeName::parse(name).unwrap(),
-                driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
-                labels: Default::default(),
-            },
-        }],
-        vec![ServiceMount {
-            volume: reference,
-            target: ContainerPath::parse(format!("/{name}")).unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        }],
-    )
-    .unwrap();
+    requested
+        .set_volume_graph(
+            ServiceVolumeGraph::parse(
+                vec![ServiceVolume {
+                    reference: reference.clone(),
+                    source: ployz_core::RawVolumeSource::Ordinary {
+                        name: DockerVolumeName::parse(name).unwrap(),
+                        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
+                        labels: Default::default(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                }],
+                vec![ServiceMount {
+                    volume: reference,
+                    target: ContainerPath::parse(format!("/{name}")).unwrap(),
+                    read_only: false,
+                    no_copy: false,
+                    subpath: None,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
 }
 
 pub(super) fn skip_health() -> PlanOptions {
@@ -881,7 +902,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),

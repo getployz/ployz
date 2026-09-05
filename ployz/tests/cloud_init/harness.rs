@@ -12,9 +12,9 @@ use ployz_core::{
     DomainRecords, EnsureGlobalSlotRequest, HealthObservation, InitializeRequest, Initialized,
     JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered,
-    ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    VolumeInventory, WireGuardPublicKey,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
+    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory,
+    WireGuardPublicKey,
 };
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status, Streaming};
@@ -381,7 +381,7 @@ impl MachineRpc for JoinDaemon {
         }
         if let Some(pairing) = join.cloud_pairing.clone() {
             hold_register(
-                pairing.relay_url(),
+                pairing.relay_url().as_str(),
                 pairing.secret(),
                 &join.registration.assigned_machine.id,
                 &self.inner._register,
@@ -413,7 +413,7 @@ impl MachineRpc for JoinDaemon {
         match set.cloud_pairing {
             Some(pairing) => {
                 hold_register(
-                    pairing.relay_url(),
+                    pairing.relay_url().as_str(),
                     pairing.secret(),
                     &self.inner.registration.assigned_machine.id,
                     &self.inner._register,
@@ -451,7 +451,7 @@ impl MachineRpc for JoinDaemon {
         self.inner.joined.store(true, Ordering::SeqCst);
         if let Some(pairing) = pairing
             && let Err(status) = hold_register(
-                pairing.relay_url(),
+                pairing.relay_url().as_str(),
                 pairing.secret(),
                 &machine.id,
                 &self.inner._register,
@@ -584,25 +584,22 @@ impl MachineRpc for JoinDaemon {
         let n = self.inner.containers.lock().unwrap().len() + 1;
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let display_name = format!("{}-{n}", create.resolved_spec.name);
-        self.inner
-            .containers
-            .lock()
-            .unwrap()
-            .push(ContainerObservation {
+        self.inner.containers.lock().unwrap().push(
+            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id,
                 display_name: display_name.clone(),
                 created_at_unix_nanos: n as i64,
                 machine_id: self.inner.registration.assigned_machine.id,
                 project_name: create.project_name,
-                service_id: create.resolved_spec.service_id,
-                service_name: create.resolved_spec.name.clone(),
                 kind: create.kind,
                 runtime: ContainerRuntimeObservation::Created,
                 effective_healthcheck: None,
                 resolved_spec: create.resolved_spec,
                 address: None,
                 labels: Default::default(),
-            });
+            })
+            .unwrap(),
+        );
         rpc_ok(ContainerCreated {
             container_id,
             display_name,
@@ -638,18 +635,13 @@ impl MachineRpc for JoinDaemon {
         let n = self.inner.ensure_requests.lock().unwrap().len();
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let machine_id = self.inner.registration.assigned_machine.id;
-        self.inner
-            .containers
-            .lock()
-            .unwrap()
-            .push(ContainerObservation {
+        self.inner.containers.lock().unwrap().push(
+            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id,
                 display_name: format!("{}-slot", ensure.resolved_spec.name),
                 created_at_unix_nanos: n as i64,
                 machine_id,
                 project_name: ensure.project_name,
-                service_id: ensure.resolved_spec.service_id,
-                service_name: ensure.resolved_spec.name.clone(),
                 kind: ContainerKind::ServiceContainer,
                 runtime: ContainerRuntimeObservation::Running {
                     health: HealthObservation::NotConfigured,
@@ -658,7 +650,9 @@ impl MachineRpc for JoinDaemon {
                 resolved_spec: ensure.resolved_spec,
                 address: None,
                 labels: Default::default(),
-            });
+            })
+            .unwrap(),
+        );
         self.record("deploy_ingress");
         rpc_ok(ContainerCreated {
             container_id,
@@ -687,9 +681,13 @@ impl MachineRpc for JoinDaemon {
             .iter_mut()
             .find(|container| container.container_id == start.container_id)
             .ok_or_else(|| Status::not_found("container not found"))?;
-        container.runtime = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
+        container
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                }
+            })
+            .unwrap();
         drop(containers);
         self.record("deploy_ingress");
         rpc_ok(ContainerChanged {
@@ -888,18 +886,18 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         }
     }))
     .unwrap();
-    let spec = spec.to_resolved(
-        ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
-        ployz_core::ResolvedUpdateConfig::default(),
-    );
-    ContainerObservation {
+    let spec = spec
+        .to_resolved(
+            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .expect("volume graph is scoped");
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,
         machine_id: machine.id,
         project_name: ployz_core::ProjectName::system(),
-        service_id: spec.service_id,
-        service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -908,7 +906,8 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }
 
 fn up_machine(machine: Machine) -> MachineObservation {
@@ -920,7 +919,6 @@ fn joiner_machine() -> Machine {
         id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
         name: MachineName::parse("joiner").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fd00::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
@@ -933,7 +931,6 @@ pub fn founder_machine() -> Machine {
         id: MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
         name: MachineName::parse("founder").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fd00::2".parse().unwrap()),
         public_key: WireGuardPublicKey([2; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],

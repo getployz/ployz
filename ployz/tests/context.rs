@@ -169,7 +169,7 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
 #[test]
 fn relay_connections_are_not_persisted() {
     let error = serde_norway::to_string(&Connection::relay(
-        "http://127.0.0.1:1",
+        ployz_core::RelayEndpoint::parse("http://127.0.0.1:1").unwrap(),
         DialCredential::parse("dial-secret").unwrap(),
         PairingCredential::parse("pairing-secret").unwrap(),
         machine_id('a'),

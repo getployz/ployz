@@ -12,7 +12,7 @@ use bollard::models::{
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
     HostBind, MachineGateway, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
-    ServiceVolumeGraph, TransportProtocol, VolumeSource,
+    ResolvedServiceVolumeGraph, TransportProtocol,
 };
 
 use super::{
@@ -52,7 +52,7 @@ pub(super) fn container_create_body(
     if hook.is_some() {
         labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
     }
-    let mounts = docker_mounts(&spec.volume_graph)?;
+    let mounts = docker_mounts(spec.volume_graph())?;
     let interface_addresses = if hook.is_none()
         && spec.ports.iter().any(|port| {
             matches!(
@@ -123,7 +123,10 @@ pub(super) fn container_create_body(
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect(),
         ),
-        cmd: Some(hook.map_or_else(|| container.command.clone(), |hook| hook.command.clone())),
+        cmd: Some(hook.map_or_else(
+            || container.command.clone(),
+            |hook| hook.command.as_slice().to_vec(),
+        )),
         healthcheck: if hook.is_some() {
             Some(HealthConfig {
                 test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
@@ -252,9 +255,9 @@ pub(super) fn docker_ports(
 
 pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> HostConfig {
     HostConfig {
-        memory: resources.memory_bytes,
-        memory_reservation: resources.memory_reservation_bytes,
-        nano_cpus: resources.cpu_nanos,
+        memory: resources.memory_bytes.map(Into::into),
+        memory_reservation: resources.memory_reservation_bytes.map(Into::into),
+        nano_cpus: resources.cpu_nanos.map(Into::into),
         devices: (!resources.devices.is_empty()).then(|| {
             resources
                 .devices
@@ -290,12 +293,12 @@ pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> Ho
                 })
                 .collect()
         }),
-        shm_size: resources.shared_memory_bytes,
+        shm_size: resources.shared_memory_bytes.map(Into::into),
         ..Default::default()
     }
 }
 
-pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Error> {
+pub(super) fn docker_mounts(graph: &ResolvedServiceVolumeGraph) -> Result<Vec<Mount>, Error> {
     graph
         .mounts()
         .iter()
@@ -306,8 +309,8 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                 read_only: Some(mount.read_only),
                 ..Default::default()
             };
-            match &volume.source {
-                VolumeSource::Bind {
+            match volume.source.kind() {
+                ployz_core::RawVolumeSource::Bind {
                     machine_path,
                     create_machine_path,
                     propagation,
@@ -337,7 +340,7 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                         read_only_force_recursive,
                     });
                 }
-                VolumeSource::External { name } => {
+                ployz_core::RawVolumeSource::External { name } => {
                     translated.typ = Some(MountType::VOLUME);
                     translated.source = Some(name.to_string());
                     translated.volume_options = Some(MountVolumeOptions {
@@ -347,8 +350,10 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                         subpath: mount.subpath.clone(),
                     });
                 }
-                source @ (VolumeSource::Ordinary { .. } | VolumeSource::Provisioned { .. }) => {
-                    let request = source
+                ployz_core::RawVolumeSource::Ordinary { .. }
+                | ployz_core::RawVolumeSource::Provisioned { .. } => {
+                    let request = volume
+                        .source
                         .to_create_volume_request()
                         .expect("managed Docker Volumes have creation requests");
                     translated.typ = Some(MountType::VOLUME);
@@ -363,7 +368,7 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                         subpath: mount.subpath.clone(),
                     });
                 }
-                VolumeSource::Tmpfs {
+                ployz_core::RawVolumeSource::Tmpfs {
                     size_bytes,
                     mode,
                     options,
