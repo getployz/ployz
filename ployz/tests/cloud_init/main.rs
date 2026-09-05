@@ -67,7 +67,7 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     assert_eq!(
         pairing_json,
         json!({
-            "relayUrl": relay.url,
+            "relayUrl": format!("{}/", relay.url),
             "secret": PAIRING,
         })
     );

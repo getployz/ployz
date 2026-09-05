@@ -129,7 +129,9 @@ impl Client {
                 url,
                 credential,
                 pairing,
-            } => revoke_cloud_pairing(url, credential, pairing).await.is_ok(),
+            } => revoke_cloud_pairing(url.as_str(), credential, pairing)
+                .await
+                .is_ok(),
             Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => false,
         };
         Ok(ClusterTeardown {

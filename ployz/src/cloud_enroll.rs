@@ -456,6 +456,12 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_rejects_invalid_relay_endpoint() {
+        let error = parse_enroll(br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"not-a-url","secret":"pairing-secret"}}"#).unwrap_err();
+        assert!(error.to_string().contains("Relay endpoint"), "{error}");
+    }
+
+    #[test]
     fn initialize_payload_is_cloud_pairing() {
         let value = serde_json::json!({
             "kind": "initialize",

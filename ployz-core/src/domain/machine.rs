@@ -9,7 +9,7 @@ use std::{
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use super::NameMatches;
+use super::{NameMatches, RelayEndpoint};
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
     ManagementAddress, PairingCredential, Placement, QualifiedService, SelectedEndpoint,
@@ -552,7 +552,7 @@ pub const DIAL_IN_PAIRING: &str = "Cloud Pairing must not carry a Dial Credentia
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudPairing {
-    relay_url: String,
+    relay_url: RelayEndpoint,
     secret: PairingCredential,
 }
 
@@ -572,25 +572,18 @@ impl CloudPairing {
     ///
     /// # Errors
     ///
-    /// Returns [`ValueError`] when `relay_url` is empty.
+    /// Returns [`ValueError`] when `relay_url` is not a usable HTTP(S) endpoint.
     pub fn parse(
         relay_url: impl Into<String>,
         secret: PairingCredential,
     ) -> Result<Self, ValueError> {
-        let relay_url = relay_url.into();
-        if relay_url.is_empty() {
-            return Err(ValueError::new(
-                "Cloud Pairing relay URL",
-                relay_url,
-                "a non-empty URL",
-            ));
-        }
+        let relay_url = RelayEndpoint::parse(relay_url.into())?;
         Ok(Self { relay_url, secret })
     }
 
     /// Cloud Relay endpoint this Machine should dial. Not `--cloud-url`.
     #[must_use]
-    pub fn relay_url(&self) -> &str {
+    pub fn relay_url(&self) -> &RelayEndpoint {
         &self.relay_url
     }
 
@@ -630,7 +623,7 @@ mod cloud_pairing_tests {
         assert_eq!(
             value,
             json!({
-                "relayUrl": "https://relay.example.invalid",
+                "relayUrl": "https://relay.example.invalid/",
                 "secret": "pairing-secret",
             })
         );
@@ -660,6 +653,55 @@ mod cloud_pairing_tests {
         }))
         .unwrap();
         assert_eq!(parsed, pairing());
+    }
+
+    #[test]
+    fn cloud_pairing_rejects_unusable_relay_endpoints() {
+        for endpoint in [
+            "not-a-url",
+            "ws://relay.example",
+            "https://",
+            "https://host:bad",
+            "https://host:0",
+            "https://host/?query",
+            "https://user:pass@host",
+            "https://host/#fragment",
+        ] {
+            assert!(
+                CloudPairing::parse(endpoint, PairingCredential::parse("secret").unwrap()).is_err(),
+                "{endpoint}"
+            );
+            assert!(
+                serde_json::from_value::<CloudPairing>(
+                    json!({"relayUrl": endpoint, "secret": "secret"})
+                )
+                .is_err(),
+                "{endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_endpoint_admission_is_syntax_only_and_round_trips() {
+        for endpoint in [
+            "http://127.0.0.1:1/",
+            "https://unavailable.invalid/base/",
+            "https://[::1]:8443/",
+        ] {
+            let endpoint = RelayEndpoint::parse(endpoint).unwrap();
+            let encoded = serde_json::to_string(&endpoint).unwrap();
+            assert_eq!(
+                serde_json::from_str::<RelayEndpoint>(&encoded).unwrap(),
+                endpoint
+            );
+            let pairing = CloudPairing::parse(
+                endpoint.as_str(),
+                PairingCredential::parse("secret").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(pairing.relay_url(), &endpoint);
+        }
+        assert!(serde_json::from_str::<RelayEndpoint>("\"not-a-url\"").is_err());
     }
 
     #[test]

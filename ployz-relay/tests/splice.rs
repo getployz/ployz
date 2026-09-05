@@ -530,7 +530,8 @@ impl Session {
 }
 
 fn client(url: &str) -> RelayClient {
-    RelayClient::new(url).expect("test Relay URL is http")
+    RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
+        .expect("test Relay URL is http")
 }
 
 fn colliding_machine_id() -> MachineId {

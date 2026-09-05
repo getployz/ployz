@@ -171,7 +171,7 @@ fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
     assert_eq!(
         pairing_json,
         &serde_json::json!({
-            "relayUrl": "https://relay.example.invalid",
+            "relayUrl": "https://relay.example.invalid/",
             "secret": "pairing-secret",
         })
     );

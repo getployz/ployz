@@ -984,6 +984,16 @@ mod set_cloud_pairing_wire {
     }
 
     #[test]
+    fn set_pairing_rejects_invalid_relay_endpoint() {
+        assert!(
+            serde_json::from_value::<SetCloudPairingRequest>(json!({
+                "cloud_pairing": {"relayUrl": "not-a-url", "secret": "pairing-secret"}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn some_pairing_sets() {
         let pairing = CloudPairing::parse(
             "https://relay.example.invalid",
@@ -998,7 +1008,7 @@ mod set_cloud_pairing_wire {
             value,
             json!({
                 "cloud_pairing": {
-                    "relayUrl": "https://relay.example.invalid",
+                    "relayUrl": "https://relay.example.invalid/",
                     "secret": "pairing-secret",
                 }
             })

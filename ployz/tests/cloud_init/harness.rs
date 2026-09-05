@@ -389,7 +389,7 @@ impl MachineRpc for JoinDaemon {
         }
         if let Some(pairing) = join.cloud_pairing.clone() {
             hold_register(
-                pairing.relay_url(),
+                pairing.relay_url().as_str(),
                 pairing.secret(),
                 &join.registration.assigned_machine.id,
                 &self.inner._register,
@@ -421,7 +421,7 @@ impl MachineRpc for JoinDaemon {
         match set.cloud_pairing {
             Some(pairing) => {
                 hold_register(
-                    pairing.relay_url(),
+                    pairing.relay_url().as_str(),
                     pairing.secret(),
                     &self.inner.registration.assigned_machine.id,
                     &self.inner._register,
@@ -459,7 +459,7 @@ impl MachineRpc for JoinDaemon {
         self.inner.joined.store(true, Ordering::SeqCst);
         if let Some(pairing) = pairing
             && let Err(status) = hold_register(
-                pairing.relay_url(),
+                pairing.relay_url().as_str(),
                 pairing.secret(),
                 &machine.id,
                 &self.inner._register,

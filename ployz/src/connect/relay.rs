@@ -8,7 +8,7 @@ use std::{
 
 use http::StatusCode;
 use hyper_util::rt::TokioIo;
-use ployz_core::MachineId;
+use ployz_core::{MachineId, RelayEndpoint};
 use ployz_relay::{
     ClientError, DialCredential, HeldRegister, PairingCredential, RelayClient, TunnelIo,
 };
@@ -17,7 +17,7 @@ use tonic::transport::{Channel, Endpoint};
 use super::ConnectError;
 
 pub(super) async fn connect_channel(
-    url: &str,
+    url: &RelayEndpoint,
     credential: &DialCredential,
     pairing: &PairingCredential,
     machine_id: &MachineId,
@@ -41,7 +41,7 @@ pub(super) async fn connect_channel(
 }
 
 async fn dial_tunnel(
-    url: &str,
+    url: &RelayEndpoint,
     credential: &DialCredential,
     pairing: &PairingCredential,
     machine_id: &MachineId,
@@ -57,7 +57,8 @@ pub(super) async fn list_held(
     credential: &DialCredential,
     pairing: &PairingCredential,
 ) -> Result<Vec<HeldRegister>, ConnectError> {
-    Ok(RelayClient::new(url)?
+    let url = RelayEndpoint::parse(url)?;
+    Ok(RelayClient::new(&url)?
         .list(credential.as_str(), pairing.as_str())
         .await?)
 }
@@ -67,7 +68,8 @@ pub(super) async fn revoke_pairing(
     credential: &DialCredential,
     pairing: &PairingCredential,
 ) -> Result<(), ConnectError> {
-    Ok(RelayClient::new(url)?
+    let url = RelayEndpoint::parse(url)?;
+    Ok(RelayClient::new(&url)?
         .revoke(credential.as_str(), pairing.as_str())
         .await?)
 }
