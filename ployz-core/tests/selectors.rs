@@ -57,7 +57,11 @@ fn machine_target_resolution_prefers_ids_and_keeps_name_ambiguity() {
     );
     assert_eq!(
         MachineTarget::parse("duplicate").unwrap().resolve(&visible),
-        NameMatches::Ambiguous(vec![&first, &second])
+        NameMatches::Ambiguous {
+            first: &first,
+            second: &second,
+            rest: vec![]
+        }
     );
 }
 

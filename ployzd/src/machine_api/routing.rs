@@ -56,9 +56,9 @@ pub fn resolve_route(
         RoutingRequest::One(target) => match target.resolve(visible) {
             NameMatches::One(machine) => Ok(ProxyRoute::One(Box::new(machine.clone()))),
             NameMatches::None => Err(TargetResolutionError::NotFound(vec![target])),
-            NameMatches::Ambiguous(matches) => Err(TargetResolutionError::Ambiguous {
+            matches @ NameMatches::Ambiguous { .. } => Err(TargetResolutionError::Ambiguous {
                 selector: target,
-                matches: matches.into_iter().map(|machine| machine.id).collect(),
+                matches: matches.iter().map(|machine| machine.id).collect(),
             }),
         },
         RoutingRequest::Many(selectors) => {

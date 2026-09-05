@@ -113,10 +113,10 @@ fn select_machine(
     match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
         NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
         NameMatches::One(machine) => Ok(machine.clone()),
-        NameMatches::Ambiguous(matches) => Err(Error::usage(format!(
+        matches @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
             "Machine name {selector:?} is ambiguous: {}",
             matches
-                .into_iter()
+                .iter()
                 .map(|machine| machine.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")

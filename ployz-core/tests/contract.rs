@@ -578,13 +578,56 @@ fn ingress_hostname_intent_is_cluster_domain_or_explicit() {
 }
 
 #[test]
+fn ambiguous_name_matches_reject_fewer_than_two_candidates() {
+    for values in [
+        serde_json::json!([]),
+        serde_json::json!(["first"]),
+        serde_json::json!({"rest": []}),
+        serde_json::json!({"first": "first", "rest": []}),
+        serde_json::json!({"second": "second", "rest": []}),
+    ] {
+        assert!(
+            serde_json::from_value::<NameMatches<Option<String>>>(serde_json::json!({
+                "match": "ambiguous", "values": values
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn name_matches_classification_and_serde_preserve_candidate_order() {
+    assert_eq!(NameMatches::<u8>::from_matches(vec![]), NameMatches::None);
+    assert_eq!(NameMatches::from_matches(vec![7]), NameMatches::One(7));
+    for candidates in [vec![], vec![7], vec![7, 2], vec![7, 2, 9, 1]] {
+        let matches = NameMatches::from_matches(candidates.clone());
+        assert_eq!(matches.iter().copied().collect::<Vec<_>>(), candidates);
+        let decoded: NameMatches<u8> =
+            serde_json::from_value(serde_json::to_value(&matches).unwrap()).unwrap();
+        assert_eq!(decoded, matches);
+    }
+    let nullable: NameMatches<Option<u8>> = serde_json::from_value(serde_json::json!({
+        "match": "ambiguous", "values": {"first": null, "second": 7, "rest": []}
+    }))
+    .unwrap();
+    assert_eq!(
+        nullable.iter().copied().collect::<Vec<_>>(),
+        [None, Some(7)]
+    );
+}
+
+#[test]
 fn duplicate_name_matches_remain_ambiguous() {
     let first = ServiceId::parse("11111111111111111111111111111111").unwrap();
     let second = ServiceId::parse("22222222222222222222222222222222").unwrap();
 
     assert_eq!(
         NameMatches::from_matches(vec![first, second]),
-        NameMatches::Ambiguous(vec![first, second])
+        NameMatches::Ambiguous {
+            first,
+            second,
+            rest: vec![]
+        }
     );
 }
 

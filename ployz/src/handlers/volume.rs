@@ -181,7 +181,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     println!("{}", serde_json::to_string_pretty(&volume)?);
                     Ok(())
                 }
-                NameMatches::Ambiguous(volumes) => Err(Error::usage(format!(
+                volumes @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
                     "Docker Volume {name:?} is ambiguous; select one Machine: {}",
                     volumes
                         .iter()
@@ -324,7 +324,7 @@ fn select_create_machine(
                     .clone(),
             )),
             NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
-            NameMatches::Ambiguous(_) => Err(Error::usage(format!(
+            NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
                 "Machine Target {selector:?} matched multiple Machines"
             ))),
         };

@@ -815,13 +815,13 @@ fn visible_machine<'list>(
                 details: Value::Null,
             });
         }
-        NameMatches::Ambiguous(matches) => {
+        matches @ NameMatches::Ambiguous { .. } => {
             return Err(RpcError {
                 code: RpcErrorCode::Ambiguous,
                 message: format!(
                     "Machine name {machine:?} is ambiguous: {}",
                     matches
-                        .into_iter()
+                        .iter()
                         .map(|row| row.id.as_str())
                         .collect::<Vec<_>>()
                         .join(", ")
