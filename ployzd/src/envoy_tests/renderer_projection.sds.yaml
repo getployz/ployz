@@ -1,4 +1,4 @@
-version_info: "64da812043281f6839f0fdbe8bb7ff63dff071847a87af60089bb010426ee231"
+version_info: "0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8"
 resources:
 - "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
   name: ployz-tls-secure.example.com

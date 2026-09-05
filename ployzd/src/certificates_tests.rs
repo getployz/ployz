@@ -404,10 +404,15 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
 #[tokio::test]
 async fn challenge_must_be_answerable_on_every_probe_address() {
     let hostname = host("app.example.com");
-    let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+    let challenge = CertificateChallenge::new(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
     let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::from([(
-        "tok".to_owned(),
-        "tok.thumb".to_owned(),
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0".to_owned(),
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            .to_owned(),
     )])));
     let (first_stop, first_port) =
         ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
@@ -429,7 +434,11 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
 #[tokio::test]
 async fn empty_probe_addresses_fail_without_waiting() {
     let hostname = host("app.example.com");
-    let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+    let challenge = CertificateChallenge::new(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
         wait_for_http01(&hostname, &challenge, &[], CHALLENGE_WAIT),

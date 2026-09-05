@@ -38,8 +38,9 @@ const HOOK_ID: &str = "333333333333333333333333333333333333333333333333333333333
 const INCOMPLETE_CONTAINER_ID: &str =
     "2222222222222222222222222222222222222222222222222222222222222222";
 const OBSERVED_AT: &str = "2024-01-01T00:00:00Z";
-const CHALLENGE_TOKEN: &str = "http-01-token-secret";
-const CHALLENGE_RESPONSE: &str = "http-01-response-secret";
+const CHALLENGE_TOKEN: &str = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+const CHALLENGE_RESPONSE: &str =
+    "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const DNS_TOKEN: &str = "dns-renewal-token-secret";
 const DNS_ENDPOINT: &str = "https://dns.example.invalid/v1";
 const PAIRING: &str = "pairing-credential-secret";

@@ -70,7 +70,26 @@ impl CertificateChallenge {
     pub fn new(token: impl Into<String>, response: impl Into<String>) -> Option<Self> {
         let token = token.into();
         let response = response.into();
-        (!token.is_empty() && !response.is_empty()).then_some(Self { token, response })
+        // RFC 8555 §§8.1, 8.3: token + '.' + base64url(SHA-256 JWK thumbprint).
+        // Length bounds token capacity; neither entropy nor account-key ownership
+        // can be established from the stored challenge alone.
+        let base64url = |value: &str| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        };
+        let (prefix, thumbprint) = response.split_once('.')?;
+        // The final base64 symbol of a 32-byte digest has two zero padding bits.
+        if token.len() < 22
+            || !base64url(&token)
+            || prefix != token
+            || thumbprint.len() != 43
+            || !base64url(thumbprint)
+            || !b"AEIMQUYcgkosw048".contains(thumbprint.as_bytes().last()?)
+        {
+            return None;
+        }
+        Some(Self { token, response })
     }
 
     #[must_use]
@@ -207,9 +226,17 @@ impl CertificateRow {
                 "stored certificate material is invalid or does not match its private key",
             );
         }
+        let has_challenge = !body.challenge_token.is_empty() || !body.challenge_response.is_empty();
+        let challenge = CertificateChallenge::new(body.challenge_token, body.challenge_response);
+        if has_challenge && challenge.is_none() {
+            if !last_error.is_empty() {
+                last_error.push_str("; ");
+            }
+            last_error.push_str("stored HTTP-01 challenge is invalid");
+        }
         Ok(Self {
             material,
-            challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
+            challenge,
             refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
                 reason: last_error,
                 clock,
@@ -296,6 +323,52 @@ mod tests {
 
     use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
+    #[test]
+    fn challenge_admission_rejects_invalid_grammar_and_token_mismatch() {
+        let token = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+        let thumbprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let response = format!("{token}.{thumbprint}");
+        assert!(CertificateChallenge::new(token, &response).is_some());
+        let minimum_token = "_-0123456789abcdefghij";
+        assert!(
+            CertificateChallenge::new(minimum_token, format!("{minimum_token}.{thumbprint}"))
+                .is_some()
+        );
+        for bad_token in [
+            String::new(),
+            "short".to_owned(),
+            format!("../{token}"),
+            format!("{token}\n}}"),
+            format!("{token}\""),
+            format!("{token}="),
+            format!("{token}é"),
+        ] {
+            assert!(
+                CertificateChallenge::new(&bad_token, format!("{bad_token}.{thumbprint}"))
+                    .is_none(),
+                "{bad_token:?}"
+            );
+        }
+        for bad_response in [
+            String::new(),
+            format!("other.{thumbprint}"),
+            format!("{token}.short"),
+            format!("{response}="),
+            format!("{response}\n"),
+            format!("{response}.extra"),
+            format!("{token}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"),
+        ] {
+            assert!(
+                CertificateChallenge::new(token, &bad_response).is_none(),
+                "{bad_response:?}"
+            );
+            let encoded = serde_json::json!({"challenge_token":token,"challenge_response":bad_response,"last_error":"authority refused"}).to_string();
+            let row = CertificateRow::decode(&encoded).unwrap();
+            assert!(row.challenge().is_none());
+            assert!(row.last_error().unwrap().contains("authority refused"));
+        }
+    }
+
     fn issued_material() -> CertificateMaterial {
         let pair = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
         CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
@@ -343,7 +416,7 @@ mod tests {
     #[test]
     fn invalid_stored_material_keeps_challenge_and_refusal_evidence() {
         let row = CertificateRow::decode(r#"{"certificate":"CERT","private_key":"KEY",
-            "challenge_token":"tok","challenge_response":"tok.thumb","last_error":"authority refused"}"#).unwrap();
+            "challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","last_error":"authority refused"}"#).unwrap();
         assert!(row.material().is_none());
         assert!(row.challenge().is_some());
         assert!(row.last_error().unwrap().contains("authority refused"));
@@ -400,14 +473,26 @@ mod tests {
     #[test]
     fn certificate_challenge_reads_from_the_row_body() {
         let row = CertificateRow::decode(
-            r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
+            r#"{"certificate":"","private_key":"","challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
         )
         .unwrap();
         assert_eq!(row.material(), None);
         let challenge = row.challenge().unwrap();
-        assert_eq!(challenge.token(), "tok");
-        assert_eq!(challenge.response(), "tok.thumb");
-        assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
+        assert_eq!(
+            challenge.token(),
+            "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"
+        );
+        assert_eq!(
+            challenge.response(),
+            "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
+        assert_eq!(
+            CertificateChallenge::new(
+                "",
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
+            None
+        );
         assert_eq!(CertificateRow::decode("{}").unwrap().challenge(), None);
     }
 
@@ -444,10 +529,33 @@ mod tests {
     fn challenge_write_keeps_issued_material() {
         let issued = issued_material();
         let latest = CertificateRow::from_parts(Some(issued.clone()), None);
-        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+        let challenge = CertificateChallenge::new("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0", "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
         let row = latest.with_challenge(challenge.clone());
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.challenge(), Some(&challenge));
+    }
+
+    #[test]
+    fn invalid_stored_challenge_keeps_material_and_refusal_clock() {
+        let material = issued_material();
+        let clock = IssuanceClock::new(
+            3,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            IssuanceFailure::DoesNotResolve,
+        );
+        let row = CertificateRow::issued(material.clone()).with_backoff("authority refused", clock);
+        let mut body: serde_json::Value = serde_json::from_str(&row.encode().unwrap()).unwrap();
+        let fields = body.as_object_mut().unwrap();
+        fields.insert("challenge_token".to_owned(), "../escape".into());
+        fields.insert("challenge_response".to_owned(), "injected\n}".into());
+        let decoded = CertificateRow::decode(&body.to_string()).unwrap();
+        assert_eq!(decoded.material(), Some(&material));
+        assert!(decoded.challenge().is_none());
+        assert_eq!(decoded.clock(), Some(clock));
+        assert_eq!(
+            decoded.last_error(),
+            Some("authority refused; stored HTTP-01 challenge is invalid")
+        );
     }
 
     #[test]

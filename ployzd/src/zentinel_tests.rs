@@ -6,7 +6,6 @@ use super::{
     write_initial_config, write_support_files,
 };
 use crate::{
-    corrosion::CertificateChallenge,
     ingress::zentinel::apply::{
         ApplyIo, ApplyOutcome, Error as ApplyError, ValidationOutcome, active_digest, apply,
     },
@@ -48,7 +47,7 @@ fn shared_projection_matches_the_frozen_zentinel_contract() {
     );
     assert_eq!(
         rendered.digest(),
-        "64da812043281f6839f0fdbe8bb7ff63dff071847a87af60089bb010426ee231"
+        "0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8"
     );
 }
 
@@ -135,8 +134,11 @@ fn support_files_are_stable_valid_and_readable_by_the_container() {
 
     let challenge = root
         .join(ZENTINEL_CHALLENGES_DIR)
-        .join("example.com/.well-known/acme-challenge/token");
-    assert_eq!(fs::read_to_string(&challenge).unwrap(), "token.thumbprint");
+        .join("example.com/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0");
+    assert_eq!(
+        fs::read_to_string(&challenge).unwrap(),
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    );
     assert_eq!(mode(&challenge), 0o644);
     assert_eq!(mode(&root.join(ZENTINEL_CHALLENGES_DIR)), 0o750);
     assert_eq!(mode(&root.join("challenges/example.com")), 0o750);
@@ -193,26 +195,30 @@ fn initial_config_reports_an_unwritable_parent() {
 }
 
 #[test]
-fn support_files_reject_a_challenge_path() {
-    let root = std::env::temp_dir().join(format!(
-        "ployz-zentinel-challenge-path-test-{}",
-        MachineId::random()
-    ));
+fn persisted_challenge_path_cannot_reach_support_files() {
+    let root = test_root("challenge-path");
+    let row = crate::corrosion::CertificateRow::decode(
+        r#"{"challenge_token":"../token","challenge_response":"response"}"#,
+    )
+    .unwrap();
+    assert!(row.challenge().is_none());
     let mut projection = renderer_projection();
-    projection
+    let site = projection
         .sites
         .iter_mut()
         .find(|site| site.hostname.as_str() == "example.com")
-        .unwrap()
-        .certificate
-        .as_mut()
-        .unwrap()
-        .challenge = CertificateChallenge::new("../token", "response");
-
-    let error = write_support_files(&projection, &root.join("zentinel.kdl")).unwrap_err();
-
-    assert!(matches!(error, RendererError::InvalidChallengeToken));
-    assert!(!root.exists());
+        .unwrap();
+    site.certificate.as_mut().unwrap().challenge = row.challenge().cloned();
+    let rendered = render(&projection).unwrap();
+    assert!(!rendered.kdl().contains("ployz-challenge-"));
+    write_support_files(&projection, &root.join("zentinel.kdl")).unwrap();
+    assert!(
+        !root
+            .join(ZENTINEL_CHALLENGES_DIR)
+            .join("example.com")
+            .exists()
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
