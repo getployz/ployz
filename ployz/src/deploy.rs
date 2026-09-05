@@ -452,6 +452,12 @@ impl fmt::Display for EliminatingConstraints {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
+    /// The Service declares overlapping exclusive host publications.
+    #[error("Service {service} declares conflicting host socket publications")]
+    ConflictingHostPublications { service: ServiceName },
+    /// Observed or earlier planned Containers occupy a required host socket.
+    #[error("Service {service} cannot fit because of known host socket conflicts")]
+    HostPortConflict { service: ServiceName },
     /// At least one relevant Machine did not return a fresh capacity observation.
     #[error("capacity unknown: an eligible Machine did not return fresh bridge telemetry")]
     CapacityUnknown,

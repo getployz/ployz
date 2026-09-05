@@ -12,7 +12,9 @@ use crate::deploy::{
 };
 
 use super::capacity::CapacityBudget;
-use super::placement::{ReplicatedCapacityReservation, reserve_replicated_service_demand};
+use super::placement::{
+    HostSockets, ReplicatedCapacityReservation, reserve_replicated_service_demand,
+};
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -419,6 +421,7 @@ pub(super) fn prepare_shared_replicated_volumes(
     options: &PlanOptions,
 ) -> Result<Vec<(ServiceName, ReplicatedCapacityReservation)>, PlanError> {
     let mut reservations = Vec::new();
+    let mut sockets = HostSockets::from_snapshot(snapshot);
     for component in shared_volume_components(volume_uses) {
         let anchor = shared_component_anchor(
             &component,
@@ -426,7 +429,7 @@ pub(super) fn prepare_shared_replicated_volumes(
             requested,
             observed_services,
             pins,
-            capacity,
+            (capacity, &mut sockets),
             options,
         )?;
         reservations.extend(anchor.capacity_reservations);
@@ -446,9 +449,10 @@ fn shared_component_anchor(
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &VolumePins,
-    capacity: &mut CapacityBudget,
+    budget: (&mut CapacityBudget, &mut HostSockets),
     options: &PlanOptions,
 ) -> Result<SharedAnchor, PlanError> {
+    let (capacity, sockets) = budget;
     let services = component
         .volumes
         .iter()
@@ -473,9 +477,10 @@ fn shared_component_anchor(
             no_eligible_shared(component, snapshot, pins),
         ));
     }
-    let capacity_error = capacity.error_for(&eligible);
+    let mut admission_error = capacity.error_for(&eligible);
     for machine_id in eligible {
         let mut projected = capacity.clone();
+        let mut projected_sockets = sockets.clone();
         let projected_services = requested
             .iter()
             .filter(|spec| services.contains_key(spec.name.as_str()))
@@ -485,6 +490,7 @@ fn shared_component_anchor(
                     .find(|service| service.identity.name == spec.name);
                 reserve_replicated_service_demand(
                     &mut projected,
+                    &mut projected_sockets,
                     spec,
                     observed,
                     machine_id,
@@ -493,18 +499,24 @@ fn shared_component_anchor(
                 .map(|reservation| (spec.name.clone(), reservation))
             })
             .collect::<Result<Vec<_>, _>>();
-        if let Ok(capacity_reservations) = projected_services {
-            *capacity = projected;
-            return Ok(SharedAnchor {
-                machine_id,
-                capacity_reservations,
-            });
-        }
+        let capacity_reservations = match projected_services {
+            Ok(reservations) => reservations,
+            Err(error) => {
+                admission_error = error;
+                continue;
+            }
+        };
+        *capacity = projected;
+        *sockets = projected_sockets;
+        return Ok(SharedAnchor {
+            machine_id,
+            capacity_reservations,
+        });
     }
     Err(super::service_error(
         true,
         first_service_name,
-        capacity_error,
+        admission_error,
     ))
 }
 
