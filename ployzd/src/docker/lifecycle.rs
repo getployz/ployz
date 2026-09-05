@@ -516,14 +516,6 @@ impl ContainerRuntime {
 }
 
 impl super::LocalDocker {
-    pub(super) async fn create_endpoint_container(
-        &self,
-        options: Option<bollard::query_parameters::CreateContainerOptions>,
-        body: ContainerCreateBody,
-    ) -> Result<bollard::models::ContainerCreateResponse, Error> {
-        self.create_container(options, body).await
-    }
-
     pub(super) async fn create_container(
         &self,
         options: Option<bollard::query_parameters::CreateContainerOptions>,

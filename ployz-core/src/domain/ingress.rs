@@ -86,12 +86,12 @@ pub fn validate_ingress_service_spec(
         .ok_or(IngressProxyServiceSpecError)
 }
 
-fn base_container(image: String) -> ServiceContainerSpec {
+fn caddy_container(image: String) -> ServiceContainerSpec {
     ServiceContainerSpec {
         image,
-        command: Vec::new(),
+        command: CADDY_INGRESS_COMMAND.map(str::to_owned).into(),
         entrypoint: Vec::new(),
-        environment: BTreeMap::new(),
+        environment: BTreeMap::from([(CADDY_ADMIN_ENV.into(), CADDY_INGRESS_ADMIN.into())]),
         labels: Default::default(),
         hostname: None,
         extra_hosts: Vec::new(),
@@ -111,14 +111,6 @@ fn base_container(image: String) -> ServiceContainerSpec {
         stop_timeout_secs: None,
         sysctls: BTreeMap::new(),
         restart: RestartPolicy::default(),
-    }
-}
-
-fn caddy_container(image: String) -> ServiceContainerSpec {
-    ServiceContainerSpec {
-        command: CADDY_INGRESS_COMMAND.map(str::to_owned).into(),
-        environment: BTreeMap::from([(CADDY_ADMIN_ENV.into(), CADDY_INGRESS_ADMIN.into())]),
-        ..base_container(image)
     }
 }
 

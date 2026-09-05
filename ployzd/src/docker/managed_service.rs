@@ -147,7 +147,7 @@ impl ManagedService {
         };
         self.prepare_image(&docker.client).await?;
         docker
-            .create_endpoint_container(
+            .create_container(
                 Some(
                     CreateContainerOptionsBuilder::default()
                         .name(&self.name)
