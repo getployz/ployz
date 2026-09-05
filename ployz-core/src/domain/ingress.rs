@@ -38,7 +38,7 @@ pub fn caddy_service_spec(
         container: caddy_container(image),
         placement: Placement { machines },
         ports: caddy_ports(),
-        mount_graph: crate::ServiceMountGraph::new(caddy_volume_graph(), Default::default())
+        mount_graph: crate::ServiceMountGraph::parse(caddy_volume_graph(), Default::default())
             .expect("built-in Caddy mounts are valid"),
         pre_deploy: None,
         ingress_proxy_fragment: fragment,

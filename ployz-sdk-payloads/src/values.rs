@@ -360,7 +360,9 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         (
             "PreDeployHook",
             to_value(&PreDeployHook {
-                command: vec!["echo".into()].try_into().unwrap(),
+                command: vec!["echo".into()]
+                    .try_into()
+                    .expect("fixture hook command is non-empty"),
                 environment: BTreeMap::new(),
                 privileged: None,
                 timeout_millis: None,
@@ -597,7 +599,8 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                     failure: HealthFailure::TimedOut,
                 }),
                 to_value(&ExecutionError::DependencyHealth {
-                    dependency: QualifiedService::parse("app/db").unwrap(),
+                    dependency: QualifiedService::parse("app/db")
+                        .expect("fixture has a valid qualified Service name"),
                     failure: DependencyHealthFailure::NoContainers,
                 }),
                 to_value(&ExecutionError::Hook {
@@ -979,7 +982,7 @@ fn provisioned_volume_source() -> VolumeSource {
 
 fn deploy_intent() -> DeployIntent {
     DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        ProjectName::parse("app").expect("fixture Project name is valid"),
         Vec::new(),
         PlanOptions::default(),
     )
@@ -999,7 +1002,7 @@ fn deploy_preview() -> DeployPreview {
             Some(ServiceName::parse("api").expect("fixture Service Name is valid")),
         )],
         deploy_warnings().to_vec(),
-        ProjectName::parse("app").unwrap(),
+        ProjectName::parse("app").expect("fixture Project name is valid"),
     );
     preview.volumes_to_create = vec![volume_to_create()];
     preview
@@ -1041,8 +1044,10 @@ fn deploy_warnings() -> [DeployWarning; 6] {
         },
         DeployWarning::ObserverRelativeHostnameConflict,
         DeployWarning::SkippedDependencyHealth {
-            dependent: QualifiedService::parse("app/web").unwrap(),
-            dependency: QualifiedService::parse("app/db").unwrap(),
+            dependent: QualifiedService::parse("app/web")
+                .expect("fixture has a valid qualified Service name"),
+            dependency: QualifiedService::parse("app/db")
+                .expect("fixture has a valid qualified Service name"),
         },
     ]
 }
@@ -1098,7 +1103,7 @@ fn volume_to_create() -> VolumeToCreate {
         machine_name: Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
         name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: Some(ProvisionedVolumeMaximumBytes::new(
-            NonZeroU64::new(1_073_741_824).unwrap(),
+            NonZeroU64::new(1_073_741_824).expect("fixture Volume bound is positive"),
         )),
     }
 }
@@ -1109,8 +1114,10 @@ fn deploy_operations() -> [DeployOperation; 8] {
     [
         DeployOperation::WaitHealthy {
             machine_id,
-            dependent: QualifiedService::parse("app/web").unwrap(),
-            dependency: QualifiedService::parse("app/db").unwrap(),
+            dependent: QualifiedService::parse("app/web")
+                .expect("fixture has a valid qualified Service name"),
+            dependency: QualifiedService::parse("app/db")
+                .expect("fixture has a valid qualified Service name"),
         },
         DeployOperation::RunContainer {
             machine_id,
@@ -1264,7 +1271,7 @@ fn typed_requested_spec() -> RequestedServiceSpec {
         ServiceVolumeGraph::parse(vec![named_volume_with_driver()], vec![service_mount()])
             .expect("typed volume graph is valid"),
     )
-    .unwrap();
+    .expect("fixture mount destinations are distinct and non-root");
     spec.set_config_graph(
         ServiceConfigGraph::parse(
             vec![config_spec()],
@@ -1272,15 +1279,25 @@ fn typed_requested_spec() -> RequestedServiceSpec {
         )
         .expect("typed config graph is valid"),
     )
-    .unwrap();
+    .expect("fixture mount destinations are distinct and non-root");
     spec.container.healthcheck = Some(configured_healthcheck());
     spec.container.resources = ContainerResources {
-        cpu_nanos: Some(ployz_core::CpuNanos::try_from(1_000_000).unwrap()),
-        memory_bytes: Some(ployz_core::ByteQuantity::try_from(64 * 1024 * 1024).unwrap()),
-        memory_reservation_bytes: Some(
-            ployz_core::ByteQuantity::try_from(32 * 1024 * 1024).unwrap(),
+        cpu_nanos: Some(
+            ployz_core::CpuNanos::try_from(1_000_000)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
         ),
-        shared_memory_bytes: Some(ployz_core::ByteQuantity::try_from(8 * 1024 * 1024).unwrap()),
+        memory_bytes: Some(
+            ployz_core::ByteQuantity::try_from(64 * 1024 * 1024)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
+        memory_reservation_bytes: Some(
+            ployz_core::ByteQuantity::try_from(32 * 1024 * 1024)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
+        shared_memory_bytes: Some(
+            ployz_core::ByteQuantity::try_from(8 * 1024 * 1024)
+                .expect("fixture resource quantity fits the nonnegative Docker range"),
+        ),
         devices: vec![device_mapping()],
         device_reservations: vec![device_reservation(), device_reservation_sparse()],
         ulimits: BTreeMap::from([("nofile".into(), ulimit())]),
@@ -1295,10 +1312,12 @@ fn typed_resolved_spec() -> ResolvedServiceSpec {
             requested
                 .volume_graph()
                 .clone()
-                .scope_to_project(&ProjectName::parse("app").unwrap())
-                .unwrap(),
+                .scope_to_project(
+                    &ProjectName::parse("app").expect("fixture Project name is valid"),
+                )
+                .expect("fixture Volume definitions retain compatible scoped identities"),
         )
-        .unwrap();
+        .expect("fixture mount destinations are distinct and non-root");
     requested
         .to_resolved(service_id(), ResolvedUpdateConfig::default())
         .expect("volume graph is scoped")
@@ -1308,7 +1327,7 @@ fn container_observation_disabled_healthcheck() -> ContainerObservation {
     let mut observation = container_observation();
     observation
         .try_update(|parts| parts.effective_healthcheck = Some(HealthcheckSpec::Disabled))
-        .unwrap();
+        .expect("fixture healthcheck update preserves observation identity");
     observation
 }
 
@@ -1391,7 +1410,7 @@ fn container_observation() -> ContainerObservation {
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: machine_id(MACHINE_ID_HEX),
-        project_name: ProjectName::parse("app").unwrap(),
+        project_name: ProjectName::parse("app").expect("fixture Project name is valid"),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -1401,7 +1420,7 @@ fn container_observation() -> ContainerObservation {
         address: None,
         labels: BTreeMap::new(),
     })
-    .unwrap()
+    .expect("fixture Container observation has a matching Service identity")
 }
 
 fn requested_spec() -> RequestedServiceSpec {
@@ -1510,7 +1529,7 @@ fn partial_result() -> PartialResult<DockerVolume, RpcError> {
 
 fn cluster_teardown() -> ClusterTeardown {
     ClusterTeardown {
-        destroyed_projects: vec![ProjectName::parse("app").unwrap()],
+        destroyed_projects: vec![ProjectName::parse("app").expect("fixture Project name is valid")],
         machines: PartialResult {
             successes: vec![MachineSuccess {
                 machine_id: machine_id(MACHINE_ID_HEX),

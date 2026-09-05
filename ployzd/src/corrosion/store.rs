@@ -1,3 +1,11 @@
+//! Replicated publication, subscriptions, and observer-relative reads.
+
+mod decode;
+use decode::{
+    INCOMPLETE_JSON_DOCUMENT, actor_id, decode_container, decode_machine, decode_observations,
+    decode_volume, id_and_json, is_incomplete_document, text,
+};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -9,7 +17,6 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
 };
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
@@ -35,7 +42,6 @@ pub(crate) const STEAL_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updat
 pub(crate) const AGE_ALLOCATOR: &str =
     "UPDATE cluster SET updated_at = datetime('now', '-5 seconds') WHERE key = 'allocator'";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
-const INCOMPLETE_JSON_DOCUMENT: &str = "{}";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AllocatorRow {
@@ -921,117 +927,6 @@ impl RuntimeWatchChanges {
             result = self.volumes.changed() => result,
             result = self.certificates.changed() => result,
             result = self.cluster.changed() => result,
-        }
-    }
-}
-
-fn is_incomplete_document(encoded: &str) -> bool {
-    encoded == INCOMPLETE_JSON_DOCUMENT
-}
-
-fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>, Error> {
-    if is_incomplete_document(encoded) {
-        Ok(None)
-    } else {
-        Ok(Some(serde_json::from_str(encoded)?))
-    }
-}
-
-fn decode_machine(id: &str, encoded: &str) -> Result<Option<Machine>, Error> {
-    let machine: Option<Machine> = decode_json_document(encoded)?;
-    if let Some(machine) = &machine
-        && machine.id.as_str() != id
-    {
-        return Err(Error::Protocol(format!(
-            "Machine row {id} contains document for {}",
-            machine.id
-        )));
-    }
-    Ok(machine)
-}
-
-fn decode_container(
-    id: &ContainerId,
-    machine_id: &str,
-    encoded: &str,
-) -> Result<Option<ContainerObservation>, Error> {
-    let observation: Option<ContainerObservation> = decode_json_document(encoded)?;
-    if let Some(observation) = &observation
-        && (observation.container_id != *id || observation.machine_id.as_str() != machine_id)
-    {
-        return Err(Error::Protocol(format!(
-            "Container row {id} on Machine {machine_id} contains document for {} on Machine {}",
-            observation.container_id, observation.machine_id
-        )));
-    }
-    Ok(observation)
-}
-
-fn decode_volume(id: &DockerVolumeId, encoded: &str) -> Result<Option<DockerVolume>, Error> {
-    let volume: Option<DockerVolume> = decode_json_document(encoded)?;
-    if let Some(volume) = &volume
-        && volume.id != *id
-    {
-        return Err(Error::Protocol(format!(
-            "Docker Volume row {}/{} contains document for {}/{}",
-            id.machine_id, id.name, volume.id.machine_id, volume.id.name
-        )));
-    }
-    Ok(volume)
-}
-
-fn id_and_json<Id>(
-    rows: Vec<[Value; 2]>,
-    parse_id: impl Fn(&str) -> Result<Id, Error>,
-) -> Result<Vec<(Id, String)>, Error> {
-    rows.into_iter()
-        .map(|[id, encoded]| {
-            Ok((
-                parse_id(text(&id, "row ID")?)?,
-                text(&encoded, "replicated JSON")?.to_owned(),
-            ))
-        })
-        .collect()
-}
-
-fn decode_observations<T, Id>(
-    rows: Vec<(Id, String)>,
-    decode: impl Fn(&Id, &str) -> Result<Option<T>, Error>,
-) -> Result<ReplicatedObservations<T, Id>, Error> {
-    let mut observations = Vec::new();
-    let mut incomplete_ids = Vec::new();
-    for (id, encoded) in rows {
-        match decode(&id, &encoded)? {
-            Some(observation) => observations.push(observation),
-            None => incomplete_ids.push(id),
-        }
-    }
-    Ok(ReplicatedObservations {
-        observations,
-        incomplete_ids,
-    })
-}
-
-fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
-    value
-        .as_str()
-        .ok_or_else(|| Error::Protocol(format!("invalid {field}")))
-}
-
-fn actor_id(value: &Value) -> Result<String, Error> {
-    match value {
-        Value::String(value) => Ok(value.clone()),
-        Value::Array(bytes) => bytes
-            .iter()
-            .map(|byte| {
-                byte.as_u64()
-                    .and_then(|byte| u8::try_from(byte).ok())
-                    .map(|byte| format!("{byte:02x}"))
-                    .ok_or_else(|| Error::Protocol("invalid actor ID byte".into()))
-            })
-            .collect(),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
-            Err(Error::Protocol("invalid actor ID".into()))
         }
     }
 }

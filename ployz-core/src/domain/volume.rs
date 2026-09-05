@@ -462,10 +462,10 @@ impl TryFrom<VolumeSource> for ResolvedVolumeSource {
     }
 }
 impl ResolvedVolumeSource {
-    /// Import a checked resolved source for a scale request, retaining its ownership.
+    /// Consume this source while retaining its Project ownership.
     #[must_use]
-    pub fn to_requested(&self) -> VolumeSource {
-        self.0.clone()
+    pub fn into_requested(self) -> VolumeSource {
+        self.0
     }
 }
 

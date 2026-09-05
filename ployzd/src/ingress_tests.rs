@@ -51,10 +51,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                     None,
                 ),
                 certificate: Some(ProjectedCertificate {
-                    challenge: CertificateChallenge::new(
+                    challenge: Some(CertificateChallenge::parse(
                         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
                         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                    ),
+                    ).unwrap()),
                     material: None,
                     last_error: None,
                 }),
@@ -64,10 +64,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                 publication: publication(None, Some(vec![endpoint("10.210.1.3", 8443)])),
                 certificate: Some(ProjectedCertificate {
                     challenge: None,
-                    material: CertificateMaterial::new(
+                    material: Some(CertificateMaterial::parse(
                         include_str!("../tests/fixtures/certificate-test-rsa.pem"),
                         include_str!("../tests/fixtures/certificate-test-rsa-key.pem"),
-                    ),
+                    ).unwrap()),
                     last_error: None,
                 }),
             },
@@ -86,5 +86,5 @@ pub(crate) fn renderer_projection() -> IngressProjection {
 
 pub(crate) fn test_material() -> CertificateMaterial {
     let pair = rcgen::generate_simple_self_signed(["secure.example.com".to_owned()]).unwrap();
-    CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
 }

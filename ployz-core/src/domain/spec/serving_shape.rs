@@ -147,7 +147,7 @@ impl ServingShape {
             "restart": restart,
             "placement": placement,
             "ports": sorted_json(ports),
-            "volumes": sorted_json(&volumes.iter().map(|volume| (&volume.reference, volume.source.kind(), volume.source.creation_labels())).collect::<Vec<_>>()),
+            "volumes": sorted_json(volumes.iter().map(|volume| (&volume.reference, volume.source.kind(), volume.source.creation_labels()))),
             "mounts": sorted_json(mounts),
             "configs": sorted_json(configs),
             "config_mounts": sorted_json(config_mounts),
@@ -181,9 +181,9 @@ fn service_mode_kind(mode: &ServiceMode) -> &'static str {
     }
 }
 
-fn sorted_json<T: Serialize>(items: &[T]) -> Vec<serde_json::Value> {
+fn sorted_json<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<serde_json::Value> {
     let mut values = items
-        .iter()
+        .into_iter()
         .map(|item| serde_json::to_value(item).expect("serving shape JSON is serializable"))
         .collect::<Vec<_>>();
     values.sort_by_cached_key(ToString::to_string);

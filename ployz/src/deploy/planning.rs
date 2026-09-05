@@ -253,13 +253,13 @@ fn seal_plan(
             .volumes_to_create
             .into_iter()
             .filter_map(|(machine_id, volume)| {
-                let (name, maximum_bytes) = match volume.source.kind().clone() {
-                    ployz_core::RawVolumeSource::Ordinary { name, .. } => (name, None),
+                let (name, maximum_bytes) = match volume.source.kind() {
+                    ployz_core::RawVolumeSource::Ordinary { name, .. } => (name.clone(), None),
                     ployz_core::RawVolumeSource::Provisioned {
                         name,
                         maximum_bytes,
                         ..
-                    } => (name, Some(maximum_bytes)),
+                    } => (name.clone(), Some(*maximum_bytes)),
                     ployz_core::RawVolumeSource::External { .. }
                     | ployz_core::RawVolumeSource::Bind { .. }
                     | ployz_core::RawVolumeSource::Tmpfs { .. } => return None,

@@ -277,7 +277,7 @@ fn only_a_participating_founder_claims_allocator() {
     let (machine, joined) = participating_record();
     assert_eq!(founder_allocator_id(&joined), None);
 
-    let founder = LocalMachineRecord::new(
+    let founder = LocalMachineRecord::parse(
         LocalMachineBody::Participating {
             machine: machine.clone(),
             origin: ParticipationOrigin::Founder {
@@ -291,7 +291,7 @@ fn only_a_participating_founder_claims_allocator() {
     .unwrap();
     assert_eq!(founder_allocator_id(&founder), Some(machine.id));
 
-    let resetting = LocalMachineRecord::new(
+    let resetting = LocalMachineRecord::parse(
         LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: machine.clone(),
@@ -307,14 +307,14 @@ fn only_a_participating_founder_claims_allocator() {
     .unwrap();
     assert_eq!(founder_allocator_id(&resetting), None);
 
-    let uninitialized = LocalMachineRecord::new(
+    let uninitialized = LocalMachineRecord::parse(
         LocalMachineBody::Uninitialized { id: machine.id },
         joined.private_key().clone(),
     )
     .unwrap();
     assert_eq!(founder_allocator_id(&uninitialized), None);
 
-    let joining = LocalMachineRecord::new(
+    let joining = LocalMachineRecord::parse(
         LocalMachineBody::Joining {
             machine: machine.clone(),
             bootstrap: vec![machine.clone()],
@@ -368,7 +368,7 @@ async fn publication_guard_rechecks_the_local_phase() {
     else {
         panic!("fixture is participating");
     };
-    let local = LocalMachineRecord::new(
+    let local = LocalMachineRecord::parse(
         LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: body_machine,
@@ -390,7 +390,7 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         "advertised_endpoints": ["192.0.2.1:51820"],
     }))
     .unwrap();
-    let local = LocalMachineRecord::new(
+    let local = LocalMachineRecord::parse(
         LocalMachineBody::Participating {
             machine: machine.clone(),
             origin: ParticipationOrigin::Join {
@@ -747,7 +747,7 @@ async fn invalid_hosted_reservation_is_unavailable_and_explicit_release_recovers
     let error = client.release_domain(&store).await.unwrap_err();
     assert!(error.to_string().contains("cleared locally"), "{error}");
     assert!(store.domain_reservation().await.unwrap().is_none());
-    let valid = crate::hosted_dns::Reservation::new(
+    let valid = crate::hosted_dns::Reservation::parse(
         "http://127.0.0.1:1".into(),
         "cluster.example".into(),
         "opaque-token".into(),

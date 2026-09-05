@@ -373,7 +373,7 @@ fn requested_with_graphs(
         },
         placement: Default::default(),
         ports: Vec::new(),
-        mount_graph: ployz_core::ServiceMountGraph::new(
+        mount_graph: ployz_core::ServiceMountGraph::parse(
             ServiceVolumeGraph::parse(volumes, mounts).unwrap(),
             ServiceConfigGraph::parse(configs, config_mounts).unwrap(),
         )
@@ -448,7 +448,7 @@ fn spec_rejects_colliding_effective_mount_destinations() {
 
 #[test]
 fn combined_mount_admission_cleans_targets_and_preserves_distinct_mounts() {
-    let graph = ployz_core::ServiceMountGraph::new(
+    let graph = ployz_core::ServiceMountGraph::parse(
         ServiceVolumeGraph::parse(
             vec![named_volume("data", "data")],
             vec![mount("data", "/x/../data/"), mount("data", "/data/child")],
@@ -523,7 +523,7 @@ fn combined_mount_admission_cleans_targets_and_preserves_distinct_mounts() {
         "/x/../data",
         "/../../data",
     ] {
-        let error = ployz_core::ServiceMountGraph::new(
+        let error = ployz_core::ServiceMountGraph::parse(
             ServiceVolumeGraph::parse(
                 vec![named_volume("data", "data")],
                 vec![mount("data", "/data"), mount("data", alias)],
@@ -541,7 +541,7 @@ fn combined_mount_admission_cleans_targets_and_preserves_distinct_mounts() {
     }
     for root in ["/", "/./", "/data/..", "/../../"] {
         assert_eq!(
-            ployz_core::ServiceMountGraph::new(
+            ployz_core::ServiceMountGraph::parse(
                 ServiceVolumeGraph::parse(
                     vec![named_volume("data", "data")],
                     vec![mount("data", root)]
@@ -602,5 +602,41 @@ fn mount_admission_is_atomic_and_runs_on_resolved_observation_import() {
         ],
     )
     .unwrap();
-    assert!(ployz_core::ServiceMountGraph::new(ServiceVolumeGraph::default(), configs).is_err());
+    assert!(ployz_core::ServiceMountGraph::parse(ServiceVolumeGraph::default(), configs).is_err());
+}
+
+#[test]
+fn volume_graph_setters_reject_collisions_and_preserve_requested_and_resolved_specs() {
+    let mut requested = requested_with_graphs(
+        vec![named_volume("data", "data")],
+        vec![mount("data", "/data")],
+        vec![config("settings", b"x")],
+        vec![config_mount("settings")],
+    );
+    requested.mount_graph = requested
+        .mount_graph
+        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .unwrap();
+    let mut resolved = requested
+        .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+        .unwrap();
+    for target in ["/settings", "/"] {
+        let replacement = ServiceVolumeGraph::parse(
+            vec![named_volume("data", "data")],
+            vec![mount("data", target)],
+        )
+        .unwrap()
+        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .unwrap();
+        let before = requested.clone();
+        assert!(requested.set_volume_graph(replacement.clone()).is_err());
+        assert_eq!(requested, before);
+        let before = resolved.clone();
+        assert!(
+            resolved
+                .set_volume_graph(replacement.try_into().unwrap())
+                .is_err()
+        );
+        assert_eq!(resolved, before);
+    }
 }

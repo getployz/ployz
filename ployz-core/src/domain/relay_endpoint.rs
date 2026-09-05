@@ -1,3 +1,5 @@
+//! Syntactic admission of Cloud Relay HTTP endpoints.
+
 use serde::{Deserialize, Deserializer, Serialize, de};
 use url::Url;
 
@@ -37,11 +39,13 @@ impl RelayEndpoint {
         Ok(Self(url))
     }
 
+    /// Borrow the admitted URL.
     #[must_use]
     pub fn as_url(&self) -> &Url {
         &self.0
     }
 
+    /// Borrow the normalized URL text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()

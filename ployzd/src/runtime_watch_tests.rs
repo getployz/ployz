@@ -210,7 +210,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
     let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_704_067_200);
     let clock = IssuanceClock::new(2, at, IssuanceFailure::DoesNotResolve);
     let pending = CertificateRow::from_parts(None, None)
-        .with_challenge(CertificateChallenge::new(CHALLENGE_TOKEN, CHALLENGE_RESPONSE).unwrap());
+        .with_challenge(CertificateChallenge::parse(CHALLENGE_TOKEN, CHALLENGE_RESPONSE).unwrap());
     let failed = CertificateRow::from_parts(None, None).with_backoff(
         "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
         clock,
@@ -340,7 +340,7 @@ fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
 }
 
 fn reservation() -> Reservation {
-    Reservation::new(
+    Reservation::parse(
         DNS_ENDPOINT.into(),
         "cluster.example.ts.net".into(),
         DNS_TOKEN.into(),

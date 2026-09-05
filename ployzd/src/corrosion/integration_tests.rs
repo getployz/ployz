@@ -159,7 +159,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let local_dir = root.0.join("local-machine");
     write_record(
         &local_dir,
-        &LocalMachineRecord::new(
+        &LocalMachineRecord::parse(
             LocalMachineBody::Joining {
                 machine: published.clone(),
                 bootstrap: vec![machine("bootstrap", 8)],
@@ -213,7 +213,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);
     write_record(
         &interrupted_dir,
-        &LocalMachineRecord::new(
+        &LocalMachineRecord::parse(
             LocalMachineBody::Joining {
                 machine: machine("interrupted", 4),
                 bootstrap: vec![machine("bootstrap", 8)],
@@ -267,7 +267,7 @@ async fn certificates_round_trip_and_notify_on_change() {
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let material = {
         let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
-        CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
     };
     let mut changes = store.subscribe_certificate_changes().await.unwrap();
 
@@ -294,7 +294,7 @@ async fn certificates_round_trip_and_notify_on_change() {
         .unwrap();
     let updated = {
         let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
-        CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
     };
     store
         .publish_certificate(&hostname, &updated)
@@ -430,7 +430,7 @@ async fn founder_publisher_backdates_allocator() {
     let published = machine("founder", 1);
     write_record(
         &local_dir,
-        &LocalMachineRecord::new(
+        &LocalMachineRecord::parse(
             LocalMachineBody::Participating {
                 machine: published.clone(),
                 origin: ParticipationOrigin::Founder {

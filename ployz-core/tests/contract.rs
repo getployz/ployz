@@ -404,7 +404,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     assert!(serde_json::from_value::<VolumeSource>(wire.clone()).is_err());
     let mut imported = serde_json::from_value::<ployz_core::ResolvedVolumeSource>(wire.clone())
         .unwrap()
-        .to_requested();
+        .into_requested();
     imported.scope_to_project(&ProjectName::parse("blog").unwrap());
     assert_eq!(imported.to_create_volume_request(), Some(request));
     let mut forged = wire;
@@ -1631,7 +1631,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             machines: vec![MachineTarget::parse("edge").unwrap()],
         },
         ports: Vec::new(),
-        mount_graph: ployz_core::ServiceMountGraph::new(
+        mount_graph: ployz_core::ServiceMountGraph::parse(
             ployz_core::ServiceVolumeGraph::parse(vec![volume.clone()], vec![mount.clone()])
                 .unwrap(),
             ployz_core::ServiceConfigGraph::parse(
