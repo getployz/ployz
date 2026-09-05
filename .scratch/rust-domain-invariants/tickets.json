@@ -71,7 +71,7 @@
     ],
     "finding": "F04",
     "file": "tickets/T07-make-executable-plans-private-and-derive-progress.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T08",
@@ -81,7 +81,7 @@
     ],
     "finding": "A06 runtime follow-up",
     "file": "tickets/T08-reject-known-host-socket-conflicts-during-placement.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T09",

@@ -1,6 +1,6 @@
 # T08 — Reject known host socket conflicts during placement
 
-Status: pending
+Status: in_progress
 Blocking dependencies: T07
 Audit scope: A06 runtime follow-up
 

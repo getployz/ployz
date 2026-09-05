@@ -1,6 +1,6 @@
 path	rung1	rung2	rung3	rung4	rung5
 compose-normalize	ployz-core/src/domain/resources.rs::checked_cpu_conversion_rejects_overflow_without_saturation	ployz/tests/compose.rs::normalized_surface_reaches_requested_specs	ployz/tests/compose_cli.rs::real_compose_normalizes_without_a_daemon_and_project_inputs_stay_relative	-	-
-cluster-deploy	-	ployz/tests/compose.rs::compose_plan_separates_volume_preview_from_service_operations	-	ployz/tests/deploy_cluster.rs::deploy_execution_preserves_partial_effects_and_never_repairs_them	scripts/qualify-release.sh
+cluster-deploy	-	ployz/tests/compose.rs::compose_plan_separates_volume_preview_from_service_operations	-	ployz/src/deploy/exec_cluster_tests.rs::deploy_execution_preserves_partial_effects_and_never_repairs_them	scripts/qualify-release.sh
 named-volume	ployz-core/tests/contract.rs::managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope	ployz/tests/compose.rs::one_named_volume_can_have_different_options_per_mount	-	ployz/tests/volume_layer3.rs::volume_cli_mounts_and_partial_results_stay_machine_local	scripts/qualify-release.sh
 machine-init-ssh	-	-	-	-	scripts/qualify-release.sh
 machine-init-local	ployz/src/handlers/mod.rs::local_machine_init_requires_root_to_install	-	-	-	-
@@ -25,3 +25,4 @@ relay-rendezvous	ployz-relay/src/lib.rs::missing_attach_expires_while_register_a
 http01-challenge	ployzd/src/corrosion/certificate.rs::challenge_admission_rejects_invalid_grammar_and_token_mismatch	-	-	-	-
 name-resolution	ployz-core/tests/contract.rs::ambiguous_name_matches_reject_fewer_than_two_candidates	-	-	-	-
 hosted-dns-reservation	ployzd/src/hosted_dns.rs::successful_reservation_response_rejects_unusable_fields	-	-	-	-
+deploy-plan-admission	-	ployz/tests/deploy_client.rs::confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_rows	-	-	-
