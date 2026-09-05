@@ -41,17 +41,45 @@ pub const INGRESS_VERIFY_PATH: &str = "/.ployz-verify";
 pub enum NameMatches<T> {
     None,
     One(T),
-    Ambiguous(Vec<T>),
+    Ambiguous {
+        // Require both fields even when T can deserialize a missing value (e.g. Option).
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        first: T,
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        second: T,
+        rest: Vec<T>,
+    },
 }
 
 impl<T> NameMatches<T> {
     #[must_use]
-    pub fn from_matches(mut matches: Vec<T>) -> Self {
-        match matches.len() {
-            0 => Self::None,
-            1 => Self::One(matches.pop().expect("length checked")),
-            _ => Self::Ambiguous(matches),
+    pub fn from_matches(matches: Vec<T>) -> Self {
+        let mut matches = matches.into_iter();
+        let Some(first) = matches.next() else {
+            return Self::None;
+        };
+        match matches.next() {
+            None => Self::One(first),
+            Some(second) => Self::Ambiguous {
+                first,
+                second,
+                rest: matches.collect(),
+            },
         }
+    }
+
+    /// Candidates in their original observation order.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        let (first, second, rest) = match self {
+            Self::None => (None, None, &[][..]),
+            Self::One(first) => (Some(first), None, &[][..]),
+            Self::Ambiguous {
+                first,
+                second,
+                rest,
+            } => (Some(first), Some(second), rest.as_slice()),
+        };
+        first.into_iter().chain(second).chain(rest)
     }
 }
 

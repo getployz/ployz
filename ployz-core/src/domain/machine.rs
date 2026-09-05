@@ -363,10 +363,10 @@ pub fn resolve_machine_selectors(
                 }
                 NameMatches::One(_) => {}
                 NameMatches::None => missing.push(target.clone()),
-                NameMatches::Ambiguous(matches) => {
+                matches @ NameMatches::Ambiguous { .. } => {
                     return Err(MachineSelectorError::Ambiguous {
                         selector: target.clone(),
-                        matches: matches.into_iter().map(|machine| machine.id).collect(),
+                        matches: matches.iter().map(|machine| machine.id).collect(),
                     });
                 }
             },

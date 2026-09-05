@@ -13,7 +13,7 @@ fn filtering_and_inspect_keep_equal_names_on_different_machines() {
     assert_eq!(filtered, volumes);
     assert!(matches!(
         NameMatches::from_matches(filtered),
-        NameMatches::Ambiguous(matches) if matches.len() == 2
+        NameMatches::Ambiguous { rest, .. } if rest.is_empty()
     ));
     assert_eq!(filter_volumes(&volumes, &[]), volumes);
 }
