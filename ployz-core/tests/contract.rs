@@ -1604,7 +1604,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         pid_mode: None,
         log_driver: None,
         resources: ContainerResources {
-            memory_bytes: Some(256 * 1024 * 1024),
+            memory_bytes: Some(ployz_core::ByteQuantity::try_from(256 * 1024 * 1024).unwrap()),
             ..Default::default()
         },
         stop_timeout_secs: Some(10),

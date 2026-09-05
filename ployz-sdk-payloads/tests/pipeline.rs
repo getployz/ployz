@@ -556,3 +556,33 @@ fn write_generated_fails_when_the_package_root_is_a_file() {
     assert!(write_generated(&path).is_err());
     std::fs::remove_file(&path).unwrap();
 }
+
+#[test]
+fn sdk_intent_and_resolved_spec_reject_negative_resource_quantities() {
+    let fixtures = fixtures();
+    for field in [
+        "cpu_nanos",
+        "memory_bytes",
+        "memory_reservation_bytes",
+        "shared_memory_bytes",
+    ] {
+        let mut spec = fixture(&fixtures, "requested_service_spec").clone();
+        *spec
+            .pointer_mut(&format!("/container/resources/{field}"))
+            .unwrap() = serde_json::json!(-1);
+        let mut intent = fixture(&fixtures, "deploy_intent").clone();
+        *intent.get_mut("target").unwrap() = serde_json::json!([spec]);
+        assert!(
+            serde_json::from_value::<DeployIntent>(intent).is_err(),
+            "{field}"
+        );
+        let mut resolved = fixture(&fixtures, "resolved_service_spec_typed").clone();
+        *resolved
+            .pointer_mut(&format!("/container/resources/{field}"))
+            .unwrap() = serde_json::json!(-1);
+        assert!(
+            serde_json::from_value::<ResolvedServiceSpec>(resolved).is_err(),
+            "{field}"
+        );
+    }
+}

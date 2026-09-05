@@ -264,9 +264,9 @@ pub(super) fn docker_ports(
 
 pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> HostConfig {
     HostConfig {
-        memory: resources.memory_bytes,
-        memory_reservation: resources.memory_reservation_bytes,
-        nano_cpus: resources.cpu_nanos,
+        memory: resources.memory_bytes.map(Into::into),
+        memory_reservation: resources.memory_reservation_bytes.map(Into::into),
+        nano_cpus: resources.cpu_nanos.map(Into::into),
         devices: (!resources.devices.is_empty()).then(|| {
             resources
                 .devices
@@ -302,7 +302,7 @@ pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> Ho
                 })
                 .collect()
         }),
-        shm_size: resources.shared_memory_bytes,
+        shm_size: resources.shared_memory_bytes.map(Into::into),
         ..Default::default()
     }
 }

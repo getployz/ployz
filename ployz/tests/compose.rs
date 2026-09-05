@@ -142,14 +142,29 @@ configs:
             ("EMPTY".into(), String::new())
         ])
     );
-    assert_eq!(api.container.resources.cpu_nanos, Some(500_000_000));
-    assert_eq!(api.container.resources.memory_bytes, Some(104_857_600));
     assert_eq!(
-        api.container.resources.memory_reservation_bytes,
+        api.container.resources.cpu_nanos.map(|value| value.get()),
+        Some(500_000_000)
+    );
+    assert_eq!(
+        api.container
+            .resources
+            .memory_bytes
+            .map(|value| value.get()),
+        Some(104_857_600)
+    );
+    assert_eq!(
+        api.container
+            .resources
+            .memory_reservation_bytes
+            .map(|value| value.get()),
         Some(52_428_800)
     );
     assert_eq!(
-        api.container.resources.shared_memory_bytes,
+        api.container
+            .resources
+            .shared_memory_bytes
+            .map(|value| value.get()),
         Some(268_435_456)
     );
     assert_eq!(api.container.resources.devices.len(), 1);
@@ -2098,5 +2113,31 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn cpu_quantities_reject_invalid_normalized_input() {
+    for field in [
+        "    cpus:",
+        "    deploy:\n      resources:\n        limits:\n          cpus:",
+    ] {
+        for invalid in ["1e20", "-0.5", "NaN", "inf", "9223372036.854776"] {
+            let yaml = format!("services:\n  api:\n    image: alpine\n{field} '{invalid}'\n");
+            assert!(parse_normalized(&yaml, ".").is_err(), "{yaml}");
+        }
+        for (valid, expected) in [("0", 0), ("0.125", 125_000_000), ("1.5", 1_500_000_000)] {
+            let yaml = format!("services:\n  api:\n    image: alpine\n{field} '{valid}'\n");
+            let project = parse_normalized(&yaml, ".").unwrap();
+            assert_eq!(
+                service(&project, "api")
+                    .container
+                    .resources
+                    .cpu_nanos
+                    .unwrap()
+                    .get(),
+                expected
+            );
+        }
     }
 }

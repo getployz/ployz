@@ -10,6 +10,10 @@ export type JsonValue =
 
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
+export type CpuNanos = number;
+
+export type ByteQuantity = number;
+
 export type MachineId = string & { readonly __brand: "MachineId" };
 
 export type ContainerId = string & { readonly __brand: "ContainerId" };
@@ -147,10 +151,10 @@ export type Ulimit = {
 };
 
 export type ContainerResources = {
-  cpu_nanos?: number;
-  memory_bytes?: number;
-  memory_reservation_bytes?: number;
-  shared_memory_bytes?: number;
+  cpu_nanos?: CpuNanos;
+  memory_bytes?: ByteQuantity;
+  memory_reservation_bytes?: ByteQuantity;
+  shared_memory_bytes?: ByteQuantity;
   devices?: DeviceMapping[];
   device_reservations?: DeviceReservation[];
   ulimits?: { readonly [key: string]: Ulimit };

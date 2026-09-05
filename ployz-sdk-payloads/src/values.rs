@@ -1228,10 +1228,12 @@ fn typed_requested_spec() -> RequestedServiceSpec {
     .expect("typed config graph is valid");
     spec.container.healthcheck = Some(configured_healthcheck());
     spec.container.resources = ContainerResources {
-        cpu_nanos: Some(1_000_000),
-        memory_bytes: Some(64 * 1024 * 1024),
-        memory_reservation_bytes: Some(32 * 1024 * 1024),
-        shared_memory_bytes: Some(8 * 1024 * 1024),
+        cpu_nanos: Some(ployz_core::CpuNanos::try_from(1_000_000).unwrap()),
+        memory_bytes: Some(ployz_core::ByteQuantity::try_from(64 * 1024 * 1024).unwrap()),
+        memory_reservation_bytes: Some(
+            ployz_core::ByteQuantity::try_from(32 * 1024 * 1024).unwrap(),
+        ),
+        shared_memory_bytes: Some(ployz_core::ByteQuantity::try_from(8 * 1024 * 1024).unwrap()),
         devices: vec![device_mapping()],
         device_reservations: vec![device_reservation(), device_reservation_sparse()],
         ulimits: BTreeMap::from([("nofile".into(), ulimit())]),

@@ -2,10 +2,11 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerPath, ContainerResources, DockerVolumeName, IngressProxyFragment, MachineTarget,
-    Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
+    ByteQuantity, ContainerPath, ContainerResources, CpuNanos, DockerVolumeName,
+    IngressProxyFragment, MachineTarget, Placement, PortPublication, PullPolicy,
+    RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, Ulimit,
+    UpdateConfig, VolumeSource,
 };
 
 use crate::{
@@ -253,22 +254,20 @@ fn parse_ulimits(values: &[String]) -> Result<BTreeMap<String, Ulimit>, Error> {
         .collect()
 }
 
-fn parse_cpu(value: &str) -> Result<i64, Error> {
+fn parse_cpu(value: &str) -> Result<CpuNanos, Error> {
     let cpu = value
         .parse::<f64>()
         .map_err(|_| Error::usage("cpu must be numeric"))?;
-    if !cpu.is_finite() || cpu < 0.0 {
-        return Err(Error::usage("cpu must be a non-negative finite number"));
-    }
-    Ok((cpu * 1e9) as i64)
+    CpuNanos::from_cpus(cpu).map_err(|error| Error::usage(error.to_string()))
 }
 
-fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<i64>, Error> {
+fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<ByteQuantity>, Error> {
     matches
         .get_one::<String>(name)
         .map(|value| {
             parse_bytes(value)
                 .and_then(|value| i64::try_from(value).ok())
+                .and_then(|value| ByteQuantity::try_from(value).ok())
                 .ok_or_else(|| Error::usage(format!("{name} must be a byte size")))
         })
         .transpose()

@@ -10,7 +10,8 @@ fn spec_comparison_distinguishes_mutable_resources_from_recreation() {
     assert_eq!(compare_specs(&current, &requested), SpecChange::UpToDate);
 
     let mut resources_changed = requested.clone();
-    resources_changed.container.resources.memory_bytes = Some(512 * 1024 * 1024);
+    resources_changed.container.resources.memory_bytes =
+        Some(ployz_core::ByteQuantity::try_from(512 * 1024 * 1024).unwrap());
     assert_eq!(
         compare_specs(&current, &resources_changed),
         SpecChange::NeedsUpdate
@@ -146,7 +147,8 @@ fn spec_comparison_handles_resource_precedence_and_unordered_volumes() {
     );
 
     let mut mutable = requested.clone();
-    mutable.container.resources.cpu_nanos = Some(1_000_000_000);
+    mutable.container.resources.cpu_nanos =
+        Some(ployz_core::CpuNanos::try_from(1_000_000_000).unwrap());
     assert_eq!(
         compare_specs(&current, &scoped_spec(&mutable)),
         SpecChange::NeedsUpdate
