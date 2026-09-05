@@ -195,26 +195,37 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
         ],
         vec![
             mount("data", "/var/data"),
-            mount("data", "/var/data"),
+            mount("data", "/var/data-copy"),
             mount("data-alias", "/alias"),
         ],
         vec![
             config("settings", b"port = 8080"),
             config("unused", b"keep"),
         ],
-        vec![config_mount("settings"), config_mount("settings")],
+        vec![
+            config_mount("settings"),
+            ConfigMount {
+                target: Some(ContainerPath::parse("/settings-copy").unwrap()),
+                ..config_mount("settings")
+            },
+        ],
     );
     assert!(
         requested
             .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
             .is_err()
     );
-    requested.volume_graph = requested
-        .volume_graph
-        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+    requested
+        .set_volume_graph(
+            requested
+                .volume_graph()
+                .clone()
+                .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+                .unwrap(),
+        )
         .unwrap();
-    let volumes = requested.volume_graph.clone();
-    let configs = requested.config_graph.clone();
+    let volumes = requested.volume_graph().clone();
+    let configs = requested.config_graph().clone();
     let update = ResolvedUpdateConfig {
         order: UpdateOrder::StopFirst,
         monitor_millis: Some(1_000),
@@ -223,13 +234,13 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
     let resolved = requested
         .to_resolved(ServiceId::random(), update.clone())
         .expect("volume graph is scoped");
-    assert_eq!(resolved.volume_graph.to_requested(), volumes);
-    assert_eq!(resolved.config_graph, configs);
+    assert_eq!(resolved.volume_graph().to_requested(), volumes);
+    assert_eq!(resolved.config_graph(), &configs);
     assert_eq!(resolved.update, update);
 
     let back = resolved.to_requested();
-    assert_eq!(back.volume_graph, volumes);
-    assert_eq!(back.config_graph, configs);
+    assert_eq!(back.volume_graph(), &volumes);
+    assert_eq!(back.config_graph(), &configs);
     assert_eq!(back.update.order, Some(UpdateOrder::StopFirst));
     assert_eq!(back.update.monitor_millis, Some(1_000));
 }
@@ -244,8 +255,8 @@ fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
     );
     let json = serde_json::to_value(&valid).unwrap();
     let decoded = serde_json::from_value::<RequestedServiceSpec>(json.clone()).unwrap();
-    assert_eq!(decoded.volume_graph, valid.volume_graph);
-    assert_eq!(decoded.config_graph, valid.config_graph);
+    assert_eq!(decoded.volume_graph(), valid.volume_graph());
+    assert_eq!(decoded.config_graph(), valid.config_graph());
 
     let mut dangling_volume = json.clone();
     set_field(
@@ -279,9 +290,14 @@ fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
         .to_string()
     );
 
-    valid.volume_graph = valid
-        .volume_graph
-        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+    valid
+        .set_volume_graph(
+            valid
+                .volume_graph()
+                .clone()
+                .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+                .unwrap(),
+        )
         .unwrap();
     let resolved = valid
         .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
@@ -357,8 +373,11 @@ fn requested_with_graphs(
         },
         placement: Default::default(),
         ports: Vec::new(),
-        volume_graph: ServiceVolumeGraph::parse(volumes, mounts).unwrap(),
-        config_graph: ServiceConfigGraph::parse(configs, config_mounts).unwrap(),
+        mount_graph: ployz_core::ServiceMountGraph::new(
+            ServiceVolumeGraph::parse(volumes, mounts).unwrap(),
+            ServiceConfigGraph::parse(configs, config_mounts).unwrap(),
+        )
+        .unwrap(),
         pre_deploy: None,
         ingress_proxy_fragment: None,
         update: Default::default(),
@@ -407,4 +426,181 @@ fn config_mount(name: &str) -> ConfigMount {
 
 fn reference(value: &str) -> ServiceVolumeReference {
     ServiceVolumeReference::parse(value).unwrap()
+}
+
+#[test]
+fn spec_rejects_colliding_effective_mount_destinations() {
+    let valid = requested_with_graphs(
+        vec![named_volume("data", "data")],
+        vec![mount("data", "/data")],
+        vec![config("data", b"x")],
+        vec![],
+    );
+    for target in [None, Some("/data"), Some("/x/../data/")] {
+        let mut wire = serde_json::to_value(&valid).unwrap();
+        *wire
+            .get_mut("container")
+            .and_then(|container| container.get_mut("config_mounts"))
+            .unwrap() = serde_json::json!([{"config_name":"data", "target": target}]);
+        assert!(serde_json::from_value::<RequestedServiceSpec>(wire).is_err());
+    }
+}
+
+#[test]
+fn combined_mount_admission_cleans_targets_and_preserves_distinct_mounts() {
+    let graph = ployz_core::ServiceMountGraph::new(
+        ServiceVolumeGraph::parse(
+            vec![named_volume("data", "data")],
+            vec![mount("data", "/x/../data/"), mount("data", "/data/child")],
+        )
+        .unwrap(),
+        ServiceConfigGraph::parse(
+            vec![config("settings", b"x")],
+            vec![
+                config_mount("settings"),
+                ConfigMount {
+                    target: Some(ContainerPath::parse("/etc//./settings/").unwrap()),
+                    uid: Some(42),
+                    ..config_mount("settings")
+                },
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        graph
+            .volume_graph()
+            .mounts()
+            .first()
+            .unwrap()
+            .target
+            .as_str(),
+        "/data"
+    );
+    assert_eq!(
+        graph
+            .volume_graph()
+            .mounts()
+            .get(1)
+            .unwrap()
+            .target
+            .as_str(),
+        "/data/child"
+    );
+    assert_eq!(
+        graph
+            .config_graph()
+            .mounts()
+            .first()
+            .unwrap()
+            .target
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "/settings"
+    );
+    assert_eq!(
+        graph
+            .config_graph()
+            .mounts()
+            .get(1)
+            .unwrap()
+            .target
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "/etc/settings"
+    );
+    assert_eq!(graph.config_graph().mounts().get(1).unwrap().uid, Some(42));
+
+    for alias in [
+        "/data",
+        "/data/",
+        "/./data",
+        "/data/.",
+        "//data",
+        "/x/../data",
+        "/../../data",
+    ] {
+        let error = ployz_core::ServiceMountGraph::new(
+            ServiceVolumeGraph::parse(
+                vec![named_volume("data", "data")],
+                vec![mount("data", "/data"), mount("data", alias)],
+            )
+            .unwrap(),
+            ServiceConfigGraph::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceSpecGraphError::DuplicateMountTarget {
+                target: ContainerPath::parse("/data").unwrap()
+            }
+        );
+    }
+    for root in ["/", "/./", "/data/..", "/../../"] {
+        assert_eq!(
+            ployz_core::ServiceMountGraph::new(
+                ServiceVolumeGraph::parse(
+                    vec![named_volume("data", "data")],
+                    vec![mount("data", root)]
+                )
+                .unwrap(),
+                ServiceConfigGraph::default(),
+            ),
+            Err(ServiceSpecGraphError::RootMountTarget)
+        );
+    }
+    assert!(
+        ContainerPath::parse("/").is_ok(),
+        "root remains a legal working directory"
+    );
+}
+
+#[test]
+fn mount_admission_is_atomic_and_runs_on_resolved_observation_import() {
+    let mut spec = requested_with_graphs(
+        vec![named_volume("data", "data")],
+        vec![mount("data", "/data")],
+        vec![config("data", b"x")],
+        vec![],
+    );
+    let before = spec.clone();
+    assert!(
+        spec.set_config_graph(
+            ServiceConfigGraph::parse(vec![config("data", b"x")], vec![config_mount("data")])
+                .unwrap()
+        )
+        .is_err()
+    );
+    assert_eq!(spec, before, "failed replacement preserves admitted mounts");
+    spec.mount_graph = spec
+        .mount_graph
+        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .unwrap();
+    let resolved = spec
+        .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+        .unwrap();
+    let mut wire = serde_json::to_value(&resolved).unwrap();
+    *wire
+        .get_mut("container")
+        .and_then(|container| container.get_mut("config_mounts"))
+        .unwrap() = serde_json::json!([{"config_name":"data"}]);
+    assert!(serde_json::from_value::<ResolvedServiceSpec>(wire).is_err());
+    let back = resolved.to_requested();
+    assert_eq!(back.mount_graph, spec.mount_graph);
+
+    let configs = ServiceConfigGraph::parse(
+        vec![config("data", b"x")],
+        vec![
+            config_mount("data"),
+            ConfigMount {
+                target: Some(ContainerPath::parse("/data/").unwrap()),
+                ..config_mount("data")
+            },
+        ],
+    )
+    .unwrap();
+    assert!(ployz_core::ServiceMountGraph::new(ServiceVolumeGraph::default(), configs).is_err());
 }

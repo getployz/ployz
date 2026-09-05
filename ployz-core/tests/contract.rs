@@ -1629,23 +1629,23 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             machines: vec![MachineTarget::parse("edge").unwrap()],
         },
         ports: Vec::new(),
-        volume_graph: ployz_core::ServiceVolumeGraph::parse(
-            vec![volume.clone()],
-            vec![mount.clone()],
-        )
-        .unwrap(),
-        config_graph: ployz_core::ServiceConfigGraph::parse(
-            vec![ConfigSpec {
-                name: "settings".into(),
-                content: b"port = 8080".to_vec(),
-            }],
-            vec![ConfigMount {
-                config_name: "settings".into(),
-                target: Some(ContainerPath::parse("/etc/api/settings.toml").unwrap()),
-                uid: Some(1000),
-                gid: Some(1000),
-                mode: Some(0o440),
-            }],
+        mount_graph: ployz_core::ServiceMountGraph::new(
+            ployz_core::ServiceVolumeGraph::parse(vec![volume.clone()], vec![mount.clone()])
+                .unwrap(),
+            ployz_core::ServiceConfigGraph::parse(
+                vec![ConfigSpec {
+                    name: "settings".into(),
+                    content: b"port = 8080".to_vec(),
+                }],
+                vec![ConfigMount {
+                    config_name: "settings".into(),
+                    target: Some(ContainerPath::parse("/etc/api/settings.toml").unwrap()),
+                    uid: Some(1000),
+                    gid: Some(1000),
+                    mode: Some(0o440),
+                }],
+            )
+            .unwrap(),
         )
         .unwrap(),
         pre_deploy: Some(PreDeployHook {
@@ -1670,8 +1670,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         container,
         placement: requested.placement.clone(),
         ports: Vec::new(),
-        volume_graph: requested.volume_graph.clone().try_into().unwrap(),
-        config_graph: requested.config_graph.clone(),
+        mount_graph: requested.mount_graph.clone().try_into().unwrap(),
         pre_deploy: requested.pre_deploy.clone(),
         ingress_proxy_fragment: requested.ingress_proxy_fragment.clone(),
         update: ployz_core::ResolvedUpdateConfig {

@@ -871,29 +871,32 @@ mod tests {
         let founder = machine('f', "founder");
         let mut spec = requested(ServiceMode::Global);
         let reference = ServiceVolumeReference::parse("data").unwrap();
-        spec.volume_graph = ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference: reference.clone(),
-                source: ployz_core::RawVolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(100).unwrap(),
-                    ),
-                    labels: Default::default(),
-                }
-                .admit()
-                .expect("valid volume declaration"),
-            }],
-            vec![ServiceMount {
-                volume: reference,
-                target: ContainerPath::parse("/data").unwrap(),
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            }],
+        spec.set_volume_graph(
+            ServiceVolumeGraph::parse(
+                vec![ServiceVolume {
+                    reference: reference.clone(),
+                    source: ployz_core::RawVolumeSource::Provisioned {
+                        name: DockerVolumeName::parse("data").unwrap(),
+                        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                            NonZeroU64::new(100).unwrap(),
+                        ),
+                        labels: Default::default(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                }],
+                vec![ServiceMount {
+                    volume: reference,
+                    target: ContainerPath::parse("/data").unwrap(),
+                    read_only: false,
+                    no_copy: false,
+                    subpath: None,
+                }],
+            )
+            .unwrap()
+            .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+            .unwrap(),
         )
-        .unwrap()
-        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
         .unwrap();
         let service = grouped(
             qualified("app", "api"),
@@ -958,7 +961,7 @@ mod tests {
             ]
         );
         assert!(
-            spec.volume_graph
+            spec.volume_graph()
                 .volumes()
                 .iter()
                 .filter_map(|volume| match volume.source.kind() {
@@ -1044,8 +1047,7 @@ mod tests {
             },
             placement: Placement::default(),
             ports: Vec::new(),
-            volume_graph: Default::default(),
-            config_graph: Default::default(),
+            mount_graph: Default::default(),
             pre_deploy: None,
             ingress_proxy_fragment: None,
             update: UpdateConfig::default(),

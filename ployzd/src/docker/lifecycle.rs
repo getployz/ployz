@@ -369,7 +369,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
     ) -> Result<ServicePlacementEligibility, Error> {
-        let storage = if spec.volume_graph.has_mounted_provisioned_volume() {
+        let storage = if spec.volume_graph().has_mounted_provisioned_volume() {
             storage.await
         } else {
             None
@@ -555,18 +555,14 @@ async fn docker_config_mounts(
     configs: &mut ConfigOperation<'_>,
     spec: &ResolvedServiceSpec,
 ) -> Result<Vec<Mount>, Error> {
-    let mut mounts = Vec::with_capacity(spec.config_graph.mounts().len());
-    for mount in spec.config_graph.mounts() {
-        let config = spec.config_graph.config_for(mount);
+    let mut mounts = Vec::with_capacity(spec.config_graph().mounts().len());
+    for mount in spec.config_graph().mounts() {
+        let config = spec.config_graph().config_for(mount);
         let target = mount
             .target
             .as_ref()
-            .map_or_else(|| format!("/{}", mount.config_name), ToString::to_string);
-        if target == "/" {
-            return Err(Error::InvalidContainerConfig(format!(
-                "invalid config target {target:?}"
-            )));
-        }
+            .expect("mount admission resolves config destinations")
+            .to_string();
         let source = configs.materialize_config(config, mount).await?;
         let source = source.to_str().ok_or_else(|| {
             Error::InvalidContainerConfig("config path is not valid UTF-8".into())

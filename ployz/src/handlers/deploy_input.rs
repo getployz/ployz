@@ -118,8 +118,8 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                 .collect::<Result<_, _>>()?,
         },
         ports,
-        volume_graph,
-        config_graph: Default::default(),
+        mount_graph: ployz_core::ServiceMountGraph::new(volume_graph, Default::default())
+            .map_err(|error| Error::usage(error.to_string()))?,
         pre_deploy: None,
         ingress_proxy_fragment: caddy_config
             .filter(|config| !config.trim().is_empty())

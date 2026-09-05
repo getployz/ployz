@@ -116,7 +116,7 @@ mod tests {
         ));
         assert_eq!(spec.mounts().len(), 3);
         assert_eq!(
-            spec.volume_graph
+            spec.volume_graph()
                 .volumes()
                 .iter()
                 .filter_map(|volume| match volume.source.kind() {
@@ -130,6 +130,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["/var/lib/ployz/ingress", "/run/ployz/ingress"]
         );
-        assert!(spec.config_graph.mounts().is_empty());
+        assert!(spec.config_graph().mounts().is_empty());
     }
 }

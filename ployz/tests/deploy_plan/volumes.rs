@@ -624,8 +624,8 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
     });
     add_named_volume(&mut requested, "data");
     make_provisioned(&mut requested, "data", 1_073_741_824);
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mut mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mut mounts = requested.volume_graph().mounts().to_vec();
     let mut alias = ServiceVolume {
         reference: ServiceVolumeReference::parse("data-alias").unwrap(),
         source: volumes.first().unwrap().source.clone(),
@@ -720,15 +720,17 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
 fn colocated_global_services_reject_conflicting_provisioned_labels() {
     let first = global_service("first", "first", 1_073_741_824);
     let mut second = global_service("second", "first", 1_073_741_824);
-    let mut volumes = second.volume_graph.volumes().to_vec();
-    let mounts = second.volume_graph.mounts().to_vec();
+    let mut volumes = second.volume_graph().volumes().to_vec();
+    let mounts = second.volume_graph().mounts().to_vec();
     let mut raw = volumes.first().unwrap().source.kind().clone();
     let ployz_core::RawVolumeSource::Provisioned { labels, .. } = &mut raw else {
         unreachable!("global_service adds a Provisioned Volume")
     };
     labels.insert("backup".into(), "daily".into());
     volumes.first_mut().unwrap().source = raw.admit().unwrap();
-    second.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    second
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&first, &second],

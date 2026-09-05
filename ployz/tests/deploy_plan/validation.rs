@@ -136,9 +136,12 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
 fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mut mounts = requested.volume_graph.mounts().to_vec();
-    mounts.push(mounts.first().unwrap().clone());
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mut mounts = requested.volume_graph().mounts().to_vec();
+    mounts.push(ServiceMount {
+        target: ContainerPath::parse("/data-copy").unwrap(),
+        ..mounts.first().unwrap().clone()
+    });
     let source = volumes.first().unwrap().source.clone();
     let alias = ServiceVolumeReference::parse("data-alias").unwrap();
     volumes.push(ServiceVolume {
@@ -152,7 +155,9 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
         no_copy: false,
         subpath: None,
     });
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 
     let plan = plan_deploy(
         [&requested],
@@ -175,8 +180,8 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
 fn unused_volume_definition_does_not_create_a_docker_volume() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mounts = requested.volume_graph().mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("logs").unwrap(),
         source: ployz_core::RawVolumeSource::Ordinary {
@@ -187,7 +192,9 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
         .admit()
         .expect("valid volume declaration"),
     });
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 
     let plan = plan_deploy(
         [&requested],
@@ -230,8 +237,8 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
 fn project_scoping_rejects_incompatible_physical_volume_aliases() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mounts = requested.volume_graph().mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("external").unwrap(),
         source: ployz_core::RawVolumeSource::External {
@@ -240,7 +247,9 @@ fn project_scoping_rejects_incompatible_physical_volume_aliases() {
         .admit()
         .expect("valid volume declaration"),
     });
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 
     assert_eq!(
         plan_deploy(

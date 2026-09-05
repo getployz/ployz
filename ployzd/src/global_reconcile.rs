@@ -305,31 +305,34 @@ mod tests {
         };
 
         let reference = ServiceVolumeReference::parse("data").unwrap();
-        spec.volume_graph = ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference: reference.clone(),
-                source: ployz_core::RawVolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(100).unwrap(),
-                    ),
-                    labels: Default::default(),
-                }
-                .admit()
-                .expect("valid volume declaration"),
-            }],
-            vec![ServiceMount {
-                volume: reference,
-                target: ContainerPath::parse("/data").unwrap(),
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            }],
+        spec.set_volume_graph(
+            ServiceVolumeGraph::parse(
+                vec![ServiceVolume {
+                    reference: reference.clone(),
+                    source: ployz_core::RawVolumeSource::Provisioned {
+                        name: DockerVolumeName::parse("data").unwrap(),
+                        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                            NonZeroU64::new(100).unwrap(),
+                        ),
+                        labels: Default::default(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                }],
+                vec![ServiceMount {
+                    volume: reference,
+                    target: ContainerPath::parse("/data").unwrap(),
+                    read_only: false,
+                    no_copy: false,
+                    subpath: None,
+                }],
+            )
+            .unwrap()
+            .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
         )
-        .unwrap()
-        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
-        .unwrap()
-        .try_into()
         .unwrap();
     }
 

@@ -1008,7 +1008,7 @@ mod tests {
                 "reference": "host",
                 "source": { "kind": "bind", "machine_path": "/etc/os-release" }
             }],
-            "mounts": [{ "volume": "host", "target": "/host-os" }]
+            "mounts": [{ "volume": "host", "target": "/x/..//host-os/./" }]
         }))
         .unwrap();
 
@@ -1059,7 +1059,7 @@ mod tests {
         }))
         .unwrap();
 
-        let mounts = docker_mounts(&spec.volume_graph).unwrap();
+        let mounts = docker_mounts(spec.volume_graph()).unwrap();
         let [bind_mount, named_mount, archive_mount, tmpfs_mount] = mounts.as_slice() else {
             panic!("expected four mounts: {mounts:?}")
         };
@@ -1086,8 +1086,8 @@ mod tests {
             ),
         ] {
             let mut recursive_spec = spec.clone();
-            let mut volumes = recursive_spec.volume_graph.volumes().to_vec();
-            let mounts = recursive_spec.volume_graph.mounts().to_vec();
+            let mut volumes = recursive_spec.volume_graph().volumes().to_vec();
+            let mounts = recursive_spec.volume_graph().mounts().to_vec();
             let mut raw = volumes.first().unwrap().source.kind().clone();
             let ployz_core::RawVolumeSource::Bind {
                 recursive: setting, ..
@@ -1097,11 +1097,15 @@ mod tests {
             };
             *setting = Some(recursive);
             volumes.first_mut().unwrap().source = raw.admit().unwrap();
-            recursive_spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
-                .unwrap()
-                .try_into()
+            recursive_spec
+                .set_volume_graph(
+                    ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                )
                 .unwrap();
-            let translated = docker_mounts(&recursive_spec.volume_graph)
+            let translated = docker_mounts(recursive_spec.volume_graph())
                 .unwrap()
                 .remove(0)
                 .bind_options
@@ -1143,8 +1147,8 @@ mod tests {
             ),
         ] {
             let mut propagation_spec = spec.clone();
-            let mut volumes = propagation_spec.volume_graph.volumes().to_vec();
-            let mounts = propagation_spec.volume_graph.mounts().to_vec();
+            let mut volumes = propagation_spec.volume_graph().volumes().to_vec();
+            let mounts = propagation_spec.volume_graph().mounts().to_vec();
             let mut raw = volumes.first().unwrap().source.kind().clone();
             let ployz_core::RawVolumeSource::Bind {
                 propagation: setting,
@@ -1155,11 +1159,15 @@ mod tests {
             };
             *setting = Some(propagation);
             volumes.first_mut().unwrap().source = raw.admit().unwrap();
-            propagation_spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
-                .unwrap()
-                .try_into()
+            propagation_spec
+                .set_volume_graph(
+                    ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                )
                 .unwrap();
-            let translated = docker_mounts(&propagation_spec.volume_graph)
+            let translated = docker_mounts(propagation_spec.volume_graph())
                 .unwrap()
                 .remove(0)
                 .bind_options
@@ -1216,7 +1224,7 @@ mod tests {
                 "mounts": [{"volume":"data","target":"/data"}]
             }))
             .unwrap();
-        let mounts = docker_mounts(&missing_docker_volume.volume_graph).unwrap();
+        let mounts = docker_mounts(missing_docker_volume.volume_graph()).unwrap();
         let [named] = mounts.as_slice() else {
             panic!("valid Service Volume graph still maps a named Docker Volume")
         };
@@ -1240,7 +1248,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let external = docker_mounts(&external.volume_graph).unwrap().remove(0);
+        let external = docker_mounts(external.volume_graph()).unwrap().remove(0);
         assert_eq!(external.source.as_deref(), Some("external-data"));
         assert_eq!(
             external.volume_options,

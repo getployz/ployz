@@ -133,20 +133,22 @@ fn spec_comparison_handles_resource_precedence_and_unordered_volumes() {
 
     let mut reordered = requested.clone();
     let volumes = reordered
-        .volume_graph
+        .volume_graph()
         .volumes()
         .iter()
         .rev()
         .cloned()
         .collect();
     let mounts = reordered
-        .volume_graph
+        .volume_graph()
         .mounts()
         .iter()
         .rev()
         .cloned()
         .collect();
-    reordered.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    reordered
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     assert_eq!(
         compare_specs(&current, &scoped_spec(&reordered)),
         SpecChange::UpToDate

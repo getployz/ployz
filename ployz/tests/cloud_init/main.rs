@@ -1112,7 +1112,7 @@ async fn join_places_observed_envoy_ingress_on_this_machine() {
         ]
     );
     assert!(
-        spec.volume_graph
+        spec.volume_graph()
             .volumes()
             .iter()
             .filter_map(|volume| match volume.source.kind() {

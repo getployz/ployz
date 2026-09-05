@@ -338,11 +338,14 @@ pub(super) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSp
             subpath: None,
         })
         .collect();
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
-        .unwrap()
-        .scope_to_project(&ProjectName::parse("app").unwrap())
-        .unwrap()
-        .try_into()
-        .unwrap();
+    spec.set_volume_graph(
+        ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+            .unwrap()
+            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    )
+    .unwrap();
     spec
 }
