@@ -779,10 +779,10 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        operations
-            if operations.iter().all(|operation| matches!(operation,
-                    DeployOperation::RunContainer { machine_id: container_machine, .. }
-                        if container_machine == &machine_id('1')))
+        [
+            DeployOperation::RunContainer { machine_id: first, .. },
+            DeployOperation::RunContainer { machine_id: second, .. },
+        ] if first == &machine_id('1') && second == &machine_id('1')
     ));
     assert!(matches!(
         &plan.volumes_to_create[..],

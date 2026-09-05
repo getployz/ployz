@@ -72,12 +72,14 @@ struct Step(Call, Reply);
 
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
+    observations: Option<Vec<ContainerObservation>>,
 }
 
 impl Scripted {
     fn new(steps: Vec<Step>) -> Self {
         Self {
             steps: Mutex::new(steps.into()),
+            observations: None,
         }
     }
 
@@ -111,6 +113,9 @@ impl MachineOperations for Scripted {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError> {
+        if let Some(observations) = &self.observations {
+            return Ok(observations.clone());
+        }
         match self.next(Call::List(service.clone())) {
             Reply::Listed(containers) => Ok(containers),
             Reply::Error(error) => Err(error),
