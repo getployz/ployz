@@ -408,7 +408,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     imported.scope_to_project(&ProjectName::parse("blog").unwrap());
     assert_eq!(imported.to_create_volume_request(), Some(request));
     let mut forged = wire;
-    forged["scope"]["project"] = serde_json::json!("blog");
+    *forged.pointer_mut("/scope/project").unwrap() = serde_json::json!("blog");
     assert!(serde_json::from_value::<ployz_core::ResolvedVolumeSource>(forged).is_err());
 
     let mut external: VolumeSource = ployz_core::RawVolumeSource::External {

@@ -305,11 +305,17 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         ("ServiceVolume", to_value(&service_volume())),
         (
             "ResolvedServiceVolume",
-            to_value(&typed_resolved_spec())["volumes"][0].clone(),
+            to_value(&typed_resolved_spec())
+                .pointer("/volumes/0")
+                .expect("Resolved Service fixture includes a Volume")
+                .clone(),
         ),
         (
             "ScopedVolumeSource",
-            to_value(&typed_resolved_spec())["volumes"][0]["source"]["scope"].clone(),
+            to_value(&typed_resolved_spec())
+                .pointer("/volumes/0/source/scope")
+                .expect("Resolved Service fixture includes a scoped Volume")
+                .clone(),
         ),
         ("ServiceMount", to_value(&service_mount())),
         ("VolumeDriver", to_value(&volume_driver())),

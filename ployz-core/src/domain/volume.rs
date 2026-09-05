@@ -107,17 +107,15 @@ impl TryFrom<RawVolumeSource> for VolumeSource {
     fn try_from(source: RawVolumeSource) -> Result<Self, Self::Error> {
         if let RawVolumeSource::Ordinary { labels, .. }
         | RawVolumeSource::Provisioned { labels, .. } = &source
-        {
-            if let Some(key) = labels
+            && let Some(key) = labels
                 .keys()
                 .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == PROJECT_NAME_LABEL)
-            {
-                return Err(ValueError::new(
-                    "volume label",
-                    key.clone(),
-                    "a non-reserved user label",
-                ));
-            }
+        {
+            return Err(ValueError::new(
+                "volume label",
+                key.clone(),
+                "a non-reserved user label",
+            ));
         }
         Ok(Self {
             source,
@@ -426,18 +424,17 @@ impl TryFrom<ResolvedVolumeSourceWire> for ResolvedVolumeSource {
     type Error = ValueError;
     fn try_from(wire: ResolvedVolumeSourceWire) -> Result<Self, Self::Error> {
         let mut source = VolumeSource::try_from(wire.source)?;
-        if let Some(scope) = &wire.scope {
-            if !matches!(
+        if let Some(scope) = &wire.scope
+            && (!matches!(
                 source.kind(),
                 RawVolumeSource::Ordinary { .. } | RawVolumeSource::Provisioned { .. }
-            ) || source.docker_volume_name() != Some(&scope.physical_name())
-            {
-                return Err(ValueError::new(
-                    "resolved volume",
-                    "scope",
-                    "ownership matching the managed physical source",
-                ));
-            }
+            ) || source.docker_volume_name() != Some(&scope.physical_name()))
+        {
+            return Err(ValueError::new(
+                "resolved volume",
+                "scope",
+                "ownership matching the managed physical source",
+            ));
         }
         source.scope = wire.scope;
         Self::try_from(source)
