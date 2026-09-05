@@ -273,6 +273,11 @@ fn cloud_enroll() -> Command {
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
         )
         .arg(switch("no-ingress", None))
+        .arg(
+            value("ingress-image", None)
+                .help("Caddy image to deploy when founding a Cluster")
+                .conflicts_with("no-ingress"),
+        )
         .arg(switch("no-dns", None))
         .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))

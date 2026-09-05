@@ -220,10 +220,11 @@ async fn enroll_founder(
     };
     let no_ingress = matches.get_flag("no-ingress");
     let no_dns = matches.get_flag("no-dns");
+    let ingress_image = matches.get_one::<String>("ingress-image").cloned();
     let ingress = if no_ingress {
         None
     } else {
-        Some(crate::ingress::service_spec(None, Vec::new(), None).await?)
+        Some(crate::ingress::service_spec(ingress_image, Vec::new(), None).await?)
     };
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => (*machine, client),
