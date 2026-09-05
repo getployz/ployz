@@ -69,6 +69,12 @@ impl MachineService {
     }
 
     #[must_use]
+    pub(super) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
+        self.local = self.local.with_participation(participating);
+        self
+    }
+
+    #[must_use]
     pub(super) fn with_cluster_option(
         mut self,
         cluster: Option<(ReplicatedStore, AdminClient)>,
@@ -954,6 +960,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::LockPoisoned => {
             Err(Status::internal("local Machine record lock poisoned"))
         }
+        LocalMachineError::OperationTask(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::IngressProxyBackend(error) => respond(RpcError {
             code: RpcErrorCode::Conflict,

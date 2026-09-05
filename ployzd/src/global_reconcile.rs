@@ -85,7 +85,16 @@ pub(crate) async fn run(
             _ = interval.tick() => *participating.borrow(),
         };
         if reconcile {
-            reconcile_store(&store, &reconciler, &observations).await;
+            tokio::select! {
+                () = reconcile_store(&store, &reconciler, &observations) => {}
+                changed = participating.wait_for(|value| !*value) => {
+                    if let Err(error) = changed {
+                        return Err(RunError::ParticipationSignalClosed(error));
+                    }
+                    observations.send_replace(Vec::new());
+                }
+                () = shutdown.cancelled() => return Ok(()),
+            }
         }
     }
 }
@@ -102,6 +111,9 @@ async fn reconcile_store(
             return;
         }
     };
+    if record.phase() != ployz_core::LocalMachinePhase::Participating {
+        return;
+    }
     let Some(machine) = record.machine().cloned() else {
         eprintln!(
             "failed to read local Machine for Global reconciliation: Machine is not participating"

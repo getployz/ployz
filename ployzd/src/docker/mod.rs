@@ -12,7 +12,7 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use std::{
     collections::HashMap,

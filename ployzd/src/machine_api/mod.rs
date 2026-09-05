@@ -80,6 +80,12 @@ impl MachineApi {
 
 impl MachineApiBuilder {
     #[must_use]
+    pub(crate) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
+        self.service = self.service.with_participation(participating);
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
         self.service = self.service.with_cluster_option(cluster);
         self

@@ -362,11 +362,11 @@ mod tests {
         let machine = machine();
         assert_eq!(
             unregistry_management_address(&LocalMachinePhase::Joining, Some(&machine)),
-            Some("fdcc::2".parse().unwrap())
+            Some("fdcc:202:202:202:202:202:202:202".parse().unwrap())
         );
         assert_eq!(
             unregistry_management_address(&LocalMachinePhase::Participating, Some(&machine)),
-            Some("fdcc::2".parse().unwrap())
+            Some("fdcc:202:202:202:202:202:202:202".parse().unwrap())
         );
         assert_eq!(
             unregistry_management_address(&LocalMachinePhase::Uninitialized, Some(&machine)),
