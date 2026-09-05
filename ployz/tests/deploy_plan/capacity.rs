@@ -367,7 +367,7 @@ fn huge_replica_request_preflights_the_persistent_hook_endpoint() {
         replicas: NonZeroU32::new(replicas).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["migrate".into()],
+        command: vec!["migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,

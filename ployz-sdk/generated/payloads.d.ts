@@ -175,7 +175,7 @@ export type Placement = {
 };
 
 export type PreDeployHook = {
-  command: string[];
+  command: readonly [string, ...string[]];
   environment?: { readonly [key: string]: string };
   privileged?: boolean;
   timeout_millis?: number;

@@ -14,6 +14,7 @@ import type {
   MachineId,
   LocalMachineRemoved,
   ProjectName,
+  PreDeployHook,
   Registered,
   RequestedServiceSpec,
   RestartPolicy,
@@ -36,6 +37,10 @@ import {
   RpcError,
 } from "../index";
 import type { HeldRegister, PreparedDeploy } from "../index";
+
+({ command: ["NONE"] }) satisfies PreDeployHook;
+// @ts-expect-error a pre-deploy hook requires at least one command argument
+({ command: [] }) satisfies PreDeployHook;
 
 new RpcError({
   code: "unavailable",

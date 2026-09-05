@@ -1649,7 +1649,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         )
         .unwrap(),
         pre_deploy: Some(PreDeployHook {
-            command: vec!["migrate".into()],
+            command: vec!["migrate".into()].try_into().unwrap(),
             environment: Default::default(),
             privileged: None,
             timeout_millis: Some(30_000),

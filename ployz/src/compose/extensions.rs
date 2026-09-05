@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use ployz_core::{IngressProxyFragment, PreDeployHook};
+use ployz_core::{IngressProxyFragment, PreDeployCommand, PreDeployHook};
 
 use super::{
     convert::{duration_millis, environment, invalid, shell},
@@ -49,12 +49,7 @@ pub(super) fn pre_deploy(
     if let Some(key) = value.other.keys().next() {
         return Err(invalid(format!("invalid x-pre_deploy key: {key}")));
     }
-    let command = shell(&value.command)?;
-    if command.is_empty() {
-        return Err(invalid(
-            "missing required attribute 'command' in x-pre_deploy",
-        ));
-    }
+    let command = PreDeployCommand::parse(shell(&value.command)?).map_err(invalid)?;
     Ok(Some(PreDeployHook {
         command,
         environment: value

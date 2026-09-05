@@ -129,7 +129,7 @@ fn selected_service_healthy_wait_precedes_the_dependent_hook() {
     db.container.healthcheck = Some(configured_healthcheck());
     let mut web = spec("web");
     web.pre_deploy = Some(PreDeployHook {
-        command: vec!["migrate".into()],
+        command: vec!["migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,

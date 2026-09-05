@@ -314,7 +314,7 @@ fn spec(
     }))
     .unwrap();
     spec.pre_deploy = hook_timeout_millis.map(|timeout_millis| ployz_core::PreDeployHook {
-        command: vec!["true".into()],
+        command: vec!["true".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: Some(timeout_millis),

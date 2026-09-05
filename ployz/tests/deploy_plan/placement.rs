@@ -717,7 +717,7 @@ fn shared_volume_anchor_accounts_for_replacements_and_hooks() {
     for spec in [&mut first, &mut second] {
         add_named_volume(spec, "data");
         spec.pre_deploy = Some(PreDeployHook {
-            command: vec!["prepare".into()],
+            command: vec!["prepare".into()].try_into().unwrap(),
             environment: Default::default(),
             privileged: None,
             timeout_millis: None,

@@ -135,7 +135,10 @@ pub(super) fn container_create_body(
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect(),
         ),
-        cmd: Some(hook.map_or_else(|| container.command.clone(), |hook| hook.command.clone())),
+        cmd: Some(hook.map_or_else(
+            || container.command.clone(),
+            |hook| hook.command.as_slice().to_vec(),
+        )),
         healthcheck: if hook.is_some() {
             Some(HealthConfig {
                 test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
