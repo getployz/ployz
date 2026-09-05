@@ -144,7 +144,7 @@
     "depends": [],
     "finding": "F11 material",
     "file": "tickets/T15-validate-certificate-material-in-its-private-constructor.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T16",
@@ -172,7 +172,7 @@
     "depends": [],
     "finding": "F14",
     "file": "tickets/T18-encode-ambiguity-minimum-cardinality.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T19",

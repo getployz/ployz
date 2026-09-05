@@ -1,6 +1,6 @@
 # T18 — Encode ambiguity minimum cardinality
 
-Status: pending
+Status: complete
 Blocking dependencies: none
 Audit scope: F14
 
