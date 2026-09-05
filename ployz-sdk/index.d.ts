@@ -4,7 +4,7 @@ import type {
   DeployIntent,
   DeployOutcome,
   DeployPreview,
-  DockerVolumeName,
+  VolumeRemoval,
   ExecutionError,
   MachineId,
   MachineTarget,
@@ -12,7 +12,6 @@ import type {
   LocalMachineRemoved,
   DataLossConfirmation,
   ClusterTeardown,
-  PartialResult,
   PlanOptions,
   ProjectName,
   RegisterRequest,
@@ -106,7 +105,7 @@ export declare class Client {
   ): Promise<DeployOutcome<ExecutionError>>;
   removeVolumes(
     request: RemoveVolumesRequest,
-  ): Promise<PartialResult<DockerVolumeName, RpcError>>;
+  ): Promise<VolumeRemoval[]>;
   dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>;
   removeMachine(
     machine: MachineTarget,

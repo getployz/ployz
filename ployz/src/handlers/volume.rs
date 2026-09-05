@@ -7,7 +7,8 @@ use clap::ArgMatches;
 use ployz_core::{
     CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
     ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
+    RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, VolumeRemoval,
+    VolumeRemovalOutcome, op, resolve_machine_selectors,
 };
 
 use crate::{
@@ -255,10 +256,13 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     force,
                 })
                 .await?;
-            if removal.all_targets_succeeded() {
+            if removal
+                .iter()
+                .all(|removal| matches!(removal.outcome, VolumeRemovalOutcome::Removed))
+            {
                 Ok(())
             } else {
-                Err(Error::usage(failure_summary(&removal)))
+                Err(Error::usage(removal_failure_summary(&removal)))
             }
         })
     })
@@ -426,6 +430,27 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
         ));
     }
     format!("one or more Docker Volume observations failed: {failures}")
+}
+
+fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
+    let failures = removals
+        .iter()
+        .filter_map(|removal| {
+            let message = match &removal.outcome {
+                VolumeRemovalOutcome::Removed => return None,
+                VolumeRemovalOutcome::Failed { error } => error.message.as_str(),
+                VolumeRemovalOutcome::Omitted => {
+                    "not attempted: Machine absent or not inviting RPC"
+                }
+            };
+            Some(format!(
+                "{}/{}: {message}",
+                removal.id.machine_id, removal.id.name
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("one or more Docker Volume removals failed or were omitted: {failures}")
 }
 
 fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {

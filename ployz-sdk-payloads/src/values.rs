@@ -30,8 +30,8 @@ use ployz_core::{
     ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt, StopContainerPurpose,
     StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
-    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeSource, VolumeToCreate,
-    WireGuardPublicKey,
+    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeRemoval, VolumeRemovalOutcome,
+    VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -278,6 +278,13 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
             ),
         ),
         ("VolumeInventory", to_value(&volume_inventory())),
+        (
+            "VolumeRemoval",
+            to_value(&VolumeRemoval {
+                id: docker_volume().id,
+                outcome: VolumeRemovalOutcome::Removed,
+            }),
+        ),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("ObservedDataLoss", to_value(&observed_data_loss())),
         ("DataLossConfirmation", to_value(&data_loss_confirmation())),
@@ -430,6 +437,7 @@ pub(super) fn tagged_decoders() -> BTreeMap<&'static str, Decodes> {
             "DockerVolumeStorageObservation",
             decodes::<DockerVolumeStorageObservation>,
         ),
+        ("VolumeRemovalOutcome", decodes::<VolumeRemovalOutcome>),
         ("CreateVolumeReport", decodes::<CreateVolumeReport>),
         ("DataLoss", decodes::<DataLoss>),
         (
@@ -468,6 +476,14 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         panic!("failed fixture is Failed");
     };
     BTreeMap::from([
+        (
+            "VolumeRemovalOutcome",
+            vec![
+                to_value(&VolumeRemovalOutcome::Removed),
+                to_value(&VolumeRemovalOutcome::Failed { error: rpc_error() }),
+                to_value(&VolumeRemovalOutcome::Omitted),
+            ],
+        ),
         ("DataLoss", vec![to_value(&data_loss())]),
         (
             "IngressProxyFragment",

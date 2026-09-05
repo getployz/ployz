@@ -5,12 +5,63 @@ use std::{path::PathBuf, process::Command, time::Duration};
 use ployz::sdk;
 use ployz_core::{
     DESCRIBE_CONTRACT_CAPABILITY, DockerVolumeId, DockerVolumeName, MachineId,
-    MembershipObservation, RemoveVolumesRequest, RpcErrorCode,
+    MembershipObservation, RemoveVolumesRequest, RpcErrorCode, VolumeRemoval, VolumeRemovalOutcome,
 };
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
 use super::support::{DiscoveryService, machine, machine_id, native_addon};
+
+#[tokio::test]
+async fn removal_outcomes_retain_each_volume_identity() {
+    let (client, _session, _machine) = volume_session().await;
+    let result = client
+        .remove_volumes(remove(
+            [
+                volume('b', "logs"),
+                volume('a', "data"),
+                volume('b', "data"),
+                volume('a', "busy"),
+                volume('c', "logs"),
+                volume('c', "data"),
+            ],
+            false,
+        ))
+        .await
+        .unwrap();
+    let wire = serde_json::to_value(result).unwrap();
+    let outcomes = wire
+        .as_array()
+        .expect("one outcome per requested Docker Volume");
+    assert_eq!(outcomes.len(), 6);
+    for (machine, name, status) in [
+        ('b', "logs", "failed"),
+        ('a', "data", "removed"),
+        ('b', "data", "failed"),
+        ('a', "busy", "failed"),
+        ('c', "logs", "omitted"),
+        ('c', "data", "omitted"),
+    ] {
+        let outcome = outcomes
+            .iter()
+            .find(|entry| entry["id"] == serde_json::to_value(volume(machine, name)).unwrap())
+            .unwrap();
+        assert_eq!(
+            outcome
+                .pointer("/outcome/status")
+                .and_then(serde_json::Value::as_str),
+            Some(status)
+        );
+        if machine == 'b' {
+            assert_eq!(
+                outcome
+                    .pointer("/outcome/error/message")
+                    .and_then(serde_json::Value::as_str),
+                Some("target unavailable")
+            );
+        }
+    }
+}
 
 #[tokio::test]
 async fn remove_volumes_destroys_named_volumes_on_a_live_machine() {
@@ -21,20 +72,13 @@ async fn remove_volumes_destroys_named_volumes_on_a_live_machine() {
         .await
         .unwrap();
 
-    assert_eq!(result.successes.len(), 1);
     assert_eq!(
-        result.successes.first().map(|success| success.machine_id),
-        Some(machine_id('a'))
+        result,
+        vec![VolumeRemoval {
+            id: volume('a', "data"),
+            outcome: VolumeRemovalOutcome::Removed
+        }]
     );
-    assert_eq!(
-        result
-            .successes
-            .first()
-            .map(|success| success.value.as_str()),
-        Some("data")
-    );
-    assert!(result.failures.is_empty());
-    assert!(result.omissions.is_empty());
     assert!(
         client
             .about()
@@ -53,20 +97,20 @@ async fn remove_volumes_keeps_successes_when_another_machine_fails() {
         .await
         .unwrap();
 
-    assert_eq!(
-        result
-            .successes
-            .iter()
-            .map(|success| success.machine_id)
-            .collect::<Vec<_>>(),
-        vec![machine_id('a')]
-    );
-    let [failure] = result.failures.as_slice() else {
-        panic!("expected one failure: {result:?}")
+    let [success, failure] = result.as_slice() else {
+        panic!("expected two volume outcomes: {result:?}")
     };
-    assert_eq!(failure.machine_id, machine_id('b'));
-    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
-    assert!(result.omissions.is_empty());
+    assert_eq!(
+        success,
+        &VolumeRemoval {
+            id: volume('a', "data"),
+            outcome: VolumeRemovalOutcome::Removed
+        }
+    );
+    assert_eq!(failure.id, volume('b', "data"));
+    assert!(
+        matches!(&failure.outcome, VolumeRemovalOutcome::Failed { error } if error.code == RpcErrorCode::Unavailable)
+    );
 }
 
 #[tokio::test]
@@ -79,14 +123,12 @@ async fn remove_volumes_treats_not_found_as_success() {
         .unwrap();
 
     assert_eq!(
-        result
-            .successes
-            .iter()
-            .map(|success| success.value.as_str())
-            .collect::<Vec<_>>(),
-        ["data", "missing"]
+        result,
+        ["data", "missing"].map(|name| VolumeRemoval {
+            id: volume('a', name),
+            outcome: VolumeRemovalOutcome::Removed
+        })
     );
-    assert!(result.failures.is_empty());
 }
 
 #[tokio::test]
@@ -97,22 +139,24 @@ async fn remove_volumes_force_is_off_by_default() {
         .remove_volumes(remove([volume('a', "busy")], false))
         .await
         .unwrap();
-    let [failure] = blocked.failures.as_slice() else {
-        panic!("expected in-use failure: {blocked:?}")
+    let [failure] = blocked.as_slice() else {
+        panic!("expected one volume outcome: {blocked:?}")
     };
-    assert_eq!(failure.error.code, RpcErrorCode::Conflict);
+    assert_eq!(failure.id, volume('a', "busy"));
+    assert!(
+        matches!(&failure.outcome, VolumeRemovalOutcome::Failed { error } if error.code == RpcErrorCode::Conflict)
+    );
 
     let forced = client
         .remove_volumes(remove([volume('a', "busy")], true))
         .await
         .unwrap();
-    assert!(forced.all_targets_succeeded());
     assert_eq!(
-        forced
-            .successes
-            .first()
-            .map(|success| success.value.as_str()),
-        Some("busy")
+        forced,
+        vec![VolumeRemoval {
+            id: volume('a', "busy"),
+            outcome: VolumeRemovalOutcome::Removed
+        }]
     );
 }
 
@@ -146,9 +190,51 @@ async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
         .await
         .unwrap();
 
-    assert_eq!(result.successes.len(), 1);
-    assert_eq!(result.omissions, vec![machine_id('c')]);
-    assert!(result.failures.is_empty());
+    assert_eq!(
+        result,
+        vec![
+            VolumeRemoval {
+                id: volume('a', "data"),
+                outcome: VolumeRemovalOutcome::Removed
+            },
+            VolumeRemoval {
+                id: volume('c', "data"),
+                outcome: VolumeRemovalOutcome::Omitted
+            },
+            VolumeRemoval {
+                id: volume('c', "logs"),
+                outcome: VolumeRemovalOutcome::Omitted
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn timed_out_removal_retains_identity_and_unknown_completion() {
+    let (client, _session, _machine) = volume_session().await;
+    let outcomes = timeout(
+        Duration::from_secs(15),
+        client.remove_volumes(remove([volume('a', "slow"), volume('a', "data")], false)),
+    )
+    .await
+    .expect("removal attempt is bounded")
+    .unwrap();
+    let [slow, data] = outcomes.as_slice() else {
+        panic!("expected both volume outcomes: {outcomes:?}")
+    };
+    assert_eq!(slow.id, volume('a', "slow"));
+    let VolumeRemovalOutcome::Failed { error } = &slow.outcome else {
+        panic!("timeout is not removal or omission: {slow:?}")
+    };
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "target Machine RPC timed out");
+    assert_eq!(
+        data,
+        &VolumeRemoval {
+            id: volume('a', "data"),
+            outcome: VolumeRemovalOutcome::Removed
+        }
+    );
 }
 
 #[tokio::test]

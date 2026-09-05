@@ -784,7 +784,8 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
     assert!(!failed.status.success(), "{failed:?}");
     assert!(removed_volumes.lock().unwrap().is_empty());
     assert!(
-        String::from_utf8_lossy(&failed.stderr).contains("volume is in use"),
+        String::from_utf8_lossy(&failed.stderr)
+            .contains(&format!("{}/busy: volume is in use", machine_id('a'))),
         "{failed:?}"
     );
 

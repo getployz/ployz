@@ -482,3 +482,22 @@ impl RawVolumeSource {
         self.try_into()
     }
 }
+
+/// The outcome of attempting to remove one Machine-local Docker Volume.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VolumeRemoval {
+    pub id: DockerVolumeId,
+    pub outcome: VolumeRemovalOutcome,
+}
+
+/// Evidence from one bounded removal attempt, never an atomicity guarantee.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum VolumeRemovalOutcome {
+    /// Removed or already absent.
+    Removed,
+    /// The request failed. A transport error or timeout leaves completion unknown.
+    Failed { error: crate::RpcError },
+    /// Not attempted because the Machine was absent or did not invite RPC.
+    Omitted,
+}
