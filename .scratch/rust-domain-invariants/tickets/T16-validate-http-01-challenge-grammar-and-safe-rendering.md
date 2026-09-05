@@ -1,6 +1,6 @@
 # T16 — Validate HTTP-01 challenge grammar and safe rendering
 
-Status: pending
+Status: in_progress
 Blocking dependencies: T15
 Audit scope: F11 challenge
 

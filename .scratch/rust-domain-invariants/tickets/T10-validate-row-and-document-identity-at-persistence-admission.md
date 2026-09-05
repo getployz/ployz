@@ -1,6 +1,6 @@
 # T10 — Validate row and document identity at persistence admission
 
-Status: pending
+Status: in_progress
 Blocking dependencies: T01, T09
 Audit scope: F05 persistence
 

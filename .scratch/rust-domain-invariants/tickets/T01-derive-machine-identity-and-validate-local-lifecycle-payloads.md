@@ -1,6 +1,6 @@
 # T01 — Derive Machine identity and validate local lifecycle payloads
 
-Status: in_progress
+Status: complete
 Blocking dependencies: none
 Audit scope: F05 Machine
 

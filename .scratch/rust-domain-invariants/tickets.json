@@ -13,7 +13,7 @@
     "depends": [],
     "finding": "F05 Machine",
     "file": "tickets/T01-derive-machine-identity-and-validate-local-lifecycle-payloads.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T02",
@@ -89,7 +89,7 @@
     "depends": [],
     "finding": "F05 Container",
     "file": "tickets/T09-make-container-observations-coherent.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T10",
@@ -100,7 +100,7 @@
     ],
     "finding": "F05 persistence",
     "file": "tickets/T10-validate-row-and-document-identity-at-persistence-admission.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T11",
@@ -118,7 +118,7 @@
     ],
     "finding": "F13",
     "file": "tickets/T12-derive-runtime-watch-services-from-containers.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T13",
@@ -136,7 +136,7 @@
     ],
     "finding": "F10",
     "file": "tickets/T14-own-and-bound-pending-relay-tunnel-lifetime.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T15",
@@ -154,7 +154,7 @@
     ],
     "finding": "F11 challenge",
     "file": "tickets/T16-validate-http-01-challenge-grammar-and-safe-rendering.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T17",

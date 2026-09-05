@@ -1,6 +1,6 @@
 # T14 — Own and bound pending Relay tunnel lifetime
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T13
 Audit scope: F10
 
