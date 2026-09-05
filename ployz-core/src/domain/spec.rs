@@ -7,7 +7,9 @@ use std::{
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
+use super::{
+    ByteQuantity, CpuNanos, ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph,
+};
 use crate::{
     ClusterDomainLabel, ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost,
     MachinePath, MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName,
@@ -335,13 +337,13 @@ pub struct Ulimit {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContainerResources {
     #[serde(default)]
-    pub cpu_nanos: Option<i64>,
+    pub cpu_nanos: Option<CpuNanos>,
     #[serde(default)]
-    pub memory_bytes: Option<i64>,
+    pub memory_bytes: Option<ByteQuantity>,
     #[serde(default)]
-    pub memory_reservation_bytes: Option<i64>,
+    pub memory_reservation_bytes: Option<ByteQuantity>,
     #[serde(default)]
-    pub shared_memory_bytes: Option<i64>,
+    pub shared_memory_bytes: Option<ByteQuantity>,
     #[serde(default)]
     pub devices: Vec<DeviceMapping>,
     #[serde(default)]
@@ -794,6 +796,41 @@ fn resource_change(current: &ContainerResources, requested: &ContainerResources)
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn resource_quantities_reject_negative_and_overflow_on_the_wire() {
+        for field in [
+            "cpu_nanos",
+            "memory_bytes",
+            "memory_reservation_bytes",
+            "shared_memory_bytes",
+        ] {
+            for invalid in [json!(-1), json!(9_223_372_036_854_775_808_u64)] {
+                assert!(
+                    serde_json::from_value::<ContainerResources>(json!({field: invalid})).is_err(),
+                    "{field}"
+                );
+            }
+            for valid in [json!(0), json!(9_223_372_036_854_775_807_i64)] {
+                let resources: ContainerResources =
+                    serde_json::from_value(json!({field: valid})).unwrap();
+                assert_eq!(
+                    serde_json::to_value(resources).unwrap().get(field),
+                    Some(&valid)
+                );
+            }
+        }
+        let resources: ContainerResources = serde_json::from_value(json!({
+            "ulimits": {"nofile": {"soft": -1, "hard": -1}},
+            "device_reservations": [{"count": -1}]
+        }))
+        .unwrap();
+        assert_eq!(resources.ulimits.get("nofile").unwrap().soft, -1);
+        assert_eq!(
+            resources.device_reservations.first().unwrap().count,
+            Some(-1)
+        );
+    }
 
     fn configured(test: &[&str]) -> HealthcheckSpec {
         HealthcheckSpec::Configured(ConfiguredHealthcheck {

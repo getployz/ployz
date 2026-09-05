@@ -222,7 +222,7 @@ mod tests {
 
         let mut other = spec.clone();
         other.service_id = ServiceId::parse("b".repeat(32)).unwrap();
-        other.container.resources.memory_bytes = Some(64);
+        other.container.resources.memory_bytes = Some(crate::ByteQuantity::try_from(64).unwrap());
         other.container.pull_policy = PullPolicy::Always;
         other.mode = ServiceMode::Replicated {
             replicas: NonZeroU32::new(3).unwrap(),

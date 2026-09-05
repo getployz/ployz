@@ -22,6 +22,8 @@ pub(super) enum Shape {
 }
 
 pub(super) const PAYLOADS: &[(&str, Shape)] = &[
+    ("CpuNanos", Shape::Alias("number")),
+    ("ByteQuantity", Shape::Alias("number")),
     ("MachineId", Shape::Branded),
     ("ContainerId", Shape::Branded),
     ("ServiceId", Shape::Branded),
@@ -291,10 +293,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Object {
             params: "",
             fields: &[
-                ("cpu_nanos", "number?"),
-                ("memory_bytes", "number?"),
-                ("memory_reservation_bytes", "number?"),
-                ("shared_memory_bytes", "number?"),
+                ("cpu_nanos", "CpuNanos?"),
+                ("memory_bytes", "ByteQuantity?"),
+                ("memory_reservation_bytes", "ByteQuantity?"),
+                ("shared_memory_bytes", "ByteQuantity?"),
                 ("devices", "DeviceMapping[]?"),
                 ("device_reservations", "DeviceReservation[]?"),
                 ("ulimits", "{ readonly [key: string]: Ulimit }?"),
