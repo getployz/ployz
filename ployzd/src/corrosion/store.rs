@@ -302,10 +302,10 @@ impl ReplicatedStore {
         let Some([value]) = rows.first() else {
             return Ok(None);
         };
-        Ok(Some(serde_json::from_str(text(
-            value,
-            "hosted DNS reservation",
-        )?)?))
+        let document = text(value, "hosted DNS reservation")?;
+        serde_json::from_str(document)
+            .map(Some)
+            .map_err(Error::InvalidDomainReservation)
     }
 
     pub(crate) async fn publish_domain_reservation(

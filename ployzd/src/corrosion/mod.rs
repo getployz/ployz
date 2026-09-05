@@ -36,6 +36,8 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("Corrosion JSON failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid stored hosted DNS reservation: {0}")]
+    InvalidDomainReservation(serde_json::Error),
     #[error(transparent)]
     Value(#[from] ployz_core::ValueError),
     #[error("Corrosion TOML failed: {0}")]

@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use ployz_core::DnsRecord;
+use ployz_core::{DnsRecord, IngressHost};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -9,11 +9,51 @@ use crate::corrosion::ReplicatedStore;
 // Hosted DNS still uses Uncloud's API at dns.uncloud.run. Point this at a
 // Ployz endpoint when that service exists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ReservationWire")]
 pub(crate) struct Reservation {
-    pub(crate) endpoint: String,
-    pub(crate) name: String,
+    endpoint: String,
+    name: IngressHost,
     // TODO: encrypt the token in the store.
-    pub(crate) token: String,
+    token: ReservationToken,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+struct ReservationToken(String);
+
+#[derive(Deserialize)]
+struct ReservationWire {
+    endpoint: String,
+    name: String,
+    token: String,
+}
+
+impl Reservation {
+    pub(crate) fn new(endpoint: String, name: String, token: String) -> Result<Self, Error> {
+        endpoint_url(&endpoint, &[])?;
+        let name = IngressHost::parse(name.strip_suffix('.').unwrap_or(&name).to_ascii_lowercase())
+            .map_err(|_| Error::InvalidReservation("invalid DNS hostname"))?;
+        if token.is_empty() || http::HeaderValue::from_str(&format!("Bearer {token}")).is_err() {
+            return Err(Error::InvalidReservation("invalid reservation token"));
+        }
+        Ok(Self {
+            endpoint,
+            name,
+            token: ReservationToken(token),
+        })
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl TryFrom<ReservationWire> for Reservation {
+    type Error = Error;
+
+    fn try_from(wire: ReservationWire) -> Result<Self, Self::Error> {
+        Self::new(wire.endpoint, wire.name, wire.token)
+    }
 }
 
 #[derive(Clone)]
@@ -37,7 +77,7 @@ impl HostedDns {
             return Err(Error::AlreadyReserved);
         }
         let reservation = self.request_reservation(endpoint).await?;
-        let name = reservation.name.clone();
+        let name = reservation.name().to_owned();
         store.publish_domain_reservation(&reservation).await?;
         Ok(name)
     }
@@ -46,17 +86,24 @@ impl HostedDns {
         store
             .domain_reservation()
             .await?
-            .map(|reservation| reservation.name)
+            .map(|reservation| reservation.name().to_owned())
             .ok_or(Error::NotFound)
     }
 
     pub(crate) async fn release_domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
-        let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
+        let reservation = match store.domain_reservation().await {
+            Ok(reservation) => reservation.ok_or(Error::NotFound)?,
+            Err(crate::corrosion::Error::InvalidDomainReservation(_)) => {
+                store.remove_domain_reservation().await?;
+                return Err(Error::InvalidReservationCleared);
+            }
+            Err(error) => return Err(error.into()),
+        };
         // ponytail: purge is best-effort. Hosted PersistRecord leaves stale
         // values after upsert, so purgerecords 500s; age-purge removes leftovers.
         let _ = self.purge_hosted_records(&reservation).await;
         store.remove_domain_reservation().await?;
-        Ok(reservation.name)
+        Ok(reservation.name().to_owned())
     }
 
     pub(crate) async fn create_records(
@@ -75,11 +122,7 @@ impl HostedDns {
             .send()
             .await?;
         let response: DomainResponse = decode(response).await?;
-        Ok(Reservation {
-            endpoint: endpoint.to_owned(),
-            name: response.name,
-            token: response.token,
-        })
+        Reservation::new(endpoint.to_owned(), response.name, response.token)
     }
 
     async fn purge_hosted_records(&self, reservation: &Reservation) -> Result<(), Error> {
@@ -87,9 +130,9 @@ impl HostedDns {
             .client
             .post(endpoint_url(
                 &reservation.endpoint,
-                &["domains", &reservation.name, "purgerecords"],
+                &["domains", reservation.name(), "purgerecords"],
             )?)
-            .bearer_auth(&reservation.token)
+            .bearer_auth(&reservation.token.0)
             .send()
             .await?;
         match hosted_body(response).await {
@@ -105,14 +148,14 @@ impl HostedDns {
     ) -> Result<Vec<DnsRecord>, Error> {
         let url = endpoint_url(
             &reservation.endpoint,
-            &["domains", &reservation.name, "records"],
+            &["domains", reservation.name(), "records"],
         )?;
         let mut created = Vec::with_capacity(records.len());
         for record in records {
             let response = self
                 .client
                 .post(url.clone())
-                .bearer_auth(&reservation.token)
+                .bearer_auth(&reservation.token.0)
                 .json(record)
                 .send()
                 .await?;
@@ -130,6 +173,14 @@ impl HostedDns {
 fn endpoint_url(endpoint: &str, segments: &[&str]) -> Result<Url, Error> {
     let mut url =
         Url::parse(endpoint).map_err(|error| Error::InvalidEndpoint(error.to_string()))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || url.port() == Some(0)
+    {
+        return Err(Error::InvalidEndpoint(
+            "expected an HTTP(S) URL with a host and nonzero port".into(),
+        ));
+    }
     url.set_query(None);
     url.set_fragment(None);
     let mut path = url
@@ -205,6 +256,12 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid hosted DNS endpoint: {0}")]
     InvalidEndpoint(String),
+    #[error("invalid hosted DNS reservation: {0}")]
+    InvalidReservation(&'static str),
+    #[error(
+        "invalid hosted DNS reservation cleared locally; remote record purge was not attempted"
+    )]
+    InvalidReservationCleared,
     #[error("hosted DNS returned HTTP {0}: {1}")]
     Status(u16, String),
     #[error("hosted DNS authentication failed")]
@@ -231,6 +288,55 @@ mod tests {
         body: Vec<u8>,
     }
 
+    #[test]
+    fn persisted_reservation_admits_dns_names_and_rejects_unusable_fields() {
+        let valid = serde_json::json!({"endpoint": "https://dns.example/v1", "name": "9-Cluster.Example.", "token": "opaque+/=token"});
+        let reservation: super::Reservation = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(reservation.name(), "9-cluster.example");
+        let encoded = serde_json::to_value(&reservation).unwrap();
+        assert_eq!(
+            serde_json::from_value::<super::Reservation>(encoded).unwrap(),
+            reservation
+        );
+        for (field, value) in [
+            ("name", ""),
+            ("name", "a..example"),
+            ("name", "-a.example"),
+            ("name", "*.example"),
+            ("name", "a/example"),
+            ("token", ""),
+            ("token", "bad\r\ntoken"),
+            ("endpoint", "garbage"),
+            ("endpoint", "file:///tmp/dns"),
+            ("endpoint", "https://dns.example:0"),
+        ] {
+            let mut invalid = valid.clone();
+            *invalid.get_mut(field).unwrap() = value.into();
+            assert!(
+                serde_json::from_value::<super::Reservation>(invalid).is_err(),
+                "{field}: {value:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_reservation_response_rejects_unusable_fields() {
+        for body in [
+            r#"{"name":"","token":"raw-token"}"#,
+            r#"{"name":"bad/name.example","token":"raw-token"}"#,
+            r#"{"name":"cluster.example","token":""}"#,
+        ] {
+            let (endpoint, _) = fake_server([(200, body)]).await;
+            assert!(
+                HostedDns::new()
+                    .request_reservation(&endpoint)
+                    .await
+                    .is_err(),
+                "{body}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn hosted_requests_keep_the_retained_wire_contract_exact() {
         let responses = [
@@ -251,8 +357,8 @@ mod tests {
         let client = HostedDns::new();
 
         let reservation = client.request_reservation(&endpoint).await.unwrap();
-        assert_eq!(reservation.name, "opaque.ployz.example");
-        assert_eq!(reservation.token, "raw-token");
+        assert_eq!(reservation.name(), "opaque.ployz.example");
+        assert_eq!(reservation.token.0, "raw-token");
         let records = client
             .submit_records(
                 &reservation,
@@ -330,11 +436,9 @@ mod tests {
     #[tokio::test]
     async fn release_purges_hosted_records_even_when_the_domain_has_none() {
         let (endpoint, requests) = fake_server([(202, r#"{"name":"opaque.ployz.example"}"#)]).await;
-        let reservation = super::Reservation {
-            endpoint,
-            name: "opaque.ployz.example".into(),
-            token: "raw-token".into(),
-        };
+        let reservation =
+            super::Reservation::new(endpoint, "opaque.ployz.example".into(), "raw-token".into())
+                .unwrap();
 
         HostedDns::new()
             .purge_hosted_records(&reservation)
@@ -367,11 +471,8 @@ mod tests {
             r#"{"status":401,"msg":"unauthorized","data":{"noDomain":true}}"#,
         )])
         .await;
-        let reservation = super::Reservation {
-            endpoint,
-            name: "gone.example".into(),
-            token: "expired".into(),
-        };
+        let reservation =
+            super::Reservation::new(endpoint, "gone.example".into(), "expired".into()).unwrap();
 
         HostedDns::new()
             .purge_hosted_records(&reservation)
@@ -385,11 +486,9 @@ mod tests {
     #[tokio::test]
     async fn release_keeps_a_generic_authentication_failure() {
         let (endpoint, _) = fake_server([(401, r#"{"status":401}"#)]).await;
-        let reservation = super::Reservation {
-            endpoint,
-            name: "opaque.ployz.example".into(),
-            token: "wrong".into(),
-        };
+        let reservation =
+            super::Reservation::new(endpoint, "opaque.ployz.example".into(), "wrong".into())
+                .unwrap();
 
         let error = HostedDns::new()
             .purge_hosted_records(&reservation)
@@ -402,11 +501,9 @@ mod tests {
     #[tokio::test]
     async fn release_keeps_a_hosted_purge_failure() {
         let (endpoint, _) = fake_server([(500, r#"{"error":"route53"}"#)]).await;
-        let reservation = super::Reservation {
-            endpoint,
-            name: "opaque.ployz.example".into(),
-            token: "raw-token".into(),
-        };
+        let reservation =
+            super::Reservation::new(endpoint, "opaque.ployz.example".into(), "raw-token".into())
+                .unwrap();
 
         let error = HostedDns::new()
             .purge_hosted_records(&reservation)
@@ -427,11 +524,8 @@ mod tests {
             r#"{"status":401,"msg":"unauthorized","data":{"noDomain":true}}"#,
         )])
         .await;
-        let reservation = super::Reservation {
-            endpoint,
-            name: "gone.example".into(),
-            token: "expired".into(),
-        };
+        let reservation =
+            super::Reservation::new(endpoint, "gone.example".into(), "expired".into()).unwrap();
 
         let error = HostedDns::new()
             .submit_records(

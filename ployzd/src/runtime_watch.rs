@@ -295,7 +295,9 @@ pub(crate) fn assemble_runtime_watch_frame(
         containers,
         volumes: snapshot.volumes.observations,
         certificates,
-        hosted_dns_hostname: snapshot.hosted_dns.map(|reservation| reservation.name),
+        hosted_dns_hostname: snapshot
+            .hosted_dns
+            .map(|reservation| reservation.name().to_owned()),
         incomplete_ids: RuntimeWatchIncompleteIds {
             machines: snapshot.machines.incomplete_ids,
             containers: snapshot.containers.incomplete_ids,
