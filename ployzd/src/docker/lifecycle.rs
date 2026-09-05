@@ -19,34 +19,33 @@ use ployz_core::MachineGateway;
 use crate::docker_image::prepare_image;
 
 use super::{
-    ContainerRuntime, Error, ManagedLabels, NetworkAttachment, create, docker_error,
-    spec_store::ConfigOperation,
+    ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
 /// Resolved container inputs shared by every Machine-local creation entry path.
-pub(crate) struct ContainerRequest<'spec, Storage, Network> {
+pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Project that owns the resulting container.
     pub(crate) project_name: &'spec ProjectName,
     /// Fully resolved Service specification to persist and execute.
     pub(crate) spec: &'spec ResolvedServiceSpec,
-    /// Deferred Docker network preparation, awaited only after final admission.
-    pub(crate) network: Network,
+    /// Deferred Machine-local admission, awaited only after volume admission.
+    pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
 }
 
 /// Exact inputs for Machine-local Global Service Container convergence.
-pub(crate) struct GlobalSlotRequest<'spec, Storage, Network> {
+pub(crate) struct GlobalSlotRequest<'spec, Storage, Admission> {
     /// Project that owns the Global slot.
     pub(crate) project_name: &'spec ProjectName,
     /// Fully resolved Global Service specification to persist and execute.
     pub(crate) spec: &'spec ResolvedServiceSpec,
-    /// Deferred Docker network preparation, awaited only after final admission.
-    pub(crate) network: Network,
+    /// Deferred Machine-local admission, awaited only after volume admission.
+    pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
 }
@@ -88,39 +87,39 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         let machine = test_machine(*machine_id, gateway);
-        self.create_with_network(
+        self.create_with_admission(
             &machine,
             ContainerRequest {
                 kind,
                 project_name,
                 spec,
-                network: std::future::ready(Ok::<_, Error>(NetworkAttachment::Bridge)),
+                admission: std::future::ready(Ok::<_, Error>(())),
                 storage: std::future::ready(None),
             },
         )
         .await
     }
 
-    /// Run final admission, prepare the deferred runtime, and create a container.
+    /// Run final admission and create a container.
     ///
     /// # Errors
     ///
-    /// Returns when final admission, Volume Ensure, runtime preparation, or Docker creation fails.
-    pub(crate) async fn create_with_network<Storage, Network, E>(
+    /// Returns when final admission, Volume Ensure, or Docker creation fails.
+    pub(crate) async fn create_with_admission<Storage, Admission, E>(
         &self,
         machine: &Machine,
-        request: ContainerRequest<'_, Storage, Network>,
+        request: ContainerRequest<'_, Storage, Admission>,
     ) -> Result<ContainerCreated, E>
     where
         Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-        Network: Future<Output = Result<NetworkAttachment, E>> + Send,
+        Admission: Future<Output = Result<(), E>> + Send,
         E: From<Error>,
     {
         let ContainerRequest {
             kind,
             project_name,
             spec,
-            network,
+            admission,
             storage,
         } = request;
         // TODO: direct creation does not validate that an existing Service ID still uses
@@ -147,8 +146,8 @@ impl ContainerRuntime {
                 return Err(E::from(unknown_error(reason)));
             }
         }
-        let network = network.await?;
-        self.prepare_and_create(machine, kind, project_name, spec, network, None)
+        admission.await?;
+        self.prepare_and_create(machine, kind, project_name, spec, None)
             .await
             .map_err(E::from)
     }
@@ -159,20 +158,20 @@ impl ContainerRuntime {
     ///
     /// Returns when listing managed Containers, ensuring mounted Volumes, pulling the image,
     /// or the required create, start, stop, or remove operation fails.
-    pub(crate) async fn converge_global_slot<Storage, Network, E>(
+    pub(crate) async fn converge_global_slot<Storage, Admission, E>(
         &self,
         machine: &Machine,
-        request: GlobalSlotRequest<'_, Storage, Network>,
+        request: GlobalSlotRequest<'_, Storage, Admission>,
     ) -> Result<GlobalSlotConvergence, E>
     where
         Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-        Network: Future<Output = Result<NetworkAttachment, E>> + Send,
+        Admission: Future<Output = Result<(), E>> + Send,
         E: From<Error>,
     {
         let GlobalSlotRequest {
             project_name,
             spec,
-            network,
+            admission,
             storage,
         } = request;
         let existing = self
@@ -200,7 +199,7 @@ impl ContainerRuntime {
                 return Ok(GlobalSlotConvergence::Unknown(reason));
             }
         }
-        let network = network.await?;
+        admission.await?;
         match SlotOccupancy::classify(existing, spec.serving_shape()) {
             SlotOccupancy::Current(slot) => {
                 if !runtime_is_running(&slot.runtime) {
@@ -219,7 +218,6 @@ impl ContainerRuntime {
                 ContainerKind::ServiceContainer,
                 project_name,
                 spec,
-                network,
                 Some(global_slot_name(spec)),
             )
             .await
@@ -234,7 +232,6 @@ impl ContainerRuntime {
         kind: ContainerKind,
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
-        network: NetworkAttachment,
         reserved_name: Option<String>,
     ) -> Result<ContainerCreated, Error> {
         let body = create::container_create_body(
@@ -243,7 +240,6 @@ impl ContainerRuntime {
             kind,
             project_name,
             spec,
-            network,
         )?;
         prepare_image(
             &self.docker.client,
@@ -251,7 +247,7 @@ impl ContainerRuntime {
             spec.container.pull_policy,
         )
         .await?;
-        self.finish_create(machine, kind, spec, network, body, reserved_name)
+        self.finish_create(machine, kind, spec, body, reserved_name)
             .await
     }
 
@@ -260,7 +256,6 @@ impl ContainerRuntime {
         machine: &Machine,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
-        network: NetworkAttachment,
         mut body: bollard::models::ContainerCreateBody,
         reserved_name: Option<String>,
     ) -> Result<ContainerCreated, Error> {
@@ -277,11 +272,7 @@ impl ContainerRuntime {
                     let options = CreateContainerOptionsBuilder::default()
                         .name(&display_name)
                         .build();
-                    match self
-                        .docker
-                        .create_container(Some(options), body, network)
-                        .await
-                    {
+                    match self.docker.create_container(Some(options), body).await {
                         Ok(created) => (created, display_name),
                         Err(Error::Docker(DockerError::DockerResponseServerError {
                             status_code: 409,
@@ -319,7 +310,7 @@ impl ContainerRuntime {
                             .build();
                         match self
                             .docker
-                            .create_container(Some(options), body.clone(), network)
+                            .create_container(Some(options), body.clone())
                             .await
                         {
                             Ok(created) => break (created, display_name),
@@ -530,19 +521,14 @@ impl super::LocalDocker {
         options: Option<bollard::query_parameters::CreateContainerOptions>,
         body: ContainerCreateBody,
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
-        self.create_container(options, body, NetworkAttachment::Bridge)
-            .await
+        self.create_container(options, body).await
     }
 
     pub(super) async fn create_container(
         &self,
         options: Option<bollard::query_parameters::CreateContainerOptions>,
         body: ContainerCreateBody,
-        network: NetworkAttachment,
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
-        if matches!(network, NetworkAttachment::Host) {
-            return Ok(self.client.create_container(options, body).await?);
-        }
         let _gate = self.endpoint_creates.lock().await;
         if self.bridge_capacity().await?.free_endpoints() == 0 {
             return Err(Error::EndpointCapacity);

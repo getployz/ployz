@@ -7,8 +7,8 @@ use std::{
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerId, ContainerObservation, DockerVolume, DockerVolumeName, LocalMachinePhase,
-    VolumeInventory,
+    CADDY_ADMIN_ENV, ContainerId, ContainerObservation, DockerVolume, DockerVolumeName,
+    LocalMachinePhase, VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -275,12 +275,11 @@ impl ContainerRuntime {
 
 fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
     let mut observation = observation.clone();
-    let keep = ployz_core::ingress_proxy_profile_environment_keys();
     observation
         .resolved_spec
         .container
         .environment
-        .retain(|key, _| keep.contains(key));
+        .retain(|key, _| key == CADDY_ADMIN_ENV);
     if let Some(hook) = &mut observation.resolved_spec.pre_deploy {
         hook.environment.clear();
     }
@@ -406,10 +405,8 @@ mod tests {
     }
 
     #[test]
-    fn publication_keeps_caddy_admin_so_redacted_caddy_still_identifies() {
-        let mut spec = ployz_core::IngressProxyBackend::Caddy
-            .requested_service_spec("caddy:test".into(), Vec::new(), None)
-            .unwrap()
+    fn publication_keeps_caddy_admin_so_redacted_caddy_stays_valid() {
+        let mut spec = ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None)
             .to_resolved(
                 ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
                 ployz_core::ResolvedUpdateConfig::default(),
@@ -451,10 +448,7 @@ mod tests {
                 .environment
                 .contains_key("TOKEN")
         );
-        assert_eq!(
-            ployz_core::ingress_proxy_backend(&redacted.resolved_spec).unwrap(),
-            ployz_core::IngressProxyBackend::Caddy
-        );
+        assert!(ployz_core::validate_ingress_service_spec(&redacted.resolved_spec).is_ok());
     }
 
     #[test]
