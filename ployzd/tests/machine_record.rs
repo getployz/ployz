@@ -322,7 +322,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
 
     let path = dir.0.join("machine.json");
     let mut stale: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    stale["body"]["machine"]["runtime"] = serde_json::to_value(MachineRuntime {
+    *stale.pointer_mut("/body/machine/runtime").unwrap() = serde_json::to_value(MachineRuntime {
         daemon_version: "stale".into(),
         docker_version: "stale".into(),
         hostname: "stale".into(),
@@ -797,32 +797,36 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
         "wireguard_private_key": key
     });
     assert!(serde_json::from_value::<LocalMachineRecord>(valid.clone()).is_ok());
-    for field in ["public_key", "advertised_endpoints", "bootstrap"] {
+    for (path, value) in [
+        (
+            "/body/machine/public_key",
+            serde_json::to_value(WireGuardPrivateKey::generate().public_key()).unwrap(),
+        ),
+        ("/body/machine/advertised_endpoints", serde_json::json!([])),
+        ("/body/bootstrap", serde_json::json!([])),
+    ] {
         let mut malformed = valid.clone();
-        match field {
-            "public_key" => {
-                malformed["body"]["machine"][field] =
-                    serde_json::to_value(WireGuardPrivateKey::generate().public_key()).unwrap()
-            }
-            "advertised_endpoints" => malformed["body"]["machine"][field] = serde_json::json!([]),
-            _ => malformed["body"][field] = serde_json::json!([]),
-        }
+        *malformed.pointer_mut(path).unwrap() = value;
         for phase in ["joining", "participating", "resetting"] {
             let mut record = malformed.clone();
+            let body = record.get_mut("body").unwrap();
             if phase == "participating" {
-                record["body"]["phase"] = serde_json::json!(phase);
-                record["body"]["origin"] = serde_json::json!("join");
+                *body.get_mut("phase").unwrap() = serde_json::json!(phase);
+                body.as_object_mut()
+                    .unwrap()
+                    .insert("origin".into(), serde_json::json!("join"));
             } else if phase == "resetting" {
-                record["body"] = serde_json::json!({"phase": phase, "prior": record["body"]});
+                let prior = body.take();
+                *body = serde_json::json!({"phase": phase, "prior": prior});
             }
-            let body = serde_json::from_value::<LocalMachineBody>(record["body"].clone()).unwrap();
+            let body = serde_json::from_value::<LocalMachineBody>(body.clone()).unwrap();
             assert!(
                 LocalMachineRecord::new(body, key.clone()).is_err(),
-                "{phase} constructor accepted invalid {field}"
+                "{phase} constructor accepted invalid {path}"
             );
             assert!(
                 serde_json::from_value::<LocalMachineRecord>(record).is_err(),
-                "{phase} accepted invalid {field}"
+                "{phase} accepted invalid {path}"
             );
         }
     }

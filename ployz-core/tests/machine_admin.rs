@@ -246,11 +246,13 @@ fn machine(id: char, name: &str, seed: u8) -> Machine {
 #[test]
 fn machine_management_address_is_derived_after_decode_and_key_update() {
     let mut wire = serde_json::to_value(machine('1', "derived", 1)).unwrap();
-    wire["public_key"] = serde_json::json!([
+    *wire.get_mut("public_key").unwrap() = serde_json::json!([
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
         25, 26, 27, 28, 29, 30, 31
     ]);
-    wire["management_address"] = serde_json::json!("::1");
+    wire.as_object_mut()
+        .unwrap()
+        .insert("management_address".into(), serde_json::json!("::1"));
     let mut decoded: Machine = serde_json::from_value(wire).unwrap();
     assert_eq!(
         decoded.management_address().0.to_string(),

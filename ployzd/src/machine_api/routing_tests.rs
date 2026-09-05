@@ -1,6 +1,3 @@
-#[path = "../../tests/echo_service/mod.rs"]
-mod echo_service;
-
 use crate::machine_api::{
     MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route,
 };
@@ -14,7 +11,7 @@ use tokio::{net::TcpListener, sync::oneshot};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{body::Body, codegen::http, service::Routes, transport::Server};
 
-use echo_service::EchoService;
+use super::echo_service::EchoService;
 
 #[test]
 fn routing_resolves_visible_targets_without_repairing_ambiguity() {

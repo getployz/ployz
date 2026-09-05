@@ -420,3 +420,7 @@ mod proxy_tests;
 #[cfg(test)]
 #[path = "routing_cluster_tests.rs"]
 mod cluster_tests;
+
+#[cfg(test)]
+#[path = "../../tests/echo_service/mod.rs"]
+mod echo_service;
