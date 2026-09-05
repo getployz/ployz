@@ -90,16 +90,19 @@ pub async fn run_machine_publisher(
                 let mut local = local
                     .lock()
                     .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                publication
+                let completed = publication
                     .complete_catch_up(&mut local)
-                    .map_err(io::Error::other)?
+                    .map_err(io::Error::other)?;
+                if completed {
+                    participating.send_replace(true);
+                }
+                completed
             };
             if completed {
                 // Join already restarted into Joining. Flip Participating
                 // in-process so DNS/ingress start; another process restart
                 // kills an in-flight Ingress Proxy Deploy against this Machine.
                 tracing::info!("catch-up complete");
-                participating.send_replace(true);
             }
         }
     }

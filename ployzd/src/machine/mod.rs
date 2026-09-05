@@ -8,6 +8,7 @@ use std::{
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -404,6 +405,10 @@ pub struct LocalMachineStore {
     data_dir: PathBuf,
     record: LocalMachineRecord,
     _lock: File,
+    // Lock order: admission, then publication/ingress/Docker, then short store locks.
+    // Reset waits for admitted operations, including Docker streams with no total deadline.
+    // ponytail: serialize local creates; use shared admission reads if throughput requires it.
+    admission_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub(crate) struct PreparedReset {
@@ -494,6 +499,7 @@ impl LocalMachineStore {
             data_dir,
             record,
             _lock: lock,
+            admission_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         if store.record.phase() == LocalMachinePhase::Resetting {
             let data_dir = store.data_dir.clone();

@@ -36,7 +36,7 @@ pub struct LocalMachine {
     restart: watch::Sender<bool>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
-    global_slot_lock: Arc<AsyncMutex<()>>,
+    participating: Option<watch::Sender<bool>>,
     /// Serializes first-process Ingress Proxy filesystem preparation.
     pub(super) ingress_runtime_lock: Arc<AsyncMutex<()>>,
 }
@@ -117,6 +117,8 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
+    #[error("local operation task failed: {0}")]
+    OperationTask(#[from] tokio::task::JoinError),
     #[error("Allocator is not quiet")]
     AllocatorNotQuiet,
     #[error("this Machine is not the Allocator")]
@@ -134,7 +136,7 @@ impl LocalMachine {
             restart,
             cluster: None,
             containers: None,
-            global_slot_lock: Arc::new(AsyncMutex::new(())),
+            participating: None,
             ingress_runtime_lock: Arc::new(AsyncMutex::new(())),
         }
     }
@@ -149,6 +151,18 @@ impl LocalMachine {
     pub(crate) fn with_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.containers = containers;
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
+        self.participating = Some(participating);
+        self
+    }
+
+    fn stop_participation(&self) {
+        if let Some(participating) = &self.participating {
+            participating.send_replace(false);
+        }
     }
 
     pub(crate) fn has_cluster(&self) -> bool {
@@ -617,16 +631,32 @@ impl LocalMachine {
     }
 
     /// Remove this Machine: clean managed containers, persist reset, and
-    /// best-effort delete the replicated row.
+    /// best-effort delete the replicated row. Once admitted, cleanup and phase commit
+    /// continue if the caller disconnects.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
     /// missing, [`Error::DockerUnavailable`] when Docker is missing,
     /// [`Error::Cleanup`] when managed container removal fails,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned, and
-    /// [`Error::Store`] when reset cannot be prepared or committed.
+    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::Store`] when reset cannot be prepared or committed, and
+    /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn remove_local(
+        &self,
+        request: RemoveLocalMachineRequest,
+    ) -> Result<LocalMachineRemoved, Error> {
+        let admission = self.lock_store()?.admission_lock.clone();
+        let guard = admission.lock_owned().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            local.remove_local_admitted(request).await
+        })
+        .await?
+    }
+
+    async fn remove_local_admitted(
         &self,
         request: RemoveLocalMachineRequest,
     ) -> Result<LocalMachineRemoved, Error> {
@@ -649,6 +679,7 @@ impl LocalMachine {
             let mut store = self.lock_store()?;
             prepared_reset.commit(&mut store)?;
         }
+        self.stop_participation();
         let reset_warning = publication
             .remove(&machine_id)
             .await
@@ -662,17 +693,34 @@ impl LocalMachine {
     }
 
     /// Begin a Local Machine Phase reset and request daemon restart.
+    /// Once admitted, cleanup and phase commit continue if the caller disconnects.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Docker`] when managed container cleanup fails,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned, and
-    /// [`Error::Store`] when reset is not legal in the current phase.
+    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::Store`] when reset is not legal in the current phase, and
+    /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn reset(&self) -> Result<ResetAccepted, Error> {
+        let admission = self.lock_store()?.admission_lock.clone();
+        let guard = admission.lock_owned().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            local.reset_admitted().await
+        })
+        .await?
+    }
+
+    async fn reset_admitted(&self) -> Result<ResetAccepted, Error> {
         if let Some(containers) = &self.containers {
             containers.remove_all_managed().await?;
         }
-        self.lock_store()?.begin_reset()?;
+        {
+            let mut store = self.lock_store()?;
+            store.begin_reset()?;
+            self.stop_participation();
+        }
         self.restart.send_replace(true);
         Ok(ResetAccepted {})
     }

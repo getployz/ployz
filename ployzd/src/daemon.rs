@@ -182,6 +182,7 @@ impl Daemon {
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
         let machine_api = MachineApi::builder(Arc::clone(&store), reset.clone())
+            .with_participation(participating.clone())
             .with_cluster(
                 corrosion
                     .as_ref()
