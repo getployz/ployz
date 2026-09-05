@@ -169,12 +169,13 @@ fn renew_does_not_contact_the_authority_when_dns_refuses() {
 }
 
 #[test]
-fn unparseable_material_does_not_renew() {
-    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
-    let row = CertificateRow::from_parts(Some(material), None);
+fn unparseable_stored_material_does_not_suppress_repair() {
+    let row = CertificateRow::decode(r#"{"certificate":"CERT","private_key":"KEY"}"#).unwrap();
+    assert!(row.material().is_none());
+    assert!(row.last_error().unwrap().contains("invalid"));
     assert_eq!(
         decide(Some(&row), 0, Duration::from_secs(60)),
-        IssuanceAction::Nothing
+        IssuanceAction::Order
     );
 }
 

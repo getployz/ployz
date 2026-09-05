@@ -265,7 +265,10 @@ async fn certificates_round_trip_and_notify_on_change() {
     .unwrap();
     let store = running.store().clone();
     let hostname = IngressHost::parse("app.example.com").unwrap();
-    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
+    let material = {
+        let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
+        CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    };
     let mut changes = store.subscribe_certificate_changes().await.unwrap();
 
     store
@@ -289,7 +292,10 @@ async fn certificates_round_trip_and_notify_on_change() {
         .publish_certificate(&hostname, &material)
         .await
         .unwrap();
-    let updated = CertificateMaterial::new("CERT-2", "KEY-2").unwrap();
+    let updated = {
+        let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
+        CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    };
     store
         .publish_certificate(&hostname, &updated)
         .await
