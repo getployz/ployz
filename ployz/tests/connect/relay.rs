@@ -133,7 +133,8 @@ pub(super) struct FakeMachine {
 
 impl FakeMachine {
     async fn register(url: &str, machine_id: MachineId, service: DiscoveryService) -> Self {
-        let client = RelayClient::new(url).expect("test Relay URL is http");
+        let client = RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
+            .expect("test Relay URL is http");
         let mut register = client.register(PAIRING, &machine_id).await.unwrap();
         let url = url.to_owned();
         let accept = tokio::spawn(async move {
@@ -159,7 +160,7 @@ impl FakeMachine {
 }
 
 async fn serve_attach(url: &str, open: Open, service: DiscoveryService) {
-    let tunnel = RelayClient::new(url)
+    let tunnel = RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
         .expect("test Relay URL is http")
         .attach(open.tunnel_id().expect("Open carries a Tunnel ID").as_str())
         .await
@@ -176,7 +177,9 @@ pub(super) async fn register_with_pairing(
     pairing: &str,
     machine_id: MachineId,
 ) -> Result<RelayWs, ClientError> {
-    RelayClient::new(url)?.register(pairing, &machine_id).await
+    RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())?
+        .register(pairing, &machine_id)
+        .await
 }
 
 struct Incoming(TunnelIo);

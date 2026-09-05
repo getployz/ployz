@@ -517,7 +517,12 @@ pub async fn connect_relay(
 ) -> Result<Client, ConnectError> {
     let connector: Arc<dyn Connector> = Arc::new(SystemConnector::default());
     connect_one(
-        &Connection::relay(url.as_ref(), credential, pairing, machine_id),
+        &Connection::relay(
+            ployz_core::RelayEndpoint::parse(url.as_ref())?,
+            credential,
+            pairing,
+            machine_id,
+        ),
         &ConnectionSource::Direct,
         &connector,
     )

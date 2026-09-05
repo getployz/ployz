@@ -25,6 +25,7 @@ import type {
 export * from "./generated/payloads";
 
 export type ConnectOptions = {
+  /** HTTP(S) base URL without credentials, query or fragment; validated before dialing. */
   readonly relayUrl: string;
   readonly bearer: string;
   readonly pairing: string;
