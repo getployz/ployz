@@ -1,3 +1,5 @@
+//! Checked CPU and memory quantities in the Docker integer range.
+
 use serde::{Deserialize, Serialize};
 
 use crate::ValueError;
@@ -9,6 +11,9 @@ pub struct CpuNanos(i64);
 
 impl CpuNanos {
     /// Convert CPUs to nanounits, truncating fractional nanounits toward zero.
+    ///
+    /// # Errors
+    /// Rejects negative, non-finite, or overflowing quantities.
     pub fn from_cpus(cpus: f64) -> Result<Self, ValueError> {
         let nanos = cpus * 1e9;
         // i64::MAX rounds up to 2^63 as f64, so that boundary must be excluded.
@@ -22,6 +27,7 @@ impl CpuNanos {
         Self::try_from(nanos as i64)
     }
 
+    /// Return the admitted integer quantity.
     #[must_use]
     pub fn get(self) -> i64 {
         self.0
@@ -55,6 +61,7 @@ impl From<CpuNanos> for i64 {
 pub struct ByteQuantity(i64);
 
 impl ByteQuantity {
+    /// Return the admitted integer quantity.
     #[must_use]
     pub fn get(self) -> i64 {
         self.0

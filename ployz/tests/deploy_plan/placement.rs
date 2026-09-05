@@ -1336,3 +1336,58 @@ fn global_socket_stops_release_each_old_sibling_before_replacement() {
         ]
     ));
 }
+
+#[test]
+fn wildcard_address_payloads_reserve_their_address_family() {
+    use serde_json::json;
+    for (wildcard, other, conflict) in [
+        (
+            "0.0.0.0",
+            json!({"kind":"address","address":"127.0.0.1"}),
+            true,
+        ),
+        ("::", json!({"kind":"address","address":"::1"}), true),
+        (
+            "0.0.0.0",
+            json!({"kind":"prefix","prefix":"192.0.2.0/24"}),
+            true,
+        ),
+        (
+            "::",
+            json!({"kind":"prefix","prefix":"2001:db8::/32"}),
+            true,
+        ),
+        ("0.0.0.0", json!({"kind":"address","address":"::1"}), false),
+        (
+            "::",
+            json!({"kind":"prefix","prefix":"192.0.2.0/24"}),
+            false,
+        ),
+    ] {
+        for protocol in ["tcp", "udp"] {
+            let spec = |name, bind, protocol| {
+                serde_json::from_value::<RequestedServiceSpec>(json!({
+                "name":name, "mode":{"mode":"replicated","replicas":1},
+                "container":{"image":"example.test/api:1","pull_policy":"missing"},
+                "ports":[{"mode":"host","bind":bind,"published_port":8080,"container_port":80,"transport_protocol":protocol}]
+            })).unwrap()
+            };
+            let mut first = spec("alpha", json!({"kind":"address","address":wildcard}), "tcp");
+            let second = spec("beta", other.clone(), protocol);
+            let snapshot = DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                ..Default::default()
+            };
+            assert_eq!(
+                plan_deploy([&first, &second], &snapshot, PlanOptions::default()).is_err(),
+                conflict && protocol == "tcp",
+                "{wildcard} {other} {protocol}"
+            );
+            first.ports.extend(second.ports);
+            assert_eq!(
+                plan_deploy([&first], &snapshot, PlanOptions::default()).is_err(),
+                conflict && protocol == "tcp"
+            );
+        }
+    }
+}

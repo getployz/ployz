@@ -210,7 +210,7 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         })
         .unwrap();
     let material = test_material();
-    let challenge = CertificateChallenge::new(
+    let challenge = CertificateChallenge::parse(
         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     )
@@ -545,10 +545,10 @@ fn pending_challenge_is_answered_on_the_http_site() {
         IngressHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(
             None,
-            CertificateChallenge::new(
+            Some(CertificateChallenge::parse(
                 "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
                 "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            ),
+            ).unwrap()),
         ),
     )]);
 

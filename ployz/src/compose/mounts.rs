@@ -81,9 +81,7 @@ pub(super) fn volumes(
                     .map(str::parse)
                     .transpose()
                     .map_err(invalid)?,
-            }
-            .admit()
-            .map_err(invalid)?,
+            },
             "tmpfs" => ployz_core::RawVolumeSource::Tmpfs {
                 size_bytes: tmpfs
                     .and_then(|tmpfs| tmpfs.size.as_ref())
@@ -100,9 +98,7 @@ pub(super) fn volumes(
                     })
                     .transpose()?,
                 options: Vec::new(),
-            }
-            .admit()
-            .map_err(invalid)?,
+            },
             "volume" => {
                 let key = source.ok_or_else(|| invalid("named volume requires source"))?;
                 let provisioned_defaults = RawVolume::default();
@@ -141,12 +137,8 @@ pub(super) fn volumes(
                         maximum_bytes: *maximum_bytes,
                         labels: BTreeMap::new(),
                     }
-                    .admit()
-                    .map_err(invalid)?
                 } else if external {
                     ployz_core::RawVolumeSource::External { name }
-                        .admit()
-                        .map_err(invalid)?
                 } else {
                     ployz_core::RawVolumeSource::Ordinary {
                         name,
@@ -157,12 +149,12 @@ pub(super) fn volumes(
                         .map_err(invalid)?,
                         labels: declared.labels.clone(),
                     }
-                    .admit()
-                    .map_err(invalid)?
                 }
             }
             _ => unreachable!("validated volume kind"),
-        };
+        }
+        .admit()
+        .map_err(invalid)?;
         let reference = ServiceVolumeReference::parse(reference).map_err(invalid)?;
         if let Some(existing) = specs.get(&reference) {
             if existing != &volume_source {

@@ -1,3 +1,8 @@
+//! Requested and resolved Service configuration with admitted mount graphs.
+
+mod wire;
+use wire::{RequestedServiceSpecWire, ResolvedServiceSpecWire};
+
 use std::{
     collections::BTreeMap,
     net::IpAddr,
@@ -533,177 +538,13 @@ pub struct ResolvedServiceSpec {
     pub update: ResolvedUpdateConfig,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ServiceContainerSpecWire {
-    #[serde(flatten)]
-    spec: ServiceContainerSpec,
-    #[serde(default)]
-    config_mounts: Vec<ConfigMount>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct RequestedServiceSpecWire {
-    name: ServiceName,
-    mode: ServiceMode,
-    container: ServiceContainerSpecWire,
-    #[serde(default)]
-    placement: Placement,
-    #[serde(default)]
-    ports: Vec<PortPublication>,
-    #[serde(default)]
-    volumes: Vec<ServiceVolume>,
-    #[serde(default)]
-    mounts: Vec<ServiceMount>,
-    #[serde(default)]
-    configs: Vec<ConfigSpec>,
-    #[serde(default)]
-    pre_deploy: Option<PreDeployHook>,
-    #[serde(default)]
-    ingress_proxy_fragment: Option<IngressProxyFragment>,
-    #[serde(default)]
-    update: UpdateConfig,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ResolvedServiceSpecWire {
-    service_id: ServiceId,
-    name: ServiceName,
-    mode: ServiceMode,
-    container: ServiceContainerSpecWire,
-    #[serde(default)]
-    placement: Placement,
-    #[serde(default)]
-    ports: Vec<PortPublication>,
-    #[serde(default)]
-    volumes: Vec<ResolvedServiceVolumeWire>,
-    #[serde(default)]
-    mounts: Vec<ServiceMount>,
-    #[serde(default)]
-    configs: Vec<ConfigSpec>,
-    #[serde(default)]
-    pre_deploy: Option<PreDeployHook>,
-    #[serde(default)]
-    ingress_proxy_fragment: Option<IngressProxyFragment>,
-    #[serde(default)]
-    update: ResolvedUpdateConfig,
-}
-
-impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
-    type Error = ServiceSpecGraphError;
-
-    fn try_from(wire: RequestedServiceSpecWire) -> Result<Self, Self::Error> {
-        Ok(Self {
-            name: wire.name,
-            mode: wire.mode,
-            container: wire.container.spec,
-            placement: wire.placement,
-            ports: wire.ports,
-            mount_graph: crate::ServiceMountGraph::new(
-                ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
-                ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
-            )?,
-            pre_deploy: wire.pre_deploy,
-            ingress_proxy_fragment: wire.ingress_proxy_fragment,
-            update: wire.update,
-        })
-    }
-}
-
-impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
-    fn from(spec: RequestedServiceSpec) -> Self {
-        let (volumes, configs) = spec.mount_graph.into_parts();
-        let (volumes, mounts) = volumes.into_parts();
-        let (configs, config_mounts) = configs.into_parts();
-        Self {
-            name: spec.name,
-            mode: spec.mode,
-            container: ServiceContainerSpecWire {
-                spec: spec.container,
-                config_mounts,
-            },
-            placement: spec.placement,
-            ports: spec.ports,
-            volumes,
-            mounts,
-            configs,
-            pre_deploy: spec.pre_deploy,
-            ingress_proxy_fragment: spec.ingress_proxy_fragment,
-            update: spec.update,
-        }
-    }
-}
-
-impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
-    type Error = ServiceSpecGraphError;
-
-    fn try_from(wire: ResolvedServiceSpecWire) -> Result<Self, Self::Error> {
-        Ok(Self {
-            service_id: wire.service_id,
-            name: wire.name,
-            mode: wire.mode,
-            container: wire.container.spec,
-            placement: wire.placement,
-            ports: wire.ports,
-            mount_graph: crate::ServiceMountGraph::new(
-                ServiceVolumeGraph::parse(
-                    wire.volumes
-                        .into_iter()
-                        .map(|volume| ServiceVolume {
-                            reference: volume.reference,
-                            source: volume.source.to_requested(),
-                        })
-                        .collect(),
-                    wire.mounts,
-                )?,
-                ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
-            )?
-            .try_into()?,
-            pre_deploy: wire.pre_deploy,
-            ingress_proxy_fragment: wire.ingress_proxy_fragment,
-            update: wire.update,
-        })
-    }
-}
-
-impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
-    fn from(spec: ResolvedServiceSpec) -> Self {
-        let (volumes, configs) = spec.mount_graph.into_parts();
-        let (volumes, mounts) = volumes.into_parts();
-        let (configs, config_mounts) = configs.into_parts();
-        Self {
-            service_id: spec.service_id,
-            name: spec.name,
-            mode: spec.mode,
-            container: ServiceContainerSpecWire {
-                spec: spec.container,
-                config_mounts,
-            },
-            placement: spec.placement,
-            ports: spec.ports,
-            volumes: volumes
-                .into_iter()
-                .map(|volume| ResolvedServiceVolumeWire {
-                    reference: volume.reference,
-                    source: volume
-                        .source
-                        .try_into()
-                        .expect("resolved graph establishes scope"),
-                })
-                .collect(),
-            mounts,
-            configs,
-            pre_deploy: spec.pre_deploy,
-            ingress_proxy_fragment: spec.ingress_proxy_fragment,
-            update: spec.update,
-        }
-    }
-}
-
 impl RequestedServiceSpec {
+    /// Admitted Volume declarations and mounts.
     #[must_use]
     pub fn volume_graph(&self) -> &ServiceVolumeGraph {
         self.mount_graph.volume_graph()
     }
+    /// Admitted Config declarations and mounts.
     #[must_use]
     pub fn config_graph(&self) -> &ServiceConfigGraph {
         self.mount_graph.config_graph()
@@ -717,7 +558,7 @@ impl RequestedServiceSpec {
         &mut self,
         volumes: ServiceVolumeGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph = crate::ServiceMountGraph::new(volumes, self.config_graph().clone())?;
+        self.mount_graph = crate::ServiceMountGraph::parse(volumes, self.config_graph().clone())?;
         Ok(())
     }
 
@@ -729,7 +570,7 @@ impl RequestedServiceSpec {
         &mut self,
         configs: ServiceConfigGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph = crate::ServiceMountGraph::new(self.volume_graph().clone(), configs)?;
+        self.mount_graph = crate::ServiceMountGraph::parse(self.volume_graph().clone(), configs)?;
         Ok(())
     }
 
@@ -783,10 +624,12 @@ impl RequestedServiceSpec {
 }
 
 impl ResolvedServiceSpec {
+    /// Admitted Volume declarations and mounts.
     #[must_use]
     pub fn volume_graph(&self) -> &crate::ResolvedServiceVolumeGraph {
         self.mount_graph.volume_graph()
     }
+    /// Admitted Config declarations and mounts.
     #[must_use]
     pub fn config_graph(&self) -> &ServiceConfigGraph {
         self.mount_graph.config_graph()
@@ -801,21 +644,7 @@ impl ResolvedServiceSpec {
         volumes: crate::ResolvedServiceVolumeGraph,
     ) -> Result<(), ServiceSpecGraphError> {
         self.mount_graph =
-            crate::ServiceMountGraph::new(volumes.to_requested(), self.config_graph().clone())?
-                .try_into()?;
-        Ok(())
-    }
-
-    /// Replace Config declarations atomically while preserving combined mount admission.
-    ///
-    /// # Errors
-    /// Rejects colliding or root destinations.
-    pub fn set_config_graph(
-        &mut self,
-        configs: ServiceConfigGraph,
-    ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph =
-            crate::ServiceMountGraph::new(self.volume_graph().to_requested(), configs)?
+            crate::ServiceMountGraph::parse(volumes.into_requested(), self.config_graph().clone())?
                 .try_into()?;
         Ok(())
     }
@@ -1056,10 +885,4 @@ mod tests {
         assert_eq!(left, HealthcheckSpec::Disabled);
         assert_ne!(left, configured(&["CMD", "true"]));
     }
-}
-
-#[derive(Serialize, Deserialize)]
-struct ResolvedServiceVolumeWire {
-    reference: crate::ServiceVolumeReference,
-    source: crate::ResolvedVolumeSource,
 }

@@ -1,3 +1,5 @@
+//! Hosted DNS reservation admission and bounded remote operations.
+
 use bytes::Bytes;
 use ployz_core::{DnsRecord, IngressHost};
 use reqwest::{Client, StatusCode, Url};
@@ -29,7 +31,11 @@ struct ReservationWire {
 }
 
 impl Reservation {
-    pub(crate) fn new(endpoint: String, name: String, token: String) -> Result<Self, Error> {
+    /// Admit a usable endpoint, normalized DNS hostname, and bearer token.
+    ///
+    /// # Errors
+    /// Rejects malformed endpoints, hostnames, or tokens without exposing the token.
+    pub(crate) fn parse(endpoint: String, name: String, token: String) -> Result<Self, Error> {
         endpoint_url(&endpoint, &[])?;
         let name = IngressHost::parse(name.strip_suffix('.').unwrap_or(&name).to_ascii_lowercase())
             .map_err(|_| Error::InvalidReservation("invalid DNS hostname"))?;
@@ -52,7 +58,7 @@ impl TryFrom<ReservationWire> for Reservation {
     type Error = Error;
 
     fn try_from(wire: ReservationWire) -> Result<Self, Self::Error> {
-        Self::new(wire.endpoint, wire.name, wire.token)
+        Self::parse(wire.endpoint, wire.name, wire.token)
     }
 }
 
@@ -122,7 +128,7 @@ impl HostedDns {
             .send()
             .await?;
         let response: DomainResponse = decode(response).await?;
-        Reservation::new(endpoint.to_owned(), response.name, response.token)
+        Reservation::parse(endpoint.to_owned(), response.name, response.token)
     }
 
     async fn purge_hosted_records(&self, reservation: &Reservation) -> Result<(), Error> {
@@ -437,7 +443,7 @@ mod tests {
     async fn release_purges_hosted_records_even_when_the_domain_has_none() {
         let (endpoint, requests) = fake_server([(202, r#"{"name":"opaque.ployz.example"}"#)]).await;
         let reservation =
-            super::Reservation::new(endpoint, "opaque.ployz.example".into(), "raw-token".into())
+            super::Reservation::parse(endpoint, "opaque.ployz.example".into(), "raw-token".into())
                 .unwrap();
 
         HostedDns::new()
@@ -472,7 +478,7 @@ mod tests {
         )])
         .await;
         let reservation =
-            super::Reservation::new(endpoint, "gone.example".into(), "expired".into()).unwrap();
+            super::Reservation::parse(endpoint, "gone.example".into(), "expired".into()).unwrap();
 
         HostedDns::new()
             .purge_hosted_records(&reservation)
@@ -487,7 +493,7 @@ mod tests {
     async fn release_keeps_a_generic_authentication_failure() {
         let (endpoint, _) = fake_server([(401, r#"{"status":401}"#)]).await;
         let reservation =
-            super::Reservation::new(endpoint, "opaque.ployz.example".into(), "wrong".into())
+            super::Reservation::parse(endpoint, "opaque.ployz.example".into(), "wrong".into())
                 .unwrap();
 
         let error = HostedDns::new()
@@ -502,7 +508,7 @@ mod tests {
     async fn release_keeps_a_hosted_purge_failure() {
         let (endpoint, _) = fake_server([(500, r#"{"error":"route53"}"#)]).await;
         let reservation =
-            super::Reservation::new(endpoint, "opaque.ployz.example".into(), "raw-token".into())
+            super::Reservation::parse(endpoint, "opaque.ployz.example".into(), "raw-token".into())
                 .unwrap();
 
         let error = HostedDns::new()
@@ -525,7 +531,7 @@ mod tests {
         )])
         .await;
         let reservation =
-            super::Reservation::new(endpoint, "gone.example".into(), "expired".into()).unwrap();
+            super::Reservation::parse(endpoint, "gone.example".into(), "expired".into()).unwrap();
 
         let error = HostedDns::new()
             .submit_records(

@@ -404,7 +404,7 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
 #[tokio::test]
 async fn challenge_must_be_answerable_on_every_probe_address() {
     let hostname = host("app.example.com");
-    let challenge = CertificateChallenge::new(
+    let challenge = CertificateChallenge::parse(
         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     )
@@ -434,7 +434,7 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
 #[tokio::test]
 async fn empty_probe_addresses_fail_without_waiting() {
     let hostname = host("app.example.com");
-    let challenge = CertificateChallenge::new(
+    let challenge = CertificateChallenge::parse(
         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
         "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     )
@@ -622,7 +622,7 @@ fn machine_id(seed: &str) -> MachineId {
 fn row_with_lifetime(not_before: SystemTime, not_after: SystemTime) -> CertificateRow {
     let (certificate, private_key) =
         ployz_testkit::fake_acme::self_signed_material("app.example.com", not_before, not_after);
-    let material = CertificateMaterial::new(certificate, private_key).unwrap();
+    let material = CertificateMaterial::parse(certificate, private_key).unwrap();
     CertificateRow::from_parts(Some(material), None)
 }
 

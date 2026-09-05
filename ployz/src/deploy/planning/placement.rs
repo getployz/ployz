@@ -706,9 +706,14 @@ fn binds_overlap(left: &HostBind, right: &HostBind) -> bool {
         (HostBind::All, _) | (_, HostBind::All) => true,
         (HostBind::Address { address: left }, HostBind::Address { address: right }) => {
             left == right
+                || (left.is_ipv4() == right.is_ipv4()
+                    && (left.is_unspecified() || right.is_unspecified()))
         }
         (HostBind::Address { address }, HostBind::Prefix { prefix })
-        | (HostBind::Prefix { prefix }, HostBind::Address { address }) => prefix.contains(address),
+        | (HostBind::Prefix { prefix }, HostBind::Address { address }) => {
+            prefix.contains(address)
+                || (address.is_unspecified() && address.is_ipv4() == prefix.network().is_ipv4())
+        }
         (HostBind::Prefix { prefix: left }, HostBind::Prefix { prefix: right }) => {
             left.contains(&right.network()) || right.contains(&left.network())
         }

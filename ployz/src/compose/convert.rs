@@ -320,7 +320,7 @@ fn convert_service(
             container,
             placement,
             ports,
-            mount_graph: ployz_core::ServiceMountGraph::new(volume_graph, config_graph)
+            mount_graph: ployz_core::ServiceMountGraph::parse(volume_graph, config_graph)
                 .map_err(invalid)?,
             pre_deploy: pre_deploy(raw.pre_deploy.as_ref())?,
             ingress_proxy_fragment,

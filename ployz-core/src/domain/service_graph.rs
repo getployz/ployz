@@ -295,6 +295,12 @@ impl ResolvedServiceVolumeGraph {
     pub fn to_requested(&self) -> ServiceVolumeGraph {
         self.0.clone()
     }
+    /// Consume this graph while retaining its scoped sources.
+    #[must_use]
+    pub fn into_requested(self) -> ServiceVolumeGraph {
+        self.0
+    }
+
     pub(crate) fn into_parts(self) -> (Vec<ServiceVolume>, Vec<ServiceMount>) {
         self.0.into_parts()
     }
@@ -312,7 +318,7 @@ impl ServiceMountGraph {
     ///
     /// # Errors
     /// Rejects root destinations and repeated effective destinations.
-    pub fn new(
+    pub fn parse(
         mut volumes: ServiceVolumeGraph,
         mut configs: ServiceConfigGraph,
     ) -> Result<Self, ServiceSpecGraphError> {
@@ -333,10 +339,12 @@ impl ServiceMountGraph {
         Ok(Self { volumes, configs })
     }
 
+    /// Admitted Volume declarations and mounts.
     #[must_use]
     pub fn volume_graph(&self) -> &ServiceVolumeGraph {
         &self.volumes
     }
+    /// Admitted Config declarations and mounts.
     #[must_use]
     pub fn config_graph(&self) -> &ServiceConfigGraph {
         &self.configs
@@ -379,14 +387,17 @@ impl TryFrom<ServiceMountGraph> for ResolvedServiceMountGraph {
 }
 
 impl ResolvedServiceMountGraph {
+    /// Admitted Volume declarations and mounts.
     #[must_use]
     pub fn volume_graph(&self) -> &ResolvedServiceVolumeGraph {
         &self.volumes
     }
+    /// Admitted Config declarations and mounts.
     #[must_use]
     pub fn config_graph(&self) -> &ServiceConfigGraph {
         &self.configs
     }
+    /// Copy the admitted mounts, retaining exact scoped source identity.
     #[must_use]
     pub fn to_requested(&self) -> ServiceMountGraph {
         ServiceMountGraph {

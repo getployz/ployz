@@ -485,7 +485,7 @@ fn reset_stops_if_the_machine_record_changes() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     store.begin_reset().unwrap();
-    let replacement = LocalMachineRecord::new(
+    let replacement = LocalMachineRecord::parse(
         LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Uninitialized {
                 id: ployz_core::MachineId::random(),
@@ -534,7 +534,7 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
     fs::create_dir_all(&dir.0).unwrap();
     let key = WireGuardPrivateKey::generate();
     let assigned = sample_machine(MachineId::random(), key.public_key());
-    let record = LocalMachineRecord::new(
+    let record = LocalMachineRecord::parse(
         LocalMachineBody::Joining {
             machine: assigned,
             bootstrap: vec![sample_machine(
@@ -654,14 +654,14 @@ fn legal_bodies_round_trip() {
         WireGuardPrivateKey::generate().public_key(),
     );
     let records = [
-        LocalMachineRecord::new(
+        LocalMachineRecord::parse(
             LocalMachineBody::Uninitialized {
                 id: MachineId::random(),
             },
             key.clone(),
         )
         .unwrap(),
-        LocalMachineRecord::new(
+        LocalMachineRecord::parse(
             LocalMachineBody::Joining {
                 machine: machine.clone(),
                 bootstrap: vec![peer.clone()],
@@ -671,7 +671,7 @@ fn legal_bodies_round_trip() {
         )
         .unwrap(),
         {
-            let mut record = LocalMachineRecord::new(
+            let mut record = LocalMachineRecord::parse(
                 LocalMachineBody::Participating {
                     machine: machine.clone(),
                     origin: ParticipationOrigin::Founder {
@@ -686,7 +686,7 @@ fn legal_bodies_round_trip() {
             record.wireguard_mtu = Some(1400);
             record
         },
-        LocalMachineRecord::new(
+        LocalMachineRecord::parse(
             LocalMachineBody::Participating {
                 machine: machine.clone(),
                 origin: ParticipationOrigin::Join {
@@ -696,7 +696,7 @@ fn legal_bodies_round_trip() {
             key.clone(),
         )
         .unwrap(),
-        LocalMachineRecord::new(
+        LocalMachineRecord::parse(
             LocalMachineBody::Resetting {
                 prior: Box::new(LocalMachinePrior::Participating {
                     machine,
@@ -737,7 +737,7 @@ fn legal_bodies_round_trip() {
 fn pre_616_participating_authority_shape_is_not_migrated() {
     let key = WireGuardPrivateKey::generate();
     let machine = sample_machine(MachineId::random(), key.public_key());
-    let record = LocalMachineRecord::new(
+    let record = LocalMachineRecord::parse(
         LocalMachineBody::Participating {
             machine,
             origin: ParticipationOrigin::Join {
@@ -807,7 +807,7 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
             }
             let body = serde_json::from_value::<LocalMachineBody>(body.clone()).unwrap();
             assert!(
-                LocalMachineRecord::new(body, key.clone()).is_err(),
+                LocalMachineRecord::parse(body, key.clone()).is_err(),
                 "{phase} constructor accepted invalid {path}"
             );
             assert!(
