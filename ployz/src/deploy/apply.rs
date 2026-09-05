@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    DeployError, DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
+    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
         push_project_images,
@@ -212,7 +212,7 @@ pub(crate) async fn deploy_scale(
 
 async fn confirm_and_execute(
     client: &Client,
-    preview: &DeployPreview,
+    preview: &DeployPlan,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
     let source = Some(gate.project.source.to_string());
@@ -265,7 +265,7 @@ pub(crate) async fn remove_project(
 
 async fn stream_confirm(
     client: &Client,
-    preview: &DeployPreview,
+    preview: &DeployPlan,
     title: String,
 ) -> DeployOutcome<ExecutionError> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

@@ -315,7 +315,8 @@ impl DeployPreviewHandle {
     /// Returns when the preview cannot be encoded as JSON.
     #[napi]
     pub fn payload(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(&*self.inner).map_err(|error| Error::from_reason(error.to_string()))
+        serde_json::to_value(self.inner.preview())
+            .map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Execute these operations. Illegal after a previous confirm.

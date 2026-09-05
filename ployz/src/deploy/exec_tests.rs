@@ -6,7 +6,7 @@ use ployz_core::{
     ServiceName,
 };
 
-use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
+use crate::deploy::{DeployOutcome, FailedOperation};
 
 use super::health::parse_monitor_period;
 use super::*;
@@ -32,11 +32,10 @@ async fn execute_with<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
     super::execute_operation_sequence(
-        crate::deploy::pending_rows(plan, &DeploySnapshot::default()),
+        &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_project()),
         client,
         cancellation,
         None,
-        &test_project(),
     )
     .await
 }

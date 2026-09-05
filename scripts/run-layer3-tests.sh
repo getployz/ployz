@@ -16,7 +16,6 @@ retry_once cargo test --locked --no-fail-fast \
     --test service_cluster \
     --test internal_dns_cluster \
     --test ingress_cluster \
-    --test deploy_cluster \
     --test operator_cluster \
     --test volume_layer3 \
     --test workflow_layer3 \
@@ -31,4 +30,8 @@ retry_once cargo test --locked --no-fail-fast \
 
 retry_once cargo test --locked --no-fail-fast --package ployzd --lib \
     corrosion::integration_tests::replicated_store_preserves_partial_and_contradictory_observations \
+    -- --ignored --exact --test-threads=1
+
+retry_once cargo test --locked --no-fail-fast --package ployz --lib \
+    deploy::exec::cluster_tests::deploy_execution_preserves_partial_effects_and_never_repairs_them \
     -- --ignored --exact --test-threads=1

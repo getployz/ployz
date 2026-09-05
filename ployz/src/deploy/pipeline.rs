@@ -1,7 +1,7 @@
 //! The Deploy pipeline: snapshot → preview → confirm.
 //!
 //! A Deploy Snapshot is gathered, a Deploy Preview is calculated, and
-//! `confirm` executes those rows to a Deploy Outcome. This module does not
+//! `confirm` executes the privately admitted plan to a Deploy Outcome. This module does not
 //! print, read stdin, or exit the process.
 
 use std::collections::BTreeSet;
@@ -26,9 +26,9 @@ use crate::{
 };
 
 use super::{
-    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, IngressContext, ObservationKind, PlanError, PlanOptions,
-    exec::execute_operation_sequence, planning, preview_deploy,
+    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview,
+    DeploySnapshot, DeployWarning, ExecutionError, IngressContext, ObservationKind, PlanError,
+    PlanOptions, exec::execute_operation_sequence, plan_deploy, planning,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -54,13 +54,13 @@ impl Client {
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Gathers the observer-relative snapshot and reserved domain, calls
-    /// [`preview_deploy`], then performs public-DNS warning I/O. Confirming
+    /// [`plan_deploy`], then performs public-DNS warning I/O. Confirming
     /// executes these operations; it does not re-plan.
     ///
     /// # Errors
     ///
     /// Returns when snapshot gathering or planning fails.
-    pub async fn preview(&mut self, intent: DeployIntent) -> Result<DeployPreview, DeployError> {
+    pub async fn preview(&mut self, intent: DeployIntent) -> Result<DeployPlan, DeployError> {
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_deploy_snapshot(self, machines, &intent).await?;
         preview_gathered(self, snapshot, warnings, &intent).await
@@ -78,12 +78,12 @@ impl Client {
         &mut self,
         project: &ProjectName,
         volumes: super::VolumeFate,
-    ) -> Result<DeployPreview, DeployError> {
+    ) -> Result<DeployPlan, DeployError> {
         crate::project::refuse_reserved(project)?;
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        let mut preview = planning::plan_project_removal(project, &snapshot, volumes)?;
-        preview.warnings.splice(0..0, warnings);
+        let mut preview = planning::prepare_project_removal(project, &snapshot, volumes)?;
+        preview.prepend_warnings(warnings);
         Ok(preview)
     }
 
@@ -142,7 +142,7 @@ impl Client {
         project: &ProjectName,
         confirm_data_loss: &DataLossConfirmation,
         volumes: super::VolumeFate,
-    ) -> Result<DeployPreview, RpcError> {
+    ) -> Result<DeployPlan, RpcError> {
         let preview = self.preview_project_removal(project, volumes).await?;
         observed_destroy_loss(&preview, volumes)?
             .require(confirm_data_loss)
@@ -160,25 +160,18 @@ impl Client {
         Ok(preview)
     }
 
-    /// Execute the operations on this Deploy Preview. Does not re-plan.
+    /// Execute this admitted Deploy Plan. Does not re-plan.
     ///
     /// Progress events are sent on `progress` when provided. The first event is
     /// every row `pending` before any Machine RPC. Execution failure is a
     /// [`DeployOutcome::Failed`], not this error.
     pub async fn confirm(
         &self,
-        preview: &DeployPreview,
+        preview: &DeployPlan,
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
-        execute_operation_sequence(
-            preview.operations.clone(),
-            self,
-            cancellation,
-            progress,
-            &preview.project_name,
-        )
-        .await
+        execute_operation_sequence(preview, self, cancellation, progress).await
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.
@@ -281,7 +274,7 @@ pub(super) async fn plan_project(
     options: PlanOptions,
     project_name: &ProjectName,
     hints: ReconciliationHints,
-) -> Result<DeployPreview, Failure> {
+) -> Result<DeployPlan, Failure> {
     project.resolve_secrets()?;
     let intent = super::compose_deploy_intent(project, project_name.clone(), options)
         .with_requested_profiles(hints.requested_profiles)
@@ -295,13 +288,13 @@ pub(super) async fn plan_scale(
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     options: PlanOptions,
-) -> Result<(DeployPreview, ProjectName), Failure> {
+) -> Result<(DeployPlan, ProjectName), Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let choice = choose_scale_spec(&snapshot, selector, replicas)?;
     let Some(requested) = choice.requested else {
         return Ok((
-            DeployPreview::new(Vec::new(), warnings, choice.project_name.clone()),
+            DeployPlan::empty(choice.project_name.clone(), warnings),
             choice.project_name,
         ));
     };
@@ -317,13 +310,13 @@ async fn preview_gathered(
     snapshot: DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
     intent: &DeployIntent,
-) -> Result<DeployPreview, DeployError> {
+) -> Result<DeployPlan, DeployError> {
     let domain = if intent.target.iter().any(needs_ingress_expansion) {
         client.domain_if_reserved().await?
     } else {
         None
     };
-    let mut preview = preview_deploy(
+    let mut preview = plan_deploy(
         intent,
         &snapshot,
         IngressContext {
@@ -331,7 +324,7 @@ async fn preview_gathered(
         },
     )?;
     warnings.extend(hostname_warnings(&preview, &snapshot.machines).await);
-    preview.warnings.splice(0..0, warnings);
+    preview.prepend_warnings(warnings);
     Ok(preview)
 }
 

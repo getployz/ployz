@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use ployz::deploy::{IngressContext, preview_deploy};
+use ployz::deploy::{IngressContext, plan_deploy};
 use ployz_core::{
     CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest,
     INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId, MachineTarget,
@@ -613,7 +613,7 @@ async fn deploy(
             .collect(),
         ..Default::default()
     };
-    let plan = preview_deploy(
+    let plan = plan_deploy(
         &ployz::deploy::DeployIntent::apply_all(
             ProjectName::parse("start-first").unwrap(),
             [requested],
