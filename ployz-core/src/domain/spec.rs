@@ -985,11 +985,14 @@ mod tests {
             "pre_deploy": {"command": ["migrate"]}
         });
         serde_json::from_value::<RequestedServiceSpec>(requested.clone()).unwrap();
-        requested["pre_deploy"]["command"] = json!([]);
+        *requested.pointer_mut("/pre_deploy/command").unwrap() = json!([]);
         assert!(serde_json::from_value::<RequestedServiceSpec>(requested).is_err());
         for command in [json!(["NONE"]), json!(["sh", "-c", "migrate"])] {
             let hook: PreDeployHook = serde_json::from_value(json!({"command": command})).unwrap();
-            assert_eq!(serde_json::to_value(hook).unwrap()["command"], command);
+            assert_eq!(
+                serde_json::to_value(hook).unwrap().get("command").unwrap(),
+                &command
+            );
         }
     }
 
