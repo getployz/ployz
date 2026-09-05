@@ -49,7 +49,7 @@
     ],
     "finding": "F07",
     "file": "tickets/T05-require-nonempty-pre-deploy-hook-command.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T06",
@@ -108,7 +108,7 @@
     "depends": [],
     "finding": "F03",
     "file": "tickets/T11-retain-resource-identity-in-volume-removal-outcomes.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T12",
@@ -126,7 +126,7 @@
     "depends": [],
     "finding": "F09",
     "file": "tickets/T13-validate-relay-endpoints-before-pairing-persistence.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T14",
@@ -136,7 +136,7 @@
     ],
     "finding": "F10",
     "file": "tickets/T14-own-and-bound-pending-relay-tunnel-lifetime.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T15",

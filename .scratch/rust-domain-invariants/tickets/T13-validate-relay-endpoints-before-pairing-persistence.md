@@ -1,6 +1,6 @@
 # T13 — Validate Relay endpoints before pairing persistence
 
-Status: pending
+Status: complete
 Blocking dependencies: none
 Audit scope: F09
 
