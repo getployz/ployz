@@ -158,8 +158,8 @@ impl IngressProxyBackend {
             container,
             placement: Placement { machines },
             ports,
-            volume_graph,
-            config_graph: Default::default(),
+            mount_graph: crate::ServiceMountGraph::new(volume_graph, Default::default())
+                .expect("built-in ingress mounts are valid"),
             pre_deploy: None,
             ingress_proxy_fragment: fragment,
             update,
@@ -513,16 +513,22 @@ mod tests {
         let mut wrong_ports = requested.clone();
         wrong_ports.ports.pop();
         let mut wrong_volume_graph = requested.clone();
-        wrong_volume_graph.volume_graph = ServiceVolumeGraph::default();
+        wrong_volume_graph
+            .set_volume_graph(ServiceVolumeGraph::default())
+            .unwrap();
         let mut wrong_config_graph = requested.clone();
-        wrong_config_graph.config_graph = ServiceConfigGraph::parse(
-            vec![ConfigSpec {
-                name: "unexpected".into(),
-                content: Vec::new(),
-            }],
-            Vec::new(),
-        )
-        .unwrap();
+        wrong_config_graph
+            .set_config_graph(
+                ServiceConfigGraph::parse(
+                    vec![ConfigSpec {
+                        name: "unexpected".into(),
+                        content: Vec::new(),
+                    }],
+                    Vec::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let mut wrong_requested_update = requested.clone();
         wrong_requested_update.update.order = Some(UpdateOrder::StopFirst);
 
@@ -600,7 +606,7 @@ mod tests {
         );
         assert!(
             requested
-                .volume_graph
+                .volume_graph()
                 .volumes()
                 .iter()
                 .filter_map(|volume| match volume.source.kind() {

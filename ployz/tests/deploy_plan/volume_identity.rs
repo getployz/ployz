@@ -6,15 +6,17 @@ use super::support::*;
 fn external_volume_keeps_its_identity_without_a_create_preview() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "shared");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mounts = requested.volume_graph().mounts().to_vec();
     let volume = volumes.first_mut().expect("named volume was added");
     volume.source = ployz_core::RawVolumeSource::External {
         name: DockerVolumeName::parse("shared").unwrap(),
     }
     .admit()
     .expect("valid volume declaration");
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     let plan = plan_deploy(
         [&requested],
         &DeploySnapshot {
@@ -29,7 +31,7 @@ fn external_volume_keeps_its_identity_without_a_create_preview() {
         panic!("expected one run operation: {plan_operations:?}");
     };
     let operation_volume = spec
-        .volume_graph
+        .volume_graph()
         .volumes()
         .first()
         .expect("run operation mounts the external Volume");
@@ -46,9 +48,14 @@ fn scale_import_preserves_foreign_observed_volume_identity() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     add_named_volume(&mut requested, "data");
-    requested.volume_graph = requested
-        .volume_graph
-        .scope_to_project(&ProjectName::parse("blog").unwrap())
+    requested
+        .set_volume_graph(
+            requested
+                .volume_graph()
+                .clone()
+                .scope_to_project(&ProjectName::parse("blog").unwrap())
+                .unwrap(),
+        )
         .unwrap();
     let resolved = requested
         .to_resolved(
@@ -78,7 +85,7 @@ fn scale_import_preserves_foreign_observed_volume_identity() {
     let volume = plan_operations
         .iter()
         .filter_map(DeployOperation::spec)
-        .flat_map(|spec| spec.volume_graph.volumes())
+        .flat_map(|spec| spec.volume_graph().volumes())
         .find(|volume| {
             matches!(
                 volume.source.kind(),

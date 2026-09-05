@@ -43,7 +43,7 @@ impl RequestedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, &self.volume_graph, machine, storage)
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
     }
 }
 
@@ -58,7 +58,7 @@ impl ResolvedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, &self.volume_graph, machine, storage)
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
     }
 }
 
@@ -201,9 +201,14 @@ mod tests {
         ];
 
         for (mut requested, storage, expected) in cases {
-            requested.volume_graph = requested
-                .volume_graph
-                .scope_to_project(&crate::ProjectName::parse("shop").unwrap())
+            requested
+                .set_volume_graph(
+                    requested
+                        .volume_graph()
+                        .clone()
+                        .scope_to_project(&crate::ProjectName::parse("shop").unwrap())
+                        .unwrap(),
+                )
                 .unwrap();
             assert_eq!(
                 requested.placement_eligibility(&machine, storage.as_ref()),
@@ -261,7 +266,7 @@ mod tests {
         }))
         .unwrap();
         spec.placement = placement;
-        spec.volume_graph = volume_graph;
+        spec.set_volume_graph(volume_graph).unwrap();
         spec
     }
 }

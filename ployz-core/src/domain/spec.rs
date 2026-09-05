@@ -192,6 +192,7 @@ pub struct ConfigSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConfigMount {
     pub config_name: String,
+    /// Omission defaults to `/{config_name}`. Admitted specs retain the canonical target.
     #[serde(default)]
     pub target: Option<ContainerPath>,
     #[serde(default)]
@@ -526,8 +527,7 @@ pub struct RequestedServiceSpec {
     pub container: ServiceContainerSpec,
     pub placement: Placement,
     pub ports: Vec<PortPublication>,
-    pub volume_graph: ServiceVolumeGraph,
-    pub config_graph: ServiceConfigGraph,
+    pub mount_graph: crate::ServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
     /// Backend-tagged custom configuration for this Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
@@ -544,8 +544,7 @@ pub struct ResolvedServiceSpec {
     pub container: ServiceContainerSpec,
     pub placement: Placement,
     pub ports: Vec<PortPublication>,
-    pub volume_graph: crate::ResolvedServiceVolumeGraph,
-    pub config_graph: ServiceConfigGraph,
+    pub mount_graph: crate::ResolvedServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
     /// Backend-tagged custom configuration for this Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
@@ -617,8 +616,10 @@ impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
             container: wire.container.spec,
             placement: wire.placement,
             ports: wire.ports,
-            volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
-            config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
+            mount_graph: crate::ServiceMountGraph::new(
+                ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
+                ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
+            )?,
             pre_deploy: wire.pre_deploy,
             ingress_proxy_fragment: wire.ingress_proxy_fragment,
             update: wire.update,
@@ -628,8 +629,9 @@ impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
 
 impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
     fn from(spec: RequestedServiceSpec) -> Self {
-        let (volumes, mounts) = spec.volume_graph.into_parts();
-        let (configs, config_mounts) = spec.config_graph.into_parts();
+        let (volumes, configs) = spec.mount_graph.into_parts();
+        let (volumes, mounts) = volumes.into_parts();
+        let (configs, config_mounts) = configs.into_parts();
         Self {
             name: spec.name,
             mode: spec.mode,
@@ -660,18 +662,20 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
             container: wire.container.spec,
             placement: wire.placement,
             ports: wire.ports,
-            volume_graph: ServiceVolumeGraph::parse(
-                wire.volumes
-                    .into_iter()
-                    .map(|volume| ServiceVolume {
-                        reference: volume.reference,
-                        source: volume.source.to_requested(),
-                    })
-                    .collect(),
-                wire.mounts,
+            mount_graph: crate::ServiceMountGraph::new(
+                ServiceVolumeGraph::parse(
+                    wire.volumes
+                        .into_iter()
+                        .map(|volume| ServiceVolume {
+                            reference: volume.reference,
+                            source: volume.source.to_requested(),
+                        })
+                        .collect(),
+                    wire.mounts,
+                )?,
+                ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             )?
             .try_into()?,
-            config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             pre_deploy: wire.pre_deploy,
             ingress_proxy_fragment: wire.ingress_proxy_fragment,
             update: wire.update,
@@ -681,8 +685,9 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
 
 impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
     fn from(spec: ResolvedServiceSpec) -> Self {
-        let (volumes, mounts) = spec.volume_graph.into_parts();
-        let (configs, config_mounts) = spec.config_graph.into_parts();
+        let (volumes, configs) = spec.mount_graph.into_parts();
+        let (volumes, mounts) = volumes.into_parts();
+        let (configs, config_mounts) = configs.into_parts();
         Self {
             service_id: spec.service_id,
             name: spec.name,
@@ -713,28 +718,61 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
 }
 
 impl RequestedServiceSpec {
+    #[must_use]
+    pub fn volume_graph(&self) -> &ServiceVolumeGraph {
+        self.mount_graph.volume_graph()
+    }
+    #[must_use]
+    pub fn config_graph(&self) -> &ServiceConfigGraph {
+        self.mount_graph.config_graph()
+    }
+
+    /// Replace Volume declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_volume_graph(
+        &mut self,
+        volumes: ServiceVolumeGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph = crate::ServiceMountGraph::new(volumes, self.config_graph().clone())?;
+        Ok(())
+    }
+
+    /// Replace Config declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_config_graph(
+        &mut self,
+        configs: ServiceConfigGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph = crate::ServiceMountGraph::new(self.volume_graph().clone(), configs)?;
+        Ok(())
+    }
+
     /// Service Volume definitions in this spec's graph.
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
-        self.volume_graph.volumes()
+        self.volume_graph().volumes()
     }
 
     /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
-        self.volume_graph.mounts()
+        self.volume_graph().mounts()
     }
 
     /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
-        self.config_graph.configs()
+        self.config_graph().configs()
     }
 
     /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
-        self.config_graph.mounts()
+        self.config_graph().mounts()
     }
 
     /// Copy this spec onto a Service Container after placement.
@@ -754,8 +792,7 @@ impl RequestedServiceSpec {
             container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volume_graph: self.volume_graph.clone().try_into()?,
-            config_graph: self.config_graph.clone(),
+            mount_graph: self.mount_graph.clone().try_into()?,
             pre_deploy: self.pre_deploy.clone(),
             ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update,
@@ -764,28 +801,65 @@ impl RequestedServiceSpec {
 }
 
 impl ResolvedServiceSpec {
+    #[must_use]
+    pub fn volume_graph(&self) -> &crate::ResolvedServiceVolumeGraph {
+        self.mount_graph.volume_graph()
+    }
+    #[must_use]
+    pub fn config_graph(&self) -> &ServiceConfigGraph {
+        self.mount_graph.config_graph()
+    }
+
+    /// Replace Volume declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_volume_graph(
+        &mut self,
+        volumes: crate::ResolvedServiceVolumeGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph =
+            crate::ServiceMountGraph::new(volumes.to_requested(), self.config_graph().clone())?
+                .try_into()?;
+        Ok(())
+    }
+
+    /// Replace Config declarations atomically while preserving combined mount admission.
+    ///
+    /// # Errors
+    /// Rejects colliding or root destinations.
+    pub fn set_config_graph(
+        &mut self,
+        configs: ServiceConfigGraph,
+    ) -> Result<(), ServiceSpecGraphError> {
+        self.mount_graph =
+            crate::ServiceMountGraph::new(self.volume_graph().to_requested(), configs)?
+                .try_into()?;
+        Ok(())
+    }
+
     /// Service Volume definitions in this spec's graph.
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
-        self.volume_graph.volumes()
+        self.volume_graph().volumes()
     }
 
     /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
-        self.volume_graph.mounts()
+        self.volume_graph().mounts()
     }
 
     /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
-        self.config_graph.configs()
+        self.config_graph().configs()
     }
 
     /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
-        self.config_graph.mounts()
+        self.config_graph().mounts()
     }
 
     /// Rebuild the deploy input this resolved spec came from.
@@ -797,8 +871,7 @@ impl ResolvedServiceSpec {
             container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volume_graph: self.volume_graph.to_requested(),
-            config_graph: self.config_graph.clone(),
+            mount_graph: self.mount_graph.to_requested(),
             pre_deploy: self.pre_deploy.clone(),
             ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update: UpdateConfig {

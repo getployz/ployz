@@ -37,8 +37,8 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         spec.ports.first(),
         Some(PortPublication::Host { .. })
     ));
-    assert!(!spec.volume_graph.mounts().is_empty());
-    assert!(spec.config_graph.mounts().is_empty());
+    assert!(!spec.volume_graph().mounts().is_empty());
+    assert!(spec.config_graph().mounts().is_empty());
     assert!(spec.mounts().first().is_some_and(|mount| mount.read_only));
     assert!(spec.mounts().get(1).is_some_and(|mount| mount.no_copy));
 

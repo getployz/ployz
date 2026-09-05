@@ -84,8 +84,8 @@ impl VolumePins {
                 operations.iter().any(|operation| {
                     operation.machine_id() == *machine_id
                         && operation.spec().is_some_and(|spec| {
-                            spec.volume_graph.mounts().iter().any(|mount| {
-                                managed_volume_name(spec.volume_graph.volume_for(mount))
+                            spec.volume_graph().mounts().iter().any(|mount| {
+                                managed_volume_name(spec.volume_graph().volume_for(mount))
                                     == managed_volume_name(volume)
                             })
                         })
@@ -105,7 +105,7 @@ pub(super) fn scope_requested(
     mut spec: RequestedServiceSpec,
     project: &ProjectName,
 ) -> Result<RequestedServiceSpec, PlanError> {
-    spec.volume_graph = match spec.volume_graph.scope_to_project(project) {
+    spec.mount_graph = match spec.mount_graph.scope_to_project(project) {
         Ok(graph) => graph,
         Err(ployz_core::ServiceVolumeGraphError::IncompatibleVolumeAliases { name }) => {
             return Err(PlanError::ConflictingDockerVolumeDefinitions { name });
@@ -123,7 +123,7 @@ impl VolumePins {
     ) -> Result<(), PlanError> {
         let name_errors_with_service = target.len() > 1;
         for spec in target {
-            if !spec.volume_graph.has_mounted_provisioned_volume() {
+            if !spec.volume_graph().has_mounted_provisioned_volume() {
                 continue;
             }
             let result = (|| {
@@ -155,7 +155,7 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
-        for volume in spec.volume_graph.mounted_provisioned_volumes() {
+        for volume in spec.volume_graph().mounted_provisioned_volumes() {
             let ployz_core::RawVolumeSource::Provisioned { name, .. } = volume.source.kind() else {
                 unreachable!("mounted_provisioned_volumes filters source kinds")
             };
@@ -183,7 +183,7 @@ impl VolumePins {
         machines: &[&MachineObservation],
         snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
-        for volume in spec.volume_graph.mounted_provisioned_volumes() {
+        for volume in spec.volume_graph().mounted_provisioned_volumes() {
             let ployz_core::RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes,
@@ -264,7 +264,7 @@ pub(super) fn preserved_owned_volumes(
 fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVolumeName> {
     target
         .iter()
-        .flat_map(|spec| spec.volume_graph.mounted_volumes())
+        .flat_map(|spec| spec.volume_graph().mounted_volumes())
         .filter_map(|volume| match volume.source.kind() {
             ployz_core::RawVolumeSource::Ordinary { name, .. }
             | ployz_core::RawVolumeSource::Provisioned { name, .. } => Some(name.clone()),
@@ -327,8 +327,8 @@ pub(super) fn managed_volume_uses(
     let mut uses = BTreeMap::<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>::new();
     for spec in requested {
         let service_name = spec.name.as_str();
-        for mount in spec.volume_graph.mounts() {
-            let volume = spec.volume_graph.volume_for(mount);
+        for mount in spec.volume_graph().mounts() {
+            let volume = spec.volume_graph().volume_for(mount);
             let Some(name) = managed_volume_name(volume) else {
                 continue;
             };
@@ -609,7 +609,7 @@ fn volume_constraints<'spec>(
     pins: &VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
-    let mounted_volumes = mounted_managed_volumes(&spec.volume_graph);
+    let mounted_volumes = mounted_managed_volumes(spec.volume_graph());
     let incomplete = machines.iter().find_map(|machine| {
         snapshot
             .volume_snapshot

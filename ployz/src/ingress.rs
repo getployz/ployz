@@ -134,7 +134,7 @@ mod tests {
         assert!(zentinel.ingress_proxy_fragment.is_none());
         assert!(
             zentinel
-                .volume_graph
+                .volume_graph()
                 .volumes()
                 .iter()
                 .filter_map(|volume| match volume.source.kind() {
@@ -180,7 +180,7 @@ mod tests {
         assert!(envoy.ingress_proxy_fragment.is_none());
         assert!(
             envoy
-                .volume_graph
+                .volume_graph()
                 .volumes()
                 .iter()
                 .filter_map(|volume| match volume.source.kind() {

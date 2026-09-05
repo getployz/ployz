@@ -410,7 +410,7 @@ async fn gather_deploy_snapshot(
     if intent
         .target
         .iter()
-        .any(|spec| spec.volume_graph.has_mounted_provisioned_volume())
+        .any(|spec| spec.volume_graph().has_mounted_provisioned_volume())
     {
         client.observe_machine_storage(&mut machines).await;
     }

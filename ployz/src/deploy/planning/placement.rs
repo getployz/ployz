@@ -529,7 +529,7 @@ fn determine_update_order(
     }) {
         return UpdateOrder::StopFirst;
     }
-    if requested.volume_graph.mounted_volumes().any(|volume| {
+    if requested.volume_graph().mounted_volumes().any(|volume| {
         matches!(
             volume.source.kind(),
             ployz_core::RawVolumeSource::External { .. }

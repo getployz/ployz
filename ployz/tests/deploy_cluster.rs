@@ -136,20 +136,23 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
     let service_id = ServiceId::random();
     let mut spec = service_spec(&service_id, "volume-owner");
     let reference = volume.reference.clone();
-    spec.volume_graph = ServiceVolumeGraph::parse(
-        vec![volume],
-        vec![ServiceMount {
-            volume: reference,
-            target: ContainerPath::parse("/data").unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        }],
+    spec.set_volume_graph(
+        ServiceVolumeGraph::parse(
+            vec![volume],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap()
+        .scope_to_project(&ProjectName::parse("app").unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap(),
     )
-    .unwrap()
-    .scope_to_project(&ProjectName::parse("app").unwrap())
-    .unwrap()
-    .try_into()
     .unwrap();
     let plan = deploy_plan(vec![run_without_health_monitor(machine, &spec)]);
 

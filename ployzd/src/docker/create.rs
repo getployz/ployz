@@ -59,7 +59,7 @@ pub(super) fn container_create_body(
     if hook.is_some() {
         labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
     }
-    let mounts = docker_mounts(&spec.volume_graph)?;
+    let mounts = docker_mounts(spec.volume_graph())?;
     let interface_addresses = if hook.is_none()
         && spec.ports.iter().any(|port| {
             matches!(

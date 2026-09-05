@@ -1350,7 +1350,7 @@ secrets: {token: {x-command: "printf resolved"}}
     let volume = plan_operations
         .iter()
         .filter_map(DeployOperation::spec)
-        .flat_map(|spec| spec.volume_graph.volumes())
+        .flat_map(|spec| spec.volume_graph().volumes())
         .find(|volume| {
             matches!(
                 volume.source.kind(),
@@ -1546,7 +1546,7 @@ fn compose_x_volume_size_stays_in_resolved_service_spec() {
 
     let source_bound = |spec: &ployz_core::ResolvedServiceSpec| {
         let volume = spec
-            .volume_graph
+            .volume_graph()
             .volumes()
             .first()
             .expect("fixture mounts one volume");
@@ -1727,7 +1727,7 @@ fn created_named_volume(
     let volume = plan_operations
         .iter()
         .filter_map(DeployOperation::spec)
-        .flat_map(|spec| spec.volume_graph.volumes())
+        .flat_map(|spec| spec.volume_graph().volumes())
         .find(|volume| matches!(volume.source.kind(), ployz_core::RawVolumeSource::Ordinary { name, .. } if name == &previewed.name))
         .expect("container operation carries the previewed Volume");
     let ployz_core::RawVolumeSource::Ordinary { name, .. } = volume.source.kind() else {

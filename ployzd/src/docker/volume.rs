@@ -32,7 +32,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
         let mut mounted = BTreeMap::<&DockerVolumeName, &VolumeSource>::new();
-        for volume in spec.volume_graph.mounted_volumes() {
+        for volume in spec.volume_graph().mounted_volumes() {
             let source = &volume.source;
             let Some(name) = source.docker_volume_name() else {
                 continue;

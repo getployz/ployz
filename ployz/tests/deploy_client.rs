@@ -404,8 +404,8 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     let (mut client, server) = connected(service).await;
     let mut requested = spec("web");
     add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mounts = requested.volume_graph().mounts().to_vec();
     let source = &mut volumes
         .first_mut()
         .expect("fixture mounts one volume")
@@ -426,7 +426,9 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     }
     .admit()
     .expect("valid volume declaration");
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     let intent =
         DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
 

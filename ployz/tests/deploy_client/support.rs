@@ -837,10 +837,13 @@ pub(super) fn running_container(
     spec: &RequestedServiceSpec,
 ) -> ployz_core::ContainerObservation {
     let mut spec = spec.clone();
-    spec.volume_graph = spec
-        .volume_graph
-        .scope_to_project(&ProjectName::parse("app").unwrap())
-        .unwrap();
+    spec.set_volume_graph(
+        spec.volume_graph()
+            .clone()
+            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     let resolved = spec
         .to_resolved(
             ServiceId::random(),
@@ -870,26 +873,30 @@ pub(super) fn running_container(
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
     let reference = ServiceVolumeReference::parse(name).unwrap();
-    requested.volume_graph = ServiceVolumeGraph::parse(
-        vec![ServiceVolume {
-            reference: reference.clone(),
-            source: ployz_core::RawVolumeSource::Ordinary {
-                name: DockerVolumeName::parse(name).unwrap(),
-                driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
-                labels: Default::default(),
-            }
-            .admit()
-            .expect("valid volume declaration"),
-        }],
-        vec![ServiceMount {
-            volume: reference,
-            target: ContainerPath::parse(format!("/{name}")).unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        }],
-    )
-    .unwrap();
+    requested
+        .set_volume_graph(
+            ServiceVolumeGraph::parse(
+                vec![ServiceVolume {
+                    reference: reference.clone(),
+                    source: ployz_core::RawVolumeSource::Ordinary {
+                        name: DockerVolumeName::parse(name).unwrap(),
+                        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
+                        labels: Default::default(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                }],
+                vec![ServiceMount {
+                    volume: reference,
+                    target: ContainerPath::parse(format!("/{name}")).unwrap(),
+                    read_only: false,
+                    no_copy: false,
+                    subpath: None,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
 }
 
 pub(super) fn skip_health() -> PlanOptions {

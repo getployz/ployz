@@ -97,8 +97,7 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
         },
         placement: Placement::default(),
         ports: Vec::new(),
-        volume_graph: Default::default(),
-        config_graph: Default::default(),
+        mount_graph: Default::default(),
         pre_deploy: None,
         ingress_proxy_fragment: None,
         update: UpdateConfig::default(),
@@ -147,8 +146,8 @@ pub(super) fn container_id(hex: char) -> ContainerId {
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
     let reference = ServiceVolumeReference::parse(name).unwrap();
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mut mounts = requested.volume_graph.mounts().to_vec();
+    let mut volumes = requested.volume_graph().volumes().to_vec();
+    let mut mounts = requested.volume_graph().mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: reference.clone(),
         source: ployz_core::RawVolumeSource::Ordinary {
@@ -166,12 +165,14 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
         no_copy: false,
         subpath: None,
     });
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    requested
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 }
 
 pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str, bytes: u64) {
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
+    let mut volumes = spec.volume_graph().volumes().to_vec();
+    let mounts = spec.volume_graph().mounts().to_vec();
     let volume = volumes
         .iter_mut()
         .find(|volume| volume.reference.as_str() == reference)
@@ -188,7 +189,8 @@ pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str,
     }
     .admit()
     .expect("valid volume declaration");
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    spec.set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
 }
 
 pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
@@ -227,12 +229,13 @@ pub(super) fn unowned_volume(machine_id: MachineId, logical: &str) -> DockerVolu
 pub(super) fn scoped_spec(spec: &RequestedServiceSpec) -> RequestedServiceSpec {
     let project = ProjectName::parse("app").unwrap();
     let mut spec = spec.clone();
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
+    let mut volumes = spec.volume_graph().volumes().to_vec();
+    let mounts = spec.volume_graph().mounts().to_vec();
     for volume in &mut volumes {
         volume.source.scope_to_project(&project);
     }
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    spec.set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
     spec
 }
 

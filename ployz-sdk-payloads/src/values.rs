@@ -1266,14 +1266,19 @@ fn typed_requested_spec() -> RequestedServiceSpec {
         IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080")
             .expect("fixture is non-empty"),
     );
-    spec.volume_graph =
+    spec.set_volume_graph(
         ServiceVolumeGraph::parse(vec![named_volume_with_driver()], vec![service_mount()])
-            .expect("typed volume graph is valid");
-    spec.config_graph = ServiceConfigGraph::parse(
-        vec![config_spec()],
-        vec![config_mount(), config_mount_defaults()],
+            .expect("typed volume graph is valid"),
     )
-    .expect("typed config graph is valid");
+    .unwrap();
+    spec.set_config_graph(
+        ServiceConfigGraph::parse(
+            vec![config_spec()],
+            vec![config_mount(), config_mount_defaults()],
+        )
+        .expect("typed config graph is valid"),
+    )
+    .unwrap();
     spec.container.healthcheck = Some(configured_healthcheck());
     spec.container.resources = ContainerResources {
         cpu_nanos: Some(ployz_core::CpuNanos::try_from(1_000_000).unwrap()),
@@ -1291,9 +1296,14 @@ fn typed_requested_spec() -> RequestedServiceSpec {
 
 fn typed_resolved_spec() -> ResolvedServiceSpec {
     let mut requested = typed_requested_spec();
-    requested.volume_graph = requested
-        .volume_graph
-        .scope_to_project(&ProjectName::parse("app").unwrap())
+    requested
+        .set_volume_graph(
+            requested
+                .volume_graph()
+                .clone()
+                .scope_to_project(&ProjectName::parse("app").unwrap())
+                .unwrap(),
+        )
         .unwrap();
     requested
         .to_resolved(service_id(), ResolvedUpdateConfig::default())
