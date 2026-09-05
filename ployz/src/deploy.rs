@@ -32,7 +32,8 @@ pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
-    IngressContext, VolumeFate, data_loss_from_plan, plan_project_removal, preview_deploy,
+    DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
+    preview_deploy,
 };
 pub use ployz_core::compare_specs;
 pub use ployz_core::{

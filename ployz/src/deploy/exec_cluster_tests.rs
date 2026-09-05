@@ -1,18 +1,18 @@
 use std::{process, time::Duration};
 
-use ployz::{
+use crate::{
     connect::Client,
     deploy::{
-        DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
-        HookFailure, ReplacementCompensation, ReplacementOperation,
+        DeployOperation, DeployOutcome, DeployPlan, ExecutionError, FailedOperation, HookFailure,
+        ReplacementCompensation, ReplacementOperation,
     },
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRuntimeObservation,
-    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, OperationRow,
-    ProjectName, RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, op,
+    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, ProjectName,
+    RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest, StopContainerRequest,
+    UpdateOrder, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -24,7 +24,7 @@ async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
     let direct = cluster.api_address(0).unwrap();
-    let mut client = ployz::connect::connect(
+    let mut client = crate::connect::connect(
         std::path::Path::new("/missing-ployz-test-config"),
         Some(&direct),
         None,
@@ -50,7 +50,7 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
         .await;
     assert!(matches!(
         healthy_outcome,
-        ployz::deploy::DeployOutcome::Success { .. }
+        crate::deploy::DeployOutcome::Success { .. }
     ));
     let healthy_containers = wait_for_service(client, &healthy_id, 1).await;
     assert!(matches!(
@@ -160,7 +160,7 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
 
     assert!(matches!(
         outcome,
-        ployz::deploy::DeployOutcome::Success { .. }
+        crate::deploy::DeployOutcome::Success { .. }
     ));
     assert!(
         cluster
@@ -402,7 +402,7 @@ async fn assert_unhealthy_service_is_not_repaired(
 }
 
 fn failed_hook_id(
-    outcome: &ployz::deploy::DeployOutcome<ExecutionError>,
+    outcome: &crate::deploy::DeployOutcome<ExecutionError>,
     suffix: &DeployOperation,
 ) -> ContainerId {
     let DeployOutcome::Failed {
@@ -425,22 +425,8 @@ fn failed_hook_id(
     *container_id
 }
 
-fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPreview {
-    DeployPreview {
-        project_name: ProjectName::parse("app").unwrap(),
-        operations: operations
-            .into_iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                OperationRow::pending(u32::try_from(index).unwrap(), operation, None, None, None)
-            })
-            .collect(),
-        warnings: Vec::new(),
-        volumes_to_create: Vec::new(),
-        would_remove: Vec::new(),
-        preserved_volumes: Vec::new(),
-        prune_refusal: None,
-    }
+fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPlan {
+    DeployPlan::for_execution_test(operations, ProjectName::parse("app").unwrap())
 }
 
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {
@@ -595,7 +581,7 @@ async fn inspect_container(
     client: &mut Client,
     machine_id: MachineId,
     container_id: ContainerId,
-) -> Result<ContainerObservation, ployz::connect::ConnectError> {
+) -> Result<ContainerObservation, crate::connect::ConnectError> {
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },

@@ -894,10 +894,13 @@ async fn preview_project_removal_refuses_the_reserved_project() {
 }
 
 #[tokio::test]
-async fn confirm_emits_all_pending_before_any_machine_rpc() {
+async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_rows() {
     let machine = machine('a', "one");
-    let (mut client, server) = connected(DeployService::new(machine)).await;
-    let preview = client
+    let target = machine.machine.id;
+    let service = DeployService::new(machine);
+    let created = service.created_specs();
+    let (mut client, server) = connected(service).await;
+    let plan = client
         .preview(DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
             spec("web"),
@@ -905,25 +908,55 @@ async fn confirm_emits_all_pending_before_any_machine_rpc() {
         ))
         .await
         .unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let outcome = client
-        .confirm(&preview, &CancellationToken::new(), Some(tx))
-        .await;
-    let first = rx.recv().await.expect("first progress event");
-    let DeployEvent::Progress {
-        rows, completed, ..
-    } = &first
-    else {
-        panic!("expected progress: {first:?}");
+    let mut displayed: ployz_core::DeployPreview =
+        serde_json::from_value(serde_json::to_value(plan.preview()).unwrap()).unwrap();
+    displayed.project_name = ProjectName::parse("forged").unwrap();
+    let row = displayed.operations.first_mut().unwrap();
+    row.machine_id = MachineId::random();
+    row.index = 42;
+    row.status = OperationStatus::Completed;
+    row.operation = DeployOperation::RemoveContainer {
+        machine_id: row.machine_id,
+        container_id: ContainerId::parse("f".repeat(64)).unwrap(),
     };
-    assert_eq!(*completed, 0);
-    assert!(
-        rows.iter()
-            .all(|row| matches!(row.status, OperationStatus::Pending)),
-        "first event must be all pending: {rows:?}"
-    );
-    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+
+    for _ in 0..2 {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = client
+            .confirm(&plan, &CancellationToken::new(), Some(tx))
+            .await;
+        let first = rx.recv().await.expect("first progress event");
+        let DeployEvent::Progress {
+            rows,
+            completed,
+            total,
+        } = first
+        else {
+            panic!("expected initial progress");
+        };
+        assert_eq!((completed, total), (0, 1));
+        let row = rows.first().unwrap();
+        assert_eq!(row.index, 0);
+        assert_eq!(row.machine_id, target);
+        assert_eq!(row.operation.machine_id(), target);
+        assert_eq!(row.status, OperationStatus::Pending);
+        assert!(matches!(
+            row.operation,
+            DeployOperation::RunContainer { .. }
+        ));
+        assert!(matches!(outcome, DeployOutcome::Success { .. }));
+        while let Ok(event) = rx.try_recv() {
+            if let DeployEvent::Progress { rows, .. } = event {
+                assert!(
+                    rows.iter()
+                        .all(|row| row.machine_id == target && row.index == 0)
+                );
+            }
+        }
+    }
+    let created = created.lock().unwrap();
+    assert_eq!(created.len(), 2);
+    assert!(created.iter().all(|spec| spec.name.as_str() == "web"));
     server.abort();
 }
 

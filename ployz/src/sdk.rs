@@ -14,7 +14,7 @@ use crate::connect::{
     Client, ConnectError, DialCredential, HeldRegister, PairingCredential, TransportError,
     connect_relay, list_held as list_held_relay, revoke_cloud_pairing,
 };
-use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
+use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
     DescribeContractRequest, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
@@ -45,7 +45,7 @@ pub struct Watch {
 
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
 pub struct PreparedDeploy {
-    preview: DeployPreview,
+    preview: DeployPlan,
     client: Client,
     session_cancel: CancellationToken,
     confirmed: AtomicBool,
@@ -475,6 +475,12 @@ impl std::fmt::Debug for PreparedDeploy {
 }
 
 impl PreparedDeploy {
+    /// Informational preview; execution remains bound to this prepared handle.
+    #[must_use]
+    pub fn preview(&self) -> &DeployPreview {
+        self.preview.preview()
+    }
+
     /// True when this preview planned no operations.
     #[must_use]
     pub fn noop(&self) -> bool {

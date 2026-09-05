@@ -4,10 +4,9 @@ use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
     ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
-    MachineId, MachineTarget, MembershipObservation, OperationPhase, OperationRow, ProjectName,
-    QualifiedService, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, StartContainerRequest, StopContainerPurpose, StopContainerRequest, UpdateOrder,
-    op,
+    MachineId, MachineTarget, MembershipObservation, OperationPhase, ProjectName, QualifiedService,
+    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    StartContainerRequest, StopContainerPurpose, StopContainerRequest, UpdateOrder, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -418,24 +417,24 @@ where
 }
 
 pub(super) async fn execute_operation_sequence<C: MachineOperations>(
-    rows: Vec<OperationRow>,
+    plan: &super::DeployPlan,
     client: &C,
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
-    project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
-    let operations: Vec<DeployOperation> = rows.iter().map(|row| row.operation.clone()).collect();
+    let operations = plan.operations();
+    let project_name = &plan.project_name;
     let client = RestartTolerant {
         inner: client,
         cancellation,
     };
-    let mut progress = Progress::new(rows, tx);
+    let mut progress = Progress::new(plan.pending_rows(), tx);
     progress.emit();
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);
-            let outcome = failure_outcome_from(&operations, index, ExecutionError::Cancelled)
+            let outcome = failure_outcome_from(operations, index, ExecutionError::Cancelled)
                 .expect("the failed operation belongs to this plan");
             progress.outcome(outcome.clone());
             return outcome;
@@ -455,7 +454,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
             Err(OperationFailure::Ordinary(error)) => {
                 progress.fail(index, error.clone());
-                let outcome = failure_outcome_from(&operations, index, error)
+                let outcome = failure_outcome_from(operations, index, error)
                     .expect("the failed operation belongs to this plan");
                 progress.outcome(outcome.clone());
                 return outcome;
@@ -466,7 +465,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }) => {
                 progress.fail(index, error.clone());
                 let outcome = replacement_health_failure_outcome_from(
-                    &operations,
+                    operations,
                     index,
                     error,
                     *compensation,
@@ -478,7 +477,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         }
     }
     let outcome = DeployOutcome::Success {
-        completed: operations,
+        completed: operations.to_vec(),
     };
     progress.outcome(outcome.clone());
     outcome
@@ -995,3 +994,7 @@ fn stop_grace_period(spec: &ResolvedServiceSpec) -> Option<i32> {
 #[cfg(test)]
 #[path = "../exec_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../exec_cluster_tests.rs"]
+mod cluster_tests;
