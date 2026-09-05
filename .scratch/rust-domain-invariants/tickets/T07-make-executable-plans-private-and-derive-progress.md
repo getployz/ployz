@@ -1,6 +1,6 @@
 # T07 — Make executable plans private and derive progress
 
-Status: pending
+Status: in_progress
 Blocking dependencies: T06
 Audit scope: F04
 

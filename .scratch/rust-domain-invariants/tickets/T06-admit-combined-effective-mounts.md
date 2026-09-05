@@ -1,6 +1,6 @@
 # T06 — Admit combined effective mounts
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T00, T03, T05
 Audit scope: F08
 

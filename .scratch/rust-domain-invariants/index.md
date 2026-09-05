@@ -14,11 +14,11 @@ PR: https://github.com/getployz/ployz2/pull/739
 | [T03](tickets/T03-separate-requested-and-scoped-volume-sources.md) | Separate requested and scoped volume sources | — | complete |
 | [T04](tickets/T04-check-resource-quantities-and-cpu-conversion.md) | Check resource quantities and CPU conversion | — | complete |
 | [T05](tickets/T05-require-nonempty-pre-deploy-hook-command.md) | Require nonempty pre-deploy hook command | T04 | complete |
-| [T06](tickets/T06-admit-combined-effective-mounts.md) | Admit combined effective mounts | T00, T03, T05 | in_progress |
-| [T07](tickets/T07-make-executable-plans-private-and-derive-progress.md) | Make executable plans private and derive progress | T06 | pending |
+| [T06](tickets/T06-admit-combined-effective-mounts.md) | Admit combined effective mounts | T00, T03, T05 | complete |
+| [T07](tickets/T07-make-executable-plans-private-and-derive-progress.md) | Make executable plans private and derive progress | T06 | in_progress |
 | [T08](tickets/T08-reject-known-host-socket-conflicts-during-placement.md) | Reject known host socket conflicts during placement | T07 | pending |
 | [T09](tickets/T09-make-container-observations-coherent.md) | Make Container observations coherent | — | complete |
-| [T10](tickets/T10-validate-row-and-document-identity-at-persistence-admission.md) | Validate row and document identity at persistence admission | T01, T09 | in_progress |
+| [T10](tickets/T10-validate-row-and-document-identity-at-persistence-admission.md) | Validate row and document identity at persistence admission | T01, T09 | complete |
 | [T11](tickets/T11-retain-resource-identity-in-volume-removal-outcomes.md) | Retain resource identity in volume removal outcomes | — | complete |
 | [T12](tickets/T12-derive-runtime-watch-services-from-containers.md) | Derive Runtime Watch Services from Containers | T09 | complete |
 | [T13](tickets/T13-validate-relay-endpoints-before-pairing-persistence.md) | Validate Relay endpoints before pairing persistence | — | complete |

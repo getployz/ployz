@@ -61,7 +61,7 @@
     ],
     "finding": "F08",
     "file": "tickets/T06-admit-combined-effective-mounts.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T07",
@@ -71,7 +71,7 @@
     ],
     "finding": "F04",
     "file": "tickets/T07-make-executable-plans-private-and-derive-progress.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T08",
@@ -100,7 +100,7 @@
     ],
     "finding": "F05 persistence",
     "file": "tickets/T10-validate-row-and-document-identity-at-persistence-admission.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T11",
