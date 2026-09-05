@@ -4,9 +4,9 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, FanoutSelector,
     Machine, MachineId, MachineName, MachineRuntime, MachineSelectorError, MachineTarget,
-    ManagementAddress, NameMatches, Placement, ProjectName, ServiceId, ServiceName,
-    ServiceSelector, ServiceSelectorError, WireGuardPublicKey, derive_services,
-    resolve_container_selector, resolve_machine_selectors,
+    NameMatches, Placement, ProjectName, ServiceId, ServiceName, ServiceSelector,
+    ServiceSelectorError, WireGuardPublicKey, derive_services, resolve_container_selector,
+    resolve_machine_selectors,
 };
 use serde_json::json;
 
@@ -311,7 +311,6 @@ fn machine(id: char, name: &str, seed: u8) -> Machine {
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: Some(IpAddr::from([192, 0, 2, seed])),
         advertised_endpoints: vec![AdvertisedEndpoint(

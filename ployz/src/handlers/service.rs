@@ -390,9 +390,9 @@ fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
 mod tests {
     use ployz_core::{
         HookContainer, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
-        MachineTarget, ManagementAddress, MembershipObservation, PartialResult, Placement,
-        RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-        WireGuardPublicKey, derive_live_services,
+        MachineTarget, MembershipObservation, PartialResult, Placement, RpcError, RpcErrorCode,
+        ServiceContainer, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
+        derive_live_services,
     };
     use serde_json::json;
 
@@ -675,7 +675,6 @@ mod tests {
                 subnet: format!("10.210.{}.0/24", id.to_digit(16).unwrap())
                     .parse()
                     .unwrap(),
-                management_address: ManagementAddress("::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([id as u8; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),

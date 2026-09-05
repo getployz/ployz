@@ -35,13 +35,13 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
         ployz_core::MachineId::random()
     ));
     let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    let public_key = local.record().wireguard_private_key.public_key();
+    let public_key = local.record().private_key().public_key();
     let machine: Machine = serde_json::from_value(json!({
         "id": "b".repeat(32),
         "name": "joining",
         "subnet": "10.210.1.0/24",
-        "management_address": "fdcc::1",
         "public_key": public_key.0,
+        "advertised_endpoints": ["192.0.2.1:51820"],
     }))
     .unwrap();
     local
@@ -285,8 +285,8 @@ fn only_a_participating_founder_claims_allocator() {
     let (machine, joined) = participating_record();
     assert_eq!(founder_allocator_id(&joined), None);
 
-    let founder = LocalMachineRecord {
-        body: LocalMachineBody::Participating {
+    let founder = LocalMachineRecord::new(
+        LocalMachineBody::Participating {
             machine: machine.clone(),
             origin: ParticipationOrigin::Founder {
                 cluster: crate::machine::FoundingCluster {
@@ -295,12 +295,13 @@ fn only_a_participating_founder_claims_allocator() {
                 },
             },
         },
-        ..joined.clone()
-    };
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&founder), Some(machine.id));
 
-    let resetting = LocalMachineRecord {
-        body: LocalMachineBody::Resetting {
+    let resetting = LocalMachineRecord::new(
+        LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: machine.clone(),
                 origin: ParticipationOrigin::Founder {
@@ -311,24 +312,27 @@ fn only_a_participating_founder_claims_allocator() {
                 },
             }),
         },
-        ..joined.clone()
-    };
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&resetting), None);
 
-    let uninitialized = LocalMachineRecord {
-        body: LocalMachineBody::Uninitialized { id: machine.id },
-        ..joined.clone()
-    };
+    let uninitialized = LocalMachineRecord::new(
+        LocalMachineBody::Uninitialized { id: machine.id },
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&uninitialized), None);
 
-    let joining = LocalMachineRecord {
-        body: LocalMachineBody::Joining {
-            machine,
-            bootstrap: Vec::new(),
+    let joining = LocalMachineRecord::new(
+        LocalMachineBody::Joining {
+            machine: machine.clone(),
+            bootstrap: vec![machine.clone()],
             min_store_version: BTreeMap::new(),
         },
-        ..joined
-    };
+        joined.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(founder_allocator_id(&joining), None);
 }
 
@@ -491,19 +495,20 @@ async fn publication_guard_rechecks_the_local_phase() {
     let LocalMachineBody::Participating {
         machine: body_machine,
         origin,
-    } = local.body
+    } = local.body().clone()
     else {
         panic!("fixture is participating");
     };
-    let local = LocalMachineRecord {
-        body: LocalMachineBody::Resetting {
+    let local = LocalMachineRecord::new(
+        LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: body_machine,
                 origin,
             }),
         },
-        ..local
-    };
+        local.private_key().clone(),
+    )
+    .unwrap();
     assert_eq!(publication.publishable_machine(&local), None);
 }
 
@@ -512,22 +517,20 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         "id": "b".repeat(32),
         "name": "machine",
         "subnet": "10.210.1.0/24",
-        "management_address": "fdcc::1",
-        "public_key": vec![3; 32],
+        "public_key": crate::network::WireGuardPrivateKey::from_bytes([0; 32]).public_key(),
+        "advertised_endpoints": ["192.0.2.1:51820"],
     }))
     .unwrap();
-    let local = LocalMachineRecord {
-        body: LocalMachineBody::Participating {
+    let local = LocalMachineRecord::new(
+        LocalMachineBody::Participating {
             machine: machine.clone(),
             origin: ParticipationOrigin::Join {
-                bootstrap: Vec::new(),
+                bootstrap: vec![machine.clone()],
             },
         },
-        wireguard_private_key: crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
-        wireguard_mtu: None,
-        cloud_pairing: None,
-        selected_endpoints: BTreeMap::new(),
-    };
+        crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
+    )
+    .unwrap();
     (machine, local)
 }
 
@@ -535,13 +538,13 @@ fn joining_record() -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>>) {
     let data_dir =
         std::env::temp_dir().join(format!("ployzd-backend-join-{}", MachineId::random()));
     let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    let public_key = local.record().wireguard_private_key.public_key();
+    let public_key = local.record().private_key().public_key();
     let machine: Machine = serde_json::from_value(json!({
         "id": "c".repeat(32),
         "name": "joining",
         "subnet": "10.210.2.0/24",
-        "management_address": "fdcc::2",
         "public_key": public_key.0,
+        "advertised_endpoints": ["192.0.2.1:51820"],
     }))
     .unwrap();
     local

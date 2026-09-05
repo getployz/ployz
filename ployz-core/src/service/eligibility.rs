@@ -96,16 +96,15 @@ fn placement_eligibility(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, net::Ipv6Addr, num::NonZeroU64};
+    use std::{collections::BTreeMap, num::NonZeroU64};
 
     use serde_json::json;
 
     use crate::{
         ContainerPath, DockerVolumeName, Machine, MachineId, MachineName,
-        MachineStorageObservation, ManagementAddress, Placement, ProvisionedVolumeMaximumBytes,
-        RequestedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount,
-        ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
-        WireGuardPublicKey,
+        MachineStorageObservation, Placement, ProvisionedVolumeMaximumBytes, RequestedServiceSpec,
+        ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount, ServiceVolume,
+        ServiceVolumeGraph, ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
     };
 
     use super::{
@@ -214,7 +213,6 @@ mod tests {
             id: MachineId::parse("1".repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

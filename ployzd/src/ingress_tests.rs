@@ -5,8 +5,8 @@ use super::{
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial};
 use ployz_core::{
-    ContainerAddress, IngressHost, Machine, MachineId, MachineName, ManagementAddress,
-    QualifiedService, WireGuardPublicKey,
+    ContainerAddress, IngressHost, Machine, MachineId, MachineName, QualifiedService,
+    WireGuardPublicKey,
 };
 use std::{collections::BTreeMap, num::NonZeroU16};
 
@@ -30,7 +30,6 @@ pub(crate) fn renderer_projection() -> IngressProjection {
             id: machine_id,
             name: MachineName::parse("node-a").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress("fdcc::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

@@ -325,7 +325,7 @@ mod tests {
     use super::*;
     use ployz_core::{
         AdvertisedEndpoint, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineId, MachineName,
-        ManagementAddress, WireGuardPublicKey,
+        WireGuardPublicKey,
     };
 
     /// Management address unregistry would bind when this Machine is active.
@@ -335,7 +335,7 @@ mod tests {
     ) -> Option<Ipv6Addr> {
         match phase {
             LocalMachinePhase::Joining | LocalMachinePhase::Participating => {
-                machine.map(|machine| machine.management_address.0)
+                machine.map(|machine| machine.management_address().0)
             }
             LocalMachinePhase::Uninitialized
             | LocalMachinePhase::Resetting
@@ -348,7 +348,6 @@ mod tests {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-2").unwrap(),
             subnet: "10.210.2.0/24".parse().unwrap(),
-            management_address: ManagementAddress("fdcc::2".parse().unwrap()),
             public_key: WireGuardPublicKey([2; 32]),
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint(

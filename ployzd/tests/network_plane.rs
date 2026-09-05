@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::{Duration, SystemTime},
 };
 
@@ -56,7 +56,7 @@ fn every_machine_table_rebuild_is_a_complete_directed_mesh() {
     assert_eq!(
         peer.allowed_ips,
         [
-            IpNet::new(IpAddr::V6(machines[1].management_address.0), 128).unwrap(),
+            IpNet::new(IpAddr::V6(machines[1].management_address().0), 128).unwrap(),
             machines[1].subnet.into(),
         ]
     );
@@ -136,9 +136,6 @@ fn machine(seed: u8) -> Machine {
         id: MachineId::parse(format!("{seed:032x}")).unwrap(),
         name: MachineName::parse(format!("machine-{seed}")).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(Ipv6Addr::from([
-            0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, seed,
-        ])),
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: None,
         advertised_endpoints: vec![endpoint(seed)],

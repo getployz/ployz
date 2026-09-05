@@ -10,9 +10,9 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
     IngressHost, IngressHostname, IngressProxyFragment, MACHINE_API_PORT, Machine, MachineId,
-    MachineName, ManagementAddress, PortPublication, ProjectName, QualifiedService,
-    ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceName, TransportProtocol,
-    WireGuardPublicKey, service_containers,
+    MachineName, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
+    ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
+    service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -33,7 +33,6 @@ fn projection(
         id: *local_machine,
         name: MachineName::parse(machine_name).unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: Vec::new(),
@@ -1104,7 +1103,6 @@ async fn failed_load_preserves_the_last_caddyfile() {
         id: MachineId::parse("a".repeat(32)).unwrap(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
@@ -1136,7 +1134,6 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         id: MachineId::parse("a".repeat(32)).unwrap(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(

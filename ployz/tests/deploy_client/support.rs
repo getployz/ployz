@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::Ipv6Addr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -21,7 +20,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, Domain, ExecResponseFrame,
     GET_CONTAINER_OBSERVATIONS_CAPABILITY, HealthObservation, LocalMachinePhase,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
-    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress,
+    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
@@ -893,7 +892,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),

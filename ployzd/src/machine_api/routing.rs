@@ -133,7 +133,7 @@ impl MachineProxy {
         if target.id == self.local_id {
             return self.call_local(request).await;
         }
-        match self.call_remote(request, target.management_address).await {
+        match self.call_remote(request, target.management_address()).await {
             Ok(response) => response,
             Err(status) => status.into_http(),
         }
@@ -412,3 +412,11 @@ mod tests {
         assert_eq!(proxy.remote_backends.lock().unwrap().len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "routing_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
+#[path = "routing_cluster_tests.rs"]
+mod cluster_tests;

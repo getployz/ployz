@@ -532,7 +532,6 @@ export type Machine = {
   id: MachineId;
   name: MachineName;
   subnet: MachineSubnet;
-  management_address: ManagementAddress;
   public_key: WireGuardPublicKey;
   public_ip?: string;
   advertised_endpoints: AdvertisedEndpoint[];

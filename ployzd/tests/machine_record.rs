@@ -75,7 +75,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     let LocalMachineBody::Participating {
         origin: ParticipationOrigin::Founder { cluster: founding },
         ..
-    } = &first.record().body
+    } = first.record().body()
     else {
         panic!("initialized Machine must retain its founding Cluster seed");
     };
@@ -102,12 +102,11 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
 
     let second_dir = TestDir::new("ployzd-join");
     let mut second = LocalMachineStore::open(&second_dir.0).unwrap();
-    let public_key = second.record().wireguard_private_key.public_key();
+    let public_key = second.record().private_key().public_key();
     let assigned = Machine {
         id: MachineId::random(),
         name: MachineName::parse("second").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ployzd::network::management_address(public_key),
         public_key,
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
@@ -266,12 +265,11 @@ fn join_with_cloud_pairing_stores_the_same_two_fields() {
 
     let second_dir = TestDir::new("ployzd-join-cloud-pairing-second");
     let store = LocalMachineStore::open(&second_dir.0).unwrap();
-    let public_key = store.record().wireguard_private_key.public_key();
+    let public_key = store.record().private_key().public_key();
     let assigned = Machine {
         id: MachineId::random(),
         name: MachineName::parse("second").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ployzd::network::management_address(public_key),
         public_key,
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
@@ -323,18 +321,16 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
     drop(store);
 
     let path = dir.0.join("machine.json");
-    let mut stale: LocalMachineRecord = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    let LocalMachineBody::Participating { machine, .. } = &mut stale.body else {
-        panic!("expected a participating Machine");
-    };
-    machine.runtime = MachineRuntime {
+    let mut stale: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    stale["body"]["machine"]["runtime"] = serde_json::to_value(MachineRuntime {
         daemon_version: "stale".into(),
         docker_version: "stale".into(),
         hostname: "stale".into(),
         architecture: "stale".into(),
         os_pretty_name: "stale".into(),
         kernel_version: "stale".into(),
-    };
+    })
+    .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
@@ -375,7 +371,7 @@ fn machine_update_is_atomic_and_durable() {
 
     assert_eq!(updated.id, original.id);
     assert_eq!(updated.subnet, original.subnet);
-    assert_eq!(updated.management_address, original.management_address);
+    assert_eq!(updated.management_address(), original.management_address());
     assert_eq!(updated.public_key, original.public_key);
     assert_eq!(updated.advertised_endpoints, endpoints);
     drop(store);
@@ -422,7 +418,7 @@ fn resetting_state_is_durable_and_completed_on_the_next_open() {
 async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
     let dir = TestDir::new("ployzd-state");
     let store = LocalMachineStore::open(&dir.0).unwrap();
-    let public_key = store.record().wireguard_private_key.public_key();
+    let public_key = store.record().private_key().public_key();
     let endpoint = AdvertisedEndpoint("192.0.2.8:51820".parse().unwrap());
     let (reset, _) = tokio::sync::watch::channel(false);
     let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
@@ -502,17 +498,15 @@ fn reset_stops_if_the_machine_record_changes() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     store.begin_reset().unwrap();
-    let replacement = LocalMachineRecord {
-        body: LocalMachineBody::Resetting {
+    let replacement = LocalMachineRecord::new(
+        LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Uninitialized {
                 id: ployz_core::MachineId::random(),
             }),
         },
-        wireguard_private_key: WireGuardPrivateKey::generate(),
-        wireguard_mtu: None,
-        cloud_pairing: None,
-        selected_endpoints: BTreeMap::new(),
-    };
+        WireGuardPrivateKey::generate(),
+    )
+    .unwrap();
     fs::write(
         dir.0.join("machine.json"),
         serde_json::to_vec(&replacement).unwrap(),
@@ -553,17 +547,18 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
     fs::create_dir_all(&dir.0).unwrap();
     let key = WireGuardPrivateKey::generate();
     let assigned = sample_machine(MachineId::random(), key.public_key());
-    let record = LocalMachineRecord {
-        body: LocalMachineBody::Joining {
+    let record = LocalMachineRecord::new(
+        LocalMachineBody::Joining {
             machine: assigned,
-            bootstrap: Vec::new(),
+            bootstrap: vec![sample_machine(
+                MachineId::random(),
+                WireGuardPrivateKey::generate().public_key(),
+            )],
             min_store_version: BTreeMap::from([("actor".to_owned(), 4)]),
         },
-        wireguard_private_key: key,
-        wireguard_mtu: None,
-        cloud_pairing: None,
-        selected_endpoints: BTreeMap::new(),
-    };
+        key,
+    )
+    .unwrap();
     fs::write(
         dir.0.join("machine.json"),
         serde_json::to_vec(&record).unwrap(),
@@ -672,67 +667,64 @@ fn legal_bodies_round_trip() {
         WireGuardPrivateKey::generate().public_key(),
     );
     let records = [
-        LocalMachineRecord {
-            body: LocalMachineBody::Uninitialized {
+        LocalMachineRecord::new(
+            LocalMachineBody::Uninitialized {
                 id: MachineId::random(),
             },
-            wireguard_private_key: key.clone(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
-        LocalMachineRecord {
-            body: LocalMachineBody::Joining {
+            key.clone(),
+        )
+        .unwrap(),
+        LocalMachineRecord::new(
+            LocalMachineBody::Joining {
                 machine: machine.clone(),
                 bootstrap: vec![peer.clone()],
                 min_store_version: BTreeMap::from([("actor".into(), 4)]),
             },
-            wireguard_private_key: key.clone(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
-        LocalMachineRecord {
-            body: LocalMachineBody::Participating {
-                machine: machine.clone(),
-                origin: ParticipationOrigin::Founder {
-                    cluster: ployzd::machine::FoundingCluster {
-                        network: "10.210.0.0/16".parse().unwrap(),
-                        ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            key.clone(),
+        )
+        .unwrap(),
+        {
+            let mut record = LocalMachineRecord::new(
+                LocalMachineBody::Participating {
+                    machine: machine.clone(),
+                    origin: ParticipationOrigin::Founder {
+                        cluster: ployzd::machine::FoundingCluster {
+                            network: "10.210.0.0/16".parse().unwrap(),
+                            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                        },
                     },
                 },
-            },
-            wireguard_private_key: key.clone(),
-            wireguard_mtu: Some(1400),
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
+                key.clone(),
+            )
+            .unwrap();
+            record.wireguard_mtu = Some(1400);
+            record
         },
-        LocalMachineRecord {
-            body: LocalMachineBody::Participating {
+        LocalMachineRecord::new(
+            LocalMachineBody::Participating {
                 machine: machine.clone(),
                 origin: ParticipationOrigin::Join {
                     bootstrap: vec![peer],
                 },
             },
-            wireguard_private_key: key.clone(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
-        LocalMachineRecord {
-            body: LocalMachineBody::Resetting {
+            key.clone(),
+        )
+        .unwrap(),
+        LocalMachineRecord::new(
+            LocalMachineBody::Resetting {
                 prior: Box::new(LocalMachinePrior::Participating {
                     machine,
                     origin: ParticipationOrigin::Join {
-                        bootstrap: Vec::new(),
+                        bootstrap: vec![sample_machine(
+                            MachineId::random(),
+                            WireGuardPrivateKey::generate().public_key(),
+                        )],
                     },
                 }),
             },
-            wireguard_private_key: key,
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
+            key,
+        )
+        .unwrap(),
     ];
     let founder = serde_json::to_value(&records[2]).unwrap();
     let founder = founder.get("body").unwrap().as_object().unwrap();
@@ -759,18 +751,19 @@ fn legal_bodies_round_trip() {
 fn pre_616_participating_authority_shape_is_not_migrated() {
     let key = WireGuardPrivateKey::generate();
     let machine = sample_machine(MachineId::random(), key.public_key());
-    let record = LocalMachineRecord {
-        body: LocalMachineBody::Participating {
+    let record = LocalMachineRecord::new(
+        LocalMachineBody::Participating {
             machine,
             origin: ParticipationOrigin::Join {
-                bootstrap: Vec::new(),
+                bootstrap: vec![sample_machine(
+                    MachineId::random(),
+                    WireGuardPrivateKey::generate().public_key(),
+                )],
             },
         },
-        wireguard_private_key: key,
-        wireguard_mtu: None,
-        cloud_pairing: None,
-        selected_endpoints: BTreeMap::new(),
-    };
+        key,
+    )
+    .unwrap();
     let mut legacy = serde_json::to_value(record).unwrap();
     let body = legacy.get_mut("body").unwrap().as_object_mut().unwrap();
     body.remove("origin");
@@ -784,10 +777,71 @@ fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> 
         id,
         name: MachineName::parse("machine").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ployzd::network::management_address(public_key),
         public_key,
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
     }
+}
+
+#[test]
+fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
+    let key = WireGuardPrivateKey::generate();
+    let machine = sample_machine(MachineId::random(), key.public_key());
+    let peer = sample_machine(
+        MachineId::random(),
+        WireGuardPrivateKey::generate().public_key(),
+    );
+    let valid = serde_json::json!({
+        "body": { "phase": "joining", "machine": machine, "bootstrap": [peer] },
+        "wireguard_private_key": key
+    });
+    assert!(serde_json::from_value::<LocalMachineRecord>(valid.clone()).is_ok());
+    for field in ["public_key", "advertised_endpoints", "bootstrap"] {
+        let mut malformed = valid.clone();
+        match field {
+            "public_key" => {
+                malformed["body"]["machine"][field] =
+                    serde_json::to_value(WireGuardPrivateKey::generate().public_key()).unwrap()
+            }
+            "advertised_endpoints" => malformed["body"]["machine"][field] = serde_json::json!([]),
+            _ => malformed["body"][field] = serde_json::json!([]),
+        }
+        for phase in ["joining", "participating", "resetting"] {
+            let mut record = malformed.clone();
+            if phase == "participating" {
+                record["body"]["phase"] = serde_json::json!(phase);
+                record["body"]["origin"] = serde_json::json!("join");
+            } else if phase == "resetting" {
+                record["body"] = serde_json::json!({"phase": phase, "prior": record["body"]});
+            }
+            let body = serde_json::from_value::<LocalMachineBody>(record["body"].clone()).unwrap();
+            assert!(
+                LocalMachineRecord::new(body, key.clone()).is_err(),
+                "{phase} constructor accepted invalid {field}"
+            );
+            assert!(
+                serde_json::from_value::<LocalMachineRecord>(record).is_err(),
+                "{phase} accepted invalid {field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
+    let dir = TestDir::new("ployzd-empty-join-endpoints");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    let original = store.record().clone();
+    let mut assigned = sample_machine(MachineId::random(), original.private_key().public_key());
+    let peer = sample_machine(
+        MachineId::random(),
+        WireGuardPrivateKey::generate().public_key(),
+    );
+    assigned.advertised_endpoints.clear();
+    assert!(matches!(
+        store.join(assigned, vec![peer], BTreeMap::new(), None, None),
+        Err(StoreError::MissingEndpoints)
+    ));
+    assert_eq!(store.record(), &original);
 }

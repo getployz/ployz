@@ -952,7 +952,6 @@ mod tests {
             "id": seed.to_string().repeat(32),
             "name": format!("machine-{seed}"),
             "subnet": format!("10.210.{}.0/24", seed.to_digit(10).unwrap()),
-            "management_address": format!("fdcc::{seed}"),
             "public_key": vec![seed as u8; 32],
         }))
         .unwrap();

@@ -153,7 +153,7 @@ fn added_machine_line(assigned: &Machine) -> String {
 mod tests {
     use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
     use ployz_core::{
-        LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
+        LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation,
         MembershipObservation, WireGuardPublicKey,
     };
 
@@ -238,7 +238,6 @@ mod tests {
             id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress("::1".parse().unwrap()),
             public_key: WireGuardPublicKey([seed as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

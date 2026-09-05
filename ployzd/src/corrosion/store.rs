@@ -57,7 +57,7 @@ impl MachinePublicationGuard<'_> {
         &self,
         local: &mut LocalMachineStore,
     ) -> Result<bool, StoreError> {
-        if !matches!(local.record().body, LocalMachineBody::Joining { .. }) {
+        if !matches!(local.record().body(), LocalMachineBody::Joining { .. }) {
             return Ok(false);
         }
         local.complete_catch_up()?;
@@ -65,7 +65,7 @@ impl MachinePublicationGuard<'_> {
     }
 
     pub(crate) fn publishable_machine(&self, local: &LocalMachineRecord) -> Option<Machine> {
-        match &local.body {
+        match local.body() {
             LocalMachineBody::Participating { machine, .. } => Some(machine.clone()),
             LocalMachineBody::Uninitialized { .. }
             | LocalMachineBody::Joining { .. }

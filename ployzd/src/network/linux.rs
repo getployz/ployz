@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DOCKER_NETWORK_NAME, MACHINE_API_PORT, MeshPeer, NetworkError, WIREGUARD_INTERFACE_NAME,
     WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey, attach_peer_selections,
-    checked_command, firewall::remove_firewall_rules, management_address, peers_for,
+    checked_command, firewall::remove_firewall_rules, peers_for,
 };
 use crate::{
     corrosion::{ReplicatedObservations, ReplicatedStore},
@@ -92,20 +92,14 @@ pub struct NetworkPlane {
 impl NetworkPlane {
     pub async fn start(record: &LocalMachineRecord) -> Result<Option<Self>, NetworkError> {
         let bootstrap = record.bootstrap();
-        let machine = match &record.body {
+        let machine = match record.body() {
             LocalMachineBody::Joining { machine, .. }
             | LocalMachineBody::Participating { machine, .. } => machine.clone(),
             LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
                 return Ok(None);
             }
         };
-        let private_key = record.wireguard_private_key.clone();
-        if private_key.public_key() != machine.public_key {
-            return Err(NetworkError::KeyMismatch);
-        }
-        if management_address(machine.public_key) != machine.management_address {
-            return Err(NetworkError::ManagementAddressMismatch);
-        }
+        let private_key = record.private_key().clone();
 
         let docker = Docker::connect_with_socket_defaults()?;
         let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
@@ -139,7 +133,7 @@ impl NetworkPlane {
             return Err(error);
         }
         if let Err(error) =
-            super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address)
+            super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
         {
             plane.rollback_start(docker_created).await;
             return Err(error);
@@ -220,7 +214,7 @@ impl NetworkPlane {
     pub fn machine_api_addresses(&self) -> Result<[SocketAddr; 2], NetworkError> {
         Ok([
             SocketAddr::new(
-                IpAddr::V6(self.machine.management_address.0),
+                IpAddr::V6(self.machine.management_address().0),
                 MACHINE_API_PORT,
             ),
             SocketAddr::new(
@@ -282,7 +276,7 @@ impl NetworkPlane {
                 name: WIREGUARD_INTERFACE_NAME.into(),
                 prvkey: self.private_key.encoded(),
                 addresses: vec![IpAddrMask::host(IpAddr::V6(
-                    self.machine.management_address.0,
+                    self.machine.management_address().0,
                 ))],
                 port: u32::from(WIREGUARD_PORT),
                 peers: wg_peers.clone(),

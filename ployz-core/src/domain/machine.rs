@@ -39,7 +39,6 @@ pub struct Machine {
     pub id: MachineId,
     pub name: MachineName,
     pub subnet: MachineSubnet,
-    pub management_address: ManagementAddress,
     pub public_key: WireGuardPublicKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<IpAddr>,
@@ -47,6 +46,23 @@ pub struct Machine {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
+}
+
+impl Machine {
+    /// Management-plane address derived solely from this Machine's public key.
+    #[must_use]
+    pub fn management_address(&self) -> ManagementAddress {
+        management_address(self.public_key)
+    }
+}
+
+/// Deterministic management-plane address for a WireGuard identity.
+#[must_use]
+pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
+    let mut address = [0_u8; 16];
+    address[..2].copy_from_slice(&[0xfd, 0xcc]);
+    address[2..].copy_from_slice(&public_key.0[..14]);
+    ManagementAddress(std::net::Ipv6Addr::from(address))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -413,7 +429,7 @@ pub fn synthesize_membership(
                 MembershipObservation::Up
             } else {
                 states
-                    .get(&machine.management_address)
+                    .get(&machine.management_address())
                     .cloned()
                     .unwrap_or(MembershipObservation::Down)
             };
@@ -680,11 +696,9 @@ mod cloud_pairing_tests {
 
 #[cfg(test)]
 mod placement_tests {
-    use std::net::Ipv6Addr;
 
     use crate::{
-        MachineId, MachineName, MachineSubnet, MachineTarget, ManagementAddress, Placement,
-        WireGuardPublicKey,
+        MachineId, MachineName, MachineSubnet, MachineTarget, Placement, WireGuardPublicKey,
     };
 
     use super::{Machine, machine_matches_placement};
@@ -694,7 +708,6 @@ mod placement_tests {
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: MachineSubnet::parse("10.210.0.0/24").unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

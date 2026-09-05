@@ -12,9 +12,9 @@ use ployz_core::{
     DomainRecords, EnsureGlobalSlotRequest, HealthObservation, InitializeRequest, Initialized,
     JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered,
-    ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    VolumeInventory, WireGuardPublicKey,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
+    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory,
+    WireGuardPublicKey,
 };
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status, Streaming};
@@ -955,7 +955,6 @@ fn joiner_machine() -> Machine {
         id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
         name: MachineName::parse("joiner").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fd00::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
@@ -968,7 +967,6 @@ pub fn founder_machine() -> Machine {
         id: MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
         name: MachineName::parse("founder").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fd00::2".parse().unwrap()),
         public_key: WireGuardPublicKey([2; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],

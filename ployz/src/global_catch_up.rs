@@ -256,19 +256,18 @@ fn service_has_slot(
 mod tests {
     use std::{
         cell::Cell,
-        net::Ipv6Addr,
         num::{NonZeroU16, NonZeroU32, NonZeroU64},
     };
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
         ContainerRuntimeObservation, DockerVolumeName, HealthObservation, HostBind, Machine,
-        MachineId, MachineName, MachineTarget, ManagementAddress, Placement, PortPublication,
-        ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
-        ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
-        ServiceMode, ServiceMount, ServiceName, ServiceObservation, ServiceVolume,
-        ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
-        WireGuardPublicKey, service_containers,
+        MachineId, MachineName, MachineTarget, Placement, PortPublication, ProjectName,
+        ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
+        ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+        ServiceMount, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+        ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource, WireGuardPublicKey,
+        service_containers,
     };
 
     use super::*;
@@ -973,7 +972,6 @@ mod tests {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

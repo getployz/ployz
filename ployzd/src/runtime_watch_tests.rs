@@ -13,7 +13,7 @@ use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, GlobalReconcileFailureObservation, HealthObservation, IngressHost,
     IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName, MachineObservation,
-    MachineRuntime, ManagementAddress, MembershipObservation, ProjectName, QualifiedService,
+    MachineRuntime, MembershipObservation, ProjectName, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -62,7 +62,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         population_stddev_ns: 250_000,
     };
     let telemetry = RuntimeWatchTelemetry {
-        states: BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]),
+        states: BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]),
         selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
         rtts: vec![rtt_on(&entry, rtt.clone())],
     };
@@ -355,7 +355,6 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
         id: MachineId::parse(id).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
@@ -368,9 +367,12 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
 fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
     RttObservation {
         peer_id: machine.name.as_str().into(),
-        address: format!("[{}]:{CORROSION_GOSSIP_PORT}", machine.management_address.0)
-            .parse()
-            .unwrap(),
+        address: format!(
+            "[{}]:{CORROSION_GOSSIP_PORT}",
+            machine.management_address().0
+        )
+        .parse()
+        .unwrap(),
         machine: None,
         statistics,
     }
@@ -382,7 +384,7 @@ fn peer_sample(
     rtt: Option<RttStatistics>,
 ) -> RuntimeWatchTelemetry {
     RuntimeWatchTelemetry {
-        states: BTreeMap::from([(peer.management_address, membership)]),
+        states: BTreeMap::from([(peer.management_address(), membership)]),
         selected_endpoints: BTreeMap::new(),
         rtts: rtt
             .map(|statistics| vec![rtt_on(peer, statistics)])

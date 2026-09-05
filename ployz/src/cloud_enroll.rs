@@ -371,7 +371,6 @@ mod tests {
                 id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
                 name: MachineName::parse("joiner").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),
-                management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([1; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
