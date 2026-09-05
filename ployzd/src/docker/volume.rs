@@ -53,7 +53,7 @@ impl ContainerRuntime {
         let Some(name) = source.docker_volume_name() else {
             return Ok(());
         };
-        if matches!(source, VolumeSource::External { .. }) {
+        if matches!(source.kind(), ployz_core::RawVolumeSource::External { .. }) {
             return match ensure_volume_exists(&self.docker.client, name.as_str()).await {
                 Err(error) if volume_not_found(&error) => {
                     Err(Error::ExternalVolumeNotFound(name.clone()))

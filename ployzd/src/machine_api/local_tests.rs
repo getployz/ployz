@@ -370,7 +370,8 @@ async fn zentinel_service_is_bootstrapped_before_host_network_is_returned() {
                 order: ployz_core::UpdateOrder::StopFirst,
                 monitor_millis: None,
             },
-        );
+        )
+        .expect("volume graph is scoped");
 
     assert!(matches!(
         service
@@ -462,7 +463,8 @@ async fn envoy_service_is_bootstrapped_before_bridge_network_is_returned() {
         .to_resolved(
             ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
             ployz_core::ResolvedUpdateConfig::default(),
-        );
+        )
+        .expect("volume graph is scoped");
 
     assert!(matches!(
         service

@@ -40,7 +40,7 @@ pub struct ServiceMount {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-pub enum VolumeSource {
+pub enum RawVolumeSource {
     Bind {
         machine_path: MachinePath,
         #[serde(default)]
@@ -61,7 +61,7 @@ pub enum VolumeSource {
     },
     /// A bounded Docker Volume backed by a Machine Pool.
     Provisioned {
-        /// Machine-local Docker Volume name after Project scoping.
+        /// Logical declaration name; immutable scoped views expose the physical name.
         name: DockerVolumeName,
         /// Required positive storage maximum.
         maximum_bytes: ProvisionedVolumeMaximumBytes,
@@ -79,36 +79,142 @@ pub enum VolumeSource {
     },
 }
 
+/// A source admitted from a raw declaration, or retained from a resolved observation.
+/// Its scoping state is private and cannot be asserted by a user-supplied label.
+/// Scoped observations serialize only through [`ResolvedVolumeSource`], never as raw input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolumeSource {
+    source: RawVolumeSource,
+    scope: Option<ScopedVolumeSource>,
+}
+
+/// Checked Project and logical identity from which a physical name and owner labels derive.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopedVolumeSource {
+    project: ProjectName,
+    logical_name: DockerVolumeName,
+}
+
+impl ScopedVolumeSource {
+    fn physical_name(&self) -> DockerVolumeName {
+        self.project.volume_name(&self.logical_name)
+    }
+}
+
+impl TryFrom<RawVolumeSource> for VolumeSource {
+    type Error = ValueError;
+    fn try_from(source: RawVolumeSource) -> Result<Self, Self::Error> {
+        if let RawVolumeSource::Ordinary { labels, .. }
+        | RawVolumeSource::Provisioned { labels, .. } = &source
+        {
+            if let Some(key) = labels
+                .keys()
+                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == PROJECT_NAME_LABEL)
+            {
+                return Err(ValueError::new(
+                    "volume label",
+                    key.clone(),
+                    "a non-reserved user label",
+                ));
+            }
+        }
+        Ok(Self {
+            source,
+            scope: None,
+        })
+    }
+}
+
+impl Serialize for VolumeSource {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.scope.is_some() {
+            return Err(serde::ser::Error::custom(
+                "scoped observations cannot be serialized as raw volume declarations",
+            ));
+        }
+        self.source.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for VolumeSource {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Request {
+            #[serde(flatten)]
+            source: RawVolumeSource,
+            #[serde(default, rename = "scope", deserialize_with = "reject_scope")]
+            _scope: (),
+        }
+        fn reject_scope<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
+            Err(D::Error::custom(
+                "raw volume declarations cannot assert observed scope",
+            ))
+        }
+        Self::try_from(Request::deserialize(deserializer)?.source).map_err(D::Error::custom)
+    }
+}
+
 impl VolumeSource {
-    /// Borrow the machine-local Docker Volume name for a named source.
-    ///
-    /// Bind Mounts and Tmpfs Mounts do not address Docker Volumes and return `None`.
+    /// Read the source's current physical shape without granting mutation of provenance.
+    #[must_use]
+    pub fn kind(&self) -> &RawVolumeSource {
+        &self.source
+    }
+
     #[must_use]
     pub fn docker_volume_name(&self) -> Option<&DockerVolumeName> {
-        match self {
-            Self::External { name }
-            | Self::Ordinary { name, .. }
-            | Self::Provisioned { name, .. } => Some(name),
-            Self::Bind { .. } | Self::Tmpfs { .. } => None,
+        match self.kind() {
+            RawVolumeSource::External { name }
+            | RawVolumeSource::Ordinary { name, .. }
+            | RawVolumeSource::Provisioned { name, .. } => Some(name),
+            RawVolumeSource::Bind { .. } | RawVolumeSource::Tmpfs { .. } => None,
         }
     }
 
-    /// Bind an ordinary or Provisioned Volume to `project`: physical name and ownership labels.
+    /// Scope admitted declarations once; preserve imported observations' exact identity.
     pub fn scope_to_project(&mut self, project: &ProjectName) {
-        let (name, labels) = match self {
-            Self::Ordinary { name, labels, .. } | Self::Provisioned { name, labels, .. } => {
-                (name, labels)
-            }
-            Self::External { .. } | Self::Bind { .. } | Self::Tmpfs { .. } => return,
-        };
-        if labels.contains_key(PROJECT_NAME_LABEL) {
-            // Already bound: scale from a Resolved Service Spec, or a volume that
-            // already carries ownership. Do not prefix again or rewrite a foreign owner.
+        if self.scope.is_some() {
             return;
         }
-        *name = project.volume_name(name);
-        labels.insert(MANAGED_LABEL.into(), String::new());
-        labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
+        let name = match &mut self.source {
+            RawVolumeSource::Ordinary { name, .. } | RawVolumeSource::Provisioned { name, .. } => {
+                name
+            }
+            RawVolumeSource::External { .. }
+            | RawVolumeSource::Bind { .. }
+            | RawVolumeSource::Tmpfs { .. } => return,
+        };
+        let logical_name = name.clone();
+        *name = project.volume_name(&logical_name);
+        self.scope = Some(ScopedVolumeSource {
+            project: project.clone(),
+            logical_name,
+        });
+    }
+
+    pub(crate) fn is_resolved(&self) -> bool {
+        !matches!(
+            self.source,
+            RawVolumeSource::Ordinary { .. } | RawVolumeSource::Provisioned { .. }
+        ) || self.scope.is_some()
+    }
+
+    /// Ownership labels are derived, never taken from user declarations.
+    #[must_use]
+    pub fn creation_labels(&self) -> BTreeMap<String, String> {
+        let mut labels = match self.kind() {
+            RawVolumeSource::Ordinary { labels, .. }
+            | RawVolumeSource::Provisioned { labels, .. } => labels.clone(),
+            RawVolumeSource::External { .. }
+            | RawVolumeSource::Bind { .. }
+            | RawVolumeSource::Tmpfs { .. } => return BTreeMap::new(),
+        };
+        if let Some(scope) = &self.scope {
+            labels.insert(MANAGED_LABEL.into(), String::new());
+            labels.insert(PROJECT_NAME_LABEL.into(), scope.project.to_string());
+        }
+        labels
     }
 
     /// Whether an observed Docker Volume exactly matches this managed source.
@@ -127,10 +233,13 @@ impl VolumeSource {
                 .labels
                 .iter()
                 .all(|(key, value)| observed.labels.get(key) == Some(value))
-            && match (self, &observed.storage) {
-                (Self::Ordinary { .. }, DockerVolumeStorageObservation::Plain { .. }) => true,
+            && match (self.kind(), &observed.storage) {
                 (
-                    Self::Provisioned { maximum_bytes, .. },
+                    RawVolumeSource::Ordinary { .. },
+                    DockerVolumeStorageObservation::Plain { .. },
+                ) => true,
+                (
+                    RawVolumeSource::Provisioned { maximum_bytes, .. },
                     DockerVolumeStorageObservation::Provisioned { bound_bytes, .. },
                 ) => bound_bytes.get() == maximum_bytes.get(),
                 _ => false,
@@ -138,7 +247,7 @@ impl VolumeSource {
     }
 }
 
-/// Reserved Docker driver used only by [`VolumeSource::Provisioned`].
+/// Reserved Docker driver used only by [`RawVolumeSource::Provisioned`].
 pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
 
 /// A positive maximum byte count for one Provisioned Volume.
@@ -295,4 +404,81 @@ pub struct RemoveVolumesRequest {
     /// Force-remove an in-use Docker Volume. Defaults to false.
     #[serde(default)]
     pub force: bool,
+}
+
+/// Wire source in a Resolved Service Spec. Import checks physical identity correspondence.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "ResolvedVolumeSourceWire",
+    into = "ResolvedVolumeSourceWire"
+)]
+pub struct ResolvedVolumeSource(VolumeSource);
+
+#[derive(Serialize, Deserialize)]
+struct ResolvedVolumeSourceWire {
+    #[serde(flatten)]
+    source: RawVolumeSource,
+    #[serde(default)]
+    scope: Option<ScopedVolumeSource>,
+}
+
+impl TryFrom<ResolvedVolumeSourceWire> for ResolvedVolumeSource {
+    type Error = ValueError;
+    fn try_from(wire: ResolvedVolumeSourceWire) -> Result<Self, Self::Error> {
+        let mut source = VolumeSource::try_from(wire.source)?;
+        if let Some(scope) = &wire.scope {
+            if !matches!(
+                source.kind(),
+                RawVolumeSource::Ordinary { .. } | RawVolumeSource::Provisioned { .. }
+            ) || source.docker_volume_name() != Some(&scope.physical_name())
+            {
+                return Err(ValueError::new(
+                    "resolved volume",
+                    "scope",
+                    "ownership matching the managed physical source",
+                ));
+            }
+        }
+        source.scope = wire.scope;
+        Self::try_from(source)
+    }
+}
+impl From<ResolvedVolumeSource> for ResolvedVolumeSourceWire {
+    fn from(value: ResolvedVolumeSource) -> Self {
+        Self {
+            source: value.0.source,
+            scope: value.0.scope,
+        }
+    }
+}
+impl TryFrom<VolumeSource> for ResolvedVolumeSource {
+    type Error = ValueError;
+    fn try_from(source: VolumeSource) -> Result<Self, Self::Error> {
+        if !source.is_resolved() {
+            return Err(ValueError::new(
+                "resolved volume",
+                "unscoped",
+                "a Project-scoped managed source",
+            ));
+        }
+        Ok(Self(source))
+    }
+}
+impl ResolvedVolumeSource {
+    /// Import a checked resolved source for a scale request, retaining its ownership.
+    #[must_use]
+    pub fn to_requested(&self) -> VolumeSource {
+        self.0.clone()
+    }
+}
+
+impl RawVolumeSource {
+    /// Admit a raw source, rejecting reserved ownership labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] if user labels assert Ployz ownership.
+    pub fn admit(self) -> Result<VolumeSource, ValueError> {
+        self.try_into()
+    }
 }

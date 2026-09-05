@@ -191,6 +191,18 @@ export type ServiceVolume = {
   source: VolumeSource;
 };
 
+export type ScopedVolumeSource = {
+  project: ProjectName;
+  logical_name: DockerVolumeName;
+};
+
+export type ResolvedVolumeSource = (Extract<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope: ScopedVolumeSource }) | (Exclude<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope?: null });
+
+export type ResolvedServiceVolume = {
+  reference: ServiceVolumeReference;
+  source: ResolvedVolumeSource;
+};
+
 export type ConfigSpec = {
   name: string;
   content?: number[];
@@ -252,7 +264,7 @@ export type ResolvedServiceSpec = {
   container: ServiceContainerSpec;
   placement?: Placement;
   ports?: PortPublication[];
-  volumes?: ServiceVolume[];
+  volumes?: ResolvedServiceVolume[];
   mounts?: ServiceMount[];
   configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;

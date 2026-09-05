@@ -6,7 +6,7 @@ use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyNetworkMode,
     MachineId, MachineObservation, PortPublication, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, SpecChange, UpdateOrder, VolumeSource, compare_specs,
+    ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
     requested_ingress_proxy_backend,
 };
 
@@ -531,10 +531,10 @@ fn determine_update_order(
     }
     if requested.volume_graph.mounted_volumes().any(|volume| {
         matches!(
-            volume.source,
-            VolumeSource::External { .. }
-                | VolumeSource::Ordinary { .. }
-                | VolumeSource::Provisioned { .. }
+            volume.source.kind(),
+            ployz_core::RawVolumeSource::External { .. }
+                | ployz_core::RawVolumeSource::Ordinary { .. }
+                | ployz_core::RawVolumeSource::Provisioned { .. }
         )
     }) {
         return UpdateOrder::StopFirst;
@@ -584,11 +584,13 @@ fn resolve(
     service_id: ServiceId,
     order: UpdateOrder,
 ) -> ResolvedServiceSpec {
-    requested.to_resolved(
-        service_id,
-        ResolvedUpdateConfig {
-            order,
-            monitor_millis: requested.update.monitor_millis,
-        },
-    )
+    requested
+        .to_resolved(
+            service_id,
+            ResolvedUpdateConfig {
+                order,
+                monitor_millis: requested.update.monitor_millis,
+            },
+        )
+        .expect("volume graph is scoped")
 }

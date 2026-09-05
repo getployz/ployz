@@ -624,8 +624,11 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     };
     let published_port = unused_address().port();
     let machine_id = MachineId::random();
-    let name =
+    let logical_name =
         ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{machine_id}")).unwrap();
+    let name = ProjectName::parse("app")
+        .unwrap()
+        .volume_name(&logical_name);
     runtime
         .create_volume(
             &machine_id,
@@ -633,7 +636,10 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
                 name: name.clone(),
                 driver: "local".into(),
                 options: BTreeMap::new(),
-                labels: BTreeMap::new(),
+                labels: BTreeMap::from([
+                    (ployz_core::MANAGED_LABEL.into(), String::new()),
+                    (ployz_core::PROJECT_NAME_LABEL.into(), "app".into()),
+                ]),
             },
         )
         .await
@@ -661,7 +667,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         }],
         "volumes": [
             {"reference":"host","source":{"kind":"bind","machine_path":root.0.join("bind")}},
-            {"reference":"data","source":{"kind":"ordinary","name":name,"driver":{"name":"local","options":{}}}},
+            {"reference":"data","source":{"kind":"ordinary","name":name,"scope":{"project":"app","logical_name":logical_name},"driver":{"name":"local","options":{}}}},
             {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
         ],
         "mounts": [

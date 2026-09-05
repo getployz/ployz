@@ -179,11 +179,13 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
     let mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("logs").unwrap(),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse("logs").unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
@@ -232,9 +234,11 @@ fn project_scoping_rejects_incompatible_physical_volume_aliases() {
     let mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("external").unwrap(),
-        source: VolumeSource::External {
+        source: ployz_core::RawVolumeSource::External {
             name: DockerVolumeName::parse("app_data").unwrap(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 

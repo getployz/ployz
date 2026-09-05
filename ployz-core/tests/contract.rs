@@ -366,69 +366,58 @@ fn project_volume_name_includes_the_project_and_differs_across_projects() {
 }
 
 #[test]
-fn managed_volume_scope_to_project_is_idempotent_and_skips_external() {
-    let project = ProjectName::parse("shop").unwrap();
-    let mut named = VolumeSource::Ordinary {
+fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope() {
+    for owner in ["shop", "blog"] {
+        for reserved in [PROJECT_NAME_LABEL, MANAGED_LABEL] {
+            let raw = ployz_core::RawVolumeSource::Ordinary {
+                name: DockerVolumeName::parse("data").unwrap(),
+                driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
+                labels: BTreeMap::from([(reserved.into(), owner.into())]),
+            };
+            assert!(VolumeSource::try_from(raw.clone()).is_err());
+            assert!(
+                serde_json::from_value::<VolumeSource>(serde_json::to_value(raw).unwrap()).is_err()
+            );
+        }
+    }
+    let mut named: VolumeSource = ployz_core::RawVolumeSource::Ordinary {
         name: DockerVolumeName::parse("data").unwrap(),
         driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
-        labels: Default::default(),
-    };
-    named.scope_to_project(&project);
-    named.scope_to_project(&project);
-    match &named {
-        VolumeSource::Ordinary { name, labels, .. } => {
-            assert_eq!(name.as_str(), "shop_data");
-            assert_eq!(labels.get(MANAGED_LABEL), Some(&String::new()));
-            assert_eq!(
-                labels.get(PROJECT_NAME_LABEL).map(String::as_str),
-                Some("shop")
-            );
-        }
-        VolumeSource::External { .. }
-        | VolumeSource::Provisioned { .. }
-        | VolumeSource::Bind { .. }
-        | VolumeSource::Tmpfs { .. } => {
-            panic!("expected a named volume")
-        }
+        labels: BTreeMap::from([("user".into(), "kept".into())]),
     }
+    .try_into()
+    .unwrap();
+    assert!(named.to_create_volume_request().is_none());
+    let project = ProjectName::parse("shop").unwrap();
+    named.scope_to_project(&project);
+    named.scope_to_project(&project);
+    let request = named.to_create_volume_request().unwrap();
+    assert_eq!(request.name.as_str(), "shop_data");
+    assert_eq!(
+        request.labels.get(PROJECT_NAME_LABEL).map(String::as_str),
+        Some("shop")
+    );
+    assert_eq!(request.labels.get("user").map(String::as_str), Some("kept"));
+    assert!(serde_json::to_value(&named).is_err());
+    let resolved = ployz_core::ResolvedVolumeSource::try_from(named).unwrap();
+    let wire = serde_json::to_value(&resolved).unwrap();
+    assert!(serde_json::from_value::<VolumeSource>(wire.clone()).is_err());
+    let mut imported = serde_json::from_value::<ployz_core::ResolvedVolumeSource>(wire.clone())
+        .unwrap()
+        .to_requested();
+    imported.scope_to_project(&ProjectName::parse("blog").unwrap());
+    assert_eq!(imported.to_create_volume_request(), Some(request));
+    let mut forged = wire;
+    forged["scope"]["project"] = serde_json::json!("blog");
+    assert!(serde_json::from_value::<ployz_core::ResolvedVolumeSource>(forged).is_err());
 
-    let mut external = VolumeSource::External {
+    let mut external: VolumeSource = ployz_core::RawVolumeSource::External {
         name: DockerVolumeName::parse("shared").unwrap(),
-    };
+    }
+    .try_into()
+    .unwrap();
     external.scope_to_project(&project);
-    match &external {
-        VolumeSource::External { name } => {
-            assert_eq!(name.as_str(), "shared");
-        }
-        VolumeSource::Ordinary { .. }
-        | VolumeSource::Provisioned { .. }
-        | VolumeSource::Bind { .. }
-        | VolumeSource::Tmpfs { .. } => {
-            panic!("expected a named volume")
-        }
-    }
-
-    let mut foreign = VolumeSource::Ordinary {
-        name: DockerVolumeName::parse("blog_data").unwrap(),
-        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
-        labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "blog".into())]),
-    };
-    foreign.scope_to_project(&project);
-    match &foreign {
-        VolumeSource::Ordinary { name, labels, .. } => {
-            assert_eq!(name.as_str(), "blog_data");
-            assert_eq!(
-                labels.get(PROJECT_NAME_LABEL).map(String::as_str),
-                Some("blog")
-            );
-        }
-        VolumeSource::External { .. }
-        | VolumeSource::Provisioned { .. }
-        | VolumeSource::Bind { .. }
-        | VolumeSource::Tmpfs { .. } => {
-            panic!("expected a named volume")
-        }
-    }
+    assert_eq!(external.docker_volume_name().unwrap().as_str(), "shared");
 }
 
 #[test]
@@ -1571,12 +1560,14 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     let reference = ServiceVolumeReference::parse("data").unwrap();
     let volume = ServiceVolume {
         reference: reference.clone(),
-        source: VolumeSource::Bind {
+        source: ployz_core::RawVolumeSource::Bind {
             machine_path: MachinePath::parse("/srv/api").unwrap(),
             create_machine_path: true,
             propagation: None,
             recursive: None,
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     };
     let mount = ServiceMount {
         volume: reference,
@@ -1636,7 +1627,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         container,
         placement: requested.placement.clone(),
         ports: Vec::new(),
-        volume_graph: requested.volume_graph.clone(),
+        volume_graph: requested.volume_graph.clone().try_into().unwrap(),
         config_graph: requested.config_graph.clone(),
         pre_deploy: requested.pre_deploy.clone(),
         ingress_proxy_fragment: requested.ingress_proxy_fragment.clone(),

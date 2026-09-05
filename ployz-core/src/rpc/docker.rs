@@ -21,31 +21,37 @@ impl VolumeSource {
     /// Build the exact Docker creation request for a managed Volume source.
     ///
     /// External Volumes, Bind Mounts, and Tmpfs Mounts have no creation
-    /// request because Ployz does not create them as Docker Volumes.
+    /// request because Ployz does not create them as Docker Volumes. Managed
+    /// declarations have no creation request until Project scoping establishes ownership.
     #[must_use]
     pub fn to_create_volume_request(&self) -> Option<CreateVolumeRequest> {
-        match self {
-            Self::Ordinary {
+        if !self.is_resolved() {
+            return None;
+        }
+        match self.kind() {
+            crate::RawVolumeSource::Ordinary {
                 name,
                 driver,
-                labels,
+                labels: _,
             } => Some(CreateVolumeRequest {
                 name: name.clone(),
                 driver: driver.name().into(),
                 options: driver.options().clone(),
-                labels: labels.clone(),
+                labels: self.creation_labels(),
             }),
-            Self::Provisioned {
+            crate::RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes,
-                labels,
+                labels: _,
             } => Some(CreateVolumeRequest {
                 name: name.clone(),
                 driver: PROVISIONED_VOLUME_DRIVER.into(),
                 options: BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]),
-                labels: labels.clone(),
+                labels: self.creation_labels(),
             }),
-            Self::External { .. } | Self::Bind { .. } | Self::Tmpfs { .. } => None,
+            crate::RawVolumeSource::External { .. }
+            | crate::RawVolumeSource::Bind { .. }
+            | crate::RawVolumeSource::Tmpfs { .. } => None,
         }
     }
 }

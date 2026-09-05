@@ -69,7 +69,7 @@ pub fn service_spec(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{PortPublication, ServiceMode, ServiceName, TransportProtocol, VolumeSource};
+    use ployz_core::{PortPublication, ServiceMode, ServiceName, TransportProtocol};
 
     use super::*;
 
@@ -119,12 +119,13 @@ mod tests {
             spec.volume_graph
                 .volumes()
                 .iter()
-                .filter_map(|volume| match &volume.source {
-                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Ordinary { .. }
-                    | VolumeSource::Provisioned { .. }
-                    | VolumeSource::Tmpfs { .. } => None,
+                .filter_map(|volume| match volume.source.kind() {
+                    ployz_core::RawVolumeSource::Bind { machine_path, .. } =>
+                        Some(machine_path.as_str()),
+                    ployz_core::RawVolumeSource::External { .. }
+                    | ployz_core::RawVolumeSource::Ordinary { .. }
+                    | ployz_core::RawVolumeSource::Provisioned { .. }
+                    | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
                 })
                 .collect::<Vec<_>>(),
             ["/var/lib/ployz/ingress", "/run/ployz/ingress"]

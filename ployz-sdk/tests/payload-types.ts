@@ -18,6 +18,8 @@ import type {
   RequestedServiceSpec,
   RestartPolicy,
   ResolvedServiceSpec,
+  ResolvedVolumeSource,
+  VolumeSource,
   ServiceMode,
   ServiceName,
   RuntimeWatchFrame,
@@ -167,6 +169,11 @@ const futureState: ContainerRuntimeObservation = { state: "hibernating" };
 // Data Loss is a tagged union whose identity nests per kind.
 // @ts-expect-error identity fields do not spread beside the kind
 const flatLoss: DataLoss = { kind: "docker_volume", machine_id: "m" as MachineId, name: "data" };
+
+({ kind: "ordinary", name: "data", driver: { name: "local", options: {} } }) satisfies VolumeSource;
+({ kind: "ordinary", name: "app_data", driver: { name: "local", options: {} }, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
+// @ts-expect-error resolved managed volumes require their scoped ownership
+const unscopedVolume: ResolvedVolumeSource = { kind: "ordinary", name: "data", driver: { name: "local", options: {} } };
 
 // The facade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;

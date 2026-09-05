@@ -5,7 +5,7 @@ use ployz_core::{
     ContainerPath, ContainerResources, DockerVolumeName, IngressProxyFragment, MachineTarget,
     Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
+    ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig,
 };
 
 use crate::{
@@ -204,18 +204,22 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
                     "volume-nocopy requires a named volume in '{value}'"
                 )));
             }
-            VolumeSource::Bind {
+            ployz_core::RawVolumeSource::Bind {
                 machine_path: ployz_core::MachinePath::parse(source)?,
                 create_machine_path: true,
                 propagation: None,
                 recursive: None,
             }
+            .admit()
+            .expect("valid volume declaration")
         } else {
-            VolumeSource::Ordinary {
+            ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse(source)?,
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new())?,
                 labels: BTreeMap::new(),
             }
+            .admit()
+            .expect("valid volume declaration")
         };
         volumes.push(ServiceVolume {
             reference: reference.clone(),

@@ -208,13 +208,15 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .unwrap();
     let ingress = container_on(
         &founder,
-        requested.to_resolved(
-            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
-            ployz_core::ResolvedUpdateConfig {
-                order: ployz_core::UpdateOrder::StopFirst,
-                monitor_millis: None,
-            },
-        ),
+        requested
+            .to_resolved(
+                ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig {
+                    order: ployz_core::UpdateOrder::StopFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped"),
         ployz_core::ProjectName::system(),
         'c',
     );

@@ -1,5 +1,5 @@
 use ployz::compose::{ComposeProject, parse_normalized};
-use ployz_core::{RequestedServiceSpec, VolumeSource};
+use ployz_core::RequestedServiceSpec;
 
 fn app(project: &ComposeProject) -> &RequestedServiceSpec {
     project.services.get("app").unwrap()
@@ -90,8 +90,8 @@ fn compose_maps_bind_recursive_disabled() {
     )
     .unwrap();
     assert!(app(&project).volumes().iter().any(|volume| matches!(
-        &volume.source,
-        VolumeSource::Bind {
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Bind {
             recursive: Some(ployz_core::BindRecursive::Disabled),
             ..
         }
@@ -106,8 +106,8 @@ fn compose_maps_bind_propagation_rprivate() {
     )
     .unwrap();
     assert!(app(&project).volumes().iter().any(|volume| matches!(
-        &volume.source,
-        VolumeSource::Bind {
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Bind {
             propagation: Some(ployz_core::BindPropagation::Rprivate),
             ..
         }

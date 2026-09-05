@@ -5,7 +5,7 @@ use ployz_core::{
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    VolumeSource, VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_target,
     same_service_mode_kind,
 };
 
@@ -152,16 +152,16 @@ fn preview_from(
             .volumes_to_create
             .into_iter()
             .filter_map(|(machine_id, volume)| {
-                let (name, maximum_bytes) = match volume.source {
-                    VolumeSource::Ordinary { name, .. } => (name, None),
-                    VolumeSource::Provisioned {
+                let (name, maximum_bytes) = match volume.source.kind().clone() {
+                    ployz_core::RawVolumeSource::Ordinary { name, .. } => (name, None),
+                    ployz_core::RawVolumeSource::Provisioned {
                         name,
                         maximum_bytes,
                         ..
                     } => (name, Some(maximum_bytes)),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Bind { .. }
-                    | VolumeSource::Tmpfs { .. } => return None,
+                    ployz_core::RawVolumeSource::External { .. }
+                    | ployz_core::RawVolumeSource::Bind { .. }
+                    | ployz_core::RawVolumeSource::Tmpfs { .. } => return None,
                 };
                 Some(VolumeToCreate {
                     machine_id,

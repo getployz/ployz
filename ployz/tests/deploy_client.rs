@@ -12,7 +12,6 @@ use ployz::deploy::{
 use ployz_core::{
     ContainerId, IngressProxyBackend, MachineId, MachineStorageObservation, OperationPhase,
     ProjectName, ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
-    VolumeSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -410,18 +409,22 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         .first_mut()
         .expect("fixture mounts one volume")
         .source;
-    let (name, labels) = match source {
-        VolumeSource::Ordinary { name, labels, .. } => (name.clone(), labels.clone()),
-        VolumeSource::External { .. }
-        | VolumeSource::Bind { .. }
-        | VolumeSource::Provisioned { .. }
-        | VolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
+    let (name, labels) = match source.kind() {
+        ployz_core::RawVolumeSource::Ordinary { name, labels, .. } => {
+            (name.clone(), labels.clone())
+        }
+        ployz_core::RawVolumeSource::External { .. }
+        | ployz_core::RawVolumeSource::Bind { .. }
+        | ployz_core::RawVolumeSource::Provisioned { .. }
+        | ployz_core::RawVolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
     };
-    *source = VolumeSource::Provisioned {
+    *source = ployz_core::RawVolumeSource::Provisioned {
         name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
         labels,
-    };
+    }
+    .admit()
+    .expect("valid volume declaration");
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
     let intent =
         DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());

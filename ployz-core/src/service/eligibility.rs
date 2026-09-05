@@ -120,25 +120,31 @@ mod tests {
             machines: vec![crate::MachineTarget::parse("other").unwrap()],
         };
         let provisioned = volume_graph(
-            VolumeSource::Provisioned {
+            crate::RawVolumeSource::Provisioned {
                 name: DockerVolumeName::parse("data").unwrap(),
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(100).unwrap()),
                 labels: BTreeMap::new(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
             true,
         );
         let unused_provisioned = volume_graph(
-            VolumeSource::Provisioned {
+            crate::RawVolumeSource::Provisioned {
                 name: DockerVolumeName::parse("unused").unwrap(),
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(100).unwrap()),
                 labels: BTreeMap::new(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
             false,
         );
         let external = volume_graph(
-            VolumeSource::External {
+            crate::RawVolumeSource::External {
                 name: DockerVolumeName::parse("external").unwrap(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
             true,
         );
         let pool = MachineStorageObservation::Pool {
@@ -195,7 +201,11 @@ mod tests {
             ),
         ];
 
-        for (requested, storage, expected) in cases {
+        for (mut requested, storage, expected) in cases {
+            requested.volume_graph = requested
+                .volume_graph
+                .scope_to_project(&crate::ProjectName::parse("shop").unwrap())
+                .unwrap();
             assert_eq!(
                 requested.placement_eligibility(&machine, storage.as_ref()),
                 expected
@@ -203,6 +213,7 @@ mod tests {
             assert_eq!(
                 requested
                     .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                    .expect("volume graph is scoped")
                     .placement_eligibility(&machine, storage.as_ref()),
                 expected
             );

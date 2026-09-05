@@ -12,7 +12,7 @@ use ployz_core::{
     DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, OperationRow,
     ProjectName, RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, VolumeSource, op,
+    StopContainerRequest, UpdateOrder, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -146,6 +146,10 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
             subpath: None,
         }],
     )
+    .unwrap()
+    .scope_to_project(&ProjectName::parse("app").unwrap())
+    .unwrap()
+    .try_into()
     .unwrap();
     let plan = deploy_plan(vec![run_without_health_monitor(machine, &spec)]);
 
@@ -157,12 +161,12 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
     ));
     assert!(
         cluster
-            .machine_shell(1, "docker volume inspect ployz-l3-deploy-data")
+            .machine_shell(1, "docker volume inspect app_ployz-l3-deploy-data")
             .is_ok()
     );
     assert!(
         cluster
-            .machine_shell(0, "docker volume inspect ployz-l3-deploy-data")
+            .machine_shell(0, "docker volume inspect app_ployz-l3-deploy-data")
             .is_err()
     );
     let containers = wait_for_service(client, &service_id, 1).await;
@@ -437,11 +441,13 @@ fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPreview {
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse(reference).unwrap(),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 

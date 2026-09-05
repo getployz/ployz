@@ -228,7 +228,9 @@ fn resolved_scale_input_changes_only_replicas() {
         "container": { "image": "alpine", "pull_policy": "missing" }
     }))
     .unwrap();
-    let resolved = requested.to_resolved(ServiceId::random(), Default::default());
+    let resolved = requested
+        .to_resolved(ServiceId::random(), Default::default())
+        .expect("volume graph is scoped");
     let mut scaled = resolved.to_requested();
     scaled.mode = ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
@@ -346,7 +348,9 @@ fn observation(
         "container": { "image": image, "pull_policy": "missing" }
     }))
     .unwrap();
-    let resolved = requested.to_resolved(*service_id, Default::default());
+    let resolved = requested
+        .to_resolved(*service_id, Default::default())
+        .expect("volume graph is scoped");
     ContainerObservation {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("api-{id}"),
