@@ -341,7 +341,7 @@ impl ReplicatedStore {
         let Some([info]) = rows.first() else {
             return Ok(None);
         };
-        decode_json_document(text(info, "machine info")?)
+        decode_machine(id, text(info, "machine info")?)
     }
 
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
@@ -352,9 +352,10 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(id_and_json(query.rows(["id", "info"])?, |id| {
-            Ok(MachineId::parse(id)?)
-        })?)
+        decode_observations(
+            id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
+            |id, encoded| decode_machine(id.as_str(), encoded),
+        )
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
@@ -369,15 +370,19 @@ impl ReplicatedStore {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT container FROM containers WHERE id = ?",
+                "SELECT machine_id, container FROM containers WHERE id = ?",
                 [json!(id)],
             ))
             .await?;
-        let rows = query.rows(["container"])?;
-        let Some([encoded]) = rows.first() else {
+        let rows = query.rows(["machine_id", "container"])?;
+        let Some([machine_id, encoded]) = rows.first() else {
             return Ok(None);
         };
-        decode_json_document(text(encoded, "replicated container JSON")?)
+        decode_container(
+            id,
+            text(machine_id, "container Machine ID")?,
+            text(encoded, "replicated container JSON")?,
+        )
     }
 
     #[cfg(test)]
@@ -410,7 +415,11 @@ impl ReplicatedStore {
         let mut snapshot = LocalContainerSnapshot::default();
         for [id, encoded] in query.rows(["id", "container"])? {
             let id = ContainerId::parse(text(&id, "container ID")?)?;
-            let observation = decode_json_document(text(&encoded, "replicated container JSON")?)?;
+            let observation = decode_container(
+                &id,
+                machine_id.as_str(),
+                text(&encoded, "replicated container JSON")?,
+            )?;
             snapshot.inventory.insert(id);
             if let Some(observation) = observation {
                 snapshot.observations.insert(id, observation);
@@ -425,18 +434,35 @@ impl ReplicatedStore {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT id, container FROM containers ORDER BY id",
+                "SELECT id, machine_id, container FROM containers ORDER BY id",
                 [],
             ))
             .await?;
-        decode_observations(id_and_json(query.rows(["id", "container"])?, |id| {
-            Ok(ContainerId::parse(id)?)
-        })?)
+        let mut observations = Vec::new();
+        let mut incomplete_ids = Vec::new();
+        for [id, machine_id, encoded] in query.rows(["id", "machine_id", "container"])? {
+            let id = ContainerId::parse(text(&id, "container ID")?)?;
+            match decode_container(
+                &id,
+                text(&machine_id, "container Machine ID")?,
+                text(&encoded, "replicated container JSON")?,
+            )? {
+                Some(observation) => observations.push(observation),
+                None => incomplete_ids.push(id),
+            }
+        }
+        Ok(ReplicatedObservations {
+            observations,
+            incomplete_ids,
+        })
     }
 
     pub(crate) async fn subscribe_container_changes(&self) -> Result<Subscription, Error> {
         self.api
-            .subscribe(Statement::new("SELECT id, container FROM containers", []))
+            .subscribe(Statement::new(
+                "SELECT id, machine_id, container FROM containers",
+                [],
+            ))
             .await
     }
 
@@ -470,7 +496,7 @@ impl ReplicatedStore {
         let Some([encoded]) = rows.first() else {
             return Ok(None);
         };
-        decode_json_document(text(encoded, "replicated volume JSON")?)
+        decode_volume(id, text(encoded, "replicated volume JSON")?)
     }
 
     /// Return decoded Docker Volume observations and typed incomplete volume IDs.
@@ -500,7 +526,7 @@ impl ReplicatedStore {
                 text(&encoded, "replicated volume JSON")?.to_owned(),
             ));
         }
-        decode_observations(rows)
+        decode_observations(rows, decode_volume)
     }
 
     async fn local_volumes(&self, machine_id: &MachineId) -> Result<LocalVolumeSnapshot, Error> {
@@ -515,7 +541,13 @@ impl ReplicatedStore {
         let mut observations = Vec::new();
         for [name, encoded] in query.rows(["name", "volume"])? {
             let name = DockerVolumeName::parse(text(&name, "Docker Volume name")?)?;
-            let observation = decode_json_document(text(&encoded, "replicated volume JSON")?)?;
+            let observation = decode_volume(
+                &DockerVolumeId {
+                    machine_id: *machine_id,
+                    name: name.clone(),
+                },
+                text(&encoded, "replicated volume JSON")?,
+            )?;
             names.push(name);
             if let Some(observation) = observation {
                 observations.push(observation);
@@ -909,6 +941,49 @@ fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>,
     }
 }
 
+fn decode_machine(id: &str, encoded: &str) -> Result<Option<Machine>, Error> {
+    let machine: Option<Machine> = decode_json_document(encoded)?;
+    if let Some(machine) = &machine
+        && machine.id.as_str() != id
+    {
+        return Err(Error::Protocol(format!(
+            "Machine row {id} contains document for {}",
+            machine.id
+        )));
+    }
+    Ok(machine)
+}
+
+fn decode_container(
+    id: &ContainerId,
+    machine_id: &str,
+    encoded: &str,
+) -> Result<Option<ContainerObservation>, Error> {
+    let observation: Option<ContainerObservation> = decode_json_document(encoded)?;
+    if let Some(observation) = &observation
+        && (observation.container_id != *id || observation.machine_id.as_str() != machine_id)
+    {
+        return Err(Error::Protocol(format!(
+            "Container row {id} on Machine {machine_id} contains document for {} on Machine {}",
+            observation.container_id, observation.machine_id
+        )));
+    }
+    Ok(observation)
+}
+
+fn decode_volume(id: &DockerVolumeId, encoded: &str) -> Result<Option<DockerVolume>, Error> {
+    let volume: Option<DockerVolume> = decode_json_document(encoded)?;
+    if let Some(volume) = &volume
+        && volume.id != *id
+    {
+        return Err(Error::Protocol(format!(
+            "Docker Volume row {}/{} contains document for {}/{}",
+            id.machine_id, id.name, volume.id.machine_id, volume.id.name
+        )));
+    }
+    Ok(volume)
+}
+
 fn id_and_json<Id>(
     rows: Vec<[Value; 2]>,
     parse_id: impl Fn(&str) -> Result<Id, Error>,
@@ -923,13 +998,14 @@ fn id_and_json<Id>(
         .collect()
 }
 
-fn decode_observations<T: DeserializeOwned, Id>(
+fn decode_observations<T, Id>(
     rows: Vec<(Id, String)>,
+    decode: impl Fn(&Id, &str) -> Result<Option<T>, Error>,
 ) -> Result<ReplicatedObservations<T, Id>, Error> {
     let mut observations = Vec::new();
     let mut incomplete_ids = Vec::new();
     for (id, encoded) in rows {
-        match decode_json_document(&encoded)? {
+        match decode(&id, &encoded)? {
             Some(observation) => observations.push(observation),
             None => incomplete_ids.push(id),
         }

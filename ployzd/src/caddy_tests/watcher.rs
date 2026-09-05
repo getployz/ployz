@@ -627,13 +627,14 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
     if statement.query == "SELECT value FROM cluster WHERE key = ?" {
         query_events(&["value"], [vec![json!("caddy")]])
-    } else if statement.query == "SELECT id, container FROM containers ORDER BY id" {
+    } else if statement.query == "SELECT id, machine_id, container FROM containers ORDER BY id" {
         let containers = state.containers.lock().unwrap();
         query_events(
-            &["id", "container"],
+            &["id", "machine_id", "container"],
             containers.iter().map(|container| {
                 vec![
                     json!(container.container_id),
+                    json!(container.machine_id),
                     json!(serde_json::to_string(container).unwrap()),
                 ]
             }),
@@ -648,10 +649,10 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
 async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
     let (columns, subscriptions, stall) =
-        if statement.query == "SELECT id, container FROM containers" {
+        if statement.query == "SELECT id, machine_id, container FROM containers" {
             state.container_opens.fetch_add(1, Ordering::SeqCst);
             (
-                &["id", "container"][..],
+                &["id", "machine_id", "container"][..],
                 &state.container_subscriptions,
                 state.stall_container.load(Ordering::SeqCst),
             )
