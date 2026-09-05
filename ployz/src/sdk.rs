@@ -17,10 +17,10 @@ use crate::connect::{
 use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
-    DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
-    MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
-    RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, decode_runtime_watch_frame, op,
+    DescribeContractRequest, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
+    ObservedDataLoss, OpaquePayload, ProjectName, RUNTIME_WATCH_CAPABILITY, RegisterRequest,
+    Registered, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
 struct SessionInner {
@@ -310,11 +310,11 @@ impl Session {
     ///
     /// Returns a generated [`RpcError`] when the session is closed or listing
     /// Machines fails. Already-absent Volumes count as successful removals;
-    /// other Machine errors stay in the Partial Result.
+    /// every failure or omission retains its Docker Volume identity.
     pub async fn remove_volumes(
         &self,
         request: RemoveVolumesRequest,
-    ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
+    ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let mut client = self.client().await?;
         client.remove_volumes(request).await
     }

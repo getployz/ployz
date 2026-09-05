@@ -542,6 +542,28 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "VolumeRemoval",
+        Shape::Object {
+            params: "",
+            fields: &[
+                ("id", "DockerVolumeId"),
+                ("outcome", "VolumeRemovalOutcome"),
+            ],
+        },
+    ),
+    (
+        "VolumeRemovalOutcome",
+        Shape::InternallyTagged {
+            tag: "status",
+            params: "",
+            variants: &[
+                ("removed", &[]),
+                ("failed", &[("error", "RpcError")]),
+                ("omitted", &[]),
+            ],
+        },
+    ),
+    (
         "RemoveVolumesRequest",
         Shape::Object {
             params: "",

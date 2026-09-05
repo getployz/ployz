@@ -634,6 +634,9 @@ impl MachineRpc for DiscoveryService {
         let RpcRequestBody::RemoveVolume(remove) = request.body else {
             return Err(Status::invalid_argument("expected remove_volume"));
         };
+        if remove.name.as_str() == "slow" {
+            std::future::pending::<()>().await;
+        }
         let response = if machine_id.as_str().starts_with('b') {
             RpcResponse::from(RpcError {
                 code: RpcErrorCode::Unavailable,

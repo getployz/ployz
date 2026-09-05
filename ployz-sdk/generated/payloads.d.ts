@@ -302,6 +302,16 @@ export type CreateVolumeReport =
   | { verification: "verified"; volume: DockerVolume }
   | { verification: "unverified"; id: DockerVolumeId; error: RpcError };
 
+export type VolumeRemoval = {
+  id: DockerVolumeId;
+  outcome: VolumeRemovalOutcome;
+};
+
+export type VolumeRemovalOutcome =
+  | { status: "removed" }
+  | { status: "failed"; error: RpcError }
+  | { status: "omitted" };
+
 export type RemoveVolumesRequest = {
   volumes: DockerVolumeId[];
   force?: boolean;

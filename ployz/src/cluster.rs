@@ -17,7 +17,7 @@ use ployz_core::{
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
-    derive_live_services, op,
+    VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -357,8 +357,8 @@ impl Client {
     /// Destroy named Docker Volumes. The list is the confirmation.
     ///
     /// Each volume is identified by Machine plus name. Fan-out is a Partial
-    /// Result: destroyed or already-absent names, per-Machine failures, and
-    /// omissions for Machines that do not invite RPC. Forced removal is off
+    /// Result: each requested identity carries removal, failure, or omission
+    /// evidence. Machines that do not invite RPC are omitted. Forced removal is off
     /// unless `force` is set.
     ///
     /// # Errors
@@ -367,7 +367,7 @@ impl Client {
     pub async fn remove_volumes(
         &mut self,
         request: RemoveVolumesRequest,
-    ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
+    ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let machines = self
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
@@ -717,57 +717,36 @@ async fn remove_volumes_on(
     client: &Client,
     machines: &[MachineObservation],
     request: RemoveVolumesRequest,
-) -> PartialResult<DockerVolumeName, RpcError> {
-    let mut removals = Vec::new();
-    let mut omissions = Vec::new();
-    for volume in &request.volumes {
-        if !machines.iter().any(|machine| {
-            machine.machine.id == volume.machine_id && machine.membership.invites_rpc()
-        }) {
-            if !omissions.contains(&volume.machine_id) {
-                omissions.push(volume.machine_id);
-            }
-            continue;
-        }
-        let client = client.clone();
-        let id = volume.clone();
-        let force = request.force;
-        removals.push(async move {
-            let outcome = client
+) -> Vec<VolumeRemoval> {
+    join_all(request.volumes.into_iter().map(|id| async move {
+        let outcome = if machines
+            .iter()
+            .any(|machine| machine.machine.id == id.machine_id && machine.membership.invites_rpc())
+        {
+            match client
                 .invoke::<op::RemoveVolume>(
                     RemoveVolumeRequest {
                         name: id.name.clone(),
-                        force,
+                        force: request.force,
                     },
                     &MachineTarget::from(&id.machine_id),
                     Some(TARGET_RPC_TIMEOUT),
                 )
-                .await;
-            (id, outcome)
-        });
-    }
-    let mut result = PartialResult {
-        successes: Vec::new(),
-        failures: Vec::new(),
-        omissions,
-    };
-    for (id, outcome) in join_all(removals).await {
-        match outcome {
-            Ok(_)
-            | Err(RpcError {
-                code: RpcErrorCode::NotFound,
-                ..
-            }) => result.successes.push(MachineSuccess {
-                machine_id: id.machine_id,
-                value: id.name,
-            }),
-            Err(error) => result.failures.push(MachineFailure {
-                machine_id: id.machine_id,
-                error,
-            }),
-        }
-    }
-    result
+                .await
+            {
+                Ok(_)
+                | Err(RpcError {
+                    code: RpcErrorCode::NotFound,
+                    ..
+                }) => VolumeRemovalOutcome::Removed,
+                Err(error) => VolumeRemovalOutcome::Failed { error },
+            }
+        } else {
+            VolumeRemovalOutcome::Omitted
+        };
+        VolumeRemoval { id, outcome }
+    }))
+    .await
 }
 
 async fn refuse_last_cloud_paired(
