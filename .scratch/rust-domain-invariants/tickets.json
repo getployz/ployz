@@ -81,7 +81,7 @@
     ],
     "finding": "A06 runtime follow-up",
     "file": "tickets/T08-reject-known-host-socket-conflicts-during-placement.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T09",
@@ -199,6 +199,6 @@
     ],
     "finding": "All F01-F14 + A06",
     "file": "tickets/T19-integrate-contracts,-evidence,-review-and-pr-readiness.md",
-    "status": "pending"
+    "status": "in_progress"
   }
 ]

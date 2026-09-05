@@ -1,7 +1,7 @@
 # Rust domain invariant task graph
 
 Branch: `feat/rust-domain-invariants`
-Base: `e0258e859ed0d71230e41ecf05681fe0b39d7ff4`
+Base: `1cb9dc0b3e589654eace5814ea9d65cf4c023022` (Caddy-only main integrated; audit began at `e0258e85`)
 PR: https://github.com/getployz/ployz2/pull/739
 
 [Spec](spec.md) · [Machine-readable graph](tickets.json)
@@ -16,7 +16,7 @@ PR: https://github.com/getployz/ployz2/pull/739
 | [T05](tickets/T05-require-nonempty-pre-deploy-hook-command.md) | Require nonempty pre-deploy hook command | T04 | complete |
 | [T06](tickets/T06-admit-combined-effective-mounts.md) | Admit combined effective mounts | T00, T03, T05 | complete |
 | [T07](tickets/T07-make-executable-plans-private-and-derive-progress.md) | Make executable plans private and derive progress | T06 | complete |
-| [T08](tickets/T08-reject-known-host-socket-conflicts-during-placement.md) | Reject known host socket conflicts during placement | T07 | in_progress |
+| [T08](tickets/T08-reject-known-host-socket-conflicts-during-placement.md) | Reject known host socket conflicts during placement | T07 | complete |
 | [T09](tickets/T09-make-container-observations-coherent.md) | Make Container observations coherent | — | complete |
 | [T10](tickets/T10-validate-row-and-document-identity-at-persistence-admission.md) | Validate row and document identity at persistence admission | T01, T09 | complete |
 | [T11](tickets/T11-retain-resource-identity-in-volume-removal-outcomes.md) | Retain resource identity in volume removal outcomes | — | complete |
@@ -27,4 +27,4 @@ PR: https://github.com/getployz/ployz2/pull/739
 | [T16](tickets/T16-validate-http-01-challenge-grammar-and-safe-rendering.md) | Validate HTTP-01 challenge grammar and safe rendering | T15 | complete |
 | [T17](tickets/T17-validate-hosted-dns-reservations.md) | Validate hosted DNS reservations | T10 | complete |
 | [T18](tickets/T18-encode-ambiguity-minimum-cardinality.md) | Encode ambiguity minimum cardinality | — | complete |
-| [T19](tickets/T19-integrate-contracts,-evidence,-review-and-pr-readiness.md) | Integrate contracts, evidence, review and PR readiness | T01, T02, T03, T04, T05, T06, T07, T08, T09, T10, T11, T12, T13, T14, T15, T16, T17, T18 | pending |
+| [T19](tickets/T19-integrate-contracts,-evidence,-review-and-pr-readiness.md) | Integrate contracts, evidence, review and PR readiness | T01, T02, T03, T04, T05, T06, T07, T08, T09, T10, T11, T12, T13, T14, T15, T16, T17, T18 | in_progress |

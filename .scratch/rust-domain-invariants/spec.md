@@ -26,3 +26,7 @@ Done means every T01–T18 acceptance criterion implemented, T00 decision resolv
 ## Build resources
 
 Use the shared Cargo target directory `/home/codex/.cache/ployz-domain-invariants-target` with CARGO_BUILD_JOBS=2, CARGO_INCREMENTAL=0, CARGO_PROFILE_DEV_DEBUG=0 and CARGO_PROFILE_TEST_DEBUG=0. Dependency builds are shared; Cargo may serialize commands. Do not launch redundant parallel builds or delete other tasks' caches/worktrees.
+
+## Integrated main baseline
+
+During implementation, main advanced through PR #738 to `1cb9dc0b3e589654eace5814ea9d65cf4c023022`, making ingress Caddy-only and documenting the greenfield compatibility policy. This branch incorporates that change. Preserve its deletion of Envoy/Zentinel and backend-selection state; do not recreate removed code to satisfy historical audit anchors. T15/T16 require the shared certificate/challenge invariants and safe rendering in the surviving Caddy path. Historical backend test evidence in handoffs describes the tested ticket branches; final verification covers the current Caddy-only tree. Review the PR diff against this integrated main baseline. All other ticket acceptance criteria remain applicable.
