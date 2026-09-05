@@ -23,6 +23,14 @@ that justification. The Boundaries section at the end lists what Ployz
 deliberately does not provide; a feature that needs one of those is fighting the
 design, not filling a gap.
 
+## Development-phase compatibility
+
+While Ployz is greenfield and under active development, backward compatibility
+is not required. Contracts, persisted state, CLI interfaces, and SDK payloads
+may change together without migrations or compatibility shims. This policy
+explicitly overrides existing backward compatibility guarantees until it is
+retired. Retirement must define the supported compatibility baseline.
+
 ## 1. Observer-relative truth
 
 **The bet.** Every view of a Cluster is one Machine's observation at a point in
@@ -58,6 +66,10 @@ consistency into mesh behavior.
 snapshot, execute, report, stop. No cluster-wide process runs forever. The only
 continuous convergence permitted is machine-local — a Machine converging its own
 Global slots.
+
+From local Replicated Observations, the daemon may ensure missing known-eligible
+Global slots, leave unknown eligibility unchanged for retry, and retire definitely
+ineligible slots. It never moves eligible slots or schedules replicated Services.
 
 **Why.** Imperative errors surface predictably at the caller that can act on them.
 Declarative reconciliation decouples components but multiplies edge cases and
@@ -172,6 +184,16 @@ policy needs one of those reasons.
 change must reach every Machine in every Cluster, while a client update ships
 instantly. This is an economic preference, not a rule that all coordination
 belongs in the client.
+
+**Machine-local admission.** Before any Service Container or hook mutation, the
+daemon reassesses the complete Resolved Service placement against fresh local
+evidence and ensures mounted Volume readiness, including Provisioned Volumes.
+Ordinary mutations are refused when eligibility is ineligible or unknown.
+Observer-side eligibility remains advisory, including an Unknown safe hold. A
+dispatched Global convergence operation makes exactly one fresh target-local
+eligibility decision: ensure eligible slots, retire definitely ineligible slots,
+or hold unknown slots unchanged. These checks admit work for an already-selected
+target; they do not schedule work across Machines.
 
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers.
