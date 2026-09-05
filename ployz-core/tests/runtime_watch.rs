@@ -5,12 +5,11 @@ use ployz_core::{
     CertificateObservation, CodecError, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
     DockerVolumeName, HealthObservation, IngressHost, Machine, MachineId, MachineName,
-    MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody,
-    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
-    RuntimeWatchRequest, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
-    ServiceObservation, WireGuardPublicKey, decode_runtime_watch_frame, encode_runtime_watch_frame,
-    op,
+    MachineObservation, MachineRuntime, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
+    ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, RuntimeWatchRequest,
+    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
+    WireGuardPublicKey, decode_runtime_watch_frame, encode_runtime_watch_frame, op,
 };
 use serde_json::{Value, json};
 
@@ -201,7 +200,6 @@ fn expected_frame() -> RuntimeWatchFrame {
                 id: MachineId::parse(MACHINE_ID).unwrap(),
                 name: MachineName::parse("edge").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),
-                management_address: ManagementAddress("::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([0; 32]),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("203.0.113.10:51820".parse().unwrap())],

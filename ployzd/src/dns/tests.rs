@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    Machine, MachineId, MachineName, MachineRuntime, ManagementAddress, ProjectName,
-    ResolvedServiceSpec, ServiceId, ServiceName, WireGuardPublicKey,
+    Machine, MachineId, MachineName, MachineRuntime, ProjectName, ResolvedServiceSpec, ServiceId,
+    ServiceName, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::net::UnixListener;
@@ -22,7 +22,6 @@ async fn run_reports_subscription_failure() {
         id: MachineId::random(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: SUBNET.parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: Vec::new(),

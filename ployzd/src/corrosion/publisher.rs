@@ -63,7 +63,7 @@ pub async fn run_machine_publisher(
             let local = local
                 .lock()
                 .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-            match &local.record().body {
+            match local.record().body() {
                 LocalMachineBody::Joining {
                     min_store_version, ..
                 } => (true, min_store_version.clone()),

@@ -6,8 +6,8 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, JoinRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRuntime, MachineSubnet, ManagementAddress, MembershipObservation, RegisterRequest,
-    RpcErrorCode, WireGuardPublicKey,
+    MachineRuntime, MachineSubnet, MembershipObservation, RegisterRequest, RpcErrorCode,
+    WireGuardPublicKey,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -284,7 +284,6 @@ async fn register_returns_the_committed_row_when_this_machine_is_not_the_allocat
         id: MachineId::random(),
         name: MachineName::parse("peer").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::9".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
@@ -413,9 +412,8 @@ async fn register_does_not_allocate_when_allocator_row_is_missing() {
 
 #[tokio::test]
 async fn contact_forwards_register_and_returns_the_allocator_payload() {
-    let (allocator_dir, allocator_store, mut reachable) = open_store("ployzd-register-allocator");
+    let (allocator_dir, allocator_store, reachable) = open_store("ployzd-register-allocator");
     let (allocator_replica, allocator_cluster) = fake_cluster::store().await;
-    reachable.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
     allocator_replica
         .publish_local_machine(&reachable)
         .await
@@ -445,7 +443,11 @@ async fn contact_forwards_register_and_returns_the_allocator_payload() {
         .publish_founder_allocator(&reachable.id)
         .await
         .unwrap();
-    let contact = machine_service(contact_store, contact_replica.clone(), Some(port));
+    let contact = machine_service(contact_store, contact_replica.clone(), Some(port))
+        .with_allocator_endpoint(
+            reachable.id,
+            std::net::SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+        );
 
     let registered = rpc_register(
         &contact,
@@ -492,7 +494,6 @@ async fn forwarded_register_does_not_admit_or_forward_when_kv_names_another_mach
     let other = MachineId::parse("b".repeat(32)).unwrap();
     let mut named = local_machine;
     named.id = other;
-    named.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
     let (replicated, server) = fake_cluster::store().await;
     replicated.publish_local_machine(&named).await.unwrap();
     replicated
@@ -625,9 +626,8 @@ async fn stealer_admits_after_the_quiet_gate() {
 
 #[tokio::test]
 async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator() {
-    let (allocator_dir, allocator_store, mut reachable) = open_store("ployzd-register-moved");
+    let (allocator_dir, allocator_store, reachable) = open_store("ployzd-register-moved");
     let (allocator_replica, allocator_cluster) = fake_cluster::store().await;
-    reachable.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
     allocator_replica
         .publish_local_machine(&reachable)
         .await
@@ -659,7 +659,11 @@ async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator(
         .await
         .unwrap();
     fake_cluster::name_allocator_on_reread(&contact_replica, &unreachable_id, &reachable.id).await;
-    let contact = machine_service(contact_store, contact_replica.clone(), Some(port));
+    let contact = machine_service(contact_store, contact_replica.clone(), Some(port))
+        .with_allocator_endpoint(
+            reachable.id,
+            std::net::SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+        );
 
     let registered = rpc_register(
         &contact,
@@ -692,8 +696,8 @@ async fn membership_down_or_suspect_does_not_steal() {
     let peer = unreachable_allocator(MachineId::parse("d".repeat(32)).unwrap());
     let _observations = RuntimeWatchTelemetry {
         states: BTreeMap::from([
-            (founder.management_address, MembershipObservation::Down),
-            (peer.management_address, MembershipObservation::Suspect),
+            (founder.management_address(), MembershipObservation::Down),
+            (peer.management_address(), MembershipObservation::Suspect),
         ]),
         selected_endpoints: BTreeMap::new(),
         rtts: Vec::new(),
@@ -721,10 +725,9 @@ async fn membership_down_or_suspect_does_not_steal() {
 
 #[tokio::test]
 async fn two_steals_leave_one_writer_and_the_loser_forwards() {
-    let (winner_dir, winner_store, mut winner_machine) = open_store("ployzd-steal-winner");
+    let (winner_dir, winner_store, winner_machine) = open_store("ployzd-steal-winner");
     let (loser_dir, loser_store, loser_machine) = open_store("ployzd-steal-loser");
     let (replica, cluster) = fake_cluster::store().await;
-    winner_machine.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
     let unreachable_id = MachineId::parse("c".repeat(32)).unwrap();
     replica
         .publish_local_machine(&unreachable_allocator(unreachable_id))
@@ -772,7 +775,10 @@ async fn two_steals_leave_one_writer_and_the_loser_forwards() {
         MachineApi::from_local(winner.clone()),
         TcpListenerStream::new(listener),
     ));
-    let loser = machine_service(loser_store, replica.clone(), Some(port));
+    let loser = machine_service(loser_store, replica.clone(), Some(port)).with_allocator_endpoint(
+        winner_machine.id,
+        std::net::SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    );
 
     let forwarded = rpc_register(
         &loser,

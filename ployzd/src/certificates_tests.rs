@@ -624,7 +624,6 @@ fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
         "id": seed.repeat(32),
         "name": format!("machine-{seed}"),
         "subnet": "10.210.1.0/24",
-        "management_address": "fdcc::1",
         "public_key": vec![3; 32],
         "advertised_endpoints": [format!("{address}:{MACHINE_API_PORT}")],
     }))

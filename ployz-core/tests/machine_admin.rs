@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, net::IpAddr};
 use ipnet::IpNet;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
-    MachineTarget, MachineUpdate, MachineUpdateError, ManagementAddress, MembershipObservation,
-    NameMatches, PublicIpUpdate, RttStatistics, WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
+    MachineTarget, MachineUpdate, MachineUpdateError, MembershipObservation, NameMatches,
+    PublicIpUpdate, RttStatistics, WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
     apply_machine_update, associate_wireguard_peers, rtt_statistics, synthesize_membership,
 };
 
@@ -26,7 +26,7 @@ fn update_mapping_preserves_omissions_and_applies_one_atomic_patch() {
 
     assert_eq!(updated.id, original.id);
     assert_eq!(updated.subnet, original.subnet);
-    assert_eq!(updated.management_address, original.management_address);
+    assert_eq!(updated.management_address(), original.management_address());
     assert_eq!(updated.public_key, original.public_key);
     assert_eq!(updated.name.as_str(), "renamed");
     assert_eq!(updated.public_ip, Some("203.0.113.9".parse().unwrap()));
@@ -79,8 +79,8 @@ fn membership_is_responder_relative_and_keeps_duplicate_names() {
     let suspect = machine('3', "suspect", 3);
     let down = machine('4', "down", 4);
     let states = BTreeMap::from([
-        (up.management_address, MembershipObservation::Up),
-        (suspect.management_address, MembershipObservation::Suspect),
+        (up.management_address(), MembershipObservation::Up),
+        (suspect.management_address(), MembershipObservation::Suspect),
     ]);
 
     let observations =
@@ -234,7 +234,6 @@ fn machine(id: char, name: &str, seed: u8) -> Machine {
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: Some(IpAddr::from([192, 0, 2, seed])),
         advertised_endpoints: vec![AdvertisedEndpoint(
@@ -242,4 +241,27 @@ fn machine(id: char, name: &str, seed: u8) -> Machine {
         )],
         runtime: MachineRuntime::default(),
     }
+}
+
+#[test]
+fn machine_management_address_is_derived_after_decode_and_key_update() {
+    let mut wire = serde_json::to_value(machine('1', "derived", 1)).unwrap();
+    wire["public_key"] = serde_json::json!([
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31
+    ]);
+    wire["management_address"] = serde_json::json!("::1");
+    let mut decoded: Machine = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        decoded.management_address().0.to_string(),
+        "fdcc:1:203:405:607:809:a0b:c0d"
+    );
+    assert!(
+        serde_json::to_value(&decoded)
+            .unwrap()
+            .get("management_address")
+            .is_none()
+    );
+    decoded.public_key = WireGuardPublicKey([0; 32]);
+    assert_eq!(decoded.management_address().0.to_string(), "fdcc::");
 }

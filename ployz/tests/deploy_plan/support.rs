@@ -1,6 +1,5 @@
 pub(super) use std::{
     collections::BTreeMap,
-    net::Ipv6Addr,
     num::{NonZeroU16, NonZeroU32},
 };
 
@@ -60,12 +59,12 @@ pub(super) use ployz_core::{
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
-    MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook,
-    ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
-    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, MembershipObservation,
+    PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook, ProjectName,
+    ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig,
+    RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
+    UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -114,7 +113,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),

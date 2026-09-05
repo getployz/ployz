@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
-    ManagementAddress, MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec,
-    RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
+    MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec, RpcError,
+    RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -324,7 +324,6 @@ fn machine() -> ployz_core::MachineObservation {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-1").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress("::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),

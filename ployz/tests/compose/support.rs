@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::Ipv6Addr};
+use std::collections::BTreeMap;
 
 use ployz::{
     compose::ComposeProject,
@@ -7,8 +7,7 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, MANAGED_LABEL, Machine, MachineId, MachineName,
-    MachineObservation, ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, ProjectName,
-    WireGuardPublicKey,
+    MachineObservation, MembershipObservation, PROJECT_NAME_LABEL, ProjectName, WireGuardPublicKey,
 };
 
 pub(super) fn plan_compose(
@@ -85,7 +84,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),

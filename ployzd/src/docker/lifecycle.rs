@@ -633,16 +633,13 @@ fn unknown_error(reason: ServicePlacementUnknownReason) -> Error {
 
 #[cfg(test)]
 pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Machine {
-    use std::net::Ipv6Addr;
-
-    use ployz_core::{MachineName, ManagementAddress, WireGuardPublicKey};
+    use ployz_core::{MachineName, WireGuardPublicKey};
 
     let [a, b, c, _] = gateway.0.octets();
     Machine {
         id: machine_id,
         name: MachineName::parse("docker-test").unwrap(),
         subnet: format!("{a}.{b}.{c}.0/24").parse().unwrap(),
-        management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
         public_key: WireGuardPublicKey([0; 32]),
         public_ip: None,
         advertised_endpoints: Vec::new(),

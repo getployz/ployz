@@ -165,16 +165,12 @@ fn reconcile_failure(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::Ipv6Addr,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation, MachineId,
-        MachineName, ManagementAddress, Placement, ProjectName, QualifiedService,
-        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceName,
-        WireGuardPublicKey,
+        MachineName, Placement, ProjectName, QualifiedService, ResolvedServiceSpec, RpcError,
+        RpcErrorCode, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
     };
     use serde_json::json;
     use tokio::sync::watch;
@@ -364,7 +360,6 @@ mod tests {
             subnet: format!("10.210.{}.0/24", id.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([id as u8; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

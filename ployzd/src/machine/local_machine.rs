@@ -26,10 +26,7 @@ use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
     host_capacity,
-    network::{
-        NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
-        management_address,
-    },
+    network::{NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device},
 };
 
 /// Live Observation and membership operations for this Machine.
@@ -480,7 +477,6 @@ impl LocalMachine {
                         network,
                         snapshot.observations.iter().map(|machine| machine.subnet),
                     )?,
-                    management_address: management_address(request.public_key),
                     public_key: request.public_key,
                     public_ip: request.public_ip,
                     advertised_endpoints: request.advertised_endpoints,
@@ -721,7 +717,7 @@ async fn machine_rtts(
     let machines = replicated.machines().await?.observations;
     let identities = unique_identities(machines.into_iter().map(|machine| {
         (
-            IpAddr::V6(machine.management_address.0),
+            IpAddr::V6(machine.management_address().0),
             MachineIdentity {
                 id: machine.id,
                 name: machine.name,
@@ -757,7 +753,7 @@ fn rtts_by_machine(
     let identities = unique_identities(
         machines
             .iter()
-            .map(|machine| (IpAddr::V6(machine.management_address.0), machine.id)),
+            .map(|machine| (IpAddr::V6(machine.management_address().0), machine.id)),
     );
     rtts.iter()
         .filter_map(|observation| {
@@ -778,7 +774,7 @@ fn isolation_lock(
         && machines.iter().all(|machine| {
             machine.id == *me
                 || !states
-                    .get(&machine.management_address)
+                    .get(&machine.management_address())
                     .is_some_and(MembershipObservation::invites_rpc)
         })
 }
@@ -818,8 +814,8 @@ mod tests {
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
-        MachineName, MachineRuntime, ManagementAddress, MembershipObservation, RttObservation,
-        RttStatistics, SelectedEndpoint, WireGuardPublicKey,
+        MachineName, MachineRuntime, MembershipObservation, RttObservation, RttStatistics,
+        SelectedEndpoint, WireGuardPublicKey,
     };
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
@@ -873,11 +869,11 @@ mod tests {
             population_stddev_ns: 250_000,
         };
         let observations = RuntimeWatchTelemetry {
-            states: BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]),
+            states: BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]),
             selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
             rtts: vec![RttObservation {
                 peer_id: "peer".into(),
-                address: format!("[{}]:{CORROSION_GOSSIP_PORT}", peer.management_address.0)
+                address: format!("[{}]:{CORROSION_GOSSIP_PORT}", peer.management_address().0)
                     .parse()
                     .unwrap(),
                 machine: None,
@@ -932,8 +928,8 @@ mod tests {
     fn isolation_lock_does_not_fire_when_a_peer_invites_rpc() {
         let [me, peer, third, fourth] = four_machines();
         let machines = [me.clone(), peer.clone(), third, fourth];
-        let up = BTreeMap::from([(peer.management_address, MembershipObservation::Up)]);
-        let suspect = BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]);
+        let up = BTreeMap::from([(peer.management_address(), MembershipObservation::Up)]);
+        let suspect = BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]);
         assert!(!isolation_lock(&me.id, &machines, &up));
         assert!(!isolation_lock(&me.id, &machines, &suspect));
     }
@@ -958,7 +954,6 @@ mod tests {
             id: MachineId::parse(id).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-            management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
             public_key: WireGuardPublicKey([seed; 32]),
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint(

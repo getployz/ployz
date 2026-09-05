@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     num::{NonZeroU16, NonZeroU32, NonZeroU64},
 };
 
@@ -19,19 +19,19 @@ use ployz_core::{
     HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol,
     IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved,
     LogDriver, Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
-    MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
-    OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
-    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
-    ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
-    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt,
-    StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
-    UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory, VolumeObservationFailure,
-    VolumeSource, VolumeToCreate, WireGuardPublicKey,
+    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, MembershipObservation,
+    ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
+    PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
+    PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal, PullPolicy,
+    QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
+    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph,
+    ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt, StopContainerPurpose,
+    StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
+    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeSource, VolumeToCreate,
+    WireGuardPublicKey,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -1261,11 +1261,6 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 subnet: "10.210.1.0/24"
                     .parse()
                     .expect("fixture Machine Subnet is valid"),
-                management_address: ManagementAddress(
-                    "::1"
-                        .parse::<Ipv6Addr>()
-                        .expect("fixture management address is valid"),
-                ),
                 public_key: WireGuardPublicKey([0; 32]),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint(endpoint())],

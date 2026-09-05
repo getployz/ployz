@@ -23,7 +23,7 @@ use thiserror::Error;
 
 use crate::machine_pool;
 use crate::network::WireGuardPrivateKey;
-use crate::network::{allocate_machine_subnet, management_address};
+use crate::network::allocate_machine_subnet;
 
 mod ingress;
 mod local_machine;
@@ -139,17 +139,43 @@ pub enum LocalMachinePrior {
 /// Persisted local Machine record: a phase-tagged body plus the key material
 /// every phase requires.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "LocalMachineRecordWire")]
 pub struct LocalMachineRecord {
     /// Phase-tagged lifecycle body.
-    pub body: LocalMachineBody,
+    body: LocalMachineBody,
     /// WireGuard private key; required in every phase.
-    pub wireguard_private_key: WireGuardPrivateKey,
+    wireguard_private_key: WireGuardPrivateKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_pairing: Option<CloudPairing>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+}
+
+/// Untrusted persisted input; only checked conversion admits a local record.
+#[derive(Deserialize)]
+struct LocalMachineRecordWire {
+    body: LocalMachineBody,
+    wireguard_private_key: WireGuardPrivateKey,
+    #[serde(default)]
+    wireguard_mtu: Option<u32>,
+    #[serde(default)]
+    cloud_pairing: Option<CloudPairing>,
+    #[serde(default)]
+    selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+}
+
+impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
+    type Error = StoreError;
+
+    fn try_from(wire: LocalMachineRecordWire) -> Result<Self, Self::Error> {
+        let mut record = Self::new(wire.body, wire.wireguard_private_key)?;
+        record.wireguard_mtu = wire.wireguard_mtu;
+        record.cloud_pairing = wire.cloud_pairing;
+        record.selected_endpoints = wire.selected_endpoints;
+        Ok(record)
+    }
 }
 
 static EMPTY_STORE_VERSION: BTreeMap<String, i64> = BTreeMap::new();
@@ -270,6 +296,48 @@ impl LocalMachineBody {
 }
 
 impl LocalMachineRecord {
+    /// Admit a local lifecycle body whose advertised identity matches its key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched keys, empty local endpoints, and empty join bootstrap peers,
+    /// including a Resetting record's retained prior state.
+    pub fn new(
+        body: LocalMachineBody,
+        wireguard_private_key: WireGuardPrivateKey,
+    ) -> Result<Self, StoreError> {
+        if let Some(machine) = body.machine() {
+            if machine.public_key != wireguard_private_key.public_key() {
+                return Err(StoreError::KeyMismatch);
+            }
+            if machine.advertised_endpoints.is_empty() {
+                return Err(StoreError::MissingEndpoints);
+            }
+            if body.cluster_network().is_none() && body.bootstrap().is_empty() {
+                return Err(StoreError::MissingPeers);
+            }
+        }
+        Ok(Self {
+            body,
+            wireguard_private_key,
+            wireguard_mtu: None,
+            cloud_pairing: None,
+            selected_endpoints: BTreeMap::new(),
+        })
+    }
+
+    /// Inspect phase-specific fields without changing lifecycle or key identity.
+    #[must_use]
+    pub fn body(&self) -> &LocalMachineBody {
+        &self.body
+    }
+
+    /// Private material corresponding to the local advertised public key.
+    #[must_use]
+    pub fn private_key(&self) -> &WireGuardPrivateKey {
+        &self.wireguard_private_key
+    }
+
     /// Durable identity of this local Machine.
     #[must_use]
     pub fn id(&self) -> MachineId {
@@ -505,7 +573,6 @@ impl LocalMachineStore {
             name,
             subnet: allocate_machine_subnet(founding_cluster.network, [])
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
-            management_address: management_address(public_key),
             public_key,
             public_ip,
             advertised_endpoints,
@@ -539,6 +606,9 @@ impl LocalMachineStore {
         }
         if self.record.wireguard_private_key.public_key() != assigned_machine.public_key {
             return Err(StoreError::KeyMismatch);
+        }
+        if assigned_machine.advertised_endpoints.is_empty() {
+            return Err(StoreError::MissingEndpoints);
         }
         assigned_machine.runtime = local_runtime();
         let mut joining = self.record.clone();
