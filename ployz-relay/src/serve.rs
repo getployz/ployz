@@ -15,7 +15,7 @@ use axum::{
 };
 use ployz_core::{MachineId, TunnelId};
 use prost::Message as _;
-use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
+use tokio::{net::TcpListener, task::JoinHandle};
 
 use crate::{
     ATTACH_PATH, DIAL_PATH, LIST_PATH, MACHINE_ID_HEADER, PAIRING_HEADER, REGISTER_PATH,
@@ -79,9 +79,7 @@ async fn dial(
     let machine_id = parse_machine_id(header(&headers, MACHINE_ID_HEADER))?;
     let started = relay.start_dial(pairing, machine_id).await?;
     Ok(ws
-        .on_upgrade(move |socket| {
-            splice_ws(socket, started.inbound, started.outbound, started.cancel)
-        })
+        .on_upgrade(move |socket| splice_ws(socket, started))
         .into_response())
 }
 
@@ -94,9 +92,7 @@ async fn attach(
     let tunnel_id = parse_tunnel_id(header(&headers, TUNNEL_ID_HEADER))?;
     let started = relay.start_attach(tunnel_id)?;
     Ok(ws
-        .on_upgrade(move |socket| {
-            splice_ws(socket, started.inbound, started.outbound, started.cancel)
-        })
+        .on_upgrade(move |socket| splice_ws(socket, started))
         .into_response())
 }
 
@@ -154,12 +150,13 @@ async fn run_register(relay: Relay, mut socket: WebSocket, pairing: crate::Pairi
     }
 }
 
-async fn splice_ws(
-    mut socket: WebSocket,
-    tx: mpsc::Sender<TunnelFrame>,
-    mut rx: mpsc::Receiver<TunnelFrame>,
-    mut cancel: tokio::sync::watch::Receiver<()>,
-) {
+async fn splice_ws(mut socket: WebSocket, started: crate::StartedTunnel) {
+    let crate::StartedTunnel {
+        inbound: tx,
+        outbound: mut rx,
+        mut cancel,
+        pending: _pending,
+    } = started;
     loop {
         tokio::select! {
             incoming = socket.recv() => {

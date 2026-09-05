@@ -20,6 +20,8 @@ pub use client::{ClientError, RelayClient, RelayWs, TunnelIo};
 
 /// In-flight tunnels drain for this long after GOAWAY, then remaining holds close.
 const DRAIN: Duration = Duration::from_secs(30);
+/// An Open must rendezvous with Attach within this bound, even if Dial stays open.
+const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Register path RTT ping after hello, then this often.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -381,6 +383,9 @@ struct Registration {
 
 struct Pending {
     slot: Slot,
+    expires_at: tokio::time::Instant,
+    // Removing pending state also stops its expiry task.
+    _expiry_cancel: tokio::sync::oneshot::Sender<()>,
     to_machine: mpsc::Receiver<TunnelFrame>,
     from_machine: mpsc::Sender<TunnelFrame>,
     cancel: tokio::sync::watch::Receiver<()>,
@@ -395,6 +400,22 @@ pub(crate) struct StartedTunnel {
     pub inbound: mpsc::Sender<TunnelFrame>,
     pub outbound: mpsc::Receiver<TunnelFrame>,
     pub cancel: tokio::sync::watch::Receiver<()>,
+    pending: Option<PendingDial>,
+}
+
+// Dial owns rendezvous cleanup before, during, and after WebSocket upgrade.
+// Attach consumes the entry; this guard then has nothing left to remove.
+struct PendingDial {
+    state: Arc<Mutex<State>>,
+    tunnel_id: TunnelId,
+}
+
+impl Drop for PendingDial {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.pending.remove(&self.tunnel_id);
+        }
+    }
 }
 
 impl Relay {
@@ -608,6 +629,8 @@ impl Relay {
             machine_id,
         };
         let tunnel_id = TunnelId::random();
+        let expires_at = tokio::time::Instant::now() + ATTACH_TIMEOUT;
+        let (expiry_cancel, cancelled) = tokio::sync::oneshot::channel();
         let (to_machine_tx, to_machine_rx) = mpsc::channel::<TunnelFrame>(TUNNEL_BUFFER);
         let (from_machine_tx, from_machine_rx) = mpsc::channel::<TunnelFrame>(TUNNEL_BUFFER);
         let (open_tx, cancel) = {
@@ -622,6 +645,8 @@ impl Relay {
                 tunnel_id,
                 Pending {
                     slot,
+                    expires_at,
+                    _expiry_cancel: expiry_cancel,
                     to_machine: to_machine_rx,
                     from_machine: from_machine_tx,
                     cancel: cancel.clone(),
@@ -629,14 +654,34 @@ impl Relay {
             );
             (open_tx, cancel)
         };
-        if open_tx.send(Open::new(&tunnel_id)).await.is_err() {
-            self.lock().pending.remove(&tunnel_id);
-            return Err(Status::unavailable("Register closed"));
-        }
+        let pending = PendingDial {
+            state: Arc::clone(&self.state),
+            tunnel_id,
+        };
+        // One bounded task per pending rendezvous; Attach, Dial cancellation,
+        // Register turnover, and shutdown all cancel it by dropping the sender.
+        let state = Arc::downgrade(&self.state);
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = cancelled => {}
+                _ = tokio::time::sleep_until(expires_at) => {
+                    if let Some(state) = state.upgrade()
+                        && let Ok(mut state) = state.lock()
+                    {
+                        state.pending.remove(&tunnel_id);
+                    }
+                }
+            }
+        });
+        tokio::time::timeout_at(expires_at, open_tx.send(Open::new(&tunnel_id)))
+            .await
+            .map_err(|_| Status::unavailable("Attach deadline elapsed"))?
+            .map_err(|_| Status::unavailable("Register closed"))?;
         Ok(StartedTunnel {
             inbound: to_machine_tx,
             outbound: from_machine_rx,
             cancel,
+            pending: Some(pending),
         })
     }
 
@@ -646,11 +691,13 @@ impl Relay {
             .lock()
             .pending
             .remove(&tunnel_id)
+            .filter(|pending| pending.expires_at > tokio::time::Instant::now())
             .ok_or_else(|| Status::not_found("unknown Tunnel ID"))?;
         Ok(StartedTunnel {
             inbound: pending.from_machine,
             outbound: pending.to_machine,
             cancel: pending.cancel,
+            pending: None,
         })
     }
 
@@ -687,6 +734,84 @@ fn rtt_ns(rtt: Duration) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn next_tunnel(register: &mut StartedRegister) -> TunnelId {
+        loop {
+            let open = register.opens.recv().await.unwrap();
+            if open.ping_nonce().is_none() {
+                return open.tunnel_id().unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn abandoned_dial_cannot_be_attached() {
+        let relay = Relay::new(DialCredential::parse("cloud").unwrap());
+        let pairing = PairingCredential::parse("pairing").unwrap();
+        let machine = MachineId::random();
+        let mut register = relay.start_register(pairing.clone(), machine).unwrap();
+        let dial = relay.start_dial(pairing.clone(), machine).await.unwrap();
+        let tunnel = next_tunnel(&mut register).await;
+        drop(dial); // Includes dropping the handle before the upgrade callback runs.
+        assert!(relay.start_attach(tunnel).is_err());
+        assert_eq!(relay.list(&pairing).registers().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_attach_expires_while_register_and_dial_survive() {
+        let relay = Relay::new(DialCredential::parse("cloud").unwrap());
+        let pairing = PairingCredential::parse("pairing").unwrap();
+        let machine = MachineId::random();
+        let mut register = relay.start_register(pairing.clone(), machine).unwrap();
+        let mut dial = relay.start_dial(pairing.clone(), machine).await.unwrap();
+        let tunnel = next_tunnel(&mut register).await;
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert!(dial.inbound.is_closed());
+        assert!(dial.outbound.recv().await.is_none());
+        assert!(relay.start_attach(tunnel).is_err());
+        assert_eq!(relay.list(&pairing).registers().len(), 1);
+
+        // Expiry does not revoke the surviving Register's ability to serve.
+        let fresh = relay.start_dial(pairing, machine).await.unwrap();
+        let mut attached = relay
+            .start_attach(next_tunnel(&mut register).await)
+            .unwrap();
+        fresh
+            .inbound
+            .send(TunnelFrame::new(vec![42]))
+            .await
+            .unwrap();
+        assert_eq!(attached.outbound.recv().await.unwrap().data, vec![42]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attached_tunnels_outlive_deadline_and_old_dial_cleanup() {
+        let relay = Relay::new(DialCredential::parse("cloud").unwrap());
+        let pairing = PairingCredential::parse("pairing").unwrap();
+        let machine = MachineId::random();
+        let mut register = relay.start_register(pairing.clone(), machine).unwrap();
+        let old = relay.start_dial(pairing.clone(), machine).await.unwrap();
+        let mut old_attach = relay
+            .start_attach(next_tunnel(&mut register).await)
+            .unwrap();
+        let mut dial = relay.start_dial(pairing, machine).await.unwrap();
+        let tunnel = next_tunnel(&mut register).await;
+        drop(old);
+        assert!(old_attach.outbound.recv().await.is_none());
+        let mut attach = relay.start_attach(tunnel).unwrap();
+        assert!(relay.start_attach(tunnel).is_err());
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        dial.inbound.send(TunnelFrame::new(vec![1])).await.unwrap();
+        assert_eq!(attach.outbound.recv().await.unwrap().data, vec![1]);
+        attach
+            .inbound
+            .send(TunnelFrame::new(vec![2]))
+            .await
+            .unwrap();
+        assert_eq!(dial.outbound.recv().await.unwrap().data, vec![2]);
+    }
 
     #[test]
     fn empty_credentials_are_rejected() {
