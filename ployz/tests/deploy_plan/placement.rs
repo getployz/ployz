@@ -1114,3 +1114,225 @@ fn first_deploy_spreads_replicated_services_past_max_replicas() {
     );
     assert_eq!(run_machine_ids(&plan).len(), 12);
 }
+
+#[test]
+fn host_socket_placement_rejects_one_machine_and_uses_an_alternative() {
+    let mut first = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    first.ports.push(host_port(8080));
+    let mut second = first.clone();
+    second.name = ServiceName::parse("second").unwrap();
+    let mut snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        ..Default::default()
+    };
+    assert!(plan_deploy([&first, &second], &snapshot, PlanOptions::default()).is_err());
+    snapshot.machines.push(machine('2', "second"));
+    let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
+    let targets = operations(&plan)
+        .iter()
+        .map(DeployOperation::machine_id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(targets, BTreeSet::from([machine_id('1'), machine_id('2')]));
+}
+
+#[test]
+fn host_socket_admission_checks_publications_and_replica_claims() {
+    let mut service = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    service.ports = vec![host_port(8080), host_port(8080)];
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        ..Default::default()
+    };
+    assert!(matches!(
+        plan_deploy([&service], &snapshot, PlanOptions::default()),
+        Err(PlanError::ConflictingHostPublications { .. })
+    ));
+    service.ports.pop();
+    service.mode = ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    };
+    assert!(matches!(
+        plan_deploy([&service], &snapshot, PlanOptions::default()),
+        Err(PlanError::HostPortConflict { .. })
+    ));
+}
+
+#[test]
+fn host_socket_admission_preserves_protocol_and_disjoint_bind_distinctions() {
+    for (first_bind, second_bind, second_protocol, conflict) in [
+        (HostBind::All, HostBind::All, TransportProtocol::Udp, false),
+        (
+            HostBind::Address {
+                address: "127.0.0.1".parse().unwrap(),
+            },
+            HostBind::Address {
+                address: "127.0.0.2".parse().unwrap(),
+            },
+            TransportProtocol::Tcp,
+            false,
+        ),
+        (
+            HostBind::Prefix {
+                prefix: "127.0.0.0/24".parse().unwrap(),
+            },
+            HostBind::Address {
+                address: "127.0.0.2".parse().unwrap(),
+            },
+            TransportProtocol::Tcp,
+            true,
+        ),
+    ] {
+        let mut first = requested(ServiceMode::Global);
+        let mut second = first.clone();
+        second.name = ServiceName::parse("second").unwrap();
+        let make_port = |bind, transport_protocol| PortPublication::Host {
+            bind,
+            transport_protocol,
+            published_port: NonZeroU16::new(8080).unwrap(),
+            container_port: NonZeroU16::new(80).unwrap(),
+        };
+        first.ports = vec![make_port(first_bind, TransportProtocol::Tcp)];
+        second.ports = vec![make_port(second_bind, second_protocol)];
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_deploy([&first, &second], &snapshot, PlanOptions::default()).is_err(),
+            conflict
+        );
+    }
+}
+
+#[test]
+fn host_socket_replacement_respects_explicit_order_and_other_owners() {
+    for mode in [
+        ServiceMode::Global,
+        ServiceMode::Replicated {
+            replicas: NonZeroU32::new(1).unwrap(),
+        },
+    ] {
+        let mut service = requested(mode);
+        service.ports.push(host_port(8080));
+        let current = container('a', '1', &service, &service_id('a'));
+        service.container.image = "changed:latest".into();
+        let mut snapshot = DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![current.clone()],
+            ..Default::default()
+        };
+        service.update.order = Some(UpdateOrder::StartFirst);
+        assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_err());
+        service.update.order = Some(UpdateOrder::StopFirst);
+        assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_ok());
+        let mut foreign = container('b', '1', &service, &service_id('b'));
+        foreign
+            .try_update(|parts| parts.project_name = ProjectName::parse("foreign").unwrap())
+            .unwrap();
+        snapshot.containers.push(foreign);
+        assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_err());
+    }
+}
+
+#[test]
+fn host_socket_future_prune_cannot_free_ports_but_hooks_do_not_claim_them() {
+    let mut service = requested(ServiceMode::Global);
+    service.ports.push(host_port(8080));
+    let mut obsolete_spec = service.clone();
+    obsolete_spec.name = ServiceName::parse("obsolete").unwrap();
+    let mut old = container('a', '1', &obsolete_spec, &service_id('a'));
+    let mut snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![old.clone()],
+        ..Default::default()
+    };
+    assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_err());
+    old.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
+    snapshot.containers = vec![old];
+    assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_ok());
+}
+
+#[test]
+fn shared_volume_anchor_skips_known_host_socket_occupancy() {
+    let mut first = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    first.name = ServiceName::parse("first").unwrap();
+    first.ports.push(host_port(8080));
+    let mut foreign = container('a', '1', &first, &service_id('a'));
+    foreign
+        .try_update(|parts| parts.project_name = ProjectName::parse("foreign").unwrap())
+        .unwrap();
+    add_named_volume(&mut first, "data");
+    let mut second = first.clone();
+    second.name = ServiceName::parse("second").unwrap();
+    second.ports.clear();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "occupied"), machine('2', "free")],
+        containers: vec![foreign],
+        ..Default::default()
+    };
+    let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
+    assert!(
+        matches!(operations(&plan).as_slice(), [DeployOperation::RunContainer { machine_id: first, .. }, DeployOperation::RunContainer { machine_id: second, .. }] if *first == machine_id('2') && first == second)
+    );
+    second.ports = first.ports.clone();
+    assert!(plan_deploy([&first, &second], &snapshot, PlanOptions::default()).is_err());
+}
+
+#[test]
+fn host_socket_replacement_releases_old_ports_before_the_next_service() {
+    let mut first = requested(ServiceMode::Global);
+    first.name = ServiceName::parse("first").unwrap();
+    first.ports.push(host_port(8080));
+    let old = container('a', '1', &first, &service_id('a'));
+    first.ports = vec![host_port(9090)];
+    let mut second = requested(ServiceMode::Global);
+    second.name = ServiceName::parse("second").unwrap();
+    second.ports.push(host_port(8080));
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![old],
+        ..Default::default()
+    };
+    let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::ReplaceContainer(_),
+            DeployOperation::RunContainer { .. }
+        ]
+    ));
+}
+
+#[test]
+fn global_socket_stops_release_each_old_sibling_before_replacement() {
+    let mut service = requested(ServiceMode::Global);
+    service.ports.push(host_port(8080));
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![
+            container('a', '1', &service, &service_id('a')),
+            container('b', '1', &service, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+    service.container.image = "changed:latest".into();
+    let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::StopContainer {
+                purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
+                ..
+            },
+            DeployOperation::ReplaceContainer(_),
+            DeployOperation::RemoveContainer { .. }
+        ]
+    ));
+}

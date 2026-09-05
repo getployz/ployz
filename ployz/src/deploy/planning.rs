@@ -346,7 +346,9 @@ fn assemble_plan(
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
     warnings.extend(storage_eligibility_warnings(&requested, snapshot));
-    // TODO: preserve the missing within-spec port-conflict validation.
+    for spec in &requested {
+        placement::validate_host_ports(spec)?;
+    }
     let volume_uses = managed_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::new();
@@ -363,7 +365,11 @@ fn assemble_plan(
         &mut capacity,
         &intent.options,
     )?;
-    let mut placement = PlacementState::new(capacity, reservations);
+    let mut placement = PlacementState::new(
+        capacity,
+        placement::HostSockets::from_snapshot(snapshot),
+        reservations,
+    );
     let mut service_operations = Vec::new();
     for spec in &requested {
         let operations = plan_one_service(
