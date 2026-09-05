@@ -5,7 +5,7 @@
     "depends": [],
     "finding": "F08",
     "file": "tickets/T00-decide-effective-mount-destination-admission.md",
-    "status": "pending"
+    "status": "complete"
   },
   {
     "id": "T01",
@@ -13,7 +13,7 @@
     "depends": [],
     "finding": "F05 Machine",
     "file": "tickets/T01-derive-machine-identity-and-validate-local-lifecycle-payloads.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T02",
@@ -31,7 +31,7 @@
     "depends": [],
     "finding": "F02",
     "file": "tickets/T03-separate-requested-and-scoped-volume-sources.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T04",
@@ -39,7 +39,7 @@
     "depends": [],
     "finding": "F06",
     "file": "tickets/T04-check-resource-quantities-and-cpu-conversion.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T05",
@@ -89,7 +89,7 @@
     "depends": [],
     "finding": "F05 Container",
     "file": "tickets/T09-make-container-observations-coherent.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T10",
@@ -126,7 +126,7 @@
     "depends": [],
     "finding": "F09",
     "file": "tickets/T13-validate-relay-endpoints-before-pairing-persistence.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T14",
@@ -172,7 +172,7 @@
     "depends": [],
     "finding": "F14",
     "file": "tickets/T18-encode-ambiguity-minimum-cardinality.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T19",
