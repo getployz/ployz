@@ -63,6 +63,9 @@ async fn first_watch_derives_services_from_containers() {
     let frame = next_frame(&watch).await;
 
     assert_eq!(frame, expected);
+    let services = frame.services();
+    assert_eq!(services.len(), 1);
+    assert_eq!(services.first().unwrap().identity.to_string(), "app/api");
     assert_redacted(&frame);
     assert!(
         !frame.volumes.is_empty(),

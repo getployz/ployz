@@ -349,7 +349,7 @@ fn json_fixtures_round_trip_through_rust_types() {
         .expect("runtime_watch_frame fixture has one Container");
     assert_eq!(container.project_name.as_str(), "app");
     assert_eq!(container.resolved_spec.name.as_str(), "api");
-    assert_eq!(frame.services.len(), 1);
+    assert_eq!(frame.services().len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
         serde_json::to_value(&frame).unwrap(),

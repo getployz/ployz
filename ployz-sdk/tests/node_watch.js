@@ -32,13 +32,13 @@ function assertFrame(frame, label) {
   if (!frame.incomplete_ids || !Array.isArray(frame.incomplete_ids.containers)) {
     throw new Error(`${label} must carry typed incomplete IDs`);
   }
-  if (!frame.containers[0]?.resolved_spec || !frame.services[0]?.containers[0]?.resolved_spec) {
-    throw new Error(`${label} must reconstruct rich Container and Service views`);
+  if (!frame.containers[0]?.resolved_spec) {
+    throw new Error(`${label} must carry rich Container observations`);
   }
   if (frame.machines[0]?.storage?.state !== "ready") {
     throw new Error(`${label} must expose Machine storage readiness`);
   }
-  if (frame.specs || frame.containers[0].spec_index != null || frame.services[0].member_ids) {
+  if (frame.specs || frame.containers[0].spec_index != null || frame.services) {
     throw new Error(`${label} leaked the normalized transport graph`);
   }
   const text = JSON.stringify(frame);
