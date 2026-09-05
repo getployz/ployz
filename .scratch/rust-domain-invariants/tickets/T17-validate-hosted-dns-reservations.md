@@ -1,6 +1,6 @@
 # T17 — Validate hosted DNS reservations
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T10
 Audit scope: F12
 

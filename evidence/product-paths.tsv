@@ -24,3 +24,4 @@ cloud-pairing	ployz-core/src/domain/machine.rs::cloud_pairing_rejects_unusable_r
 relay-rendezvous	ployz-relay/src/lib.rs::missing_attach_expires_while_register_and_dial_survive	-	-	-	-
 http01-challenge	ployzd/src/corrosion/certificate.rs::challenge_admission_rejects_invalid_grammar_and_token_mismatch	-	-	-	-
 name-resolution	ployz-core/tests/contract.rs::ambiguous_name_matches_reject_fewer_than_two_candidates	-	-	-	-
+hosted-dns-reservation	ployzd/src/hosted_dns.rs::successful_reservation_response_rejects_unusable_fields	-	-	-	-

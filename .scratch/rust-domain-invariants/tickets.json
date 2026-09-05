@@ -164,7 +164,7 @@
     ],
     "finding": "F12",
     "file": "tickets/T17-validate-hosted-dns-reservations.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T18",
