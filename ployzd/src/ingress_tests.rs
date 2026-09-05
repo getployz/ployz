@@ -51,7 +51,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                     None,
                 ),
                 certificate: Some(ProjectedCertificate {
-                    challenge: CertificateChallenge::new("token", "token.thumbprint"),
+                    challenge: CertificateChallenge::new(
+                        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    ),
                     material: None,
                     last_error: None,
                 }),

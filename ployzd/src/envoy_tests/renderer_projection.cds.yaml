@@ -1,4 +1,4 @@
-version_info: "e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8"
+version_info: "0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8"
 resources:
 - "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
   name: ployz-http-empty.example.com
@@ -19,7 +19,7 @@ resources:
   metadata:
     filter_metadata:
       com.ployz:
-        projection_digest: e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8
+        projection_digest: 0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8
   load_assignment:
     cluster_name: ployz-http-empty.example.com
     endpoints:
@@ -48,7 +48,7 @@ resources:
   metadata:
     filter_metadata:
       com.ployz:
-        projection_digest: e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8
+        projection_digest: 0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8
   load_assignment:
     cluster_name: ployz-http-example.com
     endpoints:
@@ -82,7 +82,7 @@ resources:
   metadata:
     filter_metadata:
       com.ployz:
-        projection_digest: e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8
+        projection_digest: 0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8
   load_assignment:
     cluster_name: ployz-https-secure.example.com
     endpoints:

@@ -55,7 +55,7 @@ fn shared_projection_matches_the_frozen_envoy_contract() {
     );
     assert_eq!(
         rendered.digest(),
-        "e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8"
+        "0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8"
     );
 }
 
@@ -106,7 +106,9 @@ fn http_and_https_routes_carry_timeouts_secrets_and_challenge_direct_responses()
         "filename: /config/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.key"
     ));
     assert!(rendered.rds().contains("acme-challenge"));
-    assert!(rendered.rds().contains("token.thumbprint"));
+    assert!(rendered.rds().contains(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    ));
     assert!(rendered.cds().contains("address: 127.0.0.1"));
     assert!(rendered.cds().contains("port_value: 1"));
     assert!(!rendered.lds().contains("admin:"));
@@ -150,17 +152,21 @@ fn http01_challenge_is_served_without_https_material_or_http_publication() {
         .iter_mut()
         .find(|site| site.hostname.as_str() == "secure.example.com")
         .unwrap();
-    site.certificate.as_mut().unwrap().challenge =
-        CertificateChallenge::new("issuance", "issuance.thumbprint");
+    site.certificate.as_mut().unwrap().challenge = CertificateChallenge::new(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
     site.certificate.as_mut().unwrap().material = None;
     let rendered = render(&projection).unwrap();
 
     assert!(
         rendered
             .rds()
-            .contains("/.well-known/acme-challenge/issuance")
+            .contains("/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0")
     );
-    assert!(rendered.rds().contains("issuance.thumbprint"));
+    assert!(rendered.rds().contains(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    ));
     assert!(rendered.rds().contains("ployz-http-secure.example.com"));
     assert!(
         !rendered

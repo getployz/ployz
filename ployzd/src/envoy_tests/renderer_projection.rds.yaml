@@ -1,11 +1,11 @@
-version_info: "e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8"
+version_info: "0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8"
 resources:
 - "@type": type.googleapis.com/envoy.config.route.v3.RouteConfiguration
   name: http
   metadata:
     filter_metadata:
       com.ployz:
-        projection_digest: e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8
+        projection_digest: 0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8
   virtual_hosts:
   - name: ployz-http-empty.example.com
     domains:
@@ -24,11 +24,11 @@ resources:
     - example.com
     routes:
     - match:
-        path: "/.well-known/acme-challenge/token"
+        path: "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"
       direct_response:
         status: 200
         body:
-          inline_string: "token.thumbprint"
+          inline_string: "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     - match:
         prefix: /
       route:
@@ -52,7 +52,7 @@ resources:
   metadata:
     filter_metadata:
       com.ployz:
-        projection_digest: e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8
+        projection_digest: 0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8
   virtual_hosts:
   - name: ployz-https-secure.example.com
     domains:

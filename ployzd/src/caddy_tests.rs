@@ -210,7 +210,11 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         })
         .unwrap();
     let material = test_material();
-    let challenge = CertificateChallenge::new("token", "response").unwrap();
+    let challenge = CertificateChallenge::new(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
     let certificates = BTreeMap::from([(
         IngressHost::parse("example.com").unwrap(),
         CertificateRow::from_parts(Some(material.clone()), Some(challenge.clone())),
@@ -539,7 +543,13 @@ fn pending_challenge_is_answered_on_the_http_site() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(None, CertificateChallenge::new("tok", "tok.thumb")),
+        CertificateRow::from_parts(
+            None,
+            CertificateChallenge::new(
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
+        ),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -554,8 +564,8 @@ fn pending_challenge_is_answered_on_the_http_site() {
     assert!(caddyfile.contains("auto_https off"));
     assert!(caddyfile.contains(
         "http://secure.example.com {\n\
-\thandle /.well-known/acme-challenge/tok {\n\
-\t\trespond \"tok.thumb\" 200\n\
+\thandle /.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0 {\n\
+\t\trespond \"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200\n\
 \t}\n\
 \trespond \"Bad Gateway\" 502\n\
 \tlog\n\

@@ -257,6 +257,8 @@ pub(crate) enum Error {
     MissingMaterial,
     #[error("certificate authority returned invalid or mismatched certificate material")]
     InvalidMaterial,
+    #[error("certificate authority returned an invalid HTTP-01 challenge")]
+    InvalidChallenge,
     #[error("HTTP-01 challenge was not served by the proxy")]
     ChallengeNotServed,
     #[error("authorization for {hostname} is {status:?}")]
@@ -601,7 +603,7 @@ where
             challenge.token.clone(),
             challenge.key_authorization().as_str(),
         )
-        .ok_or(Error::MissingMaterial)?;
+        .ok_or(Error::InvalidChallenge)?;
         present(presented).await?;
         challenge.set_ready().await?;
     }

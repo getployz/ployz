@@ -310,7 +310,7 @@ async fn new_order(State(ca): State<FakeCa>, request: Request<Body>) -> Response
         Order {
             hostname,
             status: OrderStatus::Pending,
-            token: format!("token{id}"),
+            token: format!("{id:0>32}"),
             thumbprint,
         },
     );
