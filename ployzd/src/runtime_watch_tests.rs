@@ -24,9 +24,7 @@ use super::{
     LatestSample, RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame,
     serve_runtime_watch,
 };
-use crate::corrosion::{
-    CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
-};
+use crate::corrosion::{CertificateChallenge, CertificateRow, Error, ReplicatedObservations};
 use crate::global_reconcile::global_reconcile_observation_channel;
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
@@ -40,8 +38,6 @@ const HOOK_ID: &str = "333333333333333333333333333333333333333333333333333333333
 const INCOMPLETE_CONTAINER_ID: &str =
     "2222222222222222222222222222222222222222222222222222222222222222";
 const OBSERVED_AT: &str = "2024-01-01T00:00:00Z";
-const CERT: &str = "-----BEGIN CERTIFICATE-----\nSECRETCERT\n-----END CERTIFICATE-----";
-const KEY: &str = "-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----";
 const CHALLENGE_TOKEN: &str = "http-01-token-secret";
 const CHALLENGE_RESPONSE: &str = "http-01-response-secret";
 const DNS_TOKEN: &str = "dns-renewal-token-secret";
@@ -75,7 +71,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             certificates: ReplicatedObservations {
                 observations: vec![(
                     IngressHost::parse("ok.example.com").unwrap(),
-                    CertificateRow::issued(CertificateMaterial::new(CERT, KEY).unwrap()),
+                    CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: Vec::new(),
             },
@@ -176,7 +172,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
             certificates: ReplicatedObservations {
                 observations: vec![(
                     IngressHost::parse("ok.example.com").unwrap(),
-                    CertificateRow::issued(CertificateMaterial::new(CERT, KEY).unwrap()),
+                    CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: vec![incomplete_cert.clone()],
             },
@@ -227,7 +223,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 observations: vec![
                     (
                         IngressHost::parse("ok.example.com").unwrap(),
-                        CertificateRow::issued(CertificateMaterial::new(CERT, KEY).unwrap()),
+                        CertificateRow::issued(crate::ingress::tests::test_material()),
                     ),
                     (IngressHost::parse("new.example.com").unwrap(), pending),
                     (IngressHost::parse("app.example.com").unwrap(), failed),
@@ -437,8 +433,6 @@ fn assert_no_secret_material(text: &str) {
     for forbidden in [
         "BEGIN CERTIFICATE",
         "BEGIN PRIVATE KEY",
-        "SECRETCERT",
-        "SECRETKEY",
         CHALLENGE_TOKEN,
         CHALLENGE_RESPONSE,
         DNS_TOKEN,

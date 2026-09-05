@@ -9,7 +9,9 @@ use serde_json::json;
 
 use super::Error;
 
-/// Certificate and private key held in cluster state for one Ingress Hostname.
+/// Parseable certificate chain paired with its private key.
+///
+/// Admission does not prove trust, hostname coverage, validity dates, or proxy adoption.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CertificateMaterial {
     certificate: String,
@@ -19,9 +21,27 @@ pub struct CertificateMaterial {
 impl CertificateMaterial {
     #[must_use]
     pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Option<Self> {
+        use rcgen::PublicKeyData as _;
+        use x509_parser::pem::Pem;
+
         let certificate = certificate.into();
         let private_key = private_key.into();
-        (!certificate.is_empty() && !private_key.is_empty()).then_some(Self {
+        let key = rcgen::KeyPair::from_pem(&private_key).ok()?;
+        let mut chain = Pem::iter_from_buffer(certificate.as_bytes());
+        let leaf = chain.next()?.ok()?;
+        if leaf.label != "CERTIFICATE"
+            || leaf.parse_x509().ok()?.public_key().raw != key.subject_public_key_info()
+        {
+            return None;
+        }
+        for certificate in chain {
+            let certificate = certificate.ok()?;
+            if certificate.label != "CERTIFICATE" {
+                return None;
+            }
+            certificate.parse_x509().ok()?;
+        }
+        Some(Self {
             certificate,
             private_key,
         })
@@ -176,11 +196,22 @@ impl CertificateRow {
         }
         let body: CertificateBody = serde_json::from_str(encoded)?;
         let clock = decode_clock(&body.next_attempt_at, body.failures, &body.last_failure);
+        let has_material = !body.certificate.is_empty() || !body.private_key.is_empty();
+        let material = CertificateMaterial::new(body.certificate, body.private_key);
+        let mut last_error = body.last_error;
+        if has_material && material.is_none() {
+            if !last_error.is_empty() {
+                last_error.push_str("; ");
+            }
+            last_error.push_str(
+                "stored certificate material is invalid or does not match its private key",
+            );
+        }
         Ok(Self {
-            material: CertificateMaterial::new(body.certificate, body.private_key),
+            material,
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-            refusal: (!body.last_error.is_empty()).then_some(RecordedRefusal {
-                reason: body.last_error,
+            refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
+                reason: last_error,
                 clock,
             }),
         })
@@ -265,8 +296,59 @@ mod tests {
 
     use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
+    fn issued_material() -> CertificateMaterial {
+        let pair = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
+        CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    }
+
     fn decode_material(encoded: &str) -> Result<Option<CertificateMaterial>, super::Error> {
         Ok(CertificateRow::decode(encoded)?.into_material())
+    }
+
+    #[test]
+    fn certificate_material_rejects_garbage_and_mismatched_keys() {
+        assert!(CertificateMaterial::new("CERT", "KEY").is_none());
+        let first = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
+        let second = rcgen::generate_simple_self_signed(["example.com".to_owned()]).unwrap();
+        assert!(
+            CertificateMaterial::new(first.cert.pem(), second.signing_key.serialize_pem())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn certificate_material_accepts_policy_key_types_and_parseable_chains() {
+        let keys = [
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap(),
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384).unwrap(),
+            rcgen::KeyPair::from_pem(include_str!(
+                "../../tests/fixtures/certificate-test-rsa-key.pem"
+            ))
+            .unwrap(),
+        ];
+        for key in keys {
+            let params = rcgen::CertificateParams::new(vec!["example.com".to_owned()]).unwrap();
+            let certificate = params.self_signed(&key).unwrap().pem();
+            let private_key = key.serialize_pem();
+            assert!(CertificateMaterial::new(certificate.clone(), private_key.clone()).is_some());
+            let chain = format!("{certificate}{certificate}");
+            assert!(CertificateMaterial::new(chain, private_key.clone()).is_some());
+            let broken_chain = format!(
+                "{certificate}-----BEGIN CERTIFICATE-----\nZ2FyYmFnZQ==\n-----END CERTIFICATE-----\n"
+            );
+            assert!(CertificateMaterial::new(broken_chain, private_key).is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_stored_material_keeps_challenge_and_refusal_evidence() {
+        let row = CertificateRow::decode(r#"{"certificate":"CERT","private_key":"KEY",
+            "challenge_token":"tok","challenge_response":"tok.thumb","last_error":"authority refused"}"#).unwrap();
+        assert!(row.material().is_none());
+        assert!(row.challenge().is_some());
+        assert!(row.last_error().unwrap().contains("authority refused"));
+        assert!(row.last_error().unwrap().contains("invalid"));
+        assert_eq!(CertificateRow::decode(&row.encode().unwrap()).unwrap(), row);
     }
 
     #[test]
@@ -289,13 +371,18 @@ mod tests {
 
     #[test]
     fn certificate_material_reads_known_fields_and_ignores_the_rest() {
+        let issued = issued_material();
         let row = CertificateRow::decode(
-            r#"{"certificate":"CERT","private_key":"KEY","last_error":"refused","future":1}"#,
+            &serde_json::json!({
+                "certificate": issued.certificate(), "private_key": issued.private_key(),
+                "last_error": "refused", "future": 1
+            })
+            .to_string(),
         )
         .unwrap();
         let material = row.material().unwrap();
-        assert_eq!(material.certificate(), "CERT");
-        assert_eq!(material.private_key(), "KEY");
+        assert_eq!(material.certificate(), issued.certificate());
+        assert_eq!(material.private_key(), issued.private_key());
         assert_eq!(row.last_error(), Some("refused"));
     }
 
@@ -355,7 +442,7 @@ mod tests {
 
     #[test]
     fn challenge_write_keeps_issued_material() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let issued = issued_material();
         let latest = CertificateRow::from_parts(Some(issued.clone()), None);
         let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
         let row = latest.with_challenge(challenge.clone());
@@ -365,7 +452,7 @@ mod tests {
 
     #[test]
     fn issued_write_replaces_the_row() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let issued = issued_material();
         let row = CertificateRow::issued(issued.clone());
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.challenge(), None);
@@ -375,7 +462,7 @@ mod tests {
 
     #[test]
     fn error_write_keeps_issued_material() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let issued = issued_material();
         let row = CertificateRow::issued(issued.clone()).with_error("refused");
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.last_error(), Some("refused"));

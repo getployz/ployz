@@ -62,7 +62,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                 publication: publication(None, Some(vec![endpoint("10.210.1.3", 8443)])),
                 certificate: Some(ProjectedCertificate {
                     challenge: None,
-                    material: CertificateMaterial::new("CERT", "KEY"),
+                    material: CertificateMaterial::new(
+                        include_str!("../tests/fixtures/certificate-test-rsa.pem"),
+                        include_str!("../tests/fixtures/certificate-test-rsa-key.pem"),
+                    ),
                     last_error: None,
                 }),
             },
@@ -77,4 +80,9 @@ pub(crate) fn renderer_projection() -> IngressProjection {
         global_fragment: None,
         service_fragments: BTreeMap::new(),
     }
+}
+
+pub(crate) fn test_material() -> CertificateMaterial {
+    let pair = rcgen::generate_simple_self_signed(["secure.example.com".to_owned()]).unwrap();
+    CertificateMaterial::new(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
 }

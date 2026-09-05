@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateRow, ReplicatedStore},
+    corrosion::{CertificateMaterial, CertificateRow, ReplicatedStore},
     docker::LocalDocker,
     filesystem::atomic_write,
 };
@@ -620,28 +620,12 @@ fn ensure_bootstrap(directory: &Path) -> Result<(), Error> {
     }
     let certificate = fs::read_to_string(&certificate_path)?;
     let key = fs::read_to_string(&key_path)?;
-    if !certificate_key_pair_matches(&certificate, &key) {
+    if CertificateMaterial::new(certificate, key).is_none() {
         return Err(Error::InvalidBootstrapPair);
     }
     secure_file(&certificate_path, 0o644)?;
     secure_file(&key_path, 0o640)?;
     Ok(())
-}
-
-fn certificate_key_pair_matches(certificate: &str, key: &str) -> bool {
-    use rcgen::PublicKeyData as _;
-    use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
-
-    let Ok((_, certificate)) = parse_x509_pem(certificate.as_bytes()) else {
-        return false;
-    };
-    let Ok((_, certificate)) = parse_x509_certificate(&certificate.contents) else {
-        return false;
-    };
-    let Ok(key) = rcgen::KeyPair::from_pem(key) else {
-        return false;
-    };
-    certificate.public_key().raw == key.subject_public_key_info()
 }
 
 fn write_challenges(config_file: &Path, sites: &[IngressSite]) -> Result<(), Error> {

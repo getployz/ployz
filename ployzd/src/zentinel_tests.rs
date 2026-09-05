@@ -2,8 +2,8 @@
 
 use super::{
     Error as RendererError, ZENTINEL_BOOTSTRAP_CERT_FILE, ZENTINEL_BOOTSTRAP_KEY_FILE,
-    ZENTINEL_CHALLENGES_DIR, ZENTINEL_GID, ZENTINEL_VERIFY_DIR, certificate_key_pair_matches,
-    render, set_group, write_initial_config, write_support_files,
+    ZENTINEL_CHALLENGES_DIR, ZENTINEL_GID, ZENTINEL_VERIFY_DIR, render, set_group,
+    write_initial_config, write_support_files,
 };
 use crate::{
     corrosion::CertificateChallenge,
@@ -48,7 +48,7 @@ fn shared_projection_matches_the_frozen_zentinel_contract() {
     );
     assert_eq!(
         rendered.digest(),
-        "7fea0e6032bb92f9cc4f67fd0838b5563fc40835d520ee514720bab4b9f7a052"
+        "e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8"
     );
 }
 
@@ -116,7 +116,9 @@ fn support_files_are_stable_valid_and_readable_by_the_container() {
     let bootstrap_key = certificates.join(ZENTINEL_BOOTSTRAP_KEY_FILE);
     let certificate = fs::read_to_string(&bootstrap_certificate).unwrap();
     let key = fs::read_to_string(&bootstrap_key).unwrap();
-    assert!(certificate_key_pair_matches(&certificate, &key));
+    assert!(
+        crate::corrosion::CertificateMaterial::new(certificate.as_str(), key.as_str()).is_some()
+    );
     assert_eq!(mode(&certificates), 0o750);
     assert_eq!(mode(&bootstrap_certificate), 0o644);
     assert_eq!(mode(&bootstrap_key), 0o640);
@@ -160,10 +162,13 @@ fn support_files_are_stable_valid_and_readable_by_the_container() {
 
     fs::remove_file(&bootstrap_key).unwrap();
     write_support_files(&projection, &config_file).unwrap();
-    assert!(certificate_key_pair_matches(
-        &fs::read_to_string(&bootstrap_certificate).unwrap(),
-        &fs::read_to_string(&bootstrap_key).unwrap()
-    ));
+    assert!(
+        crate::corrosion::CertificateMaterial::new(
+            fs::read_to_string(&bootstrap_certificate).unwrap(),
+            fs::read_to_string(&bootstrap_key).unwrap()
+        )
+        .is_some()
+    );
 
     fs::write(&bootstrap_key, "not a private key").unwrap();
     let error = write_support_files(&projection, &config_file).unwrap_err();

@@ -55,7 +55,7 @@ fn shared_projection_matches_the_frozen_envoy_contract() {
     );
     assert_eq!(
         rendered.digest(),
-        "7fea0e6032bb92f9cc4f67fd0838b5563fc40835d520ee514720bab4b9f7a052"
+        "e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8"
     );
 }
 
@@ -100,10 +100,10 @@ fn http_and_https_routes_carry_timeouts_secrets_and_challenge_direct_responses()
     assert!(rendered.lds().contains("server_names:"));
     assert!(rendered.lds().contains("secure.example.com"));
     assert!(rendered.sds().contains(
-        "filename: /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt"
+        "filename: /config/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.crt"
     ));
     assert!(rendered.sds().contains(
-        "filename: /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
+        "filename: /config/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.key"
     ));
     assert!(rendered.rds().contains("acme-challenge"));
     assert!(rendered.rds().contains("token.thumbprint"));
@@ -333,8 +333,14 @@ async fn accepted_candidate_writes_certificates_and_removes_stale_files() {
     let stem = certificate_file_stem(&site.hostname, site.material().unwrap());
     let cert_path = certs.join(format!("{stem}.crt"));
     let key_path = certs.join(format!("{stem}.key"));
-    assert_eq!(fs::read_to_string(&cert_path).unwrap(), "CERT");
-    assert_eq!(fs::read_to_string(&key_path).unwrap(), "KEY");
+    assert_eq!(
+        fs::read_to_string(&cert_path).unwrap(),
+        site.material().unwrap().certificate()
+    );
+    assert_eq!(
+        fs::read_to_string(&key_path).unwrap(),
+        site.material().unwrap().private_key()
+    );
     assert_eq!(
         fs::metadata(&certs).unwrap().permissions().mode() & 0o777,
         0o750

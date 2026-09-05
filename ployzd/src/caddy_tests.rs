@@ -3,8 +3,11 @@ use super::{
     generate_caddyfile as render_caddyfile,
 };
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow},
-    ingress::{IngressProjection, apply_caddy, tests::renderer_projection},
+    corrosion::{CertificateChallenge, CertificateRow},
+    ingress::{
+        IngressProjection, apply_caddy,
+        tests::{renderer_projection, test_material},
+    },
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
@@ -170,7 +173,7 @@ fn shared_renderer_projection_drives_caddy() {
     );
     assert!(
         caddyfile.contains(
-            "tls /config/caddy/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt /config/caddy/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
+            "tls /config/caddy/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.crt /config/caddy/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.key"
         ),
         "{caddyfile}"
     );
@@ -199,7 +202,7 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
     );
     remote_container.created_at_unix_nanos = 2;
     remote_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
-    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
+    let material = test_material();
     let challenge = CertificateChallenge::new("token", "response").unwrap();
     let certificates = BTreeMap::from([(
         IngressHost::parse("example.com").unwrap(),
@@ -377,7 +380,7 @@ fn https_site_with_material_pins_tls_paths() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
+        CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -435,7 +438,7 @@ fn changing_material_changes_the_pin_paths() {
         None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
-            CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
+            CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
     let second = automatic_caddyfile(
@@ -446,7 +449,7 @@ fn changing_material_changes_the_pin_paths() {
         None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
-            CertificateRow::from_parts(CertificateMaterial::new("CERT-2", "KEY-2"), None),
+            CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
 
@@ -477,7 +480,7 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
     );
     let unused = BTreeMap::from([(
         IngressHost::parse("other.example.com").unwrap(),
-        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
+        CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
     assert_eq!(
@@ -582,8 +585,7 @@ fn last_error_is_omitted_once_material_exists() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None)
-            .with_error("stale"),
+        CertificateRow::from_parts(Some(test_material()), None).with_error("stale"),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -1151,9 +1153,10 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         Some([10, 210, 1, 2]),
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
+    let material = test_material();
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(CertificateMaterial::new("CERT-BODY", "KEY-BODY"), None),
+        CertificateRow::from_parts(Some(material.clone()), None),
     )]);
     let admin = FakeAdmin::default();
     let certs = directory.join("certs");
@@ -1172,8 +1175,14 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     let (cert_name, key_name) = pinned_file_names(pin);
     let cert = certs.join(&cert_name);
     let key = certs.join(&key_name);
-    assert_eq!(std::fs::read_to_string(&cert).unwrap(), "CERT-BODY");
-    assert_eq!(std::fs::read_to_string(&key).unwrap(), "KEY-BODY");
+    assert_eq!(
+        std::fs::read_to_string(&cert).unwrap(),
+        material.certificate()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&key).unwrap(),
+        material.private_key()
+    );
     assert_eq!(
         std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
         0o600

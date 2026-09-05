@@ -255,6 +255,8 @@ pub(crate) enum Error {
     Acme(#[from] instant_acme::Error),
     #[error("certificate authority did not issue material")]
     MissingMaterial,
+    #[error("certificate authority returned invalid or mismatched certificate material")]
+    InvalidMaterial,
     #[error("HTTP-01 challenge was not served by the proxy")]
     ChallengeNotServed,
     #[error("authorization for {hostname} is {status:?}")]
@@ -621,7 +623,7 @@ where
         }
     };
     let certificate = order.poll_certificate(&RetryPolicy::default()).await?;
-    CertificateMaterial::new(certificate, private_key).ok_or(Error::MissingMaterial)
+    CertificateMaterial::new(certificate, private_key).ok_or(Error::InvalidMaterial)
 }
 
 fn certificate_request(
