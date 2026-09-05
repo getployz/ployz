@@ -39,7 +39,10 @@ impl Reservation {
         endpoint_url(&endpoint, &[])?;
         let name = IngressHost::parse(name.strip_suffix('.').unwrap_or(&name).to_ascii_lowercase())
             .map_err(|_| Error::InvalidReservation("invalid DNS hostname"))?;
-        if token.is_empty() || http::HeaderValue::from_str(&format!("Bearer {token}")).is_err() {
+        if token.is_empty()
+            || token.chars().any(char::is_whitespace)
+            || http::HeaderValue::from_str(&format!("Bearer {token}")).is_err()
+        {
             return Err(Error::InvalidReservation("invalid reservation token"));
         }
         Ok(Self {
@@ -311,6 +314,12 @@ mod tests {
             ("name", "*.example"),
             ("name", "a/example"),
             ("token", ""),
+            ("token", " "),
+            ("token", " leading"),
+            ("token", "trailing "),
+            ("token", "embedded space"),
+            ("token", "embedded\ttab"),
+            ("token", "embedded\u{00a0}space"),
             ("token", "bad\r\ntoken"),
             ("endpoint", "garbage"),
             ("endpoint", "file:///tmp/dns"),
@@ -331,6 +340,8 @@ mod tests {
             r#"{"name":"","token":"raw-token"}"#,
             r#"{"name":"bad/name.example","token":"raw-token"}"#,
             r#"{"name":"cluster.example","token":""}"#,
+            r#"{"name":"cluster.example","token":" "}"#,
+            r#"{"name":"cluster.example","token":"embedded space"}"#,
         ] {
             let (endpoint, _) = fake_server([(200, body)]).await;
             assert!(
