@@ -414,14 +414,12 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         "container": { "image": "api:1", "pull_policy": "missing" }
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: MachineId::parse(ENTRY_ID).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -430,7 +428,8 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         resolved_spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }
 
 fn assert_no_secret_material(text: &str) {

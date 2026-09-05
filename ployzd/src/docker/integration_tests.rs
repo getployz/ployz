@@ -112,7 +112,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     assert_eq!(inspected.resolved_spec, spec);
     assert_eq!(inspected.kind, ContainerKind::ServiceContainer);
     assert_eq!(inspected.project_name.as_str(), "app");
-    assert_eq!(inspected.service_name.as_str(), "default-api");
+    assert_eq!(inspected.resolved_spec.name.as_str(), "default-api");
     assert_eq!(
         inspected.labels.get(LABEL_PROJECT_NAME).map(String::as_str),
         Some("app")
@@ -922,8 +922,8 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     assert_eq!(hook_observation.kind, ContainerKind::PreDeployHook);
     assert_eq!(service_observation.project_name.as_str(), "app");
     assert_eq!(hook_observation.project_name.as_str(), "app");
-    assert_eq!(service_observation.service_name.as_str(), "api");
-    assert_eq!(hook_observation.service_name.as_str(), "api");
+    assert_eq!(service_observation.resolved_spec.name.as_str(), "api");
+    assert_eq!(hook_observation.resolved_spec.name.as_str(), "api");
     assert_eq!(
         service_observation.runtime,
         ContainerRuntimeObservation::Created
@@ -1129,13 +1129,11 @@ fn fixture_observation(
     service_id: ServiceId,
     service_name: ServiceName,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         display_name: format!("{service_name}-stale"),
         created_at_unix_nanos: 0,
         machine_id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Created,
         effective_healthcheck: None,
@@ -1143,7 +1141,8 @@ fn fixture_observation(
         address: None,
         labels: BTreeMap::new(),
         container_id,
-    }
+    })
+    .unwrap()
 }
 
 async fn wait_for<F, Fut>(timeout: Duration, mut condition: F)

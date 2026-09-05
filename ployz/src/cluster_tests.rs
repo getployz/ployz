@@ -267,14 +267,12 @@ fn machine_id(hex: char) -> MachineId {
 fn observation(id: char, machine: char) -> ContainerObservation {
     let service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
     let service_name = ServiceName::parse("api").unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: "api".into(),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -289,7 +287,8 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         .unwrap(),
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 fn docker_volume(machine: char, name: &str) -> DockerVolume {

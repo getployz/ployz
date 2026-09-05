@@ -187,9 +187,13 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         Some([10, 210, 1, 2]),
         vec![ingress("example.com", 8080, HttpProtocol::Http)],
     );
-    local_container.created_at_unix_nanos = 1;
+    local_container
+        .try_update(|parts| parts.created_at_unix_nanos = 1)
+        .unwrap();
     let fragment = IngressProxyFragment::parse_caddy("# selected").unwrap();
-    local_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
+    local_container
+        .try_update(|parts| parts.resolved_spec.ingress_proxy_fragment = Some(fragment.clone()))
+        .unwrap();
     let mut remote_container = observation(
         2,
         &remote,
@@ -197,8 +201,12 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         Some([10, 210, 2, 2]),
         vec![ingress("example.com", 8080, HttpProtocol::Http)],
     );
-    remote_container.created_at_unix_nanos = 2;
-    remote_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
+    remote_container
+        .try_update(|parts| {
+            parts.created_at_unix_nanos = 2;
+            parts.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
+        })
+        .unwrap();
     let material = CertificateMaterial::new("CERT", "KEY").unwrap();
     let challenge = CertificateChallenge::new("token", "response").unwrap();
     let certificates = BTreeMap::from([(
@@ -270,8 +278,12 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
         Some([10, 210, 1, 2]),
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
-    shop_old.project_name = ProjectName::parse("shop").unwrap();
-    shop_old.created_at_unix_nanos = 1;
+    shop_old
+        .try_update(|parts| {
+            parts.project_name = ProjectName::parse("shop").unwrap();
+            parts.created_at_unix_nanos = 1;
+        })
+        .unwrap();
     let mut shop_rollout = observation(
         3,
         &local,
@@ -279,8 +291,12 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
         Some([10, 210, 1, 3]),
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
-    shop_rollout.project_name = ProjectName::parse("shop").unwrap();
-    shop_rollout.created_at_unix_nanos = 3;
+    shop_rollout
+        .try_update(|parts| {
+            parts.project_name = ProjectName::parse("shop").unwrap();
+            parts.created_at_unix_nanos = 3;
+        })
+        .unwrap();
     let mut blog = observation(
         2,
         &local,
@@ -288,8 +304,11 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
         Some([10, 210, 2, 2]),
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
-    blog.project_name = ProjectName::parse("blog").unwrap();
-    blog.created_at_unix_nanos = 2;
+    blog.try_update(|parts| {
+        parts.project_name = ProjectName::parse("blog").unwrap();
+        parts.created_at_unix_nanos = 2;
+    })
+    .unwrap();
 
     let caddyfile = automatic_caddyfile(
         &local,
@@ -325,8 +344,11 @@ fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_matc
         Some([10, 210, 1, 2]),
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
-    shop.project_name = ProjectName::parse("shop").unwrap();
-    shop.created_at_unix_nanos = 1;
+    shop.try_update(|parts| {
+        parts.project_name = ProjectName::parse("shop").unwrap();
+        parts.created_at_unix_nanos = 1;
+    })
+    .unwrap();
     let mut blog = observation(
         2,
         &local,
@@ -334,8 +356,11 @@ fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_matc
         Some([10, 210, 2, 2]),
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
-    blog.project_name = ProjectName::parse("blog").unwrap();
-    blog.created_at_unix_nanos = 2;
+    blog.try_update(|parts| {
+        parts.project_name = ProjectName::parse("blog").unwrap();
+        parts.created_at_unix_nanos = 2;
+    })
+    .unwrap();
 
     let file = |observations: Vec<ContainerObservation>| {
         automatic_caddyfile(
@@ -618,7 +643,8 @@ fn automatic_sites_exclude_hook_containers() {
                 Some([10, 210, 1, 4]),
                 vec![ingress("hook.example", 80, HttpProtocol::Http)],
             );
-            hook.kind = ContainerKind::PreDeployHook;
+            hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+                .unwrap();
             hook
         },
     ];
@@ -737,7 +763,9 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         Some([10, 210, 1, 3]),
         vec![ingress("stopped.example", 80, HttpProtocol::Http)],
     );
-    stopped.runtime = ContainerRuntimeObservation::Exited { code: 137 };
+    stopped
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 137 })
+        .unwrap();
     let mut unhealthy = observation(
         3,
         &local,
@@ -745,9 +773,13 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         Some([10, 210, 1, 4]),
         vec![ingress("unhealthy.example", 80, HttpProtocol::Http)],
     );
-    unhealthy.runtime = ContainerRuntimeObservation::Running {
-        health: HealthObservation::Unhealthy,
-    };
+    unhealthy
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            }
+        })
+        .unwrap();
 
     let caddyfile = automatic_caddyfile(
         &local,
@@ -784,7 +816,8 @@ async fn custom_configs_exclude_hook_containers() {
         "hook.example { reverse_proxy {{upstreams}} }",
         [10, 210, 1, 4],
     );
-    hook.kind = ContainerKind::PreDeployHook;
+    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let observations = vec![
         custom_observation(
             1,
@@ -819,7 +852,8 @@ api.example { reverse_proxy 10.210.1.2 }"
 async fn user_project_caddy_does_not_supply_global_config() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let mut user = custom_observation(2, 9, &local, "caddy", "{\n\tadmin off\n}", [10, 210, 1, 9]);
-    user.project_name = ployz_core::ProjectName::parse("shop").unwrap();
+    user.try_update(|parts| parts.project_name = ployz_core::ProjectName::parse("shop").unwrap())
+        .unwrap();
     let observations = vec![
         reserved(observation(
             1,
@@ -856,7 +890,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
         "external.example { respond external }",
         [10, 210, 1, 7],
     );
-    external.address = None;
+    external.try_update(|parts| parts.address = None).unwrap();
     let observations = vec![
         reserved(custom_observation(
             1,
@@ -960,7 +994,9 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
         "staging.example { reverse_proxy {{upstreams \"api\"}} }",
         [10, 210, 1, 2],
     );
-    staging_web.project_name = ProjectName::parse("shop-staging").unwrap();
+    staging_web
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
+        .unwrap();
     let mut prod_api = custom_observation(
         3,
         1,
@@ -969,7 +1005,9 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
         "api.example { respond api }",
         [10, 210, 1, 11],
     );
-    prod_api.project_name = ProjectName::parse("shop-prod").unwrap();
+    prod_api
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .unwrap();
     let mut prod_web = custom_observation(
         4,
         1,
@@ -978,7 +1016,9 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
         "prod.example { reverse_proxy {{upstreams \"api\"}} }",
         [10, 210, 1, 3],
     );
-    prod_web.project_name = ProjectName::parse("shop-prod").unwrap();
+    prod_web
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .unwrap();
     let mut staging_other = custom_observation(
         5,
         1,
@@ -987,7 +1027,9 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
         "cross.example { reverse_proxy {{upstreams \"shop-prod/api\"}} }",
         [10, 210, 1, 4],
     );
-    staging_other.project_name = ProjectName::parse("shop-staging").unwrap();
+    staging_other
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
+        .unwrap();
     let observations = vec![
         reserved(custom_observation(
             1,
@@ -1249,7 +1291,9 @@ fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublic
 }
 
 fn reserved(mut observation: ContainerObservation) -> ContainerObservation {
-    observation.project_name = ployz_core::ProjectName::system();
+    observation
+        .try_update(|parts| parts.project_name = ployz_core::ProjectName::system())
+        .unwrap();
     observation
 }
 
@@ -1270,14 +1314,12 @@ fn observation(
         "ports": ports,
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
         project_name: ployz_core::ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -1286,7 +1328,8 @@ fn observation(
         resolved_spec,
         address: address.map(|address| ContainerAddress(address.into())),
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 fn custom_observation(
@@ -1298,8 +1341,14 @@ fn custom_observation(
     address: [u8; 4],
 ) -> ContainerObservation {
     let mut observation = observation(suffix, machine_id, service_name, Some(address), Vec::new());
-    observation.created_at_unix_nanos = created_at_unix_nanos;
-    observation.resolved_spec.ingress_proxy_fragment =
-        Some(IngressProxyFragment::parse_caddy(caddy_config).expect("fixture is non-empty"));
+    observation
+        .try_update(|parts| parts.created_at_unix_nanos = created_at_unix_nanos)
+        .unwrap();
+    observation
+        .try_update(|parts| {
+            parts.resolved_spec.ingress_proxy_fragment =
+                Some(IngressProxyFragment::parse_caddy(caddy_config).expect("fixture is non-empty"))
+        })
+        .unwrap();
     observation
 }

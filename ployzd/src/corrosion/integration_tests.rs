@@ -550,8 +550,6 @@ fn container(machine_id: &MachineId, suffix: &str) -> ContainerObservation {
         "display_name": format!("service-{suffix}"),
         "machine_id": machine_id,
         "project_name": "app",
-        "service_id": format!("{suffix:0<32}"),
-        "service_name": "service",
         "kind": "service_container",
         "runtime": { "state": "created" },
         "resolved_spec": {

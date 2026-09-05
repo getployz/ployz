@@ -221,7 +221,8 @@ mod tests {
             ServiceMode::Global,
             Placement::default(),
         );
-        add_provisioned_mount(&mut slot.resolved_spec);
+        slot.try_update(|parts| add_provisioned_mount(&mut parts.resolved_spec))
+            .unwrap();
         let reconciler = FakeReconciler::default();
 
         let unknown = reconcile_global_slots(
@@ -391,14 +392,12 @@ mod tests {
         }))
         .unwrap();
         spec.placement = placement;
-        ContainerObservation {
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 1,
             machine_id: machine.id,
             project_name: ProjectName::parse(project).unwrap(),
-            service_id,
-            service_name,
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
@@ -407,6 +406,7 @@ mod tests {
             resolved_spec: spec,
             address: None,
             labels: Default::default(),
-        }
+        })
+        .unwrap()
     }
 }

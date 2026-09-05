@@ -245,7 +245,9 @@ async fn zentinel_replacement_stops_the_old_host_network_proxy_first() {
     old.container.image = "example.test/zentinel:old".into();
     let service_id = service_id('a');
     let mut current = container('b', '1', &old, &service_id);
-    current.project_name = ProjectName::system();
+    current
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
     let intent = DeployIntent::apply_one(ProjectName::system(), requested, PlanOptions::default());
     let plan = preview_deploy(
         &intent,

@@ -15,11 +15,17 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
     let first_id = container('a');
     let second_id = container('b');
     let mut first = observation(&machine('1'), &first_id, healthy());
-    first.resolved_spec.container.healthcheck = Some(healthcheck());
+    first
+        .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
+        .unwrap();
     let mut second = observation(&machine('2'), &second_id, starting());
-    second.resolved_spec.container.healthcheck = Some(healthcheck());
+    second
+        .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
+        .unwrap();
     let mut second_healthy = second.clone();
-    second_healthy.runtime = healthy();
+    second_healthy
+        .try_update(|parts| parts.runtime = healthy())
+        .unwrap();
     let new = container('c');
     let mut web = spec(Some(0), None, None);
     web.name = ServiceName::parse("web").unwrap();
@@ -54,7 +60,8 @@ async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
     for containers in [Vec::new(), {
         let id = container('a');
         let mut hook = observation(&machine('1'), &id, healthy());
-        hook.kind = ContainerKind::PreDeployHook;
+        hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+            .unwrap();
         vec![hook]
     }] {
         let plan = vec![DeployOperation::WaitHealthy {
@@ -94,14 +101,18 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
     ] {
         let id = container('a');
         let mut observed = observation(&machine('1'), &id, runtime);
-        observed.resolved_spec.container.healthcheck = Some(
-            ployz_core::HealthcheckSpec::Configured(ployz_core::ConfiguredHealthcheck {
-                interval_millis: Some(1_000),
-                timeout_millis: Some(1_000),
-                retries: Some(1),
-                ..configured_healthcheck()
-            }),
-        );
+        observed
+            .try_update(|parts| {
+                parts.resolved_spec.container.healthcheck = Some(
+                    ployz_core::HealthcheckSpec::Configured(ployz_core::ConfiguredHealthcheck {
+                        interval_millis: Some(1_000),
+                        timeout_millis: Some(1_000),
+                        retries: Some(1),
+                        ..configured_healthcheck()
+                    }),
+                )
+            })
+            .unwrap();
         let plan = vec![DeployOperation::WaitHealthy {
             machine_id: machine('1'),
             dependent: QualifiedService::parse("app/web").unwrap(),

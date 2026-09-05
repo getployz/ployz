@@ -446,16 +446,26 @@ mod tests {
     fn global_summary_counts_only_up_placement_eligible_machines() {
         let mut service = service_named('a', "app", "api");
         let mut observation = service.containers.pop().unwrap().into_observation();
-        observation.runtime = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
-        observation.resolved_spec.mode = ServiceMode::Global;
-        observation.resolved_spec.placement = Placement {
-            machines: ["edge-a", "edge-b", "edge-c"]
-                .into_iter()
-                .map(|name| MachineTarget::parse(name).unwrap())
-                .collect(),
-        };
+        observation
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                }
+            })
+            .unwrap();
+        observation
+            .try_update(|parts| parts.resolved_spec.mode = ServiceMode::Global)
+            .unwrap();
+        observation
+            .try_update(|parts| {
+                parts.resolved_spec.placement = Placement {
+                    machines: ["edge-a", "edge-b", "edge-c"]
+                        .into_iter()
+                        .map(|name| MachineTarget::parse(name).unwrap())
+                        .collect(),
+                }
+            })
+            .unwrap();
         service.containers = vec![ServiceContainer::try_from(observation).unwrap()];
         let machines = [
             machine('a', "edge-a", MembershipObservation::Up),
@@ -486,37 +496,55 @@ mod tests {
 
         let mut service = service_named('a', "app", "api");
         let mut first = service.containers.pop().unwrap().into_observation();
-        first.runtime = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
-        first.resolved_spec.mode = ServiceMode::Global;
+        first
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                }
+            })
+            .unwrap();
+        first
+            .try_update(|parts| parts.resolved_spec.mode = ServiceMode::Global)
+            .unwrap();
         let reference = ServiceVolumeReference::parse("data").unwrap();
-        first.resolved_spec.volume_graph = ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference: reference.clone(),
-                source: VolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("app_data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(100).unwrap(),
-                    ),
-                    labels: Default::default(),
-                },
-            }],
-            vec![ServiceMount {
-                volume: reference,
-                target: ContainerPath::parse("/data").unwrap(),
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            }],
-        )
-        .unwrap();
+        first
+            .try_update(|parts| {
+                parts.resolved_spec.volume_graph = ServiceVolumeGraph::parse(
+                    vec![ServiceVolume {
+                        reference: reference.clone(),
+                        source: VolumeSource::Provisioned {
+                            name: DockerVolumeName::parse("app_data").unwrap(),
+                            maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                                NonZeroU64::new(100).unwrap(),
+                            ),
+                            labels: Default::default(),
+                        },
+                    }],
+                    vec![ServiceMount {
+                        volume: reference,
+                        target: ContainerPath::parse("/data").unwrap(),
+                        read_only: false,
+                        no_copy: false,
+                        subpath: None,
+                    }],
+                )
+                .unwrap()
+            })
+            .unwrap();
         let containers = ('a'..='f')
             .map(|machine| {
                 let mut observation = first.clone();
-                observation.container_id =
-                    ployz_core::ContainerId::parse(machine.to_string().repeat(64)).unwrap();
-                observation.machine_id = MachineId::parse(machine.to_string().repeat(32)).unwrap();
+                observation
+                    .try_update(|parts| {
+                        parts.container_id =
+                            ployz_core::ContainerId::parse(machine.to_string().repeat(64)).unwrap()
+                    })
+                    .unwrap();
+                observation
+                    .try_update(|parts| {
+                        parts.machine_id = MachineId::parse(machine.to_string().repeat(32)).unwrap()
+                    })
+                    .unwrap();
                 ServiceContainer::try_from(observation).unwrap()
             })
             .collect::<Vec<_>>();
@@ -621,7 +649,7 @@ mod tests {
     #[test]
     fn lifecycle_selectors_deduplicate_names_and_ids() {
         let container = observation('a', 'a', "api", ContainerRuntimeObservation::Created);
-        let service_id = container.service_id;
+        let service_id = container.service_id();
         let services = vec![ployz_core::ServiceObservation {
             identity: container.identity(),
             service_id,
@@ -658,10 +686,14 @@ mod tests {
 
     fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObservation {
         let mut container = observation(id, id, name, ContainerRuntimeObservation::Created);
-        container.project_name = ployz_core::ProjectName::parse(project).unwrap();
+        container
+            .try_update(|parts| {
+                parts.project_name = ployz_core::ProjectName::parse(project).unwrap()
+            })
+            .unwrap();
         ployz_core::ServiceObservation {
             identity: container.identity(),
-            service_id: container.service_id,
+            service_id: container.service_id(),
             containers: vec![ServiceContainer::try_from(container).unwrap()],
             hook_containers: Vec::new(),
         }
@@ -688,7 +720,7 @@ mod tests {
     fn names<'a>(containers: &'a [ContainerRef<'a>]) -> Vec<&'a str> {
         containers
             .iter()
-            .map(|container| container.as_observation().service_name.as_str())
+            .map(|container| container.as_observation().resolved_spec.name.as_str())
             .collect()
     }
 
@@ -699,7 +731,9 @@ mod tests {
         runtime: ContainerRuntimeObservation,
     ) -> ployz_core::ContainerObservation {
         let mut observation = observation(id, machine, name, runtime);
-        observation.kind = ployz_core::ContainerKind::PreDeployHook;
+        observation
+            .try_update(|parts| parts.kind = ployz_core::ContainerKind::PreDeployHook)
+            .unwrap();
         observation
     }
 
@@ -711,14 +745,12 @@ mod tests {
     ) -> ployz_core::ContainerObservation {
         let service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
         let service_name = ServiceName::parse(name).unwrap();
-        ployz_core::ContainerObservation {
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
             container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
             project_name: ployz_core::ProjectName::parse("app").unwrap(),
-            service_id,
-            service_name: service_name.clone(),
             kind: ployz_core::ContainerKind::ServiceContainer,
             runtime,
             effective_healthcheck: None,
@@ -731,6 +763,7 @@ mod tests {
             .unwrap(),
             address: None,
             labels: Default::default(),
-        }
+        })
+        .unwrap()
     }
 }

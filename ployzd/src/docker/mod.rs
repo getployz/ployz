@@ -231,35 +231,31 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
-        let ManagedLabels {
-            identity,
-            service_id,
-            kind,
-        } = ManagedLabels::parse(labels)?;
+        let ManagedLabels { identity, kind } = ManagedLabels::parse(labels)?;
         let resolved_spec = self
             .specs
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
 
-        Ok(ContainerObservation {
-            container_id: *container_id,
-            display_name: display_name(inspected.name.as_deref()),
-            created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
-            machine_id: *machine_id,
-            project_name: identity.project,
-            service_id,
-            service_name: identity.name,
-            kind,
-            runtime: runtime_observation(inspected.state.as_ref()),
-            effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
-            resolved_spec,
-            address: container_address(&inspected),
-            labels: labels
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        })
+        Ok(ployz_core::ContainerObservation::try_from(
+            ployz_core::ContainerObservationParts {
+                container_id: *container_id,
+                display_name: display_name(inspected.name.as_deref()),
+                created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
+                machine_id: *machine_id,
+                project_name: identity.project,
+                kind,
+                runtime: runtime_observation(inspected.state.as_ref()),
+                effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
+                resolved_spec,
+                address: container_address(&inspected),
+                labels: labels
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            },
+        )?)
     }
 }
 
@@ -289,7 +285,8 @@ fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Er
 fn malformed_container(error: &Error) -> bool {
     matches!(
         error,
-        Error::Json(_)
+        Error::Observation(_)
+            | Error::Json(_)
             | Error::SpecStore(SpecStoreError::Json(_))
             | Error::MissingField(_)
             | Error::MissingLabel(_)
@@ -393,7 +390,6 @@ fn created_at_unix_nanos(created: Option<&str>) -> i64 {
 
 struct ManagedLabels {
     identity: QualifiedService,
-    service_id: ServiceId,
     kind: ContainerKind,
 }
 
@@ -405,6 +401,10 @@ impl ManagedLabels {
         let project_name = required_label(labels, LABEL_PROJECT_NAME)?;
         let service_id = required_label(labels, LABEL_SERVICE_ID)?;
         let service_name = required_label(labels, LABEL_SERVICE_NAME)?;
+        ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
+            field: LABEL_SERVICE_ID,
+            source,
+        })?;
         Ok(Self {
             identity: QualifiedService::new(
                 ProjectName::parse(project_name).map_err(|source| Error::InvalidValue {
@@ -416,10 +416,6 @@ impl ManagedLabels {
                     source,
                 })?,
             ),
-            service_id: ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
-                field: LABEL_SERVICE_ID,
-                source,
-            })?,
             kind: match labels.get(LABEL_HOOK) {
                 None => ContainerKind::ServiceContainer,
                 Some(_) => ContainerKind::PreDeployHook,
@@ -559,6 +555,8 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Observation(#[from] ployz_core::ContainerObservationError),
     /// A required host telemetry read failed.
     #[error("host telemetry failed: {0}")]
     Io(#[from] std::io::Error),
@@ -695,7 +693,8 @@ impl Error {
             | Self::PeerPull(_)
             | Self::UnregistryNotReady { .. }
             | Self::InvalidVolumeStatus(_)
-            | Self::UnexpectedVolumeName { .. } => RpcErrorCode::Internal,
+            | Self::UnexpectedVolumeName { .. }
+            | Self::Observation(_) => RpcErrorCode::Internal,
         }
     }
 }

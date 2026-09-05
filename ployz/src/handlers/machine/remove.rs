@@ -285,7 +285,9 @@ mod tests {
                     {
                         let mut global =
                             observation('2', 'a', "caddy", ContainerKind::ServiceContainer, 'b');
-                        global.resolved_spec.mode = ServiceMode::Global;
+                        global
+                            .try_update(|parts| parts.resolved_spec.mode = ServiceMode::Global)
+                            .unwrap();
                         global
                     },
                 ],
@@ -308,14 +310,12 @@ mod tests {
     ) -> ContainerObservation {
         let service_id = ServiceId::parse(service.to_string().repeat(32)).unwrap();
         let service_name = ServiceName::parse(name).unwrap();
-        ContainerObservation {
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
             container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: machine_id(machine),
             project_name: ployz_core::ProjectName::parse("app").unwrap(),
-            service_id,
-            service_name: service_name.clone(),
             kind,
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
@@ -330,7 +330,8 @@ mod tests {
             .unwrap(),
             address: None,
             labels: Default::default(),
-        }
+        })
+        .unwrap()
     }
 
     fn machine_id(value: char) -> MachineId {

@@ -213,7 +213,9 @@ fn explicit_order_is_deferred_until_the_next_replacement() {
             add_named_volume(&mut requested, "data");
         }
         let mut current = container('b', '1', &requested, &service_id('a'));
-        current.resolved_spec.update.order = current_order;
+        current
+            .try_update(|parts| parts.resolved_spec.update.order = current_order)
+            .unwrap();
         requested.update.order = Some(requested_order);
         let snapshot = DeploySnapshot {
             machines: vec![machine('1', "first")],
@@ -253,7 +255,7 @@ fn global_active_non_running_container_is_replaced_before_reusing_its_host_port(
         current.container.image = "ghcr.io/getployz/api:old".into();
         let current_service_id = service_id('a');
         let mut old = container('b', '1', &current, &current_service_id);
-        old.runtime = runtime;
+        old.try_update(|parts| parts.runtime = runtime).unwrap();
         let plan = plan_deploy(
             [&requested],
             &DeploySnapshot {

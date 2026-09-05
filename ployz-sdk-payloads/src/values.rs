@@ -1245,7 +1245,9 @@ fn typed_resolved_spec() -> ResolvedServiceSpec {
 
 fn container_observation_disabled_healthcheck() -> ContainerObservation {
     let mut observation = container_observation();
-    observation.effective_healthcheck = Some(HealthcheckSpec::Disabled);
+    observation
+        .try_update(|parts| parts.effective_healthcheck = Some(HealthcheckSpec::Disabled))
+        .unwrap();
     observation
 }
 
@@ -1335,14 +1337,12 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
 }
 
 fn container_observation() -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("1".repeat(64)).expect("fixture Container ID is valid"),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: machine_id(MACHINE_ID_HEX),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: service_id(),
-        service_name: ServiceName::parse("api").expect("fixture Service Name is valid"),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -1351,7 +1351,8 @@ fn container_observation() -> ContainerObservation {
         resolved_spec: resolved_spec(),
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 fn requested_spec() -> RequestedServiceSpec {

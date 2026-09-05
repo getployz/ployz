@@ -249,14 +249,12 @@ pub(super) fn container(
     requested: &RequestedServiceSpec,
     service_id: &ServiceId,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: container_id(hex),
         display_name: format!("{}-{hex}", requested.name),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine_hex),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: *service_id,
-        service_name: requested.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -271,5 +269,6 @@ pub(super) fn container(
         ),
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }

@@ -62,7 +62,7 @@ fn container_labels(
                 container.container_id,
                 (
                     Some(container.display_name.clone()),
-                    Some(container.service_name.clone()),
+                    Some(container.resolved_spec.name.clone()),
                 ),
             )
         })

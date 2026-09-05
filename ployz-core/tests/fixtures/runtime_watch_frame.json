@@ -35,8 +35,6 @@
       "created_at_unix_nanos": 1700000000000000000,
       "machine_id": "0123456789abcdef0123456789abcdef",
       "project_name": "app",
-      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "service_name": "api",
       "kind": "service_container",
       "runtime": {
         "state": "running",
@@ -64,8 +62,6 @@
           "created_at_unix_nanos": 1700000000000000000,
           "machine_id": "0123456789abcdef0123456789abcdef",
           "project_name": "app",
-          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "service_name": "api",
           "kind": "service_container",
           "runtime": {
             "state": "running",

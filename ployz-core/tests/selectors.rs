@@ -144,9 +144,12 @@ fn service_selector_resolution_prefers_ids_then_qualified_then_unique_short_name
     let prod_id = ServiceId::parse("b".repeat(32)).unwrap();
     let unique_id = ServiceId::parse("d".repeat(32)).unwrap();
     let mut staging = observation('1', &staging_id, "web", ContainerKind::ServiceContainer);
-    staging.project_name = ProjectName::parse("shop-staging").unwrap();
+    staging
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
+        .unwrap();
     let mut prod = observation('2', &prod_id, "web", ContainerKind::ServiceContainer);
-    prod.project_name = ProjectName::parse("shop-prod").unwrap();
+    prod.try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .unwrap();
     let services = derive_services([
         staging,
         prod,
@@ -351,19 +354,18 @@ fn container(
         "container": { "image": "api", "pull_policy": "missing" }
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: display_name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind,
         runtime: ContainerRuntimeObservation::Created,
         effective_healthcheck: None,
         resolved_spec,
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
