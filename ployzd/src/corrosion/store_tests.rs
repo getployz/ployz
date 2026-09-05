@@ -881,3 +881,35 @@ async fn store_preserves_published_identities_and_keyed_incomplete_rows() {
     );
     task.abort();
 }
+
+#[tokio::test]
+async fn invalid_hosted_reservation_is_unavailable_and_explicit_release_recovers() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    db.execute(
+        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
+        [json!({"endpoint": "https://dns.example", "name": "", "token": ""}).to_string()],
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    let client = crate::hosted_dns::HostedDns::new();
+    assert!(store.domain_reservation().await.is_err());
+    assert!(client.domain(&store).await.is_err());
+    let error = client.release_domain(&store).await.unwrap_err();
+    assert!(error.to_string().contains("cleared locally"), "{error}");
+    assert!(store.domain_reservation().await.unwrap().is_none());
+    let valid = crate::hosted_dns::Reservation::new(
+        "http://127.0.0.1:1".into(),
+        "cluster.example".into(),
+        "opaque-token".into(),
+    )
+    .unwrap();
+    store.publish_domain_reservation(&valid).await.unwrap();
+    assert_eq!(client.domain(&store).await.unwrap(), "cluster.example");
+    assert_eq!(
+        client.release_domain(&store).await.unwrap(),
+        "cluster.example"
+    );
+    assert!(store.domain_reservation().await.unwrap().is_none());
+    server.abort();
+}

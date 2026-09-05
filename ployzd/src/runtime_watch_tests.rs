@@ -340,11 +340,12 @@ fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
 }
 
 fn reservation() -> Reservation {
-    Reservation {
-        endpoint: DNS_ENDPOINT.into(),
-        name: "cluster.example.ts.net".into(),
-        token: DNS_TOKEN.into(),
-    }
+    Reservation::new(
+        DNS_ENDPOINT.into(),
+        "cluster.example.ts.net".into(),
+        DNS_TOKEN.into(),
+    )
+    .unwrap()
 }
 
 fn machine(name: &str, id: &str, seed: u8) -> Machine {
