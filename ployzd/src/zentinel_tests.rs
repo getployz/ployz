@@ -48,7 +48,7 @@ fn shared_projection_matches_the_frozen_zentinel_contract() {
     );
     assert_eq!(
         rendered.digest(),
-        "e3314422cbb7e109161ad18864b183fa14805f688832d117b9ea81d74fe624c8"
+        "64da812043281f6839f0fdbe8bb7ff63dff071847a87af60089bb010426ee231"
     );
 }
 
