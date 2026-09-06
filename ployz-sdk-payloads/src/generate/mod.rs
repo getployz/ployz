@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use crate::values::{catalogued_capabilities, object_examples};
 
 mod catalog;
+mod evidence;
 use catalog::{PAYLOADS, Shape};
 
 /// npm package name for this crate's Node artifact.
@@ -229,13 +230,13 @@ fn check_internally_tagged_variants_match_rust() {
         let Shape::InternallyTagged {
             tag,
             variants,
-            examples,
+            evidence,
             ..
         } = shape
         else {
             continue;
         };
-        let examples = examples();
+        let examples = evidence.examples();
         assert!(!examples.is_empty(), "{name} shape has no serde example");
         let mut seen = BTreeSet::new();
         for value in examples {
@@ -277,18 +278,12 @@ const PASSTHROUGH_PAYLOAD: &str = "ContainerRuntimeObservation";
 
 fn check_tagged_payloads_reject_unknown_tags() {
     for (name, shape) in PAYLOADS {
-        let Shape::InternallyTagged {
-            tag,
-            decodes,
-            examples,
-            ..
-        } = shape
-        else {
+        let Shape::InternallyTagged { tag, evidence, .. } = shape else {
             continue;
         };
-        for example in examples() {
+        for example in evidence.examples() {
             assert!(
-                decodes(example),
+                evidence.decodes(example),
                 "{name} decoder rejects its own serde example; the table row names the wrong type"
             );
         }
@@ -298,12 +293,12 @@ fn check_tagged_payloads_reject_unknown_tags() {
         )]));
         if *name == PASSTHROUGH_PAYLOAD {
             assert!(
-                decodes(unknown),
+                evidence.decodes(unknown),
                 "{name} must keep an unknown {tag} as observed; its union names that case"
             );
         } else {
             assert!(
-                !decodes(unknown),
+                !evidence.decodes(unknown),
                 "{name} accepts an unknown {tag}, so its closed TypeScript union would be false"
             );
         }

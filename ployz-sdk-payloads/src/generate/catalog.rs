@@ -1,5 +1,6 @@
 //! Shape catalog for generated `@ployz/sdk` TypeScript.
 
+use super::evidence::{RustEvidence, TaggedEvidence};
 use crate::values::{
     container_id, data_loss, deploy_event_progress, deploy_operations, deploy_outcome,
     deploy_outcome_failed, deploy_warnings, docker_volume, execution_error_machine, host_port,
@@ -18,7 +19,6 @@ use ployz_core::{
     RestartPolicy, RpcErrorCode, ServiceMode, StopAttempt, StopContainerPurpose, StorageChoice,
     TransportProtocol, UpdateOrder, VolumeRemovalOutcome, VolumeSource,
 };
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{
     net::IpAddr,
@@ -38,8 +38,7 @@ pub(super) enum Shape {
         fields: &'static [(&'static str, &'static str)],
     },
     InternallyTagged {
-        decodes: fn(Value) -> bool,
-        examples: fn() -> Vec<Value>,
+        evidence: &'static dyn TaggedEvidence,
         tag: &'static str,
         params: &'static str,
         variants: &'static [(&'static str, &'static [(&'static str, &'static str)])],
@@ -105,19 +104,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "MachineStorageObservation",
         Shape::InternallyTagged {
-            decodes: decodes::<MachineStorageObservation>,
-            examples: || {
+            evidence: &RustEvidence::<MachineStorageObservation>(|| {
                 vec![
-                    to_value(&MachineStorageObservation::Stateless),
-                    to_value(&MachineStorageObservation::Ready),
-                    to_value(&MachineStorageObservation::Pool {
+                    MachineStorageObservation::Stateless,
+                    MachineStorageObservation::Ready,
+                    MachineStorageObservation::Pool {
                         size_bytes: NonZeroU64::new(4_294_967_296)
                             .expect("fixture capacity is nonzero"),
                         used_bytes: 3_865_470_566,
                         free_bytes: 429_496_730,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "state",
             params: "",
             variants: &[
@@ -173,15 +171,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ServiceMode",
         Shape::InternallyTagged {
-            decodes: decodes::<ServiceMode>,
-            examples: || {
+            evidence: &RustEvidence::<ServiceMode>(|| {
                 vec![
-                    to_value(&ServiceMode::Replicated {
+                    ServiceMode::Replicated {
                         replicas: NonZeroU32::MIN,
-                    }),
-                    to_value(&ServiceMode::Global),
+                    },
+                    ServiceMode::Global,
                 ]
-            },
+            }),
             tag: "mode",
             params: "",
             variants: &[("replicated", &[("replicas", "number")]), ("global", &[])],
@@ -198,19 +195,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "IngressHostname",
         Shape::InternallyTagged {
-            decodes: decodes::<IngressHostname>,
-            examples: || {
+            evidence: &RustEvidence::<IngressHostname>(|| {
                 vec![
-                    to_value(&IngressHostname::cluster_domain()),
-                    to_value(
-                        &IngressHostname::cluster_domain_label("api")
-                            .expect("fixture Cluster Domain label is valid"),
-                    ),
-                    to_value(&IngressHostname::Explicit {
+                    IngressHostname::cluster_domain(),
+                    IngressHostname::cluster_domain_label("api")
+                        .expect("fixture Cluster Domain label is valid"),
+                    IngressHostname::Explicit {
                         hostname: ingress_host("app.example.com"),
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -222,21 +216,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HostBind",
         Shape::InternallyTagged {
-            decodes: decodes::<HostBind>,
-            examples: || {
+            evidence: &RustEvidence::<HostBind>(|| {
                 vec![
-                    to_value(&HostBind::All),
-                    to_value(&HostBind::Address {
+                    HostBind::All,
+                    HostBind::Address {
                         address: IpAddr::from([127, 0, 0, 1]),
-                    }),
-                    to_value(
-                        &serde_json::from_value::<HostBind>(
-                            json!({ "kind": "prefix", "prefix": "10.0.0.0/8" }),
-                        )
-                        .expect("fixture HostBind prefix is valid"),
-                    ),
+                    },
+                    serde_json::from_value::<HostBind>(
+                        json!({ "kind": "prefix", "prefix": "10.0.0.0/8" }),
+                    )
+                    .expect("fixture HostBind prefix is valid"),
                 ]
-            },
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -249,8 +240,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "PortPublication",
         Shape::InternallyTagged {
-            decodes: decodes::<PortPublication>,
-            examples: || vec![to_value(&ingress_port()), to_value(&host_port())],
+            evidence: &RustEvidence::<PortPublication>(|| vec![ingress_port(), host_port()]),
             tag: "mode",
             params: "",
             variants: &[
@@ -288,42 +278,35 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "VolumeSource",
         Shape::InternallyTagged {
-            decodes: decodes::<VolumeSource>,
-            examples: || {
+            evidence: &RustEvidence::<VolumeSource>(|| {
                 vec![
-                    to_value(
-                        &ployz_core::RawVolumeSource::Bind {
-                            machine_path: MachinePath::parse("/data")
-                                .expect("fixture bind path is valid"),
-                            create_machine_path: false,
-                            propagation: Some(BindPropagation::Private),
-                            recursive: Some(BindRecursive::Disabled),
-                        }
-                        .admit()
-                        .expect("valid volume declaration"),
-                    ),
-                    to_value(
-                        &ployz_core::RawVolumeSource::External {
-                            name: DockerVolumeName::parse("shared")
-                                .expect("fixture external Volume name is valid"),
-                        }
-                        .admit()
-                        .expect("valid volume declaration"),
-                    ),
-                    to_value(&service_volume().source),
-                    to_value(&named_volume_with_driver().source),
-                    to_value(&provisioned_volume_source()),
-                    to_value(
-                        &ployz_core::RawVolumeSource::Tmpfs {
-                            size_bytes: Some(64),
-                            mode: Some(0o755),
-                            options: Vec::new(),
-                        }
-                        .admit()
-                        .expect("valid volume declaration"),
-                    ),
+                    ployz_core::RawVolumeSource::Bind {
+                        machine_path: MachinePath::parse("/data")
+                            .expect("fixture bind path is valid"),
+                        create_machine_path: false,
+                        propagation: Some(BindPropagation::Private),
+                        recursive: Some(BindRecursive::Disabled),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                    ployz_core::RawVolumeSource::External {
+                        name: DockerVolumeName::parse("shared")
+                            .expect("fixture external Volume name is valid"),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                    service_volume().source,
+                    named_volume_with_driver().source,
+                    provisioned_volume_source(),
+                    ployz_core::RawVolumeSource::Tmpfs {
+                        size_bytes: Some(64),
+                        mode: Some(0o755),
+                        options: Vec::new(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
                 ]
-            },
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -367,11 +350,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HealthcheckSpec",
         Shape::InternallyTagged {
-            decodes: decodes::<HealthcheckSpec>,
-            examples: || {
+            evidence: &RustEvidence::<HealthcheckSpec>(|| {
                 vec![
-                    to_value(&HealthcheckSpec::Disabled),
-                    to_value(&HealthcheckSpec::Configured(ConfiguredHealthcheck {
+                    HealthcheckSpec::Disabled,
+                    HealthcheckSpec::Configured(ConfiguredHealthcheck {
                         test: HealthcheckCommand::parse(["CMD", "true"])
                             .expect("fixture healthcheck command is valid"),
                         interval_millis: None,
@@ -379,9 +361,9 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         start_period_millis: None,
                         start_interval_millis: None,
                         retries: None,
-                    })),
+                    }),
                 ]
-            },
+            }),
             tag: "state",
             params: "",
             variants: &[
@@ -403,17 +385,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "RestartPolicy",
         Shape::InternallyTagged {
-            decodes: decodes::<RestartPolicy>,
-            examples: || {
+            evidence: &RustEvidence::<RestartPolicy>(|| {
                 vec![
-                    to_value(&RestartPolicy::No),
-                    to_value(&RestartPolicy::Always),
-                    to_value(&RestartPolicy::UnlessStopped),
-                    to_value(&RestartPolicy::OnFailure {
+                    RestartPolicy::No,
+                    RestartPolicy::Always,
+                    RestartPolicy::UnlessStopped,
+                    RestartPolicy::OnFailure {
                         maximum_retry_count: Some(2),
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "name",
             params: "",
             variants: &[
@@ -696,21 +677,20 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DockerVolumeStorageObservation",
         Shape::InternallyTagged {
-            decodes: decodes::<DockerVolumeStorageObservation>,
-            examples: || {
+            evidence: &RustEvidence::<DockerVolumeStorageObservation>(|| {
                 vec![
-                    to_value(&DockerVolumeStorageObservation::Plain {
+                    DockerVolumeStorageObservation::Plain {
                         driver: "local".into(),
-                    }),
-                    to_value(&DockerVolumeStorageObservation::Provisioned {
+                    },
+                    DockerVolumeStorageObservation::Provisioned {
                         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data")
                             .expect("fixture mountpoint is valid"),
                         bound_bytes: NonZeroU64::new(1_073_741_824)
                             .expect("fixture Provisioned Volume bound is positive"),
                         used_bytes: 966_367_642,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -758,18 +738,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "CreateVolumeReport",
         Shape::InternallyTagged {
-            decodes: decodes::<CreateVolumeReport>,
-            examples: || {
+            evidence: &RustEvidence::<CreateVolumeReport>(|| {
                 vec![
-                    to_value(&CreateVolumeReport::Verified {
+                    CreateVolumeReport::Verified {
                         volume: docker_volume(),
-                    }),
-                    to_value(&CreateVolumeReport::Unverified {
+                    },
+                    CreateVolumeReport::Unverified {
                         id: docker_volume().id,
                         error: rpc_error(),
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "verification",
             params: "",
             variants: &[
@@ -794,14 +773,13 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "VolumeRemovalOutcome",
         Shape::InternallyTagged {
-            decodes: decodes::<VolumeRemovalOutcome>,
-            examples: || {
+            evidence: &RustEvidence::<VolumeRemovalOutcome>(|| {
                 vec![
-                    to_value(&VolumeRemovalOutcome::Removed),
-                    to_value(&VolumeRemovalOutcome::Failed { error: rpc_error() }),
-                    to_value(&VolumeRemovalOutcome::Omitted),
+                    VolumeRemovalOutcome::Removed,
+                    VolumeRemovalOutcome::Failed { error: rpc_error() },
+                    VolumeRemovalOutcome::Omitted,
                 ]
-            },
+            }),
             tag: "status",
             params: "",
             variants: &[
@@ -821,8 +799,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DataLoss",
         Shape::InternallyTagged {
-            decodes: decodes::<DataLoss>,
-            examples: || vec![to_value(&data_loss())],
+            evidence: &RustEvidence::<DataLoss>(|| vec![data_loss()]),
             tag: "kind",
             params: "",
             variants: &[("docker_volume", &[("id", "DockerVolumeId")])],
@@ -919,23 +896,22 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ContainerRuntimeObservation",
         Shape::InternallyTagged {
-            decodes: decodes::<ContainerRuntimeObservation>,
-            examples: || {
+            evidence: &RustEvidence::<ContainerRuntimeObservation>(|| {
                 vec![
-                    to_value(&ContainerRuntimeObservation::Created),
-                    to_value(&ContainerRuntimeObservation::Running {
+                    ContainerRuntimeObservation::Created,
+                    ContainerRuntimeObservation::Running {
                         health: HealthObservation::Healthy,
-                    }),
-                    to_value(&ContainerRuntimeObservation::Paused),
-                    to_value(&ContainerRuntimeObservation::Restarting),
-                    to_value(&ContainerRuntimeObservation::Exited { code: 0 }),
-                    to_value(&ContainerRuntimeObservation::Removing),
-                    to_value(&ContainerRuntimeObservation::Dead),
-                    to_value(&ContainerRuntimeObservation::Unknown {
+                    },
+                    ContainerRuntimeObservation::Paused,
+                    ContainerRuntimeObservation::Restarting,
+                    ContainerRuntimeObservation::Exited { code: 0 },
+                    ContainerRuntimeObservation::Removing,
+                    ContainerRuntimeObservation::Dead,
+                    ContainerRuntimeObservation::Unknown {
                         raw: json!({ "Status": "hibernating", "ExitCode": 0 }),
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "state",
             params: "",
             variants: &[
@@ -995,8 +971,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployWarning",
         Shape::InternallyTagged {
-            decodes: decodes::<DeployWarning>,
-            examples: || deploy_warnings().iter().map(to_value).collect(),
+            evidence: &RustEvidence::<DeployWarning>(|| deploy_warnings().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -1099,8 +1074,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "OperationStatus",
         Shape::InternallyTagged {
-            decodes: decodes::<OperationStatus>,
-            examples: || operation_statuses().iter().map(to_value).collect(),
+            evidence: &RustEvidence::<OperationStatus>(|| operation_statuses().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -1115,8 +1089,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "OperationPhase",
         Shape::InternallyTagged {
-            decodes: decodes::<OperationPhase>,
-            examples: || operation_phases().iter().map(to_value).collect(),
+            evidence: &RustEvidence::<OperationPhase>(|| operation_phases().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -1150,15 +1123,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployEvent",
         Shape::InternallyTagged {
-            decodes: decodes::<DeployEvent>,
-            examples: || {
+            evidence: &RustEvidence::<DeployEvent>(|| {
                 vec![
-                    to_value(&deploy_event_progress()),
-                    to_value(&DeployEvent::Outcome {
+                    deploy_event_progress(),
+                    DeployEvent::Outcome {
                         outcome: deploy_outcome(),
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1201,8 +1173,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployOperation",
         Shape::InternallyTagged {
-            decodes: decodes::<DeployOperation>,
-            examples: || deploy_operations().iter().map(to_value).collect(),
+            evidence: &RustEvidence::<DeployOperation>(|| deploy_operations().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -1285,16 +1256,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HealthFailure",
         Shape::InternallyTagged {
-            decodes: decodes::<HealthFailure>,
-            examples: || {
+            evidence: &RustEvidence::<HealthFailure>(|| {
                 vec![
-                    to_value(&HealthFailure::Cancelled),
-                    to_value(&HealthFailure::TimedOut),
-                    to_value(&HealthFailure::Runtime {
+                    HealthFailure::Cancelled,
+                    HealthFailure::TimedOut,
+                    HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Restarting,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1307,16 +1277,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HookFailure",
         Shape::InternallyTagged {
-            decodes: decodes::<HookFailure>,
-            examples: || {
+            evidence: &RustEvidence::<HookFailure>(|| {
                 vec![
-                    to_value(&HookFailure::Cancelled { stop_error: None }),
-                    to_value(&HookFailure::TimedOut {
+                    HookFailure::Cancelled { stop_error: None },
+                    HookFailure::TimedOut {
                         stop_error: Some(rpc_error()),
-                    }),
-                    to_value(&HookFailure::Exit { code: 7 }),
+                    },
+                    HookFailure::Exit { code: 7 },
                 ]
-            },
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1329,18 +1298,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DependencyHealthFailure",
         Shape::InternallyTagged {
-            decodes: decodes::<DependencyHealthFailure>,
-            examples: || {
+            evidence: &RustEvidence::<DependencyHealthFailure>(|| {
                 vec![
-                    to_value(&DependencyHealthFailure::Cancelled),
-                    to_value(&DependencyHealthFailure::NoContainers),
-                    to_value(&DependencyHealthFailure::Observation { error: rpc_error() }),
-                    to_value(&DependencyHealthFailure::Container {
+                    DependencyHealthFailure::Cancelled,
+                    DependencyHealthFailure::NoContainers,
+                    DependencyHealthFailure::Observation { error: rpc_error() },
+                    DependencyHealthFailure::Container {
                         container_id: container_id(),
                         failure: HealthFailure::TimedOut,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1360,26 +1328,25 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ExecutionError",
         Shape::InternallyTagged {
-            decodes: decodes::<ExecutionError>,
-            examples: || {
+            evidence: &RustEvidence::<ExecutionError>(|| {
                 vec![
-                    to_value(&execution_error_machine()),
-                    to_value(&ExecutionError::Health {
+                    execution_error_machine(),
+                    ExecutionError::Health {
                         container_id: container_id(),
                         failure: HealthFailure::TimedOut,
-                    }),
-                    to_value(&ExecutionError::DependencyHealth {
+                    },
+                    ExecutionError::DependencyHealth {
                         dependency: QualifiedService::parse("app/db")
                             .expect("fixture has a valid qualified Service name"),
                         failure: DependencyHealthFailure::NoContainers,
-                    }),
-                    to_value(&ExecutionError::Hook {
+                    },
+                    ExecutionError::Hook {
                         container_id: container_id(),
                         failure: HookFailure::Exit { code: 1 },
-                    }),
-                    to_value(&ExecutionError::Cancelled),
+                    },
+                    ExecutionError::Cancelled,
                 ]
-            },
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1412,15 +1379,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "StopAttempt",
         Shape::InternallyTagged {
-            decodes: decodes::<StopAttempt<ExecutionError>>,
-            examples: || {
+            evidence: &RustEvidence::<StopAttempt<ExecutionError>>(|| {
                 vec![
-                    to_value(&StopAttempt::<ExecutionError>::Stopped),
-                    to_value(&StopAttempt::Failed {
+                    StopAttempt::<ExecutionError>::Stopped,
+                    StopAttempt::Failed {
                         error: ExecutionError::Cancelled,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[("stopped", &[]), ("failed", &[("error", "E")])],
@@ -1429,16 +1395,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "RestartAttempt",
         Shape::InternallyTagged {
-            decodes: decodes::<RestartAttempt<ExecutionError>>,
-            examples: || {
+            evidence: &RustEvidence::<RestartAttempt<ExecutionError>>(|| {
                 vec![
-                    to_value(&RestartAttempt::<ExecutionError>::NotAttempted),
-                    to_value(&RestartAttempt::<ExecutionError>::Restarted),
-                    to_value(&RestartAttempt::Failed {
+                    RestartAttempt::<ExecutionError>::NotAttempted,
+                    RestartAttempt::<ExecutionError>::Restarted,
+                    RestartAttempt::Failed {
                         error: ExecutionError::Cancelled,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1451,18 +1416,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ReplacementCompensation",
         Shape::InternallyTagged {
-            decodes: decodes::<ReplacementCompensation<ExecutionError>>,
-            examples: || {
+            evidence: &RustEvidence::<ReplacementCompensation<ExecutionError>>(|| {
                 vec![
-                    to_value(&ReplacementCompensation::<ExecutionError>::StartFirst {
+                    ReplacementCompensation::<ExecutionError>::StartFirst {
                         stop_new_container: StopAttempt::Stopped,
-                    }),
-                    to_value(&ReplacementCompensation::<ExecutionError>::StopFirst {
+                    },
+                    ReplacementCompensation::<ExecutionError>::StopFirst {
                         stop_new_container: StopAttempt::Stopped,
                         restart_old_container: RestartAttempt::NotAttempted,
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1480,22 +1444,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "FailedOperation",
         Shape::InternallyTagged {
-            decodes: decodes::<FailedOperation<ExecutionError>>,
-            examples: || {
+            evidence: &RustEvidence::<FailedOperation<ExecutionError>>(|| {
                 let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
                     panic!("failed fixture is Failed");
                 };
                 vec![
-                    to_value(&failed),
-                    to_value(&FailedOperation::ReplacementHealth {
+                    failed,
+                    FailedOperation::ReplacementHealth {
                         operation: replacement_operation(),
                         error: execution_error_machine(),
                         compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
                             stop_new_container: StopAttempt::Stopped,
                         },
-                    }),
+                    },
                 ]
-            },
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1517,13 +1480,9 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployOutcome",
         Shape::InternallyTagged {
-            decodes: decodes::<DeployOutcome<ExecutionError>>,
-            examples: || {
-                vec![
-                    to_value(&deploy_outcome()),
-                    to_value(&deploy_outcome_failed()),
-                ]
-            },
+            evidence: &RustEvidence::<DeployOutcome<ExecutionError>>(|| {
+                vec![deploy_outcome(), deploy_outcome_failed()]
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1713,7 +1672,3 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
 ];
-
-fn decodes<T: DeserializeOwned>(value: Value) -> bool {
-    serde_json::from_value::<T>(value).is_ok()
-}
