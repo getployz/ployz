@@ -24,7 +24,7 @@ const sdk = require(dir);
 
 function assertFrame(frame, label) {
   if (!frame || typeof frame !== "object") {
-    throw new Error(`${label} must be a RuntimeWatchFrame object`);
+    throw new Error(`${label} must be a RuntimeWatchView object`);
   }
   if (!Array.isArray(frame.volumes) || frame.volumes.length === 0) {
     throw new Error(`${label} must carry replicated Docker Volumes`);

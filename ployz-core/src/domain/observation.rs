@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
 use thiserror::Error;
 use ts_rs::TS;
@@ -22,13 +22,10 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
 /// On the wire, a known state is `{ "state": "running", ... }`. A value this
 /// reader cannot classify is `{ "state": "unrecognized", "raw": <as observed> }`,
 /// so every reader sees a closed set of `state` spellings and a newer reader
-/// recovers the observed value from `raw`.
+/// recovers the observed value from `raw`. A known `state` with malformed
+/// fields is an error, not an unknown state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(
-    tag = "state",
-    rename_all = "snake_case",
-    from = "ContainerRuntimeObservationWire"
-)]
+#[serde(tag = "state", rename_all = "snake_case", remote = "Self")]
 pub enum ContainerRuntimeObservation {
     Created,
     Running {
@@ -47,49 +44,41 @@ pub enum ContainerRuntimeObservation {
     },
 }
 
-/// A known state decodes as itself; anything else is kept as observed.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ContainerRuntimeObservationWire {
-    Known(KnownContainerRuntimeObservation),
-    Unknown(Value),
+/// The `state` spellings this reader classifies; anything else is kept as observed.
+const KNOWN_STATES: [&str; 8] = [
+    "created",
+    "running",
+    "paused",
+    "restarting",
+    "exited",
+    "removing",
+    "dead",
+    "unrecognized",
+];
+
+impl Serialize for ContainerRuntimeObservation {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // `remote = "Self"` turns the derive into an inherent fn.
+        Self::serialize(self, serializer)
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum KnownContainerRuntimeObservation {
-    Created,
-    Running {
-        health: HealthObservation,
-    },
-    Paused,
-    Restarting,
-    Exited {
-        code: i64,
-    },
-    Removing,
-    Dead,
-    #[serde(rename = "unrecognized")]
-    Unknown {
-        raw: Value,
-    },
-}
-
-impl From<ContainerRuntimeObservationWire> for ContainerRuntimeObservation {
-    fn from(wire: ContainerRuntimeObservationWire) -> Self {
-        use KnownContainerRuntimeObservation as Known;
-        match wire {
-            ContainerRuntimeObservationWire::Known(Known::Created) => Self::Created,
-            ContainerRuntimeObservationWire::Known(Known::Running { health }) => {
-                Self::Running { health }
+impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        match Self::deserialize(&raw) {
+            Ok(observation) => Ok(observation),
+            Err(error) => {
+                let known_state = raw
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .is_some_and(|state| KNOWN_STATES.contains(&state));
+                if known_state {
+                    Err(D::Error::custom(error))
+                } else {
+                    Ok(Self::Unknown { raw })
+                }
             }
-            ContainerRuntimeObservationWire::Known(Known::Paused) => Self::Paused,
-            ContainerRuntimeObservationWire::Known(Known::Restarting) => Self::Restarting,
-            ContainerRuntimeObservationWire::Known(Known::Exited { code }) => Self::Exited { code },
-            ContainerRuntimeObservationWire::Known(Known::Removing) => Self::Removing,
-            ContainerRuntimeObservationWire::Known(Known::Dead) => Self::Dead,
-            ContainerRuntimeObservationWire::Known(Known::Unknown { raw })
-            | ContainerRuntimeObservationWire::Unknown(raw) => Self::Unknown { raw },
         }
     }
 }
@@ -449,11 +438,46 @@ impl TryFrom<Container> for HookContainer {
 mod tests {
     use std::collections::BTreeMap;
 
+    #[test]
+    fn known_states_name_every_variant_spelling() {
+        let variants = [
+            ContainerRuntimeObservation::Created,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            ContainerRuntimeObservation::Paused,
+            ContainerRuntimeObservation::Restarting,
+            ContainerRuntimeObservation::Exited { code: 0 },
+            ContainerRuntimeObservation::Removing,
+            ContainerRuntimeObservation::Dead,
+            ContainerRuntimeObservation::Unknown { raw: Value::Null },
+        ];
+        let spellings: Vec<String> = variants
+            .iter()
+            .map(|variant| {
+                serde_json::to_value(variant)
+                    .unwrap()
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(spellings, KNOWN_STATES);
+        assert!(
+            serde_json::from_value::<ContainerRuntimeObservation>(
+                serde_json::json!({ "state": "running" })
+            )
+            .is_err()
+        );
+    }
+
     use serde_json::json;
 
     use super::{
         Container, ContainerKind, ContainerObservation, ContainerRoleError,
-        ContainerRuntimeObservation, HealthObservation, HookContainer, ServiceContainer,
+        ContainerRuntimeObservation, HealthObservation, HookContainer, KNOWN_STATES,
+        ServiceContainer, Value,
     };
     use crate::{ContainerId, MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName};
 

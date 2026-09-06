@@ -427,7 +427,9 @@ export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "uns
 
 export type RttStatistics = { median_ns: number, population_stddev_ns: number, };
 
-export type RuntimeWatchFrame = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, 
+export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<IngressHost>, };
+
+export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, 
 /**
  * Hosted DNS hostname only; never the renewal token or endpoint.
  */
@@ -436,8 +438,6 @@ hosted_dns_hostname: string | null, incomplete_ids: RuntimeWatchIncompleteIds,
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */
 observed_at: string, };
-
-export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<IngressHost>, };
 
 export type ScopedVolumeSource = { project: ProjectName, logical_name: DockerVolumeName, };
 

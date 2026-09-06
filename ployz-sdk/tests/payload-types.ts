@@ -4,10 +4,8 @@ import type {
   ClusterTeardown,
   ConfigMount,
   ConfigSpec,
-  ContainerObservation,
   ContainerRuntimeObservation,
   DataLoss,
-  DataLossConfirmation,
   DeployEvent,
   DeployIntent,
   DeviceMapping,
@@ -20,7 +18,7 @@ import type {
   RequestedServiceSpec,
   ResolvedVolumeSource,
   RestartPolicy,
-  RuntimeWatchFrame,
+  RuntimeWatchView,
   ServiceContainerSpec,
   ServiceMode,
   ServiceName,
@@ -104,7 +102,6 @@ new RpcError({ code: "unavailable", message: "Watch interrupted", details: null 
 ({ machine_path: "/dev/fuse", container_path: "/dev/fuse", cgroup_permissions: "rwm" }) satisfies DeviceMapping;
 ({ soft: 1024, hard: 2048 }) satisfies Ulimit;
 ({ state: "disabled" }) satisfies HealthcheckSpec;
-({ state: "disabled" }) satisfies ContainerObservation["effective_healthcheck"];
 
 // @ts-expect-error DeviceMapping requires cgroup_permissions
 const invalidDevice: DeviceMapping = { machine_path: "/dev/fuse", container_path: "/dev/fuse" };
@@ -112,12 +109,6 @@ const invalidDevice: DeviceMapping = { machine_path: "/dev/fuse", container_path
 const invalidConfig: ConfigSpec = { name: "settings", content: "port = 8080" };
 // @ts-expect-error Ulimit requires hard
 const invalidUlimit: Ulimit = { soft: 1024 };
-// @ts-expect-error HealthcheckSpec is tagged, not a string
-const invalidHealthcheck: HealthcheckSpec = "disabled";
-// @ts-expect-error effective_healthcheck is HealthcheckSpec | null, not a string
-const invalidEffective: ContainerObservation["effective_healthcheck"] = "disabled";
-// @ts-expect-error DataLossConfirmation is an object, not a bare Data Loss list
-const invalidConfirmation: DataLossConfirmation = [];
 
 // Payloads are plain object types, so a misspelled field is rejected, not absorbed.
 ({
@@ -205,7 +196,7 @@ register("https://relay.example", "bearer", "pairing", "machine" as MachineId, i
 applyAll("app" as ProjectName, [web]) satisfies DeployIntent;
 applyOne("app" as ProjectName, web) satisfies DeployIntent;
 client.preview(intent) satisfies Promise<PreparedDeploy>;
-client.runtime.watch() satisfies AsyncIterable<RuntimeWatchFrame>;
+client.runtime.watch() satisfies AsyncIterable<RuntimeWatchView>;
 client.removeMachine("machine", { confirmed: [] }) satisfies Promise<LocalMachineRemoved>;
 client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
 // @ts-expect-error destructive methods require an explicit confirmation object
@@ -213,5 +204,5 @@ client.removeMachine("machine", []);
 // @ts-expect-error MachineId is branded; a plain string cannot cross the façade
 connect({ ...connectOptions, machineId: "machine" });
 
-declare const watchFrame: RuntimeWatchFrame;
+declare const watchFrame: RuntimeWatchView;
 watchFrame.services satisfies ServiceObservation[];

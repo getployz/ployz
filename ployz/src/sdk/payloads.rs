@@ -32,20 +32,18 @@ impl Declarations {
         if !self.seen.insert(TypeId::of::<T>()) {
             return;
         }
+        // `output_path` is `Some` for types with their own declaration and `None`
+        // for primitives and containers, which only contribute dependencies.
         if T::output_path().is_some() {
             let name = T::ident(&self.config);
             let declaration = T::decl(&self.config);
-            match self.by_name.get(&name) {
-                None => {
-                    self.by_name.insert(name, declaration);
-                }
-                Some(existing) => assert_eq!(
-                    existing, &declaration,
+            if let Some(previous) = self.by_name.insert(name.clone(), declaration.clone()) {
+                assert_eq!(
+                    previous, declaration,
                     "two Rust types declare the TypeScript name {name}"
-                ),
+                );
             }
         }
-        T::visit_generics(self);
         T::visit_dependencies(self);
     }
 }

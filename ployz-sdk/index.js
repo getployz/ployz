@@ -2,7 +2,7 @@
 
 // ponytail: specifiers are computed so bundlers cannot follow require into the
 // .node binary. Nitro/Vinxi emit this file as ESM without CJS module globals.
-const localBinding = [".", "ployz-sdk.node"].join("/"); // scripts/check-sdk-package.sh, tests
+const localBinding = [".", "ployz-sdk.node"].join("/"); // tests
 const bindingPackage = `@ployz/sdk-${process.platform}-${process.arch}`;
 let native;
 for (const specifier of [localBinding, bindingPackage]) {

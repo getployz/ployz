@@ -82,8 +82,9 @@ pub enum RawVolumeSource {
 }
 
 /// A source admitted from a raw declaration, or retained from a resolved observation.
-/// Its scoping state is private and cannot be asserted by a user-supplied label.
-/// Scoped observations serialize only through [`ResolvedVolumeSource`], never as raw input.
+/// Its scoping state is private and cannot be asserted by a user-supplied label: the
+/// wire form is the raw declaration, and observed scope travels only on
+/// [`ResolvedVolumeSource`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "RawVolumeSource", into = "RawVolumeSource")]
 #[ts(as = "RawVolumeSource")]
@@ -233,8 +234,7 @@ pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
 
 /// A positive maximum byte count for one Provisioned Volume.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(try_from = "i64", into = "i64")]
-#[ts(as = "i64")]
+#[serde(try_from = "u64", into = "u64")]
 pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
 
 impl ProvisionedVolumeMaximumBytes {
@@ -257,28 +257,23 @@ impl Display for ProvisionedVolumeMaximumBytes {
     }
 }
 
-impl TryFrom<i64> for ProvisionedVolumeMaximumBytes {
+impl TryFrom<u64> for ProvisionedVolumeMaximumBytes {
     type Error = ValueError;
 
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        u64::try_from(value)
-            .ok()
-            .and_then(NonZeroU64::new)
-            .map(Self)
-            .ok_or_else(|| {
-                ValueError::new(
-                    "Provisioned Volume maximum bytes",
-                    value.to_string(),
-                    "a positive byte count",
-                )
-            })
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        NonZeroU64::new(value).map(Self).ok_or_else(|| {
+            ValueError::new(
+                "Provisioned Volume maximum bytes",
+                value.to_string(),
+                "a positive byte count",
+            )
+        })
     }
 }
 
-impl From<ProvisionedVolumeMaximumBytes> for i64 {
+impl From<ProvisionedVolumeMaximumBytes> for u64 {
     fn from(value: ProvisionedVolumeMaximumBytes) -> Self {
-        // Admission never accepts a value above i64::MAX.
-        i64::try_from(value.get()).unwrap_or(i64::MAX)
+        value.get()
     }
 }
 

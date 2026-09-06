@@ -54,20 +54,20 @@ fn provisioned_volume_sources_carry_required_positive_byte_counts() {
     });
     let source: VolumeSource = serde_json::from_value(valid.clone()).unwrap();
     assert_eq!(serde_json::to_value(source).unwrap(), valid);
-    let exact_i64_max = json!({
+    let exact_u64_max = json!({
         "kind": "provisioned",
         "name": "data",
-        "maximum_bytes": i64::MAX,
+        "maximum_bytes": u64::MAX,
         "labels": {}
     });
-    let source: VolumeSource = serde_json::from_value(exact_i64_max.clone()).unwrap();
-    assert_eq!(serde_json::to_value(source).unwrap(), exact_i64_max);
+    let source: VolumeSource = serde_json::from_value(exact_u64_max.clone()).unwrap();
+    assert_eq!(serde_json::to_value(source).unwrap(), exact_u64_max);
     for invalid in [
         r#"{"kind":"provisioned","name":"data"}"#,
         r#"{"kind":"provisioned","name":"data","maximum_bytes":0}"#,
         r#"{"kind":"provisioned","name":"data","maximum_bytes":-1}"#,
         r#"{"kind":"provisioned","name":"data","maximum_bytes":"1073741824"}"#,
-        r#"{"kind":"provisioned","name":"data","maximum_bytes":9223372036854775808}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":18446744073709551616}"#,
     ] {
         assert!(serde_json::from_str::<VolumeSource>(invalid).is_err());
     }
@@ -614,6 +614,10 @@ fn unknown_observation_variants_preserve_the_raw_value() {
 
     let health: HealthObservation = serde_json::from_str("\"degraded\"").unwrap();
     assert_eq!(health, HealthObservation::Unrecognized("degraded".into()));
+
+    // A known state with malformed fields is an error, not a future state.
+    serde_json::from_value::<ContainerRuntimeObservation>(json!({ "state": "running" }))
+        .unwrap_err();
 
     let known_with_addition: ContainerRuntimeObservation = serde_json::from_value(json!({
         "state": "running",

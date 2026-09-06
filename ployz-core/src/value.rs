@@ -122,13 +122,11 @@ macro_rules! hex_id_newtype {
 
         /// Branded on the TypeScript side: an identity is never interchangeable
         /// with a selector or another identity, even though both are strings.
+        /// Hand-written because `#[ts(type = "...")]` takes only a literal, and
+        /// the brand carries the type name.
         impl TS for $name {
             type WithoutGenerics = Self;
             type OptionInnerType = Self;
-
-            fn ident(_: &ts_rs::Config) -> String {
-                stringify!($name).to_owned()
-            }
 
             fn name(_: &ts_rs::Config) -> String {
                 stringify!($name).to_owned()
@@ -142,14 +140,8 @@ macro_rules! hex_id_newtype {
                 format!("type {} = {};", Self::name(cfg), Self::inline(cfg))
             }
 
-            fn decl_concrete(cfg: &ts_rs::Config) -> String {
-                Self::decl(cfg)
-            }
-
-            fn inline_flattened(_: &ts_rs::Config) -> String {
-                panic!("a branded identity cannot be flattened")
-            }
-
+            // `Some` marks a type with its own declaration; the path itself is
+            // never written. Primitives return `None`.
             fn output_path() -> Option<std::path::PathBuf> {
                 Some(std::path::PathBuf::from(concat!(stringify!($name), ".ts")))
             }

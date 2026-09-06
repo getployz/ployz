@@ -32,7 +32,6 @@ mod payloads;
 /// The public SDK Watch frame: the RPC frame plus the Services this observer
 /// derives from its Containers. The RPC frame carries only Container observations.
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
-#[ts(rename = "RuntimeWatchFrame")]
 pub struct RuntimeWatchView {
     #[serde(flatten)]
     pub frame: RuntimeWatchFrame,
