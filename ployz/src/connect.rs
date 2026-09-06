@@ -30,6 +30,7 @@ use crate::context::{
 };
 
 mod relay;
+pub(crate) use relay::{list_held, revoke_pairing as revoke_cloud_pairing};
 
 pub use crate::cluster::{Client, MachineImagesObservation};
 pub use ployz_relay::{DialCredential, HeldRegister, PairingCredential};
@@ -470,33 +471,6 @@ pub async fn connect(
         Path::new(DEFAULT_LOCAL_SOCKET),
     )?;
     connect_selected_with(selected, Arc::new(SystemConnector::default())).await
-}
-
-/// Revoke the Cloud Pairing so Register with that Pairing Credential fails afterwards.
-///
-/// # Errors
-///
-/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected.
-pub(crate) async fn revoke_cloud_pairing(
-    url: &str,
-    credential: &DialCredential,
-    pairing: &PairingCredential,
-) -> Result<(), ConnectError> {
-    relay::revoke_pairing(url, credential, pairing).await
-}
-
-/// List Machines currently holding Register for this pairing.
-///
-/// # Errors
-///
-/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
-/// or another [`ConnectError`] when the Relay call fails.
-pub(crate) async fn list_held(
-    url: &str,
-    credential: &DialCredential,
-    pairing: &PairingCredential,
-) -> Result<Vec<HeldRegister>, ConnectError> {
-    relay::list_held(url, credential, pairing).await
 }
 
 /// Open a Machine RPC channel through Cloud Relay.

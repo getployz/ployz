@@ -1,6 +1,6 @@
 //! Façade tests for Cloud session `runtime.watch`.
 
-use std::{path::PathBuf, process::Command, time::Duration};
+use std::time::Duration;
 
 use ployz::sdk;
 use ployz_core::{
@@ -15,7 +15,8 @@ use tokio::time::timeout;
 use tonic::{Request, Status, codec::CompressionEncoding};
 
 use super::relay::{self, FakeMachine, RelaySession};
-use super::support::{DescribeOutcome, DiscoveryService, native_addon, serve_discovery};
+use super::sdk::advertised_description;
+use super::support::{DescribeOutcome, DiscoveryService, serve_discovery};
 
 const FROZEN_FRAME: &str =
     include_str!("../../../ployz-core/tests/fixtures/runtime_watch_frame.json");
@@ -409,39 +410,9 @@ async fn node_watch_decodes_frames_above_tonics_default() {
     let _machine = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_watch.js");
-    let url = session.url.clone();
-    let machine_id = description.machine_id.as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", machine_id)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node Watch smoke must not hang")
-    .expect("Node Watch smoke task joins")
-    .expect("Node Watch smoke spawns");
-
-    assert!(
-        output.status.success(),
-        "Node Watch smoke failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script("node_watch.js", description.machine_id, &[])
+        .await;
     assert_eq!(
         service
             .watch_opens
@@ -524,17 +495,6 @@ async fn wait_watch_rpc_dropped(service: &DiscoveryService) {
     })
     .await
     .expect("cancel must drop the Watch RPC without another next()");
-}
-
-fn advertised_description() -> ContractDescription {
-    ContractDescription {
-        machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "do-not-branch-on-me".into(),
-        capabilities: [CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
-            .expect("catalogued capability names are valid")]
-        .into(),
-    }
 }
 
 fn watch_description() -> ContractDescription {

@@ -239,7 +239,7 @@ fn text_param(params: &[Value], index: usize) -> &str {
         .expect("statement parameter")
 }
 
-fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes {
+pub(crate) fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes {
     let mut body = serde_json::to_vec(&json!({ "columns": columns })).unwrap();
     for (index, row) in rows.into_iter().enumerate() {
         body.extend(serde_json::to_vec(&json!({ "row": [index as u64 + 1, row] })).unwrap());

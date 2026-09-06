@@ -2,7 +2,7 @@
 
 use super::{ingress, observation, reserved};
 use crate::{
-    corrosion::{ApiClient, ReplicatedStore},
+    corrosion::{ApiClient, ReplicatedStore, fake_cluster::events},
     ingress::caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     ingress::watch_caddy,
 };
@@ -625,11 +625,9 @@ struct Statement {
 
 async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    if statement.query == "SELECT value FROM cluster WHERE key = ?" {
-        query_events(&["value"], [vec![json!("caddy")]])
-    } else if statement.query == "SELECT id, machine_id, container FROM containers ORDER BY id" {
+    if statement.query == "SELECT id, machine_id, container FROM containers ORDER BY id" {
         let containers = state.containers.lock().unwrap();
-        query_events(
+        events(
             &["id", "machine_id", "container"],
             containers.iter().map(|container| {
                 vec![
@@ -640,7 +638,7 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
             }),
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
-        query_events(&["hostname", "body"], [])
+        events(&["hostname", "body"], [])
     } else {
         panic!("unexpected query {}", statement.query);
     }
@@ -678,15 +676,6 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     Response::new(Body::from_stream(
         UnboundedReceiverStream::new(receiver).map(Ok::<_, Infallible>),
     ))
-}
-
-fn query_events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes {
-    let mut body = serde_json::to_vec(&json!({ "columns": columns })).unwrap();
-    for (index, row) in rows.into_iter().enumerate() {
-        body.extend(serde_json::to_vec(&json!({ "row": [index as u64 + 1, row] })).unwrap());
-    }
-    body.extend(br#"{"eoq":{"time":0.0}}"#);
-    body.into()
 }
 
 async fn wait_for_caddyfile(path: &Path, expected: &str) -> String {

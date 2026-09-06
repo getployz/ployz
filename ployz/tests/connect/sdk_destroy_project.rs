@@ -1,6 +1,6 @@
 //! Façade tests for Cloud session Project destroy with named Data Loss.
 
-use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz::deploy::VolumeFate;
 use ployz::sdk;
@@ -10,9 +10,8 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{
-    DiscoveryService, confirmation, machine, native_addon, owned_volume, volume_id,
-};
+use super::support::{DiscoveryService, confirmation, machine};
+use super::support::{owned_volume, volume_id};
 
 struct ProjectVolumes {
     shop_data: DockerVolumeId,
@@ -183,41 +182,16 @@ async fn node_destroy_project_covers_volumes_and_unconfirmed_missing_names() {
     let (description, volumes, service) = project_cluster();
     let session = RelaySession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_destroy_project.js");
-    let url = session.url.clone();
-    let entry = description.machine_id.as_str().to_owned();
-    let machine_id = volumes.shop_data.machine_id.as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", entry)
-                .env("PLOYZ_VOLUME_MACHINE_ID", machine_id)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node Project destroy must not hang")
-    .expect("Node Project destroy task joins")
-    .expect("Node Project destroy spawns");
-
-    assert!(
-        output.status.success(),
-        "Node Project destroy failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script(
+            "node_destroy_project.js",
+            description.machine_id,
+            &[(
+                "PLOYZ_VOLUME_MACHINE_ID",
+                volumes.shop_data.machine_id.as_str(),
+            )],
+        )
+        .await;
 }
 
 async fn project_session() -> (

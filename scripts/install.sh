@@ -473,7 +473,7 @@ install_binaries() {
     tmp_dir=$(mktemp -d)
     # shellcheck disable=SC2064
     trap "rm -rf '$tmp_dir'" EXIT
-    # TODO(artifact integrity): verify ployzd checksums or signatures if Ployz publishes them; this boundary intentionally relies on TLS alone.
+    # Daemon downloads currently rely on TLS; published checksums are not verified here.
     if [ -n "${PLOYZ_RELEASE_DIR:-}" ]; then
         cp "$PLOYZ_RELEASE_DIR/$archive" "$tmp_dir/$archive" || error "PLOYZ_RELEASE_DIR is missing $archive"
     else

@@ -1,7 +1,9 @@
 use std::{
     io,
     net::Ipv4Addr,
+    path::PathBuf,
     pin::Pin,
+    process::Command,
     task::{Context, Poll},
     time::Duration,
 };
@@ -108,6 +110,38 @@ pub(super) struct RelaySession {
 }
 
 impl RelaySession {
+    pub(super) async fn assert_sdk_script(
+        &self,
+        script: &str,
+        machine_id: MachineId,
+        environment: &[(&str, &str)],
+    ) {
+        let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ployz-sdk");
+        let output = timeout(
+            Duration::from_secs(20),
+            tokio::process::Command::new("node")
+                .arg(package.join("tests").join(script))
+                .env("PLOYZ_SDK_ADDON", native_addon())
+                .env("PLOYZ_SDK_PACKAGE", package)
+                .env("PLOYZ_RELAY_URL", &self.url)
+                .env("PLOYZ_BEARER", DIAL)
+                .env("PLOYZ_PAIRING", PAIRING)
+                .env("PLOYZ_MACHINE_ID", machine_id.as_str())
+                .envs(environment.iter().copied())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{script} exceeded 20 seconds"))
+        .unwrap_or_else(|error| panic!("{script} could not start: {error}"));
+        assert!(
+            output.status.success(),
+            "{script} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     pub(super) async fn start() -> Self {
         let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
         let listen = (Ipv4Addr::LOCALHOST, 0).into();
@@ -224,4 +258,40 @@ fn pairing_credential() -> PairingCredential {
 
 fn dial_credential() -> DialCredential {
     DialCredential::parse(DIAL).unwrap()
+}
+
+fn native_addon() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.join("..");
+    let target = option_env!("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join("target"));
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let names = ["libployz_sdk.so", "libployz_sdk.dylib", "ployz_sdk.dll"];
+    for name in names {
+        let path = target.join(profile).join(name);
+        if path.is_file() {
+            return path;
+        }
+    }
+    let status = Command::new("cargo")
+        .args(["build", "-p", "ployz-sdk", "--locked"])
+        .current_dir(&workspace)
+        .status()
+        .expect("cargo build -p ployz-sdk");
+    assert!(status.success(), "cargo build -p ployz-sdk failed");
+    for name in names {
+        let path = target.join(profile).join(name);
+        if path.is_file() {
+            return path;
+        }
+    }
+    panic!(
+        "ployz-sdk cdylib was not produced under {}",
+        target.join(profile).display()
+    );
 }

@@ -2,8 +2,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,
     num::NonZeroU64,
-    path::PathBuf,
-    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -555,7 +553,7 @@ impl MachineRpc for DiscoveryService {
                     },
                     options: Default::default(),
                     labels: Default::default(),
-                    storage: DockerVolumeStorageObservation::Plain {
+                    storage: ployz_core::DockerVolumeStorageObservation::Plain {
                         driver: "local".into(),
                     },
                 }],
@@ -904,6 +902,40 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
     )
 }
 
+pub(super) fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
+    DockerVolumeId {
+        machine_id,
+        name: DockerVolumeName::parse(name).unwrap(),
+    }
+}
+
+pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
+    DockerVolume {
+        id: volume_id(machine_id, name),
+        options: Default::default(),
+        labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    }
+}
+
+pub(super) fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
+    DockerVolume {
+        labels: BTreeMap::from([
+            (MANAGED_LABEL.to_owned(), String::new()),
+            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
+        ]),
+        ..docker_volume(machine_id, name)
+    }
+}
+
+pub(super) fn machine_named(id: &MachineId, name: &str) -> MachineObservation {
+    let mut observation = machine('a', name);
+    observation.machine.id = *id;
+    observation
+}
+
 pub(super) fn machine_id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
@@ -945,72 +977,4 @@ pub(super) async fn connected_client(
     .await
     .unwrap();
     (client, server, connects)
-}
-
-pub(super) fn native_addon() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.join("..");
-    let target = option_env!("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target"));
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let names = ["libployz_sdk.so", "libployz_sdk.dylib", "ployz_sdk.dll"];
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-    let status = Command::new("cargo")
-        .args(["build", "-p", "ployz-sdk", "--locked"])
-        .current_dir(&workspace)
-        .status()
-        .expect("cargo build -p ployz-sdk");
-    assert!(status.success(), "cargo build -p ployz-sdk failed");
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-    panic!(
-        "ployz-sdk cdylib was not produced under {}",
-        target.join(profile).display()
-    );
-}
-
-pub(super) fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
-    DockerVolumeId {
-        machine_id,
-        name: DockerVolumeName::parse(name).unwrap(),
-    }
-}
-
-pub(super) fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
-    DockerVolume {
-        id: volume_id(machine_id, name),
-        options: Default::default(),
-        labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
-        ]),
-        storage: DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
-}
-
-pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
-    DockerVolume {
-        id: volume_id(machine_id, name),
-        options: Default::default(),
-        labels: Default::default(),
-        storage: DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
 }

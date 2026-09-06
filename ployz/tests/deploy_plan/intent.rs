@@ -277,14 +277,6 @@ fn web_db_worker() -> (
     (db, web, worker, dependencies)
 }
 
-fn spec(name: &str) -> RequestedServiceSpec {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    requested.name = ServiceName::parse(name).unwrap();
-    requested
-}
-
 fn attempt(name: &str) -> ServiceAttempt {
     ServiceAttempt {
         name: ServiceName::parse(name).unwrap(),

@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, net::IpAddr};
 use ipnet::IpNet;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
-    MachineTarget, MachineUpdate, MachineUpdateError, MembershipObservation, NameMatches,
-    PublicIpUpdate, RttStatistics, WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
-    apply_machine_update, associate_wireguard_peers, rtt_statistics, synthesize_membership,
+    MachineUpdate, MachineUpdateError, MembershipObservation, PublicIpUpdate, RttStatistics,
+    WireGuardDevice, WireGuardPeer, WireGuardPublicKey, apply_machine_update,
+    associate_wireguard_peers, rtt_statistics, synthesize_membership,
 };
 
 #[test]
@@ -109,27 +109,6 @@ fn membership_is_responder_relative_and_keeps_duplicate_names() {
 }
 
 #[test]
-fn selector_resolution_prefers_ids_and_preserves_name_ambiguity() {
-    let first = machine('1', "duplicate", 1);
-    let second = machine('2', "duplicate", 2);
-    let id_collision = machine('3', first.id.as_str(), 3);
-    let visible = [first.clone(), second.clone(), id_collision];
-
-    assert_eq!(
-        MachineTarget::from(&first.id).resolve(&visible),
-        NameMatches::One(&first)
-    );
-    assert_eq!(
-        MachineTarget::parse("duplicate").unwrap().resolve(&visible),
-        NameMatches::Ambiguous {
-            first: &first,
-            second: &second,
-            rest: vec![]
-        }
-    );
-}
-
-#[test]
 fn rtt_statistics_use_median_and_population_standard_deviation() {
     assert_eq!(rtt_statistics(&[]), None);
     assert_eq!(
@@ -146,7 +125,6 @@ fn rtt_statistics_use_median_and_population_standard_deviation() {
 
 #[test]
 fn rtt_statistics_keep_sub_millisecond_samples() {
-    assert_eq!(rtt_statistics(&[]), None);
     assert_eq!(
         rtt_statistics(&[0.0]),
         Some(RttStatistics {

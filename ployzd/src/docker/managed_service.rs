@@ -2,11 +2,11 @@ use bollard::{
     Docker,
     errors::Error as DockerError,
     models::{ContainerCreateBody, ContainerInspectResponse},
-    query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    },
+    query_parameters::{CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder},
 };
-use futures_util::TryStreamExt;
+use ployz_core::PullPolicy;
+
+use crate::docker_image::{is_not_found, prepare_image};
 
 use super::{Error, LocalDocker};
 
@@ -102,32 +102,11 @@ impl ManagedService {
         Ok(())
     }
 
-    async fn prepare_image(&self, docker: &Docker) -> Result<(), DockerError> {
-        if let Err(error) = docker.inspect_image(self.image).await {
-            if !is_not_found(&error) {
-                return Err(error);
-            }
-            docker
-                .create_image(
-                    Some(
-                        CreateImageOptionsBuilder::default()
-                            .from_image(self.image)
-                            .build(),
-                    ),
-                    None,
-                    None,
-                )
-                .try_collect::<Vec<_>>()
-                .await?;
-        }
-        Ok(())
-    }
-
     async fn create_host(&self, config: ContainerCreateBody) -> Result<(), DockerError> {
         let Engine::Host(docker) = &self.engine else {
             unreachable!()
         };
-        self.prepare_image(docker).await?;
+        prepare_image(docker, self.image, PullPolicy::Missing).await?;
         docker
             .create_container(
                 Some(
@@ -145,7 +124,7 @@ impl ManagedService {
         let Engine::Endpoint(docker) = &self.engine else {
             unreachable!()
         };
-        self.prepare_image(&docker.client).await?;
+        prepare_image(&docker.client, self.image, PullPolicy::Missing).await?;
         docker
             .create_container(
                 Some(
@@ -190,16 +169,6 @@ impl ManagedService {
             Engine::Endpoint(docker) => &docker.client,
         }
     }
-}
-
-fn is_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
 }
 
 fn is_already_stopped(error: &DockerError) -> bool {

@@ -1,6 +1,6 @@
 //! Façade tests for Cloud session Cluster destroy with named Data Loss.
 
-use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz::sdk;
 use ployz_core::{
@@ -10,9 +10,8 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{
-    DiscoveryService, confirmation, docker_volume, machine, native_addon, owned_volume, volume_id,
-};
+use super::support::{DiscoveryService, confirmation, machine};
+use super::support::{docker_volume, owned_volume, volume_id};
 
 struct ClusterLoss {
     shop_data: DockerVolumeId,
@@ -120,45 +119,17 @@ async fn node_destroy_cluster_covers_teardown_and_unconfirmed_missing_names() {
     let (description, loss, worker, _down, service) = cluster_fixture();
     let session = RelaySession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_destroy_cluster.js");
-    let url = session.url.clone();
-    let entry = description.machine_id.as_str().to_owned();
-    let worker_id = worker.machine.id.as_str().to_owned();
-    let scratch_machine = loss.scratch.machine_id.as_str().to_owned();
-    let shop_machine = loss.shop_data.machine_id.as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", entry)
-                .env("PLOYZ_WORKER_MACHINE", worker_id)
-                .env("PLOYZ_SCRATCH_MACHINE_ID", scratch_machine)
-                .env("PLOYZ_SHOP_MACHINE_ID", shop_machine)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node Cluster destroy must not hang")
-    .expect("Node Cluster destroy task joins")
-    .expect("Node Cluster destroy spawns");
-
-    assert!(
-        output.status.success(),
-        "Node Cluster destroy failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script(
+            "node_destroy_cluster.js",
+            description.machine_id,
+            &[
+                ("PLOYZ_WORKER_MACHINE", worker.machine.id.as_str()),
+                ("PLOYZ_SCRATCH_MACHINE_ID", loss.scratch.machine_id.as_str()),
+                ("PLOYZ_SHOP_MACHINE_ID", loss.shop_data.machine_id.as_str()),
+            ],
+        )
+        .await;
 }
 
 async fn cluster_session() -> (

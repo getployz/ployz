@@ -1,6 +1,6 @@
 //! Façade tests for one-shot Machine RPC Register over Relay Dial.
 
-use std::{path::PathBuf, process::Command, time::Duration};
+use std::time::Duration;
 
 use ployz::sdk;
 use ployz_core::{
@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
 use super::sdk::advertised_description;
-use super::support::{DiscoveryService, native_addon};
+use super::support::DiscoveryService;
 
 #[tokio::test]
 async fn list_held_then_register_returns_registered_and_closes_the_dial() {
@@ -196,43 +196,16 @@ async fn node_smoke_covers_list_held_then_register() {
     wait_held(&session.url, description.machine_id).await;
     wait_held(&session.url, not_quiet_id).await;
 
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_register.js");
-    let url = session.url.clone();
-    let machine_id = description.machine_id.as_str().to_owned();
-    let not_quiet = not_quiet_id.as_str().to_owned();
-    let unknown = MachineId::random().as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", machine_id)
-                .env("PLOYZ_NOT_QUIET_MACHINE_ID", not_quiet)
-                .env("PLOYZ_UNKNOWN_MACHINE_ID", unknown)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node register smoke must not hang")
-    .expect("Node register smoke task joins")
-    .expect("Node register smoke spawns");
-
-    assert!(
-        output.status.success(),
-        "Node register smoke failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script(
+            "node_register.js",
+            description.machine_id,
+            &[
+                ("PLOYZ_NOT_QUIET_MACHINE_ID", not_quiet_id.as_str()),
+                ("PLOYZ_UNKNOWN_MACHINE_ID", MachineId::random().as_str()),
+            ],
+        )
+        .await;
 }
 
 async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
