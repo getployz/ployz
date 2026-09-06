@@ -143,8 +143,7 @@ impl Cluster {
                 .into_inner(),
         )?
         .decode::<op::Inspect>()?
-        .rtts
-        .clone())
+        .rtts)
     }
 
     pub(super) async fn machine_token(

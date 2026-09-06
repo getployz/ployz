@@ -1592,15 +1592,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_inspect_projects_address_runtime_and_created_nanos() {
-        let typed: ContainerInspectResponse = serde_json::from_value(inspect_json()).unwrap();
-        assert_eq!(
-            projected(&RawContainerInspect::from_typed(&typed).unwrap()),
-            expected_typed_projection()
-        );
-    }
-
-    #[test]
     fn typed_and_raw_inspect_project_equivalent_observations() {
         let value = inspect_json();
         let typed: ContainerInspectResponse = serde_json::from_value(value.clone()).unwrap();

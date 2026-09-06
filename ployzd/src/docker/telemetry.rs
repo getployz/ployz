@@ -218,8 +218,7 @@ mod tests {
         .unwrap();
         let capacity = BridgeEndpointCapacity::new(usable, attachments.len() as u64);
 
-        assert_eq!(capacity.usable_endpoints(), 6);
-        assert_eq!(capacity.attached_endpoints(), 2);
+        assert_eq!(usable, 6);
         assert_eq!(capacity.free_endpoints(), 4);
     }
 
@@ -229,8 +228,7 @@ mod tests {
         let usable = usable_endpoint_count(&[ipam("10.0.0.0/29", None, "10.0.0.1", &[])]).unwrap();
         let capacity = BridgeEndpointCapacity::new(usable, attachments.len() as u64);
 
-        assert_eq!(capacity.usable_endpoints(), 5);
-        assert_eq!(capacity.attached_endpoints(), 5);
+        assert_eq!(usable, 5);
         assert_eq!(capacity.free_endpoints(), 0);
     }
 

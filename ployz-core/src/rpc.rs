@@ -14,7 +14,6 @@ use crate::{
     ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
     MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
     PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
-    framing::{FramingError, grpc_frame_payload},
 };
 
 mod docker;
@@ -125,11 +124,6 @@ impl OpaquePayload {
 
     pub fn decode_json<T: DeserializeOwned>(&self) -> Result<T, CodecError> {
         serde_json::from_slice(&self.json).map_err(CodecError::DecodeJson)
-    }
-
-    pub fn decode_grpc_frame(frame: &[u8]) -> Result<Self, FramingError> {
-        Self::decode(grpc_frame_payload(frame)?)
-            .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
     }
 
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {

@@ -153,9 +153,7 @@ fn unselected_target_spec_is_not_an_applied_conflict() {
         ProjectName::parse("app").unwrap(),
         vec![api, web.clone()],
         PlanOptions {
-            selected: vec![ServiceAttempt {
-                name: web.name.clone(),
-            }],
+            selected: vec![ServiceAttempt { name: web.name }],
             ..PlanOptions::default()
         },
     );
@@ -243,9 +241,7 @@ fn unselected_cluster_domain_spec_does_not_require_a_domain() {
         ProjectName::parse("app").unwrap(),
         vec![api, web.clone()],
         PlanOptions {
-            selected: vec![ServiceAttempt {
-                name: web.name.clone(),
-            }],
+            selected: vec![ServiceAttempt { name: web.name }],
             ..PlanOptions::default()
         },
     );

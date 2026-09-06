@@ -9,7 +9,6 @@ use std::{
 
 use ployz_core::{CloudPairing, PairingCredential, RelayEndpoint};
 use ployz_relay::{ClientError, Open, RegisterRequest, RelayClient, TunnelIo};
-use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::watch,
@@ -26,13 +25,6 @@ pub struct RegisterHold {
     task: JoinHandle<()>,
 }
 
-/// Failures holding Cloud Relay Register.
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(transparent)]
-    Client(#[from] ClientError),
-}
-
 /// Hold Register: hello with Machine ID, Pairing Credential bearer, echo pings,
 /// and Attach each Open to serve Machine RPC.
 ///
@@ -43,7 +35,7 @@ pub async fn hold_register(
     url: &RelayEndpoint,
     pairing: &PairingCredential,
     machine_api: MachineApi,
-) -> Result<RegisterHold, Error> {
+) -> Result<RegisterHold, ClientError> {
     let client = RelayClient::new(url)?;
     let machine_id = machine_api.machine_id();
     let mut ws = client.register(pairing.as_str(), &machine_id).await?;
@@ -206,7 +198,7 @@ mod tests {
     use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Error, hold_register, register_retry_delay, run};
+    use super::{hold_register, register_retry_delay, run};
     use crate::{machine::LocalMachineStore, machine_api::MachineApi};
 
     const PAIRING: &str = "pairing-secret";
@@ -340,17 +332,13 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_relay_fails() {
-        let error = match hold_register(
+        let result = hold_register(
             &RelayEndpoint::parse("http://127.0.0.1:1").unwrap(),
             &secret(),
             test_api().1,
         )
-        .await
-        {
-            Ok(_) => panic!("expected unreachable Relay to fail"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, Error::Client(_)));
+        .await;
+        assert!(result.is_err(), "expected unreachable Relay to fail");
     }
 
     #[tokio::test]

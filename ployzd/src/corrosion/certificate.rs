@@ -641,16 +641,6 @@ mod tests {
     }
 
     #[test]
-    fn issued_write_replaces_the_row() {
-        let issued = issued_material();
-        let row = CertificateRow::issued(issued.clone());
-        assert_eq!(row.material(), Some(&issued));
-        assert_eq!(row.challenge(), None);
-        assert_eq!(row.last_error(), None);
-        assert_eq!(row.clock(), None);
-    }
-
-    #[test]
     fn error_write_keeps_issued_material() {
         let issued = issued_material();
         let row = CertificateRow::issued(issued.clone()).with_error("refused");

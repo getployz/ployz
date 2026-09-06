@@ -15,7 +15,7 @@ use super::*;
 #[tokio::test]
 #[ignore = "requires Docker and the pinned Corrosion image"]
 async fn docker_volume_events_and_rescans_publish_named_local_observations() {
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let mut corrosion = crate::corrosion::CorrosionConfig::new(
         root.0.join("corrosion"),
         root.0.join("run"),

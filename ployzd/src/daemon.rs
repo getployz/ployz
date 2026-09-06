@@ -737,21 +737,8 @@ mod tests {
     use super::{
         ContainerMode, Daemon, DaemonConfig, wait_for_participation, wait_until_socket_accepts,
     };
+    use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
-
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new(prefix: &str) -> Self {
-            Self(std::env::temp_dir().join(format!("{prefix}-{}", ployz_core::MachineId::random())))
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn unused_address() -> SocketAddr {
         TcpListener::bind("127.0.0.1:0")

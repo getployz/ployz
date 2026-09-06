@@ -119,12 +119,6 @@ pub(crate) enum InitializeMode {
     Resume,
 }
 
-impl From<bool> for InitializeMode {
-    fn from(resumed: bool) -> Self {
-        if resumed { Self::Resume } else { Self::New }
-    }
-}
-
 /// One enroll POST body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Response {
@@ -344,7 +338,11 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             storage,
             dial: None,
         } => Ok(Response::Initialize {
-            mode: resumed.into(),
+            mode: if resumed {
+                InitializeMode::Resume
+            } else {
+                InitializeMode::New
+            },
             pairing,
             storage,
         }),

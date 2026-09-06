@@ -218,7 +218,8 @@ fn ssh_base_args(
             "-o".into(),
             format!(
                 "ControlPersist={}",
-                std::env::var("PLOYZ_SSH_CONTROL_PERSIST").unwrap_or_else(|_| "10m".into())
+                std::env::var(crate::cli::env::SSH_CONTROL_PERSIST)
+                    .unwrap_or_else(|_| "10m".into())
             ),
         ]);
     }

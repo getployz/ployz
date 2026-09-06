@@ -29,6 +29,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+use crate::test_dir::TestDir;
+
 // ponytail: serialize tests sharing fixed Docker resources; use unique names if parallelism matters.
 static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const TEST_GATEWAY: MachineGateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
@@ -83,7 +85,7 @@ async fn image_ingest_reconciles_observed_docker_state_on_every_open() {
 #[ignore = "requires Docker and alpine:3.23.3"]
 async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     let _lock = DOCKER_NETWORK_LOCK.lock().await;
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await
         .unwrap();
@@ -248,7 +250,7 @@ async fn concurrent_runtime_creates_admit_only_one_last_bridge_endpoint() {
     if !created_network {
         return;
     }
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await
         .unwrap();
@@ -306,7 +308,7 @@ async fn concurrent_runtime_creates_admit_only_one_last_bridge_endpoint() {
 #[ignore = "requires Docker and alpine:3.23.3"]
 async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     let _lock = DOCKER_NETWORK_LOCK.lock().await;
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await
         .unwrap();
@@ -559,7 +561,7 @@ async fn cleanup_ployz_network(docker: &Docker, created: bool) {
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let runtime = ContainerRuntime::open(root.0.join("machine.db"))
         .await
         .unwrap();
@@ -596,7 +598,7 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
 async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     fs::create_dir_all(root.0.join("bind")).unwrap();
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await
@@ -820,7 +822,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
 #[tokio::test]
 #[ignore = "requires Docker, alpine:3.23.3, and the pinned Corrosion image"]
 async fn docker_events_and_rescans_publish_redacted_local_observations() {
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let mut corrosion = crate::corrosion::CorrosionConfig::new(
         root.0.join("corrosion"),
         root.0.join("run"),
@@ -1169,18 +1171,4 @@ fn unused_address() -> std::net::SocketAddr {
         .unwrap()
         .local_addr()
         .unwrap()
-}
-
-struct TestRoot(PathBuf);
-
-impl TestRoot {
-    fn new() -> Self {
-        Self(std::env::temp_dir().join(format!("ployzd-docker-observer-{}", MachineId::random())))
-    }
-}
-
-impl Drop for TestRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
 }

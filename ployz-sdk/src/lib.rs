@@ -9,10 +9,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::{
-    DataLossConfirmation, DeployIntent, ProjectName, RegisterRequest, RemoveVolumesRequest,
-    RpcError, RpcErrorCode,
-};
+use ployz_core::{DataLossConfirmation, ProjectName, RemoveVolumesRequest, RpcError, RpcErrorCode};
 
 /// npm package name.
 #[must_use]
@@ -73,7 +70,7 @@ impl Client {
     #[napi]
     pub async fn about(&self) -> Result<serde_json::Value> {
         let description = self.inner.about().await.map_err(rpc_to_napi)?;
-        serde_json::to_value(&description).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&description)
     }
 
     /// Open a Runtime Watch stream of complete frames.
@@ -95,10 +92,10 @@ impl Client {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when `intent` is not
-    /// [`DeployIntent`] data, the session is closed, or planning fails.
+    /// [`DeployIntent`](ployz_core::DeployIntent) data, the session is closed, or planning fails.
     #[napi]
     pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
-        let intent = parse_intent(intent)?;
+        let intent = serde_json::from_value(intent).map_err(invalid_json)?;
         let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
     }
@@ -149,7 +146,7 @@ impl Client {
             .remove_volumes(request)
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&result).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&result)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.
@@ -168,7 +165,7 @@ impl Client {
             .data_loss_if_machine_removed(&machine)
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&observed)
     }
 
     /// Remove `machine` after an exact Data Loss confirmation.
@@ -195,7 +192,7 @@ impl Client {
             .remove_machine(&machine, &confirm_data_loss)
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&removed).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&removed)
     }
 
     /// Live Observation of Data Loss that destroying `project_name` would cause.
@@ -219,7 +216,7 @@ impl Client {
             .data_loss_if_project_destroyed(&project_name, volume_fate(destroy_volumes))
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&observed)
     }
 
     /// Destroy `project_name` after an exact Data Loss confirmation.
@@ -252,7 +249,7 @@ impl Client {
             )
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&outcome)
     }
 
     /// Live Observation of Data Loss that destroying this Cluster would cause.
@@ -270,7 +267,7 @@ impl Client {
             .data_loss_if_cluster_destroyed()
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&observed)
     }
 
     /// Destroy this Cluster after an exact Data Loss confirmation.
@@ -296,7 +293,7 @@ impl Client {
             .destroy_cluster(&confirm_data_loss)
             .await
             .map_err(rpc_to_napi)?;
-        serde_json::to_value(&teardown).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&teardown)
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
@@ -315,8 +312,7 @@ impl DeployPreviewHandle {
     /// Returns when the preview cannot be encoded as JSON.
     #[napi]
     pub fn payload(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(self.inner.preview())
-            .map_err(|error| Error::from_reason(error.to_string()))
+        to_json(self.inner.preview())
     }
 
     /// Execute these operations. Illegal after a previous confirm.
@@ -348,9 +344,7 @@ impl RunningDeployHandle {
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
-            Some(event) => serde_json::to_value(&event)
-                .map(Some)
-                .map_err(|error| Error::from_reason(error.to_string())),
+            Some(event) => to_json(&event).map(Some),
             None => Ok(None),
         }
     }
@@ -363,7 +357,7 @@ impl RunningDeployHandle {
     #[napi]
     pub async fn finished(&self) -> Result<serde_json::Value> {
         let outcome = self.inner.finished().await;
-        serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(&outcome)
     }
 }
 
@@ -378,9 +372,7 @@ impl WatchStream {
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
-            Ok(Some(frame)) => serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame))
-                .map(Some)
-                .map_err(|error| Error::from_reason(error.to_string())),
+            Ok(Some(frame)) => to_json(&ployz_sdk_payloads::runtime_watch_view(&frame)).map(Some),
             Ok(None) => Ok(None),
             Err(error) => Err(rpc_to_napi(error)),
         }
@@ -430,11 +422,11 @@ pub async fn register(
     machine_id: String,
     identity: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let identity = parse_register(identity)?;
+    let identity = serde_json::from_value(identity).map_err(invalid_json)?;
     let registered = sdk::register(&relay_url, &bearer, &pairing, &machine_id, identity)
         .await
         .map_err(rpc_to_napi)?;
-    serde_json::to_value(&registered).map_err(|error| Error::from_reason(error.to_string()))
+    to_json(&registered)
 }
 
 /// List Machines currently holding Register for this pairing.
@@ -482,12 +474,8 @@ fn volume_fate(destroy_volumes: bool) -> ployz::deploy::VolumeFate {
     }
 }
 
-fn parse_intent(intent: serde_json::Value) -> Result<DeployIntent> {
-    serde_json::from_value(intent).map_err(invalid_json)
-}
-
-fn parse_register(identity: serde_json::Value) -> Result<RegisterRequest> {
-    serde_json::from_value(identity).map_err(invalid_json)
+fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
+    serde_json::to_value(value).map_err(|error| Error::from_reason(error.to_string()))
 }
 
 fn invalid_json(error: serde_json::Error) -> Error {

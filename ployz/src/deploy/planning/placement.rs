@@ -258,7 +258,7 @@ pub(super) fn plan_global(
         })
     });
     if requested.pre_deploy.is_some() && hook_machine.is_none() && has_changes {
-        return Err(capacity_error.clone());
+        return Err(capacity_error);
     }
 
     for machine in machines {
@@ -278,7 +278,7 @@ pub(super) fn plan_global(
             let demand =
                 endpoint_demand(EndpointOperation::Replace, hook_machine == Some(machine_id));
             if !placement.capacity.reserve(&machine_id, demand) {
-                return Err(capacity_error.clone());
+                return Err(capacity_error);
             }
             used.insert(observation.container_id);
             for other in on_machine(current, machine_id) {
@@ -319,7 +319,7 @@ pub(super) fn plan_global(
             let demand =
                 endpoint_demand(EndpointOperation::Create, hook_machine == Some(machine_id));
             if !placement.capacity.reserve(&machine_id, demand) {
-                return Err(capacity_error.clone());
+                return Err(capacity_error);
             }
             placement
                 .sockets

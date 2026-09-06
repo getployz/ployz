@@ -307,7 +307,7 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
     let partial = preview_deploy(
         &DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
-            web.clone(),
+            web,
             PlanOptions::default(),
         ),
         &snapshot,

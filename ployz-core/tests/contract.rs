@@ -293,15 +293,11 @@ fn qualified_service_ingress_label_rejects_more_than_63_characters() {
 }
 
 #[test]
-fn machine_name_rejects_spaces() {
+fn machine_name_rejects_spaces_uppercase_and_empty_strings() {
     assert_eq!(
         MachineName::parse("BAD NAME").unwrap_err().to_string(),
         "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
     );
-}
-
-#[test]
-fn machine_name_rejects_uppercase_and_empty_strings() {
     assert_eq!(
         MachineName::parse("Vultr1").unwrap_err().to_string(),
         "invalid Machine Name \"Vultr1\": a 1-63 character lowercase DNS label"

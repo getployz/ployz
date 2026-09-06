@@ -19,7 +19,7 @@ use crate::{
     operator::{
         ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
-        select_proxy_container, service_logs_use_compose,
+        select_proxy_container,
     },
 };
 
@@ -105,7 +105,7 @@ pub(super) fn ingress_logs(root: &ArgMatches) -> Result<(), Error> {
 fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let options = log_options(leaf)?;
-    let (args, context, compose_selection) = if service_logs_use_compose(&explicit) {
+    let (args, context, compose_selection) = if explicit.is_empty() {
         let project = load_project(&LoadOptions {
             command: "logs".into(),
             files: string_values(leaf, "file")

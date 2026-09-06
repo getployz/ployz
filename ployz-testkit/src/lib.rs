@@ -13,55 +13,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use ployz_core::MACHINE_API_PORT;
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_API_PORT, CORROSION_GOSSIP_PORT, ContainerId,
     DescribeContractRequest, DockerVolumeName, InitializeRequest, InspectRequest, JoinRequest,
-    ListImagesRequest, LocalMachinePhase, Machine, MachineName, MachineRpcClient,
+    ListImagesRequest, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineName, MachineRpcClient,
     MembershipObservation, OpaquePayload, Registered, ResetRequest, RpcResponse, RpcResponseBody,
     op,
 };
 use thiserror::Error;
 
 pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
-pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
-pub const CADDY_IMAGE: &str = "caddy:2.10.2";
-pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 const HOST_ENTRY_API_PORT: u16 = 51003;
 static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ImageTarget {
-    pub platform: &'static str,
-    pub requires: [&'static str; 7],
-}
-
-#[must_use]
-pub fn image_targets() -> [ImageTarget; 2] {
-    let requires = [
-        "ployzd",
-        "dockerd",
-        "wg",
-        CORROSION_IMAGE,
-        SERVICE_CONTAINER_IMAGE,
-        CADDY_IMAGE,
-        UNREGISTRY_IMAGE,
-    ];
-    [
-        ImageTarget {
-            platform: "linux/amd64",
-            requires,
-        },
-        ImageTarget {
-            platform: "linux/arm64",
-            requires,
-        },
-    ]
-}
 
 /// Per-Machine knobs that are not derived from the Cluster name.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1044,24 +1011,6 @@ mod tests {
                 "label=dev.ployz.testkit.cluster=l3-001",
             ]
         );
-
-        let targets = image_targets();
-        assert_eq!(
-            targets.map(|target| target.platform),
-            ["linux/amd64", "linux/arm64"]
-        );
-        assert!(targets.iter().all(|target| {
-            target.requires
-                == [
-                    "ployzd",
-                    "dockerd",
-                    "wg",
-                    CORROSION_IMAGE,
-                    SERVICE_CONTAINER_IMAGE,
-                    CADDY_IMAGE,
-                    UNREGISTRY_IMAGE,
-                ]
-        }));
     }
 
     #[tokio::test]

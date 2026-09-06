@@ -7,32 +7,14 @@ struct UnsupportedDaemonChannel;
 
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
-    pub const COMPOSE_DISABLE_ENV_FILE: &str = "COMPOSE_DISABLE_ENV_FILE";
     pub const COMPOSE_FILE: &str = "COMPOSE_FILE";
     pub const COMPOSE_PROJECT_NAME: &str = "COMPOSE_PROJECT_NAME";
     pub const CONFIG: &str = "PLOYZ_CONFIG";
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
     pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
-    pub const DEBUG: &str = "DEBUG";
-    pub const FAILED_CONTAINER_LOGS_TAIL: &str = "PLOYZ_FAILED_CONTAINER_LOGS_TAIL";
     pub const HEALTH_MONITOR_PERIOD: &str = "PLOYZ_HEALTH_MONITOR_PERIOD";
     pub const SSH_CONTROL_PERSIST: &str = "PLOYZ_SSH_CONTROL_PERSIST";
-
-    pub const ALL: &[&str] = &[
-        AUTO_CONFIRM,
-        COMPOSE_DISABLE_ENV_FILE,
-        COMPOSE_FILE,
-        COMPOSE_PROJECT_NAME,
-        CONFIG,
-        CONNECT,
-        CONTEXT,
-        DAEMON_VERSION,
-        DEBUG,
-        FAILED_CONTAINER_LOGS_TAIL,
-        HEALTH_MONITOR_PERIOD,
-        SSH_CONTROL_PERSIST,
-    ];
 }
 
 #[must_use]

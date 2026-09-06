@@ -101,7 +101,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         select_proxy_container(&hook_only),
         Err(OperatorError::NoHealthyContainer)
     ));
-    let mut duplicate_names = service.clone();
+    let mut duplicate_names = service;
     if let Some(slot) = duplicate_names.containers.get_mut(1) {
         let mut observation = slot.clone().into_observation();
         observation
@@ -170,8 +170,6 @@ fn exec_mode_resolves_cli_flags_without_detach_plus_tty() {
 
 #[test]
 fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
-    assert!(service_logs_use_compose(&[]));
-    assert!(!service_logs_use_compose(&["api".into()]));
     assert_eq!(
         parse_service_args(&strings([
             "api:one",
