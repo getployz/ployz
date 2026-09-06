@@ -28,3 +28,4 @@ hosted-dns-reservation	ployzd/src/hosted_dns.rs::successful_reservation_response
 deploy-plan-admission	-	ployz/tests/deploy_client.rs::confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_rows	-	-	-
 ingress-caddy-only	ployz-core/src/domain/ingress.rs::validators_reject_noncanonical_whole_spec_fields	ployz/tests/deploy_client.rs::ingress_deploy_builds_the_caddy_spec	-	-	-
 host-socket-placement	-	ployz/tests/deploy_plan/placement.rs::host_socket_placement_rejects_one_machine_and_uses_an_alternative	-	-	-
+runtime-watch-sharing	ployzd/src/runtime_watch_tests/shared.rs::clients_share_acquisition_without_backpressure_or_shared_cancellation	-	-	-	-

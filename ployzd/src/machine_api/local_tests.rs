@@ -350,7 +350,8 @@ async fn runtime_watch_without_a_cluster_store_is_unavailable() {
                 .unwrap(),
         ))
         .await
-        .unwrap_err();
+        .err()
+        .expect("Watch without a Cluster store must fail");
     assert_eq!(error.code(), Code::Unavailable);
     let _ = std::fs::remove_dir_all(data_dir);
 }

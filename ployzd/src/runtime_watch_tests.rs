@@ -895,7 +895,11 @@ fn serve_sampled_with_observations(
     )
 }
 
-async fn next_frame(stream: &mut crate::logs::RpcStream) -> ployz_core::RuntimeWatchFrame {
+async fn next_frame(
+    stream: &mut (
+             impl futures_util::Stream<Item = Result<ployz_core::OpaquePayload, tonic::Status>> + Unpin
+         ),
+) -> ployz_core::RuntimeWatchFrame {
     let payload = tokio::time::timeout(Duration::from_secs(1), stream.next())
         .await
         .expect("Watch frame")
@@ -916,3 +920,6 @@ fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchS
         hosted_dns: None,
     }
 }
+
+#[path = "runtime_watch_tests/shared.rs"]
+mod shared;
