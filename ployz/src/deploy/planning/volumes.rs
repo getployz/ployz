@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
     MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
-    ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceVolume,
+    ServiceMode, ServiceObservation, ServicePlacementEligibility, ServiceVolume,
     ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
@@ -11,10 +11,7 @@ use crate::deploy::{
     DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
 };
 
-use super::capacity::CapacityBudget;
-use super::placement::{
-    HostSockets, ReplicatedCapacityReservation, reserve_replicated_service_demand,
-};
+use super::placement::PlacementReservations;
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -417,11 +414,9 @@ pub(super) fn prepare_shared_replicated_volumes(
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &mut VolumePins,
-    capacity: &mut CapacityBudget,
+    placement: &mut PlacementReservations,
     options: &PlanOptions,
-) -> Result<Vec<(ServiceName, ReplicatedCapacityReservation)>, PlanError> {
-    let mut reservations = Vec::new();
-    let mut sockets = HostSockets::from_snapshot(snapshot);
+) -> Result<(), PlanError> {
     for component in shared_volume_components(volume_uses) {
         let anchor = shared_component_anchor(
             &component,
@@ -429,18 +424,12 @@ pub(super) fn prepare_shared_replicated_volumes(
             requested,
             observed_services,
             pins,
-            (capacity, &mut sockets),
+            placement,
             options,
         )?;
-        reservations.extend(anchor.capacity_reservations);
-        pin_shared_component(&component, anchor.machine_id, snapshot, pins);
+        pin_shared_component(&component, anchor, snapshot, pins);
     }
-    Ok(reservations)
-}
-
-struct SharedAnchor {
-    machine_id: MachineId,
-    capacity_reservations: Vec<(ServiceName, ReplicatedCapacityReservation)>,
+    Ok(())
 }
 
 fn shared_component_anchor(
@@ -449,10 +438,9 @@ fn shared_component_anchor(
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &VolumePins,
-    budget: (&mut CapacityBudget, &mut HostSockets),
+    placement: &mut PlacementReservations,
     options: &PlanOptions,
-) -> Result<SharedAnchor, PlanError> {
-    let (capacity, sockets) = budget;
+) -> Result<MachineId, PlanError> {
     let services = component
         .volumes
         .iter()
@@ -477,46 +465,20 @@ fn shared_component_anchor(
             no_eligible_shared(component, snapshot, pins),
         ));
     }
-    let mut admission_error = capacity.error_for(&eligible);
+    let requested = requested
+        .iter()
+        .filter(|spec| services.contains_key(spec.name.as_str()));
+    let mut admission_error = None;
     for machine_id in eligible {
-        let mut projected = capacity.clone();
-        let mut projected_sockets = sockets.clone();
-        let projected_services = requested
-            .iter()
-            .filter(|spec| services.contains_key(spec.name.as_str()))
-            .map(|spec| {
-                let observed = observed_services
-                    .iter()
-                    .find(|service| service.identity.name == spec.name);
-                reserve_replicated_service_demand(
-                    &mut projected,
-                    &mut projected_sockets,
-                    spec,
-                    observed,
-                    machine_id,
-                    options,
-                )
-                .map(|reservation| (spec.name.clone(), reservation))
-            })
-            .collect::<Result<Vec<_>, _>>();
-        let capacity_reservations = match projected_services {
-            Ok(reservations) => reservations,
-            Err(error) => {
-                admission_error = error;
-                continue;
-            }
-        };
-        *capacity = projected;
-        *sockets = projected_sockets;
-        return Ok(SharedAnchor {
-            machine_id,
-            capacity_reservations,
-        });
+        match placement.reserve_on(machine_id, requested.clone(), observed_services, options) {
+            Ok(()) => return Ok(machine_id),
+            Err(error) => admission_error = Some(error),
+        }
     }
     Err(super::service_error(
         true,
         first_service_name,
-        admission_error,
+        admission_error.expect("non-empty eligible Machines were tried"),
     ))
 }
 

@@ -18,10 +18,9 @@ pub(super) mod capacity;
 mod placement;
 mod volumes;
 
-use capacity::CapacityBudget;
 use placement::{
-    CapacityAdmission, GlobalPlacement, PlacementState, ReplicatedPlacement, is_up_to_date,
-    plan_global, plan_replicated,
+    CapacityAdmission, GlobalPlacement, PlacementReservations, PlacementState, ReplicatedPlacement,
+    is_up_to_date, plan_global, plan_replicated,
 };
 use volumes::{
     VolumePins, constrain_volume_candidates, managed_volume_uses, plan_volume_operations,
@@ -355,21 +354,17 @@ fn assemble_plan(
     pins.validate_provisioned_volume_definitions(&target, snapshot)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
-    let mut capacity = CapacityBudget::from_snapshot(snapshot);
-    let reservations = prepare_shared_replicated_volumes(
+    let mut reservations = PlacementReservations::new(snapshot);
+    prepare_shared_replicated_volumes(
         &volume_uses,
         snapshot,
         &requested,
         &services,
         &mut pins,
-        &mut capacity,
+        &mut reservations,
         &intent.options,
     )?;
-    let mut placement = PlacementState::new(
-        capacity,
-        placement::HostSockets::from_snapshot(snapshot),
-        reservations,
-    );
+    let mut placement = reservations.into_placement(snapshot);
     let mut service_operations = Vec::new();
     for spec in &requested {
         let operations = plan_one_service(
@@ -682,13 +677,12 @@ fn plan_one_service(
     }
     plan_volume_operations(requested, snapshot, pins, &mut machines)?;
     let (service_operations, hook_machine) = match requested.mode {
-        ServiceMode::Replicated { replicas } => plan_replicated(
+        ServiceMode::Replicated { .. } => plan_replicated(
             requested,
             &service_id,
             current,
             ReplicatedPlacement {
                 machines,
-                replicas: replicas.get() as usize,
                 admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
                     error: capacity_error.expect("unreserved capacity has relevant Machines"),
                 }),

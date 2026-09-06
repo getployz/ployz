@@ -1,20 +1,44 @@
 //! Shape catalog for generated `@ployz/sdk` TypeScript.
 
+use super::evidence::{RustEvidence, TaggedEvidence};
+use crate::values::{
+    container_id, data_loss, deploy_event_progress, deploy_operations, deploy_outcome,
+    deploy_outcome_failed, deploy_warnings, docker_volume, execution_error_machine, host_port,
+    ingress_host, ingress_port, named_volume_with_driver, operation_phases, operation_statuses,
+    provisioned_volume_source, replacement_operation, rpc_error, service_volume, to_value,
+};
 use ployz_core::{
-    CertificateAvailability, CertificateFailureKind, HealthObservation, MembershipObservation,
-    RpcErrorCode,
+    BindPropagation, BindRecursive, CertificateAvailability, CertificateFailureKind,
+    ConfiguredHealthcheck, ContainerKind, ContainerRuntimeObservation, CreateVolumeReport,
+    DataLoss, DependencyHealthFailure, DeployEvent, DeployOperation, DeployOutcome, DeployWarning,
+    DockerVolumeName, DockerVolumeStorageObservation, ExecutionError, FailedOperation,
+    HealthFailure, HealthObservation, HealthcheckCommand, HealthcheckSpec, HookFailure, HostBind,
+    HttpProtocol, IngressHostname, MachineAction, MachinePath, MachineStorageObservation,
+    MembershipObservation, ObservationKind, OperationPhase, OperationStatus, PortPublication,
+    PruneRefusal, PullPolicy, QualifiedService, ReplacementCompensation, RestartAttempt,
+    RestartPolicy, RpcErrorCode, ServiceMode, StopAttempt, StopContainerPurpose, StorageChoice,
+    TransportProtocol, UpdateOrder, VolumeRemovalOutcome, VolumeSource,
+};
+use serde_json::{Value, json};
+use std::{
+    net::IpAddr,
+    num::{NonZeroU32, NonZeroU64},
 };
 
 pub(super) enum Shape {
     Alias(&'static str),
     Branded,
     OpenString(&'static [&'static str]),
-    ClosedString(&'static [&'static str]),
+    ClosedString {
+        known: &'static [&'static str],
+        examples: fn() -> Vec<Value>,
+    },
     Object {
         params: &'static str,
         fields: &'static [(&'static str, &'static str)],
     },
     InternallyTagged {
+        evidence: &'static dyn TaggedEvidence,
         tag: &'static str,
         params: &'static str,
         variants: &'static [(&'static str, &'static [(&'static str, &'static str)])],
@@ -54,12 +78,44 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("PidMode", Shape::Alias("string")),
     (
         "PullPolicy",
-        Shape::ClosedString(&["always", "missing", "never"]),
+        Shape::ClosedString {
+            known: &["always", "missing", "never"],
+            examples: || {
+                vec![
+                    to_value(&PullPolicy::Always),
+                    to_value(&PullPolicy::Missing),
+                    to_value(&PullPolicy::Never),
+                ]
+            },
+        },
     ),
-    ("StorageChoice", Shape::ClosedString(&["none", "zfs"])),
+    (
+        "StorageChoice",
+        Shape::ClosedString {
+            known: &["none", "zfs"],
+            examples: || {
+                vec![
+                    to_value(&StorageChoice::None),
+                    to_value(&StorageChoice::Zfs),
+                ]
+            },
+        },
+    ),
     (
         "MachineStorageObservation",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<MachineStorageObservation>(|| {
+                vec![
+                    MachineStorageObservation::Stateless,
+                    MachineStorageObservation::Ready,
+                    MachineStorageObservation::Pool {
+                        size_bytes: NonZeroU64::new(4_294_967_296)
+                            .expect("fixture capacity is nonzero"),
+                        used_bytes: 3_865_470_566,
+                        free_bytes: 429_496_730,
+                    },
+                ]
+            }),
             tag: "state",
             params: "",
             variants: &[
@@ -78,13 +134,51 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "UpdateOrder",
-        Shape::ClosedString(&["start_first", "stop_first"]),
+        Shape::ClosedString {
+            known: &["start_first", "stop_first"],
+            examples: || {
+                vec![
+                    to_value(&UpdateOrder::StartFirst),
+                    to_value(&UpdateOrder::StopFirst),
+                ]
+            },
+        },
     ),
-    ("HttpProtocol", Shape::ClosedString(&["http", "https"])),
-    ("TransportProtocol", Shape::ClosedString(&["tcp", "udp"])),
+    (
+        "HttpProtocol",
+        Shape::ClosedString {
+            known: &["http", "https"],
+            examples: || {
+                vec![
+                    to_value(&HttpProtocol::Http),
+                    to_value(&HttpProtocol::Https),
+                ]
+            },
+        },
+    ),
+    (
+        "TransportProtocol",
+        Shape::ClosedString {
+            known: &["tcp", "udp"],
+            examples: || {
+                vec![
+                    to_value(&TransportProtocol::Tcp),
+                    to_value(&TransportProtocol::Udp),
+                ]
+            },
+        },
+    ),
     (
         "ServiceMode",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<ServiceMode>(|| {
+                vec![
+                    ServiceMode::Replicated {
+                        replicas: NonZeroU32::MIN,
+                    },
+                    ServiceMode::Global,
+                ]
+            }),
             tag: "mode",
             params: "",
             variants: &[("replicated", &[("replicas", "number")]), ("global", &[])],
@@ -101,6 +195,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "IngressHostname",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<IngressHostname>(|| {
+                vec![
+                    IngressHostname::cluster_domain(),
+                    IngressHostname::cluster_domain_label("api")
+                        .expect("fixture Cluster Domain label is valid"),
+                    IngressHostname::Explicit {
+                        hostname: ingress_host("app.example.com"),
+                    },
+                ]
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -112,6 +216,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HostBind",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<HostBind>(|| {
+                vec![
+                    HostBind::All,
+                    HostBind::Address {
+                        address: IpAddr::from([127, 0, 0, 1]),
+                    },
+                    serde_json::from_value::<HostBind>(
+                        json!({ "kind": "prefix", "prefix": "10.0.0.0/8" }),
+                    )
+                    .expect("fixture HostBind prefix is valid"),
+                ]
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -124,6 +240,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "PortPublication",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<PortPublication>(|| vec![ingress_port(), host_port()]),
             tag: "mode",
             params: "",
             variants: &[
@@ -161,6 +278,35 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "VolumeSource",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<VolumeSource>(|| {
+                vec![
+                    ployz_core::RawVolumeSource::Bind {
+                        machine_path: MachinePath::parse("/data")
+                            .expect("fixture bind path is valid"),
+                        create_machine_path: false,
+                        propagation: Some(BindPropagation::Private),
+                        recursive: Some(BindRecursive::Disabled),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                    ployz_core::RawVolumeSource::External {
+                        name: DockerVolumeName::parse("shared")
+                            .expect("fixture external Volume name is valid"),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                    service_volume().source,
+                    named_volume_with_driver().source,
+                    provisioned_volume_source(),
+                    ployz_core::RawVolumeSource::Tmpfs {
+                        size_bytes: Some(64),
+                        mode: Some(0o755),
+                        options: Vec::new(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ]
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -204,6 +350,20 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HealthcheckSpec",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<HealthcheckSpec>(|| {
+                vec![
+                    HealthcheckSpec::Disabled,
+                    HealthcheckSpec::Configured(ConfiguredHealthcheck {
+                        test: HealthcheckCommand::parse(["CMD", "true"])
+                            .expect("fixture healthcheck command is valid"),
+                        interval_millis: None,
+                        timeout_millis: None,
+                        start_period_millis: None,
+                        start_interval_millis: None,
+                        retries: None,
+                    }),
+                ]
+            }),
             tag: "state",
             params: "",
             variants: &[
@@ -225,6 +385,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "RestartPolicy",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<RestartPolicy>(|| {
+                vec![
+                    RestartPolicy::No,
+                    RestartPolicy::Always,
+                    RestartPolicy::UnlessStopped,
+                    RestartPolicy::OnFailure {
+                        maximum_retry_count: Some(2),
+                    },
+                ]
+            }),
             tag: "name",
             params: "",
             variants: &[
@@ -487,7 +657,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ContainerKind",
-        Shape::ClosedString(&["service_container", "pre_deploy_hook"]),
+        Shape::ClosedString {
+            known: &["service_container", "pre_deploy_hook"],
+            examples: || {
+                vec![
+                    to_value(&ContainerKind::ServiceContainer),
+                    to_value(&ContainerKind::PreDeployHook),
+                ]
+            },
+        },
     ),
     (
         "DockerVolumeId",
@@ -499,6 +677,20 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DockerVolumeStorageObservation",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DockerVolumeStorageObservation>(|| {
+                vec![
+                    DockerVolumeStorageObservation::Plain {
+                        driver: "local".into(),
+                    },
+                    DockerVolumeStorageObservation::Provisioned {
+                        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data")
+                            .expect("fixture mountpoint is valid"),
+                        bound_bytes: NonZeroU64::new(1_073_741_824)
+                            .expect("fixture Provisioned Volume bound is positive"),
+                        used_bytes: 966_367_642,
+                    },
+                ]
+            }),
             tag: "kind",
             params: "",
             variants: &[
@@ -546,6 +738,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "CreateVolumeReport",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<CreateVolumeReport>(|| {
+                vec![
+                    CreateVolumeReport::Verified {
+                        volume: docker_volume(),
+                    },
+                    CreateVolumeReport::Unverified {
+                        id: docker_volume().id,
+                        error: rpc_error(),
+                    },
+                ]
+            }),
             tag: "verification",
             params: "",
             variants: &[
@@ -570,6 +773,13 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "VolumeRemovalOutcome",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<VolumeRemovalOutcome>(|| {
+                vec![
+                    VolumeRemovalOutcome::Removed,
+                    VolumeRemovalOutcome::Failed { error: rpc_error() },
+                    VolumeRemovalOutcome::Omitted,
+                ]
+            }),
             tag: "status",
             params: "",
             variants: &[
@@ -589,6 +799,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DataLoss",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DataLoss>(|| vec![data_loss()]),
             tag: "kind",
             params: "",
             variants: &[("docker_volume", &[("id", "DockerVolumeId")])],
@@ -685,6 +896,22 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ContainerRuntimeObservation",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<ContainerRuntimeObservation>(|| {
+                vec![
+                    ContainerRuntimeObservation::Created,
+                    ContainerRuntimeObservation::Running {
+                        health: HealthObservation::Healthy,
+                    },
+                    ContainerRuntimeObservation::Paused,
+                    ContainerRuntimeObservation::Restarting,
+                    ContainerRuntimeObservation::Exited { code: 0 },
+                    ContainerRuntimeObservation::Removing,
+                    ContainerRuntimeObservation::Dead,
+                    ContainerRuntimeObservation::Unknown {
+                        raw: json!({ "Status": "hibernating", "ExitCode": 0 }),
+                    },
+                ]
+            }),
             tag: "state",
             params: "",
             variants: &[
@@ -731,11 +958,20 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ObservationKind",
-        Shape::ClosedString(&["container", "volume"]),
+        Shape::ClosedString {
+            known: &["container", "volume"],
+            examples: || {
+                vec![
+                    to_value(&ObservationKind::Container),
+                    to_value(&ObservationKind::Volume),
+                ]
+            },
+        },
     ),
     (
         "DeployWarning",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DeployWarning>(|| deploy_warnings().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -769,12 +1005,22 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "PruneRefusal",
-        Shape::ClosedString(&[
-            "incomplete_snapshot",
-            "selected_services",
-            "filtered_profiles",
-            "guessed_project_name",
-        ]),
+        Shape::ClosedString {
+            known: &[
+                "incomplete_snapshot",
+                "selected_services",
+                "filtered_profiles",
+                "guessed_project_name",
+            ],
+            examples: || {
+                vec![
+                    to_value(&PruneRefusal::IncompleteSnapshot),
+                    to_value(&PruneRefusal::SelectedServices),
+                    to_value(&PruneRefusal::FilteredProfiles),
+                    to_value(&PruneRefusal::GuessedProjectName),
+                ]
+            },
+        },
     ),
     (
         "PreservedVolume",
@@ -828,6 +1074,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "OperationStatus",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<OperationStatus>(|| operation_statuses().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -842,6 +1089,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "OperationPhase",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<OperationPhase>(|| operation_phases().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -875,6 +1123,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployEvent",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DeployEvent>(|| {
+                vec![
+                    deploy_event_progress(),
+                    DeployEvent::Outcome {
+                        outcome: deploy_outcome(),
+                    },
+                ]
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -904,11 +1160,20 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "StopContainerPurpose",
-        Shape::ClosedString(&["lifecycle", "free_host_ports"]),
+        Shape::ClosedString {
+            known: &["lifecycle", "free_host_ports"],
+            examples: || {
+                vec![
+                    to_value(&StopContainerPurpose::Lifecycle),
+                    to_value(&StopContainerPurpose::FreeHostPorts),
+                ]
+            },
+        },
     ),
     (
         "DeployOperation",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DeployOperation>(|| deploy_operations().into()),
             tag: "type",
             params: "",
             variants: &[
@@ -967,18 +1232,39 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "MachineAction",
-        Shape::ClosedString(&[
-            "CreateContainer",
-            "StartContainer",
-            "InspectContainer",
-            "StopContainer",
-            "RemoveContainer",
-            "RemoveVolume",
-        ]),
+        Shape::ClosedString {
+            known: &[
+                "CreateContainer",
+                "StartContainer",
+                "InspectContainer",
+                "StopContainer",
+                "RemoveContainer",
+                "RemoveVolume",
+            ],
+            examples: || {
+                vec![
+                    to_value(&MachineAction::CreateContainer),
+                    to_value(&MachineAction::StartContainer),
+                    to_value(&MachineAction::InspectContainer),
+                    to_value(&MachineAction::StopContainer),
+                    to_value(&MachineAction::RemoveContainer),
+                    to_value(&MachineAction::RemoveVolume),
+                ]
+            },
+        },
     ),
     (
         "HealthFailure",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<HealthFailure>(|| {
+                vec![
+                    HealthFailure::Cancelled,
+                    HealthFailure::TimedOut,
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting,
+                    },
+                ]
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -991,6 +1277,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HookFailure",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<HookFailure>(|| {
+                vec![
+                    HookFailure::Cancelled { stop_error: None },
+                    HookFailure::TimedOut {
+                        stop_error: Some(rpc_error()),
+                    },
+                    HookFailure::Exit { code: 7 },
+                ]
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1003,6 +1298,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DependencyHealthFailure",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DependencyHealthFailure>(|| {
+                vec![
+                    DependencyHealthFailure::Cancelled,
+                    DependencyHealthFailure::NoContainers,
+                    DependencyHealthFailure::Observation { error: rpc_error() },
+                    DependencyHealthFailure::Container {
+                        container_id: container_id(),
+                        failure: HealthFailure::TimedOut,
+                    },
+                ]
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1022,6 +1328,25 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ExecutionError",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<ExecutionError>(|| {
+                vec![
+                    execution_error_machine(),
+                    ExecutionError::Health {
+                        container_id: container_id(),
+                        failure: HealthFailure::TimedOut,
+                    },
+                    ExecutionError::DependencyHealth {
+                        dependency: QualifiedService::parse("app/db")
+                            .expect("fixture has a valid qualified Service name"),
+                        failure: DependencyHealthFailure::NoContainers,
+                    },
+                    ExecutionError::Hook {
+                        container_id: container_id(),
+                        failure: HookFailure::Exit { code: 1 },
+                    },
+                    ExecutionError::Cancelled,
+                ]
+            }),
             tag: "type",
             params: "",
             variants: &[
@@ -1054,6 +1379,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "StopAttempt",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<StopAttempt<ExecutionError>>(|| {
+                vec![
+                    StopAttempt::<ExecutionError>::Stopped,
+                    StopAttempt::Failed {
+                        error: ExecutionError::Cancelled,
+                    },
+                ]
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[("stopped", &[]), ("failed", &[("error", "E")])],
@@ -1062,6 +1395,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "RestartAttempt",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<RestartAttempt<ExecutionError>>(|| {
+                vec![
+                    RestartAttempt::<ExecutionError>::NotAttempted,
+                    RestartAttempt::<ExecutionError>::Restarted,
+                    RestartAttempt::Failed {
+                        error: ExecutionError::Cancelled,
+                    },
+                ]
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1074,6 +1416,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ReplacementCompensation",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<ReplacementCompensation<ExecutionError>>(|| {
+                vec![
+                    ReplacementCompensation::<ExecutionError>::StartFirst {
+                        stop_new_container: StopAttempt::Stopped,
+                    },
+                    ReplacementCompensation::<ExecutionError>::StopFirst {
+                        stop_new_container: StopAttempt::Stopped,
+                        restart_old_container: RestartAttempt::NotAttempted,
+                    },
+                ]
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1091,6 +1444,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "FailedOperation",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<FailedOperation<ExecutionError>>(|| {
+                let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
+                    panic!("failed fixture is Failed");
+                };
+                vec![
+                    failed,
+                    FailedOperation::ReplacementHealth {
+                        operation: replacement_operation(),
+                        error: execution_error_machine(),
+                        compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
+                            stop_new_container: StopAttempt::Stopped,
+                        },
+                    },
+                ]
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1112,6 +1480,9 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployOutcome",
         Shape::InternallyTagged {
+            evidence: &RustEvidence::<DeployOutcome<ExecutionError>>(|| {
+                vec![deploy_outcome(), deploy_outcome_failed()]
+            }),
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[

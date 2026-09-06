@@ -2,38 +2,34 @@
 
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, SocketAddr},
-    num::{NonZeroU16, NonZeroU32, NonZeroU64},
+    net::SocketAddr,
+    num::{NonZeroU16, NonZeroU64},
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, BindPropagation, BindRecursive, CapabilityName, CertificateAvailability,
-    CertificateBackoff, CertificateFailureKind, CertificateObservation, ClusterTeardown,
-    ConfigMount, ConfigSpec, ConfiguredHealthcheck, ContainerId, ContainerKind,
-    ContainerObservation, ContainerPath, ContainerResources, ContainerRuntimeObservation,
-    ContractDescription, CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
-    DataLossConfirmation, DependencyHealthFailure, DeployEvent, DeployIntent, DeployOperation,
-    DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation, DockerVolume,
-    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ExecutionError,
-    FailedOperation, GlobalReconcileFailureObservation, HealthFailure, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, HookFailure, HostBind, HttpProtocol, IngressHost,
-    IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved, LogDriver,
-    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, MembershipObservation,
-    ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
-    PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
-    PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal, PullPolicy,
-    QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
-    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    AdvertisedEndpoint, CapabilityName, CertificateAvailability, CertificateBackoff,
+    CertificateFailureKind, CertificateObservation, ClusterTeardown, ConfigMount, ConfigSpec,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
+    ContainerResources, ContainerRuntimeObservation, ContractDescription, CreateVolumeReport,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DataLossConfirmation, DeployEvent, DeployIntent,
+    DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation,
+    DockerVolume, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ExecutionError,
+    FailedOperation, GlobalReconcileFailureObservation, HealthObservation, HealthcheckCommand,
+    HealthcheckSpec, HostBind, HttpProtocol, IngressHost, IngressHostname, IngressProxyConfig,
+    IngressProxyFragment, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
+    MachineStorageObservation, MachineSuccess, MembershipObservation, ObservationKind,
+    ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
+    Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RegisterRequest, Registered,
+    RemoveVolumesRequest, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
     RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, StopAttempt, StopContainerPurpose, StorageChoice, TransportProtocol,
-    Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory,
-    VolumeObservationFailure, VolumeRemoval, VolumeRemovalOutcome, VolumeSource, VolumeToCreate,
-    WireGuardPublicKey,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
+    UpdateConfig, VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeRemoval,
+    VolumeRemovalOutcome, VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 const MACHINE_ID_HEX: &str = "0123456789abcdef0123456789abcdef";
@@ -425,449 +421,6 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
     ])
 }
 
-/// Whether a wire value decodes as one payload type.
-pub(super) type Decodes = fn(Value) -> bool;
-
-/// A decoder for every internally tagged payload, so the generator can prove
-/// each rejects an unknown tag: the reason its generated union is closed.
-/// `ContainerRuntimeObservation` keeps one as observed instead, and its union
-/// names that case.
-pub(super) fn tagged_decoders() -> BTreeMap<&'static str, Decodes> {
-    fn decodes<T: DeserializeOwned>(value: Value) -> bool {
-        serde_json::from_value::<T>(value).is_ok()
-    }
-    let rows = [
-        (
-            "MachineStorageObservation",
-            decodes::<MachineStorageObservation> as Decodes,
-        ),
-        ("ServiceMode", decodes::<ServiceMode>),
-        ("IngressHostname", decodes::<IngressHostname>),
-        ("HostBind", decodes::<HostBind>),
-        ("PortPublication", decodes::<PortPublication>),
-        ("VolumeSource", decodes::<VolumeSource>),
-        ("HealthcheckSpec", decodes::<HealthcheckSpec>),
-        ("RestartPolicy", decodes::<RestartPolicy>),
-        (
-            "DockerVolumeStorageObservation",
-            decodes::<DockerVolumeStorageObservation>,
-        ),
-        ("VolumeRemovalOutcome", decodes::<VolumeRemovalOutcome>),
-        ("CreateVolumeReport", decodes::<CreateVolumeReport>),
-        ("DataLoss", decodes::<DataLoss>),
-        (
-            "ContainerRuntimeObservation",
-            decodes::<ContainerRuntimeObservation>,
-        ),
-        ("DeployWarning", decodes::<DeployWarning>),
-        ("OperationStatus", decodes::<OperationStatus>),
-        ("OperationPhase", decodes::<OperationPhase>),
-        ("DeployEvent", decodes::<DeployEvent>),
-        ("DeployOperation", decodes::<DeployOperation>),
-        ("HealthFailure", decodes::<HealthFailure>),
-        ("HookFailure", decodes::<HookFailure>),
-        (
-            "DependencyHealthFailure",
-            decodes::<DependencyHealthFailure>,
-        ),
-        ("ExecutionError", decodes::<ExecutionError>),
-        ("StopAttempt", decodes::<StopAttempt<ExecutionError>>),
-        ("RestartAttempt", decodes::<RestartAttempt<ExecutionError>>),
-        (
-            "ReplacementCompensation",
-            decodes::<ReplacementCompensation<ExecutionError>>,
-        ),
-        (
-            "FailedOperation",
-            decodes::<FailedOperation<ExecutionError>>,
-        ),
-        ("DeployOutcome", decodes::<DeployOutcome<ExecutionError>>),
-    ];
-    rows.into_iter().collect()
-}
-
-pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
-    let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
-        panic!("failed fixture is Failed");
-    };
-    BTreeMap::from([
-        (
-            "VolumeRemovalOutcome",
-            vec![
-                to_value(&VolumeRemovalOutcome::Removed),
-                to_value(&VolumeRemovalOutcome::Failed { error: rpc_error() }),
-                to_value(&VolumeRemovalOutcome::Omitted),
-            ],
-        ),
-        ("DataLoss", vec![to_value(&data_loss())]),
-        (
-            "CreateVolumeReport",
-            vec![
-                to_value(&CreateVolumeReport::Verified {
-                    volume: docker_volume(),
-                }),
-                to_value(&CreateVolumeReport::Unverified {
-                    id: docker_volume().id,
-                    error: rpc_error(),
-                }),
-            ],
-        ),
-        (
-            "DeployOutcome",
-            vec![
-                to_value(&deploy_outcome()),
-                to_value(&deploy_outcome_failed()),
-            ],
-        ),
-        (
-            "StopContainerPurpose",
-            vec![
-                to_value(&StopContainerPurpose::Lifecycle),
-                to_value(&StopContainerPurpose::FreeHostPorts),
-            ],
-        ),
-        (
-            "DeployOperation",
-            deploy_operations().iter().map(to_value).collect(),
-        ),
-        (
-            "ObservationKind",
-            vec![
-                to_value(&ObservationKind::Container),
-                to_value(&ObservationKind::Volume),
-            ],
-        ),
-        (
-            "PruneRefusal",
-            vec![
-                to_value(&PruneRefusal::IncompleteSnapshot),
-                to_value(&PruneRefusal::SelectedServices),
-                to_value(&PruneRefusal::FilteredProfiles),
-                to_value(&PruneRefusal::GuessedProjectName),
-            ],
-        ),
-        (
-            "DeployWarning",
-            deploy_warnings().iter().map(to_value).collect(),
-        ),
-        (
-            "MachineAction",
-            vec![
-                to_value(&MachineAction::CreateContainer),
-                to_value(&MachineAction::StartContainer),
-                to_value(&MachineAction::InspectContainer),
-                to_value(&MachineAction::StopContainer),
-                to_value(&MachineAction::RemoveContainer),
-                to_value(&MachineAction::RemoveVolume),
-            ],
-        ),
-        (
-            "HealthFailure",
-            vec![
-                to_value(&HealthFailure::Cancelled),
-                to_value(&HealthFailure::TimedOut),
-                to_value(&HealthFailure::Runtime {
-                    observation: ContainerRuntimeObservation::Restarting,
-                }),
-            ],
-        ),
-        (
-            "HookFailure",
-            vec![
-                to_value(&HookFailure::Cancelled { stop_error: None }),
-                to_value(&HookFailure::TimedOut {
-                    stop_error: Some(rpc_error()),
-                }),
-                to_value(&HookFailure::Exit { code: 7 }),
-            ],
-        ),
-        (
-            "DependencyHealthFailure",
-            vec![
-                to_value(&DependencyHealthFailure::Cancelled),
-                to_value(&DependencyHealthFailure::NoContainers),
-                to_value(&DependencyHealthFailure::Observation { error: rpc_error() }),
-                to_value(&DependencyHealthFailure::Container {
-                    container_id: container_id(),
-                    failure: HealthFailure::TimedOut,
-                }),
-            ],
-        ),
-        (
-            "ExecutionError",
-            vec![
-                to_value(&execution_error_machine()),
-                to_value(&ExecutionError::Health {
-                    container_id: container_id(),
-                    failure: HealthFailure::TimedOut,
-                }),
-                to_value(&ExecutionError::DependencyHealth {
-                    dependency: QualifiedService::parse("app/db")
-                        .expect("fixture has a valid qualified Service name"),
-                    failure: DependencyHealthFailure::NoContainers,
-                }),
-                to_value(&ExecutionError::Hook {
-                    container_id: container_id(),
-                    failure: HookFailure::Exit { code: 1 },
-                }),
-                to_value(&ExecutionError::Cancelled),
-            ],
-        ),
-        (
-            "FailedOperation",
-            vec![
-                to_value(&failed),
-                to_value(&FailedOperation::ReplacementHealth {
-                    operation: replacement_operation(),
-                    error: execution_error_machine(),
-                    compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
-                        stop_new_container: StopAttempt::Stopped,
-                    },
-                }),
-            ],
-        ),
-        (
-            "RestartAttempt",
-            vec![
-                to_value(&RestartAttempt::<ExecutionError>::NotAttempted),
-                to_value(&RestartAttempt::<ExecutionError>::Restarted),
-                to_value(&RestartAttempt::Failed {
-                    error: ExecutionError::Cancelled,
-                }),
-            ],
-        ),
-        (
-            "StopAttempt",
-            vec![
-                to_value(&StopAttempt::<ExecutionError>::Stopped),
-                to_value(&StopAttempt::Failed {
-                    error: ExecutionError::Cancelled,
-                }),
-            ],
-        ),
-        (
-            "ReplacementCompensation",
-            vec![
-                to_value(&ReplacementCompensation::<ExecutionError>::StartFirst {
-                    stop_new_container: StopAttempt::Stopped,
-                }),
-                to_value(&ReplacementCompensation::<ExecutionError>::StopFirst {
-                    stop_new_container: StopAttempt::Stopped,
-                    restart_old_container: RestartAttempt::NotAttempted,
-                }),
-            ],
-        ),
-        (
-            "ContainerKind",
-            vec![
-                to_value(&ContainerKind::ServiceContainer),
-                to_value(&ContainerKind::PreDeployHook),
-            ],
-        ),
-        (
-            "ContainerRuntimeObservation",
-            vec![
-                to_value(&ContainerRuntimeObservation::Created),
-                to_value(&ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy,
-                }),
-                to_value(&ContainerRuntimeObservation::Paused),
-                to_value(&ContainerRuntimeObservation::Restarting),
-                to_value(&ContainerRuntimeObservation::Exited { code: 0 }),
-                to_value(&ContainerRuntimeObservation::Removing),
-                to_value(&ContainerRuntimeObservation::Dead),
-                to_value(&ContainerRuntimeObservation::Unknown {
-                    raw: json!({ "Status": "hibernating", "ExitCode": 0 }),
-                }),
-            ],
-        ),
-        (
-            "ServiceMode",
-            vec![
-                to_value(&ServiceMode::Replicated {
-                    replicas: NonZeroU32::MIN,
-                }),
-                to_value(&ServiceMode::Global),
-            ],
-        ),
-        (
-            "PortPublication",
-            vec![to_value(&ingress_port()), to_value(&host_port())],
-        ),
-        (
-            "VolumeSource",
-            vec![
-                to_value(
-                    &ployz_core::RawVolumeSource::Bind {
-                        machine_path: MachinePath::parse("/data")
-                            .expect("fixture bind path is valid"),
-                        create_machine_path: false,
-                        propagation: Some(BindPropagation::Private),
-                        recursive: Some(BindRecursive::Disabled),
-                    }
-                    .admit()
-                    .expect("valid volume declaration"),
-                ),
-                to_value(
-                    &ployz_core::RawVolumeSource::External {
-                        name: DockerVolumeName::parse("shared")
-                            .expect("fixture external Volume name is valid"),
-                    }
-                    .admit()
-                    .expect("valid volume declaration"),
-                ),
-                to_value(&service_volume().source),
-                to_value(&named_volume_with_driver().source),
-                to_value(&provisioned_volume_source()),
-                to_value(
-                    &ployz_core::RawVolumeSource::Tmpfs {
-                        size_bytes: Some(64),
-                        mode: Some(0o755),
-                        options: Vec::new(),
-                    }
-                    .admit()
-                    .expect("valid volume declaration"),
-                ),
-            ],
-        ),
-        (
-            "IngressHostname",
-            vec![
-                to_value(&IngressHostname::cluster_domain()),
-                to_value(
-                    &IngressHostname::cluster_domain_label("api")
-                        .expect("fixture Cluster Domain label is valid"),
-                ),
-                to_value(&IngressHostname::Explicit {
-                    hostname: ingress_host("app.example.com"),
-                }),
-            ],
-        ),
-        (
-            "HostBind",
-            vec![
-                to_value(&HostBind::All),
-                to_value(&HostBind::Address {
-                    address: IpAddr::from([127, 0, 0, 1]),
-                }),
-                to_value(
-                    &serde_json::from_value::<HostBind>(
-                        json!({ "kind": "prefix", "prefix": "10.0.0.0/8" }),
-                    )
-                    .expect("fixture HostBind prefix is valid"),
-                ),
-            ],
-        ),
-        (
-            "HealthcheckSpec",
-            vec![
-                to_value(&HealthcheckSpec::Disabled),
-                to_value(&HealthcheckSpec::Configured(ConfiguredHealthcheck {
-                    test: HealthcheckCommand::parse(["CMD", "true"])
-                        .expect("fixture healthcheck command is valid"),
-                    interval_millis: None,
-                    timeout_millis: None,
-                    start_period_millis: None,
-                    start_interval_millis: None,
-                    retries: None,
-                })),
-            ],
-        ),
-        (
-            "RestartPolicy",
-            vec![
-                to_value(&RestartPolicy::No),
-                to_value(&RestartPolicy::Always),
-                to_value(&RestartPolicy::UnlessStopped),
-                to_value(&RestartPolicy::OnFailure {
-                    maximum_retry_count: Some(2),
-                }),
-            ],
-        ),
-        (
-            "PullPolicy",
-            vec![
-                to_value(&PullPolicy::Always),
-                to_value(&PullPolicy::Missing),
-                to_value(&PullPolicy::Never),
-            ],
-        ),
-        (
-            "StorageChoice",
-            vec![
-                to_value(&StorageChoice::None),
-                to_value(&StorageChoice::Zfs),
-            ],
-        ),
-        (
-            "DockerVolumeStorageObservation",
-            vec![
-                to_value(&DockerVolumeStorageObservation::Plain {
-                    driver: "local".into(),
-                }),
-                to_value(&DockerVolumeStorageObservation::Provisioned {
-                    mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data")
-                        .expect("fixture mountpoint is valid"),
-                    bound_bytes: NonZeroU64::new(1_073_741_824)
-                        .expect("fixture Provisioned Volume bound is positive"),
-                    used_bytes: 966_367_642,
-                }),
-            ],
-        ),
-        (
-            "MachineStorageObservation",
-            vec![
-                to_value(&MachineStorageObservation::Stateless),
-                to_value(&MachineStorageObservation::Ready),
-                to_value(&MachineStorageObservation::Pool {
-                    size_bytes: NonZeroU64::new(4_294_967_296)
-                        .expect("fixture capacity is nonzero"),
-                    used_bytes: 3_865_470_566,
-                    free_bytes: 429_496_730,
-                }),
-            ],
-        ),
-        (
-            "UpdateOrder",
-            vec![
-                to_value(&UpdateOrder::StartFirst),
-                to_value(&UpdateOrder::StopFirst),
-            ],
-        ),
-        (
-            "HttpProtocol",
-            vec![
-                to_value(&HttpProtocol::Http),
-                to_value(&HttpProtocol::Https),
-            ],
-        ),
-        (
-            "TransportProtocol",
-            vec![
-                to_value(&TransportProtocol::Tcp),
-                to_value(&TransportProtocol::Udp),
-            ],
-        ),
-        (
-            "DeployEvent",
-            vec![
-                to_value(&deploy_event_progress()),
-                to_value(&DeployEvent::Outcome {
-                    outcome: deploy_outcome(),
-                }),
-            ],
-        ),
-        (
-            "OperationStatus",
-            operation_statuses().iter().map(to_value).collect(),
-        ),
-        (
-            "OperationPhase",
-            operation_phases().iter().map(to_value).collect(),
-        ),
-    ])
-}
-
 pub(super) fn catalogued_capabilities() -> Vec<(&'static str, &'static str)> {
     let mut rows = ployz_core::CATALOGUED_CAPABILITY_BINDINGS.to_vec();
     rows.sort_by_key(|(_, wire)| *wire);
@@ -892,7 +445,7 @@ fn contract_description() -> ContractDescription {
     }
 }
 
-fn rpc_error() -> RpcError {
+pub(super) fn rpc_error() -> RpcError {
     RpcError {
         code: RpcErrorCode::Unsupported,
         message: "watch is not advertised".into(),
@@ -900,7 +453,7 @@ fn rpc_error() -> RpcError {
     }
 }
 
-fn docker_volume() -> DockerVolume {
+pub(super) fn docker_volume() -> DockerVolume {
     DockerVolume {
         id: DockerVolumeId {
             machine_id: machine_id(MACHINE_ID_HEX),
@@ -940,7 +493,7 @@ fn remove_volumes_request() -> RemoveVolumesRequest {
     }
 }
 
-fn data_loss() -> DataLoss {
+pub(super) fn data_loss() -> DataLoss {
     DataLoss::DockerVolume {
         id: docker_volume().id,
     }
@@ -971,7 +524,7 @@ fn service_attempt() -> ServiceAttempt {
     }
 }
 
-fn provisioned_volume_source() -> VolumeSource {
+pub(super) fn provisioned_volume_source() -> VolumeSource {
     ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
@@ -1018,7 +571,7 @@ fn preserved_volume() -> PreservedVolume {
     }
 }
 
-fn deploy_event_progress() -> DeployEvent {
+pub(super) fn deploy_event_progress() -> DeployEvent {
     DeployEvent::Progress {
         completed: 0,
         total: 1,
@@ -1026,7 +579,7 @@ fn deploy_event_progress() -> DeployEvent {
     }
 }
 
-fn deploy_warnings() -> [DeployWarning; 6] {
+pub(super) fn deploy_warnings() -> [DeployWarning; 6] {
     [
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Container,
@@ -1055,7 +608,7 @@ fn deploy_warnings() -> [DeployWarning; 6] {
     ]
 }
 
-fn deploy_outcome() -> DeployOutcome<ExecutionError> {
+pub(super) fn deploy_outcome() -> DeployOutcome<ExecutionError> {
     DeployOutcome::Success {
         completed: vec![DeployOperation::StopContainer {
             machine_id: machine_id(MACHINE_ID_HEX),
@@ -1065,7 +618,7 @@ fn deploy_outcome() -> DeployOutcome<ExecutionError> {
     }
 }
 
-fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
+pub(super) fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
     DeployOutcome::Failed {
         completed: Vec::new(),
         failed: FailedOperation::Operation {
@@ -1084,14 +637,14 @@ fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
     }
 }
 
-fn execution_error_machine() -> ExecutionError {
+pub(super) fn execution_error_machine() -> ExecutionError {
     ExecutionError::Machine {
         action: MachineAction::CreateContainer,
         error: rpc_error(),
     }
 }
 
-fn replacement_operation() -> ReplacementOperation {
+pub(super) fn replacement_operation() -> ReplacementOperation {
     ReplacementOperation {
         machine_id: machine_id(MACHINE_ID_HEX),
         old_container_id: container_id(),
@@ -1111,7 +664,7 @@ fn volume_to_create() -> VolumeToCreate {
     }
 }
 
-fn deploy_operations() -> [DeployOperation; 8] {
+pub(super) fn deploy_operations() -> [DeployOperation; 8] {
     let machine_id = machine_id(MACHINE_ID_HEX);
     let container_id = container_id();
     [
@@ -1155,7 +708,7 @@ fn deploy_operations() -> [DeployOperation; 8] {
     ]
 }
 
-fn service_volume() -> ServiceVolume {
+pub(super) fn service_volume() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
@@ -1170,7 +723,7 @@ fn service_volume() -> ServiceVolume {
     }
 }
 
-fn named_volume_with_driver() -> ServiceVolume {
+pub(super) fn named_volume_with_driver() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
@@ -1455,7 +1008,7 @@ fn service_mount() -> ServiceMount {
     }
 }
 
-fn ingress_port() -> PortPublication {
+pub(super) fn ingress_port() -> PortPublication {
     PortPublication::Ingress {
         hostname: IngressHostname::Explicit {
             hostname: ingress_host("app.example.com"),
@@ -1466,7 +1019,7 @@ fn ingress_port() -> PortPublication {
     }
 }
 
-fn host_port() -> PortPublication {
+pub(super) fn host_port() -> PortPublication {
     PortPublication::Host {
         bind: HostBind::All,
         published_port: NonZeroU16::new(8080).expect("port is non-zero"),
@@ -1475,7 +1028,7 @@ fn host_port() -> PortPublication {
     }
 }
 
-fn operation_statuses() -> [OperationStatus; 5] {
+pub(super) fn operation_statuses() -> [OperationStatus; 5] {
     [
         OperationStatus::Pending,
         OperationStatus::Running {
@@ -1489,7 +1042,7 @@ fn operation_statuses() -> [OperationStatus; 5] {
     ]
 }
 
-fn operation_phases() -> [OperationPhase; 9] {
+pub(super) fn operation_phases() -> [OperationPhase; 9] {
     [
         OperationPhase::Starting,
         OperationPhase::CreatingContainer,
@@ -1512,7 +1065,7 @@ fn operation_phases() -> [OperationPhase; 9] {
     ]
 }
 
-fn container_id() -> ContainerId {
+pub(super) fn container_id() -> ContainerId {
     ContainerId::parse(CONTAINER_ID_HEX).expect("fixture Container ID is valid")
 }
 
@@ -1581,7 +1134,7 @@ fn service_id() -> ServiceId {
     ServiceId::parse(SERVICE_ID_HEX).expect("fixture Service ID is valid")
 }
 
-fn ingress_host(value: &str) -> IngressHost {
+pub(super) fn ingress_host(value: &str) -> IngressHost {
     IngressHost::parse(value).expect("fixture Ingress Hostname is valid")
 }
 
@@ -1591,7 +1144,7 @@ fn endpoint() -> SocketAddr {
         .expect("fixture endpoint is valid")
 }
 
-fn to_value<T: serde::Serialize>(value: &T) -> Value {
+pub(super) fn to_value<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).expect("SDK fixtures serialize")
 }
 
