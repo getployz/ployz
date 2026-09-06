@@ -558,6 +558,12 @@ assert_eq "$(release_artifacts_needed pull_request scripts/build-relay-image.sh)
 assert_eq "$(release_artifacts_needed pull_request scripts/verify-relay-image.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/publish-relay-image.sh)" true
 
+# upload-artifact drops the parent directory of a single search path, so the
+# macOS archives land at the artifact root and the pack job must read them there.
+release_workflow=$ROOT/.github/workflows/release-contracts.yml
+assert_eq "$(grep -m1 -A1 'name: release-darwin' "$release_workflow" | tail -n1 | tr -d ' ')" "path:dist"
+assert_contains "$release_workflow" 'cp darwin/*.tar.gz dist/'
+
 PLOYZ_BOUNCE_RELEASE_TEST_ONLY=true source "$ROOT/scripts/bounce-release-to-main.sh"
 assert_eq "$(printf '%s\n' '[{"databaseId":2,"displayTitle":"Release v1.2.3"},{"databaseId":3,"displayTitle":"Release v1.2.3"}]' | newest_run_id_named_except "Release v1.2.3" $'2\n')" "3"
 assert_eq "$(printf '%s\n' '[]' | newest_run_id_named_except "Release v1.2.3" "")" ""

@@ -166,6 +166,7 @@ jobs:
         with:
           name: release-darwin
           path: dist
+          if-no-files-found: error
 
   pack:
     needs: [build-linux, build-macos, scripts]
@@ -186,7 +187,7 @@ jobs:
       - run: |
           mkdir -p dist
           cp linux/dist/*.tar.gz dist/
-          cp darwin/dist/*.tar.gz dist/
+          cp darwin/*.tar.gz dist/
           bash scripts/pack-release.sh
           bash scripts/verify-release.sh artifacts
           mkdir -p target/x86_64-unknown-linux-musl/release target/aarch64-unknown-linux-musl/release
