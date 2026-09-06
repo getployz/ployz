@@ -364,7 +364,7 @@ impl RunningDeployHandle {
 
 #[napi]
 impl WatchStream {
-    /// Next complete `RuntimeWatchFrame`, or `null` when this stream was cancelled.
+    /// Next complete `RuntimeWatchView`, or `null` when this stream was cancelled.
     ///
     /// # Errors
     ///
