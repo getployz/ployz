@@ -1,10 +1,11 @@
 use std::{fmt, str::FromStr};
+use ts_rs::TS;
 
 use serde::{Deserialize, Serialize};
 
 use crate::ValueError;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "name", rename_all = "kebab-case")]
 pub enum RestartPolicy {
     No,
@@ -12,7 +13,7 @@ pub enum RestartPolicy {
     #[default]
     UnlessStopped,
     OnFailure {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         maximum_retry_count: Option<i64>,
     },
 }
@@ -47,7 +48,7 @@ impl RestartPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum BindRecursive {
     Disabled,
@@ -72,7 +73,7 @@ impl FromStr for BindRecursive {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum BindPropagation {
     Private,
@@ -103,7 +104,7 @@ impl FromStr for BindPropagation {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub enum PidMode {
     Host,

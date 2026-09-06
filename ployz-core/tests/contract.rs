@@ -26,8 +26,8 @@ use ployz_core::{
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UNRECOGNIZED_STATE, UpdateConfig, UpdateMachineRequest,
-    UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -53,24 +53,25 @@ fn provisioned_volume_sources_carry_required_positive_byte_counts() {
     let valid = json!({
         "kind": "provisioned",
         "name": "data",
-        "maximum_bytes": "1073741824",
+        "maximum_bytes": 1_073_741_824_i64,
         "labels": {"backup": "daily"}
     });
     let source: VolumeSource = serde_json::from_value(valid.clone()).unwrap();
     assert_eq!(serde_json::to_value(source).unwrap(), valid);
-    let exact_u64_max = json!({
+    let exact_i64_max = json!({
         "kind": "provisioned",
         "name": "data",
-        "maximum_bytes": "18446744073709551615",
+        "maximum_bytes": i64::MAX,
         "labels": {}
     });
-    let source: VolumeSource = serde_json::from_value(exact_u64_max.clone()).unwrap();
-    assert_eq!(serde_json::to_value(source).unwrap(), exact_u64_max);
+    let source: VolumeSource = serde_json::from_value(exact_i64_max.clone()).unwrap();
+    assert_eq!(serde_json::to_value(source).unwrap(), exact_i64_max);
     for invalid in [
         r#"{"kind":"provisioned","name":"data"}"#,
-        r#"{"kind":"provisioned","name":"data","maximum_bytes":"0"}"#,
-        r#"{"kind":"provisioned","name":"data","maximum_bytes":"18446744073709551616"}"#,
-        r#"{"kind":"provisioned","name":"data","maximum_bytes":9007199254740993}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":0}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":-1}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":"1073741824"}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":9223372036854775808}"#,
     ] {
         assert!(serde_json::from_str::<VolumeSource>(invalid).is_err());
     }
@@ -91,7 +92,7 @@ fn service_volume_source_wire_forms_are_exact() {
         json!({
             "kind": "provisioned",
             "name": "bounded",
-            "maximum_bytes": "1073741824",
+            "maximum_bytes": 1_073_741_824_i64,
             "labels": {}
         }),
     ] {
@@ -651,7 +652,7 @@ fn unknown_observation_variants_preserve_the_raw_value() {
             raw: future.clone()
         }
     );
-    let wrapped = json!({ "state": UNRECOGNIZED_STATE, "raw": future });
+    let wrapped = json!({ "state": "unrecognized", "raw": future });
     assert_eq!(serde_json::to_value(&observation).unwrap(), wrapped);
     let reread: ContainerRuntimeObservation = serde_json::from_value(wrapped.clone()).unwrap();
     assert_eq!(reread, observation);
@@ -680,44 +681,6 @@ fn unknown_observation_variants_preserve_the_raw_value() {
             health: HealthObservation::Healthy
         }
     );
-}
-
-#[test]
-fn unrecognized_wrappers_unwrap_to_the_observed_value() {
-    // A newer reader recovers a state that crossed an older hop.
-    let exited = json!({ "state": "exited", "code": 3 });
-    let via_old_hop = json!({ "state": UNRECOGNIZED_STATE, "raw": exited });
-    let observation: ContainerRuntimeObservation = serde_json::from_value(via_old_hop).unwrap();
-    assert_eq!(observation, ContainerRuntimeObservation::Exited { code: 3 });
-
-    // A wrapper without `raw` is kept whole rather than invented.
-    let bare = json!({ "state": UNRECOGNIZED_STATE });
-    let observation: ContainerRuntimeObservation = serde_json::from_value(bare.clone()).unwrap();
-    assert_eq!(
-        observation,
-        ContainerRuntimeObservation::Unknown { raw: bare }
-    );
-
-    // One unwrap is the whole walk; deeper nesting is kept as observed.
-    let inner = json!({ "state": UNRECOGNIZED_STATE, "raw": exited });
-    let twice = json!({ "state": UNRECOGNIZED_STATE, "raw": inner });
-    let observation: ContainerRuntimeObservation = serde_json::from_value(twice).unwrap();
-    assert_eq!(
-        observation,
-        ContainerRuntimeObservation::Unknown { raw: inner }
-    );
-
-    // What a writer could not classify may not parse either; keep it as
-    // observed instead of failing the frame. Top level stays strict.
-    let malformed = json!({ "state": "running" });
-    let wrapped = json!({ "state": UNRECOGNIZED_STATE, "raw": malformed });
-    let observation: ContainerRuntimeObservation = serde_json::from_value(wrapped).unwrap();
-    assert_eq!(
-        observation,
-        ContainerRuntimeObservation::Unknown { raw: malformed }
-    );
-    serde_json::from_value::<ContainerRuntimeObservation>(json!({ "state": "running" }))
-        .unwrap_err();
 }
 
 #[test]

@@ -10,8 +10,10 @@ use crate::{
     ServiceVolumeGraph,
 };
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, TS)]
+#[ts(rename = "ServiceContainerSpec")]
 struct ServiceContainerSpecWire {
     #[serde(flatten)]
     spec: ServiceContainerSpec,
@@ -20,7 +22,8 @@ struct ServiceContainerSpecWire {
 }
 
 /// External requested declarations, admitted as one mount graph.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, TS)]
+#[ts(rename = "RequestedServiceSpec")]
 pub(super) struct RequestedServiceSpecWire {
     name: ServiceName,
     mode: ServiceMode,
@@ -44,7 +47,8 @@ pub(super) struct RequestedServiceSpecWire {
 }
 
 /// External resolved declarations, additionally requiring scoped Volume sources.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, TS)]
+#[ts(rename = "ResolvedServiceSpec")]
 pub(super) struct ResolvedServiceSpecWire {
     service_id: ServiceId,
     name: ServiceName,
@@ -179,7 +183,8 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, TS)]
+#[ts(rename = "ResolvedServiceVolume")]
 struct ResolvedServiceVolumeWire {
     reference: crate::ServiceVolumeReference,
     source: crate::ResolvedVolumeSource,

@@ -270,7 +270,7 @@ pub enum LogOrigin {
         service_id: ServiceId,
         service_name: ServiceName,
         container_id: ContainerId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         hook: Option<String>,
     },
     Machine {
@@ -305,7 +305,7 @@ pub struct LogEntry {
 struct LogHeader {
     metadata: LogMetadata,
     timestamp_unix_nanos: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     error: Option<String>,
 }
 

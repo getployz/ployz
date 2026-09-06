@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use serde_json::{Map, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
+use ts_rs::TS;
 
 use super::spec::{HealthcheckSpec, ResolvedServiceSpec};
 use crate::{
@@ -16,28 +17,81 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
     Unhealthy => "unhealthy",
 });
 
-/// Wire `state` of [`ContainerRuntimeObservation::Unknown`]. Reserved: no known
-/// Docker state may ever use this spelling.
-pub const UNRECOGNIZED_STATE: &str = "unrecognized";
-
 /// Docker state as observed, including the untouched value of a future state.
 ///
-/// On the wire, a known state is `{ "state": "running", ... }`. An unknown
-/// state is `{ "state": "unrecognized", "raw": <the value as observed> }`, so
-/// every reader sees a closed set of `state` spellings, and a newer reader
-/// recovers the observed value from `raw`. A wrapper is at most one deep: a
-/// reader from before this form passes it through bare, and a reader that
-/// knows it unwraps before re-encoding, so one unwrap is the whole walk.
-#[derive(Clone, Debug, PartialEq)]
+/// On the wire, a known state is `{ "state": "running", ... }`. A value this
+/// reader cannot classify is `{ "state": "unrecognized", "raw": <as observed> }`,
+/// so every reader sees a closed set of `state` spellings and a newer reader
+/// recovers the observed value from `raw`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    from = "ContainerRuntimeObservationWire"
+)]
 pub enum ContainerRuntimeObservation {
     Created,
-    Running { health: HealthObservation },
+    Running {
+        health: HealthObservation,
+    },
     Paused,
     Restarting,
-    Exited { code: i64 },
+    Exited {
+        code: i64,
+    },
     Removing,
     Dead,
-    Unknown { raw: Value },
+    #[serde(rename = "unrecognized")]
+    Unknown {
+        raw: Value,
+    },
+}
+
+/// A known state decodes as itself; anything else is kept as observed.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ContainerRuntimeObservationWire {
+    Known(KnownContainerRuntimeObservation),
+    Unknown(Value),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum KnownContainerRuntimeObservation {
+    Created,
+    Running {
+        health: HealthObservation,
+    },
+    Paused,
+    Restarting,
+    Exited {
+        code: i64,
+    },
+    Removing,
+    Dead,
+    #[serde(rename = "unrecognized")]
+    Unknown {
+        raw: Value,
+    },
+}
+
+impl From<ContainerRuntimeObservationWire> for ContainerRuntimeObservation {
+    fn from(wire: ContainerRuntimeObservationWire) -> Self {
+        use KnownContainerRuntimeObservation as Known;
+        match wire {
+            ContainerRuntimeObservationWire::Known(Known::Created) => Self::Created,
+            ContainerRuntimeObservationWire::Known(Known::Running { health }) => {
+                Self::Running { health }
+            }
+            ContainerRuntimeObservationWire::Known(Known::Paused) => Self::Paused,
+            ContainerRuntimeObservationWire::Known(Known::Restarting) => Self::Restarting,
+            ContainerRuntimeObservationWire::Known(Known::Exited { code }) => Self::Exited { code },
+            ContainerRuntimeObservationWire::Known(Known::Removing) => Self::Removing,
+            ContainerRuntimeObservationWire::Known(Known::Dead) => Self::Dead,
+            ContainerRuntimeObservationWire::Known(Known::Unknown { raw })
+            | ContainerRuntimeObservationWire::Unknown(raw) => Self::Unknown { raw },
+        }
+    }
 }
 
 impl ContainerRuntimeObservation {
@@ -53,117 +107,7 @@ impl ContainerRuntimeObservation {
     }
 }
 
-impl Serialize for ContainerRuntimeObservation {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut object = Map::new();
-        match self {
-            Self::Created => insert_state(&mut object, "created"),
-            Self::Running { health } => {
-                insert_state(&mut object, "running");
-                object.insert(
-                    "health".into(),
-                    serde_json::to_value(health).map_err(serde::ser::Error::custom)?,
-                );
-            }
-            Self::Paused => insert_state(&mut object, "paused"),
-            Self::Restarting => insert_state(&mut object, "restarting"),
-            Self::Exited { code } => {
-                insert_state(&mut object, "exited");
-                object.insert("code".into(), Value::from(*code));
-            }
-            Self::Removing => insert_state(&mut object, "removing"),
-            Self::Dead => insert_state(&mut object, "dead"),
-            Self::Unknown { raw } => {
-                insert_state(&mut object, UNRECOGNIZED_STATE);
-                object.insert("raw".into(), raw.clone());
-            }
-        }
-        Value::Object(object).serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = Value::deserialize(deserializer)?;
-        let Some(inner) = unrecognized_raw(&raw) else {
-            return match Self::parse(&raw).map_err(D::Error::custom)? {
-                Some(observation) => Ok(observation),
-                None => Ok(Self::Unknown { raw }),
-            };
-        };
-        // The wrapper carries what a writer could not classify, so a value
-        // that does not parse here is kept as observed rather than failing
-        // the whole frame.
-        Ok(match Self::parse(inner) {
-            Ok(Some(observation)) => observation,
-            Ok(None) | Err(_) => Self::Unknown { raw: inner.clone() },
-        })
-    }
-}
-
-/// The `raw` of an `unrecognized` wrapper, when `raw` is one.
-fn unrecognized_raw(raw: &Value) -> Option<&Value> {
-    let object = raw.as_object()?;
-    if object.get("state").and_then(Value::as_str) != Some(UNRECOGNIZED_STATE) {
-        return None;
-    }
-    object.get("raw")
-}
-
-impl ContainerRuntimeObservation {
-    /// A known state, or `None` for a value this reader keeps as observed:
-    /// not an object, no string `state`, an unknown `state`, or a nested
-    /// `unrecognized` wrapper.
-    ///
-    /// # Errors
-    ///
-    /// Returns the field error when a known `state` is missing its fields.
-    fn parse(raw: &Value) -> Result<Option<Self>, serde_json::Error> {
-        let Some(object) = raw.as_object() else {
-            return Ok(None);
-        };
-        let Some(state) = object.get("state").and_then(Value::as_str) else {
-            return Ok(None);
-        };
-
-        Ok(Some(match state {
-            "created" => Self::Created,
-            "running" => {
-                let health = object
-                    .get("health")
-                    .cloned()
-                    .ok_or_else(|| serde_json::Error::missing_field("health"))?;
-                Self::Running {
-                    health: serde_json::from_value(health)?,
-                }
-            }
-            "paused" => Self::Paused,
-            "restarting" => Self::Restarting,
-            "exited" => {
-                let code = object
-                    .get("code")
-                    .and_then(Value::as_i64)
-                    .ok_or_else(|| serde_json::Error::missing_field("code"))?;
-                Self::Exited { code }
-            }
-            "removing" => Self::Removing,
-            "dead" => Self::Dead,
-            _ => return Ok(None),
-        }))
-    }
-}
-
-fn insert_state(object: &mut Map<String, Value>, state: &'static str) {
-    object.insert("state".into(), Value::String(state.into()));
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerKind {
     ServiceContainer,
@@ -171,8 +115,9 @@ pub enum ContainerKind {
 }
 
 /// Raw facts for admitting one Container observation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+#[ts(rename = "ContainerObservation")]
 pub struct ContainerObservationParts {
     pub container_id: ContainerId,
     /// Generated Docker name for display, never identity or selection.
@@ -196,11 +141,12 @@ pub struct ContainerObservationParts {
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     try_from = "ContainerObservationParts",
     into = "ContainerObservationParts"
 )]
+#[ts(as = "ContainerObservationParts")]
 pub struct ContainerObservation {
     parts: ContainerObservationParts,
 }
@@ -297,15 +243,17 @@ impl ContainerObservation {
 }
 
 /// A Service Container after its role has been proven from a mixed observation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
+#[ts(type = "ContainerObservation")]
 pub struct ServiceContainer {
     observation: ContainerObservation,
 }
 
 /// A Hook Container after its role has been proven from a mixed observation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
+#[ts(type = "ContainerObservation")]
 pub struct HookContainer {
     observation: ContainerObservation,
 }

@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     fmt::{self, Display, Formatter},
 };
+use ts_rs::TS;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +22,7 @@ use thiserror::Error;
 /// `selected` is the Service list this command applies. Empty means full
 /// reconciliation of `DeployIntent.target`. Non-empty means partial. There is
 /// no independent prune flag.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
     pub force_recreate: bool,
@@ -35,14 +36,14 @@ pub struct PlanOptions {
 }
 
 /// One Service Name this Deploy will apply from the target.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceAttempt {
     /// Service Name to apply from `DeployIntent.target`.
     pub name: ServiceName,
 }
 
 /// Complete desired Services plus which of those Services this command applies.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeployIntent {
     /// Project that will own Containers this Deploy creates.
     pub project_name: ProjectName,
@@ -233,6 +234,7 @@ pub fn profiles_enable_start(service_profiles: &[String], requested_profiles: &[
     clippy::large_enum_variant,
     reason = "Failed must own the named op and unexecuted operations; boxing would not change the states"
 )]
+#[derive(TS)]
 pub enum DeployOutcome<E> {
     /// Every planned operation completed.
     Success { completed: Vec<DeployOperation> },
@@ -245,7 +247,7 @@ pub enum DeployOutcome<E> {
 }
 
 /// Why a Deploy Operation did not complete.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FailedOperation<E> {
     /// The named operation returned `error` or caused the plan to be rejected in preflight.
@@ -262,7 +264,7 @@ pub enum FailedOperation<E> {
 }
 
 /// Compensation after a replacement health failure.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplacementCompensation<E> {
     /// New container started first; `stop_new_container` is that stop attempt.
@@ -275,7 +277,7 @@ pub enum ReplacementCompensation<E> {
 }
 
 /// The stop attempt on the new container during compensation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StopAttempt<E> {
     /// The container stopped, or was already gone.
@@ -302,7 +304,7 @@ impl<E> From<Result<(), E>> for StopAttempt<E> {
 }
 
 /// Whether restarting the old container was attempted after stop-first replacement failure.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RestartAttempt<E> {
     /// Restart was not attempted.
@@ -331,7 +333,7 @@ impl<E> RestartAttempt<E> {
 }
 
 /// Replace one container with a newly resolved spec on the same Machine.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ReplacementOperation {
     /// Machine that hosts both containers.
     pub machine_id: MachineId,
@@ -344,7 +346,7 @@ pub struct ReplacementOperation {
 }
 
 /// Why a Deploy stops a Container.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StopContainerPurpose {
     /// Complete a lifecycle change and wait for replicated consumers to drop it.
@@ -355,7 +357,7 @@ pub enum StopContainerPurpose {
 }
 
 /// One step in a Deploy Plan.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployOperation {
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
@@ -403,7 +405,7 @@ pub enum DeployOperation {
 ///
 /// Live Observation shaped for a decision, not persisted state or execution authority.
 /// The client retains a separately admitted plan for confirmation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeployPreview {
     /// Project this preview describes.
     pub project_name: ProjectName,
@@ -423,33 +425,33 @@ pub struct DeployPreview {
     #[serde(default)]
     pub preserved_volumes: Vec<PreservedVolume>,
     /// Why pruning will not run. `None` means obsolete Services are removed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub prune_refusal: Option<PruneRefusal>,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeToCreate {
     /// Machine where the container operation will ensure the Volume.
     pub machine_id: MachineId,
     /// Human-facing Machine Name from this observer's snapshot when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub machine_name: Option<MachineName>,
     /// Physical Docker Volume Name that is currently absent on the Machine.
     pub name: DockerVolumeName,
     /// Positive Provisioned Volume bound; absent for an ordinary named Volume.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 /// A Compose-declared Docker Volume this Deploy keeps because it is omitted
 /// from this Deploy's target.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PreservedVolume {
     /// Machine-local Docker Volume identity.
     pub id: DockerVolumeId,
     /// Machine Name from this observer's snapshot when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub machine_name: Option<MachineName>,
 }
 
@@ -472,7 +474,7 @@ impl From<ComposePruneRefusal> for PruneRefusal {
 }
 
 /// Why a full reconciliation must not remove visible drift.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum PruneRefusal {
     /// Required Container or Docker Volume evidence is missing from this Machine's visible fan-out.
@@ -531,7 +533,7 @@ impl DeployPreview {
 }
 
 /// Kind of Machine observation that failed or was omitted while gathering a snapshot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ObservationKind {
     Container,
@@ -548,7 +550,7 @@ impl Display for ObservationKind {
 }
 
 /// A warning attached to a Deploy Preview. Display matches the CLI warning body.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployWarning {
     /// Listing containers or volumes on `machine_id` returned `message`.
@@ -609,7 +611,7 @@ impl Display for DeployWarning {
 }
 
 /// Machine RPC invoked while executing one Deploy Operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub enum MachineAction {
     CreateContainer,
     StartContainer,
@@ -620,7 +622,7 @@ pub enum MachineAction {
 }
 
 /// Why health monitoring rejected a started container.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HealthFailure {
     Cancelled,
@@ -631,7 +633,7 @@ pub enum HealthFailure {
 }
 
 /// Why a `service_healthy` dependency gate failed.
-#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DependencyHealthFailure {
     #[error("deploy cancelled")]
@@ -648,7 +650,7 @@ pub enum DependencyHealthFailure {
 }
 
 /// Why a pre-deploy hook container did not succeed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HookFailure {
     Cancelled { stop_error: Option<RpcError> },
@@ -657,7 +659,7 @@ pub enum HookFailure {
 }
 
 /// Error from preflighting or executing one Deploy Operation.
-#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionError {
     #[error("{action:?} failed: {}", error.message)]
@@ -691,6 +693,7 @@ pub enum ExecutionError {
     clippy::large_enum_variant,
     reason = "Outcome owns the completed operations, failed op, and unexecuted operations"
 )]
+#[derive(TS)]
 pub enum DeployEvent {
     /// Full snapshot of every planned row.
     Progress {
@@ -705,29 +708,29 @@ pub enum DeployEvent {
 }
 
 /// One planned operation plus its current execution status.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct OperationRow {
     /// Zero-based index in the Deploy Plan.
     pub index: u32,
     /// Machine this operation targets.
     pub machine_id: MachineId,
     /// Human-facing Machine Name when known from the snapshot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub machine_name: Option<MachineName>,
     /// Planned operation.
     pub operation: DeployOperation,
     /// Container display name when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
     /// Service Name when known from the spec or snapshot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub service_name: Option<ServiceName>,
     /// Current status of this row.
     pub status: OperationStatus,
 }
 
 /// Status of one operation in a Deploy Progress snapshot.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationStatus {
     Pending,
@@ -738,7 +741,7 @@ pub enum OperationStatus {
 }
 
 /// Phase of a running operation. Wait phases carry clocks.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationPhase {
     Starting,
@@ -746,7 +749,7 @@ pub enum OperationPhase {
     StartingContainer,
     WaitingForHealth {
         container_id: ContainerId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         health: Option<HealthObservation>,
         elapsed_ms: u64,
         deadline_ms: u64,

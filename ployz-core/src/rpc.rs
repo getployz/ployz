@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
 };
+use ts_rs::TS;
 
 use ipnet::Ipv4Net;
 use prost::Message;
@@ -216,11 +217,10 @@ pub struct InitializeRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud_pairing: Option<CloudPairing>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
     pub name: MachineName,
     pub storage: StorageChoice,
@@ -237,7 +237,7 @@ pub struct JoinRequest {
     pub registration: Registered,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cloud_pairing: Option<CloudPairing>,
 }
 
@@ -282,7 +282,7 @@ pub struct EnsureGlobalSlotRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SetCloudPairingRequest {
     /// `Some` holds Relay Register with this pairing. `None` unlinks Cloud.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cloud_pairing: Option<CloudPairing>,
 }
 
@@ -316,9 +316,9 @@ pub struct RemoveContainerRequest {
 pub struct LogsOptions {
     pub follow: bool,
     pub tail: i32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub since_unix_seconds: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub until_unix_seconds: Option<i64>,
 }
 
@@ -336,7 +336,7 @@ pub struct MachineLogsRequest {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListImagesRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub reference: Option<String>,
 }
 
@@ -625,7 +625,7 @@ pub struct Initialized {
     pub machine: Machine,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Registered {
     pub assigned_machine: Machine,
     pub visible_peers: Vec<Machine>,
@@ -713,9 +713,9 @@ pub struct MachineUpdated {
     pub machine: Machine,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LocalMachineRemoved {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub reset_warning: Option<String>,
 }
 
@@ -903,7 +903,7 @@ impl<'de> Deserialize<'de> for RpcResponse {
 }
 
 /// The capabilities currently advertised by one Machine.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ContractDescription {
     pub machine_id: MachineId,
     pub protocol_major: u32,
@@ -933,12 +933,12 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Unauthenticated => "unauthenticated",
 });
 
-#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[error("{message}")]
 pub struct RpcError {
     pub code: RpcErrorCode,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
+    #[serde(default)]
     pub details: Value,
 }
 
@@ -951,7 +951,10 @@ mod set_cloud_pairing_wire {
     fn omitted_pairing_unlinks() {
         let request = serde_json::from_value::<SetCloudPairingRequest>(json!({})).unwrap();
         assert_eq!(request.cloud_pairing, None);
-        assert_eq!(serde_json::to_value(&request).unwrap(), json!({}));
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            json!({ "cloud_pairing": null })
+        );
     }
 
     #[test]
