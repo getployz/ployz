@@ -165,9 +165,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-darwin
-          path: |
-            dist
-            .goreleaser.yaml
+          path: dist
 
   pack:
     needs: [build-linux, build-macos, scripts]

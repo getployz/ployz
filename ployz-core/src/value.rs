@@ -200,7 +200,7 @@ hex_id_newtype!(
 );
 
 impl MachineId {
-    /// Generate the same 32-character lowercase hexadecimal identity shape as the baseline.
+    /// Random 32-character lowercase hexadecimal Machine ID.
     #[must_use]
     pub fn random() -> Self {
         let mut hex = [0_u8; 32];

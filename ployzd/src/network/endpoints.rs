@@ -75,7 +75,8 @@ fn read_interfaces(up_only: bool) -> Result<Vec<Interface>, NetworkError> {
 }
 
 fn routable_addresses(interfaces: Vec<Interface>) -> Vec<IpAddr> {
-    // TODO: check for link/ether ifaces?
+    // Link-layer type is not a filter: UP/LOWER_UP flags decide eligibility, so
+    // tunnels and bridges advertise the same way as Ethernet.
     interfaces
         .into_iter()
         .filter(|interface| {

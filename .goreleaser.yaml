@@ -119,19 +119,5 @@ checksum:
   name_template: checksums.txt
   ids: [ployz]
 
-brews:
-  - name: ployz
-    description: Ployz CLI
-    homepage: https://github.com/getployz/ployz2
-    ids: [ployz]
-    install: bin.install "ployz"
-    caveats: |
-      This formula replaces the older getployz/ployz implementation as a clean break
-      with manual transition, not an in-place compatibility promise.
-    skip_upload: true
-    repository:
-      owner: getployz
-      name: homebrew-ployz
-
 changelog:
   disable: true

@@ -18,8 +18,7 @@ pub mod daemon;
 pub mod diag;
 pub mod dns;
 pub mod docker;
-#[doc(hidden)]
-pub mod filesystem;
+pub(crate) mod filesystem;
 mod global_reconcile;
 mod host_capacity;
 mod hosted_dns;
@@ -33,3 +32,6 @@ pub mod metrics;
 pub mod network;
 pub mod relay;
 pub(crate) mod runtime_watch;
+#[cfg(test)]
+#[path = "../tests/test_dir/mod.rs"]
+mod test_dir;

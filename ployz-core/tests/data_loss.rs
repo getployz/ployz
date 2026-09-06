@@ -156,11 +156,6 @@ fn docker_volume_data_loss_display_is_name_on_machine() {
 }
 
 #[test]
-fn docker_volume_data_loss_name_is_the_volume_name() {
-    assert_eq!(volume('a', "data").name(), "data");
-}
-
-#[test]
 fn confirm_names_resolves_unique_display_names_to_listed_identities() {
     let observed = ObservedDataLoss {
         data_loss: vec![volume('a', "data"), volume('a', "logs")],

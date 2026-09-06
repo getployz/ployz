@@ -28,18 +28,6 @@ impl BridgeEndpointCapacity {
         }
     }
 
-    /// IPAM-derived bridge endpoints available to Containers.
-    #[must_use]
-    pub fn usable_endpoints(&self) -> u64 {
-        self.usable_endpoints
-    }
-
-    /// Endpoints currently attached to the bridge.
-    #[must_use]
-    pub fn attached_endpoints(&self) -> u64 {
-        self.attached_endpoints
-    }
-
     /// Usable bridge endpoints not currently attached.
     #[must_use]
     pub fn free_endpoints(&self) -> u64 {
@@ -185,30 +173,6 @@ impl MachineTelemetry {
             docker_root_total_bytes: docker_root.total(),
             docker_root_free_bytes: docker_root.available(),
         }
-    }
-
-    /// Host memory total in bytes.
-    #[must_use]
-    pub fn memory_total_bytes(&self) -> u64 {
-        self.memory_total_bytes
-    }
-
-    /// Host memory available in bytes.
-    #[must_use]
-    pub fn memory_available_bytes(&self) -> u64 {
-        self.memory_available_bytes
-    }
-
-    /// Docker-root filesystem size in bytes.
-    #[must_use]
-    pub fn docker_root_total_bytes(&self) -> u64 {
-        self.docker_root_total_bytes
-    }
-
-    /// Docker-root filesystem free bytes.
-    #[must_use]
-    pub fn docker_root_free_bytes(&self) -> u64 {
-        self.docker_root_free_bytes
     }
 }
 

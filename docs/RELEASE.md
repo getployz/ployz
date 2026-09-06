@@ -77,7 +77,7 @@ Apex and channel URLs must serve these bodies. The installer does not detect or 
 
 ## Homebrew
 
-Goreleaser does not upload the tap (`skip_upload: true`). Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only after a **stable** Publish.
+Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only after a **stable** Publish.
 
 ## Machine daemon
 

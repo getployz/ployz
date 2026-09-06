@@ -1,6 +1,3 @@
-#[path = "../../tests/test_dir/mod.rs"]
-mod test_dir;
-
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, TcpListener},
@@ -27,7 +24,7 @@ use tonic::{
 };
 
 use super::echo_service::EchoService;
-use test_dir::TestDir;
+use crate::test_dir::TestDir;
 
 #[tokio::test]
 #[ignore = "requires Docker and the pinned Corrosion image"]

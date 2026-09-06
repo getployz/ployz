@@ -18,7 +18,7 @@ use crate::machine_api::MachineApi;
 
 #[tokio::test]
 async fn exec_forwards_output_while_docker_inspection_is_pending() {
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let docker_address = docker_listener.local_addr().unwrap();
     let (release_inspection, inspection_released) = tokio::sync::oneshot::channel();
@@ -133,7 +133,7 @@ async fn accept_docker_request(listener: &tokio::net::TcpListener) -> tokio::net
 #[ignore = "requires Docker and alpine:3.23.3"]
 async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoint() {
     let _lock = DOCKER_NETWORK_LOCK.lock().await;
-    let root = TestRoot::new();
+    let root = TestDir::new("ployzd-docker-observer");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();

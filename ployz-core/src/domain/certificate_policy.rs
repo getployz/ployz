@@ -55,11 +55,6 @@ impl ExternalAccountBinding {
         &self.kid
     }
 
-    #[must_use]
-    pub fn hmac_key(&self) -> &str {
-        &self.hmac_key
-    }
-
     /// Decode the HMAC key from standard or URL-safe base64.
     ///
     /// # Errors
@@ -368,7 +363,6 @@ mod tests {
         assert_eq!(policy.directory_url(), Some("http://127.0.0.1:9/directory"));
         let eab = policy.eab().unwrap();
         assert_eq!(eab.kid(), "kid-1");
-        assert_eq!(eab.hmac_key(), "dGVzdA");
         assert_eq!(eab.to_hmac_key_bytes().unwrap(), b"test");
         assert_eq!(policy.key_type(), &CertificateKeyType::EcdsaP384);
         assert_eq!(policy.renew_at_lifetime_fraction(), 0.5);
