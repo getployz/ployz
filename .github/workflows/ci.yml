@@ -48,7 +48,14 @@ jobs:
                 - tcp: 127.0.0.1:1
           EOF
           cargo test --workspace --all-features --locked
-      - run: bash scripts/check-sdk-package.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Type-check the SDK package against the derived declarations
+        working-directory: ployz-sdk
+        run: |
+          npm ci --ignore-scripts
+          npx --no-install tsc --noEmit
       - run: bash scripts/test-release-contracts.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-daemon-lifecycle.sh
