@@ -503,14 +503,6 @@ fn shop_with_obsolete_debug() -> (RequestedServiceSpec, DeploySnapshot) {
     )
 }
 
-fn spec(name: &str) -> RequestedServiceSpec {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    requested.name = ServiceName::parse(name).unwrap();
-    requested
-}
-
 fn removes(plan: &ployz::deploy::DeployPreview, hex: char) -> bool {
     let id = container_id(hex);
     plan.operations.iter().any(|row| {

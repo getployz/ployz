@@ -1,6 +1,6 @@
 //! Façade tests for Cloud session volume removal.
 
-use std::{path::PathBuf, process::Command, time::Duration};
+use std::time::Duration;
 
 use ployz::sdk;
 use ployz_core::{
@@ -10,7 +10,7 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, machine, machine_id, native_addon};
+use super::support::{DiscoveryService, machine, machine_id};
 
 #[tokio::test]
 async fn removal_outcomes_retain_each_volume_identity() {
@@ -255,43 +255,16 @@ async fn node_smoke_covers_successful_and_partial_volume_removal() {
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_volumes.js");
-    let url = session.url.clone();
-    let entry_id = description.machine_id.as_str().to_owned();
-    let machine_a = machine_id('a').as_str().to_owned();
-    let machine_b = machine_id('b').as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", entry_id)
-                .env("PLOYZ_MACHINE_A", machine_a)
-                .env("PLOYZ_MACHINE_B", machine_b)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node volume smoke must not hang")
-    .expect("Node volume smoke task joins")
-    .expect("Node volume smoke spawns");
-
-    assert!(
-        output.status.success(),
-        "Node volume smoke failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script(
+            "node_volumes.js",
+            description.machine_id,
+            &[
+                ("PLOYZ_MACHINE_A", machine_id('a').as_str()),
+                ("PLOYZ_MACHINE_B", machine_id('b').as_str()),
+            ],
+        )
+        .await;
 }
 
 async fn volume_session() -> (sdk::Session, RelaySession, super::relay::FakeMachine) {

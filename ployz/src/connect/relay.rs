@@ -9,9 +9,7 @@ use std::{
 use http::StatusCode;
 use hyper_util::rt::TokioIo;
 use ployz_core::{MachineId, RelayEndpoint};
-use ployz_relay::{
-    ClientError, DialCredential, HeldRegister, PairingCredential, RelayClient, TunnelIo,
-};
+use ployz_relay::{ClientError, DialCredential, HeldRegister, PairingCredential, RelayClient};
 use tonic::transport::{Channel, Endpoint};
 
 use super::ConnectError;
@@ -22,7 +20,10 @@ pub(super) async fn connect_channel(
     pairing: &PairingCredential,
     machine_id: &MachineId,
 ) -> Result<Channel, ConnectError> {
-    let io = dial_tunnel(url, credential, pairing, machine_id).await?;
+    let io = RelayClient::new(url)?
+        .dial(credential.as_str(), pairing.as_str(), machine_id.as_str())
+        .await?
+        .into_io();
     let io = Arc::new(Mutex::new(Some(io)));
     Endpoint::from_static("http://[::]:50051")
         .connect_timeout(Duration::from_secs(5))
@@ -40,19 +41,12 @@ pub(super) async fn connect_channel(
         .map_err(ConnectError::from)
 }
 
-async fn dial_tunnel(
-    url: &RelayEndpoint,
-    credential: &DialCredential,
-    pairing: &PairingCredential,
-    machine_id: &MachineId,
-) -> Result<TunnelIo, ConnectError> {
-    Ok(RelayClient::new(url)?
-        .dial(credential.as_str(), pairing.as_str(), machine_id.as_str())
-        .await?
-        .into_io())
-}
-
-pub(super) async fn list_held(
+/// List Machines currently holding Register for this pairing.
+///
+/// # Errors
+/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
+/// or another [`ConnectError`] when the Relay call fails.
+pub(crate) async fn list_held(
     url: &str,
     credential: &DialCredential,
     pairing: &PairingCredential,
@@ -63,7 +57,11 @@ pub(super) async fn list_held(
         .await?)
 }
 
-pub(super) async fn revoke_pairing(
+/// Revoke the Cloud Pairing so Register with that Pairing Credential fails afterwards.
+///
+/// # Errors
+/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected.
+pub(crate) async fn revoke_pairing(
     url: &str,
     credential: &DialCredential,
     pairing: &PairingCredential,

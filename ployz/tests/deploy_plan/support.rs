@@ -66,6 +66,14 @@ pub(super) use ployz_core::{
     ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
     UpdateOrder, WireGuardPublicKey,
 };
+pub(super) fn spec(name: &str) -> RequestedServiceSpec {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.name = ServiceName::parse(name).unwrap();
+    requested
+}
+
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
         name: ServiceName::parse("api").unwrap(),

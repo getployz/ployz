@@ -10,10 +10,8 @@ use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
-    fs,
     future::Future,
     io,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -24,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{CertificateChallenge, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
-    ingress::{IngressEndpoint, IngressProjection, IngressSite},
+    ingress::{IngressEndpoint, IngressProjection, IngressSite, prepare_directory},
 };
 
 pub const CONFIG_FILE: &str = "Caddyfile";
@@ -172,12 +170,6 @@ fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
     atomic_write(path, caddyfile.as_bytes(), 0o640)?;
     set_ployz_group(path)?;
     Ok(())
-}
-
-fn prepare_directory(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o750))?;
-    set_ployz_group(path)
 }
 
 async fn generate_caddyfile<A: CaddyAdmin>(

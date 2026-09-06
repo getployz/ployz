@@ -161,7 +161,7 @@ impl RelayClient {
     ) -> Result<Vec<HeldRegister>, ClientError> {
         self.post::<ListResponse>(LIST_PATH, bearer, pairing)
             .await
-            .map(|response| response.registers().to_vec())
+            .map(|response| response.registers)
     }
 
     /// Revoke a Pairing Credential so later Register fails.

@@ -9,7 +9,6 @@ use std::{
 
 use bollard::{
     Docker,
-    errors::Error as DockerError,
     models::{Ipam, IpamConfig, NetworkCreateRequest, NetworkInspect},
 };
 use defguard_wireguard_rs::{
@@ -22,6 +21,8 @@ use ployz_core::{
     WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
 };
 use tokio_util::sync::CancellationToken;
+
+use crate::docker_image::is_not_found;
 
 use super::{
     DOCKER_NETWORK_NAME, MACHINE_API_PORT, MeshPeer, NetworkError, WIREGUARD_INTERFACE_NAME,
@@ -206,7 +207,7 @@ impl NetworkPlane {
     async fn remove_docker_network(&self) -> Result<(), NetworkError> {
         match self.docker.remove_network(DOCKER_NETWORK_NAME).await {
             Ok(()) => Ok(()),
-            Err(error) if docker_not_found(&error) => Ok(()),
+            Err(error) if is_not_found(&error) => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
@@ -356,7 +357,7 @@ impl NetworkPlane {
                         };
                         match self.docker.remove_network(network_id).await {
                             Ok(()) => {}
-                            Err(error) if docker_not_found(&error) => {}
+                            Err(error) if is_not_found(&error) => {}
                             Err(error) => {
                                 return Err(docker_network_conflict(
                                     &network,
@@ -381,7 +382,7 @@ impl NetworkPlane {
                     }
                 }
             }
-            Err(error) if docker_not_found(&error) => {}
+            Err(error) if is_not_found(&error) => {}
             Err(error) => return Err(error.into()),
         }
         self.docker
@@ -555,16 +556,6 @@ fn delete_route(route: &IpNet) {
         WIREGUARD_INTERFACE_NAME,
     ]);
     let _ = Command::new("ip").args(args).output();
-}
-
-fn docker_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
 }
 
 #[cfg(test)]

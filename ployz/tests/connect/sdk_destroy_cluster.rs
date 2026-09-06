@@ -1,17 +1,17 @@
 //! Façade tests for Cloud session Cluster destroy with named Data Loss.
 
-use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz::sdk;
 use ployz_core::{
-    ContractDescription, DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachineId, MachineName, MachineObservation, MembershipObservation, PROJECT_NAME_LABEL,
-    RpcErrorCode, UnconfirmedDataLoss,
+    ContractDescription, DataLoss, DockerVolumeId, MachineId, MachineName, MachineObservation,
+    MembershipObservation, RpcErrorCode, UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, confirmation, machine, native_addon};
+use super::support::{DiscoveryService, confirmation, machine};
+use super::support::{docker_volume, owned_volume, volume_id};
 
 struct ClusterLoss {
     shop_data: DockerVolumeId,
@@ -119,45 +119,17 @@ async fn node_destroy_cluster_covers_teardown_and_unconfirmed_missing_names() {
     let (description, loss, worker, _down, service) = cluster_fixture();
     let session = RelaySession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_destroy_cluster.js");
-    let url = session.url.clone();
-    let entry = description.machine_id.as_str().to_owned();
-    let worker_id = worker.machine.id.as_str().to_owned();
-    let scratch_machine = loss.scratch.machine_id.as_str().to_owned();
-    let shop_machine = loss.shop_data.machine_id.as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", entry)
-                .env("PLOYZ_WORKER_MACHINE", worker_id)
-                .env("PLOYZ_SCRATCH_MACHINE_ID", scratch_machine)
-                .env("PLOYZ_SHOP_MACHINE_ID", shop_machine)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node Cluster destroy must not hang")
-    .expect("Node Cluster destroy task joins")
-    .expect("Node Cluster destroy spawns");
-
-    assert!(
-        output.status.success(),
-        "Node Cluster destroy failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script(
+            "node_destroy_cluster.js",
+            description.machine_id,
+            &[
+                ("PLOYZ_WORKER_MACHINE", worker.machine.id.as_str()),
+                ("PLOYZ_SCRATCH_MACHINE_ID", loss.scratch.machine_id.as_str()),
+                ("PLOYZ_SHOP_MACHINE_ID", loss.shop_data.machine_id.as_str()),
+            ],
+        )
+        .await;
 }
 
 async fn cluster_session() -> (
@@ -233,36 +205,4 @@ fn cluster_fixture() -> (
         (down.machine.id, vec![]),
     ]);
     (description, loss, worker, down, service)
-}
-
-fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
-    DockerVolumeId {
-        machine_id,
-        name: DockerVolumeName::parse(name).unwrap(),
-    }
-}
-
-fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
-    DockerVolume {
-        id: volume_id(machine_id, name),
-        options: Default::default(),
-        labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
-        ]),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
-}
-
-fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
-    DockerVolume {
-        id: volume_id(machine_id, name),
-        options: Default::default(),
-        labels: Default::default(),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
 }

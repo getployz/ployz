@@ -46,12 +46,6 @@ impl ContainerLabels {
     pub fn as_map(&self) -> &BTreeMap<String, String> {
         &self.0
     }
-
-    /// Consume these labels and return their map.
-    #[must_use]
-    pub fn into_map(self) -> BTreeMap<String, String> {
-        self.0
-    }
 }
 
 impl TryFrom<BTreeMap<String, String>> for ContainerLabels {

@@ -42,7 +42,12 @@ pub(super) fn container_create_body(
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
     environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
-    let mut labels: HashMap<_, _> = container.labels.clone().into_map().into_iter().collect();
+    let mut labels: HashMap<_, _> = container
+        .labels
+        .as_map()
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     labels.extend([
         (LABEL_MANAGED.into(), String::new()),
         (LABEL_PROJECT_NAME.into(), project_name.to_string()),
@@ -84,7 +89,13 @@ pub(super) fn container_create_body(
             .as_ref()
             .map(|driver| HostConfigLogConfig {
                 typ: Some(driver.name.clone()),
-                config: Some(driver.options.clone().into_iter().collect()),
+                config: Some(
+                    driver
+                        .options
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
             }),
         port_bindings,
         restart_policy: Some(docker_restart(if hook.is_some() {
@@ -107,8 +118,13 @@ pub(super) fn container_create_body(
             hook.and_then(|hook| hook.privileged)
                 .unwrap_or(container.privileged),
         ),
-        sysctls: (!container.sysctls.is_empty())
-            .then(|| container.sysctls.clone().into_iter().collect()),
+        sysctls: (!container.sysctls.is_empty()).then(|| {
+            container
+                .sysctls
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        }),
         ..docker_resources(resources)
     };
     Ok(ContainerCreateBody {
@@ -278,7 +294,13 @@ pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> Ho
                     count: reservation.count,
                     device_ids: Some(reservation.device_ids.clone()),
                     capabilities: Some(reservation.capabilities.clone()),
-                    options: Some(reservation.options.clone().into_iter().collect()),
+                    options: Some(
+                        reservation
+                            .options
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                    ),
                 })
                 .collect()
         }),

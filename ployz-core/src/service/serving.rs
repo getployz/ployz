@@ -116,15 +116,13 @@ impl SlotOccupancy {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use serde_json::json;
 
     use super::{SlotOccupancy, serving_containers};
+    use crate::service::tests::observation;
     use crate::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-        ContainerRuntimeObservation, HealthObservation, MachineId, ProjectName,
-        ResolvedServiceSpec, ServiceId, ServiceName, service_containers,
+        ContainerAddress, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+        HealthObservation, ResolvedServiceSpec, ServiceId, service_containers,
     };
 
     #[test]
@@ -356,36 +354,5 @@ mod tests {
             })
             .unwrap();
         observation
-    }
-
-    fn observation(
-        id: char,
-        service_id: &ServiceId,
-        name: &str,
-        kind: ContainerKind,
-        image: &str,
-    ) -> ContainerObservation {
-        let service_name = ServiceName::parse(name).unwrap();
-        let resolved_spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": service_id,
-            "name": service_name,
-            "mode": { "mode": "replicated", "replicas": 1 },
-            "container": { "image": image, "pull_policy": "missing" }
-        }))
-        .unwrap();
-        ContainerObservation::try_from(crate::ContainerObservationParts {
-            container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
-            display_name: format!("{name}-{id}"),
-            created_at_unix_nanos: 0,
-            machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
-            project_name: ProjectName::parse("app").unwrap(),
-            kind,
-            runtime: ContainerRuntimeObservation::Created,
-            effective_healthcheck: None,
-            resolved_spec,
-            address: None,
-            labels: BTreeMap::new(),
-        })
-        .unwrap()
     }
 }

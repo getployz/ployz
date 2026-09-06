@@ -701,8 +701,6 @@ pub fn compare_specs(
     current: &ResolvedServiceSpec,
     requested: &RequestedServiceSpec,
 ) -> SpecChange {
-    // TODO: ingress, placement, unused-volume, bind-option/default, and mutable-resource changes still
-    // recreate until the Machine API supports the narrower in-place updates.
     if requested.container.pull_policy == PullPolicy::Always
         || current.serving_shape() != requested.serving_shape()
     {
