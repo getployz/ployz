@@ -416,7 +416,7 @@ async fn list_without_pong_omits_register_rtt() {
     let machine = client(&relay.url);
     let cloud = client(&relay.url);
     let machine_id = MachineId::random();
-    let _hold = start_register(&machine, PAIRING, &machine_id).await;
+    let _hold = machine.register(PAIRING, &machine_id).await.unwrap();
 
     let listed = cloud.list(DIAL, PAIRING).await.unwrap();
     let row = listed.first().expect("silent Register is listed");
@@ -560,7 +560,7 @@ async fn hold_register(
     pairing: &str,
     machine_id: &MachineId,
 ) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<Open>) {
-    let mut ws = start_register(client, pairing, machine_id).await;
+    let mut ws = client.register(pairing, machine_id).await.unwrap();
     let (tx, rx) = mpsc::channel(16);
     let hold = tokio::spawn(async move {
         while let Ok(Some(open)) = ws.recv::<Open>().await {
@@ -572,10 +572,6 @@ async fn hold_register(
         }
     });
     (hold, rx)
-}
-
-async fn start_register(client: &RelayClient, pairing: &str, machine_id: &MachineId) -> RelayWs {
-    client.register(pairing, machine_id).await.unwrap()
 }
 
 async fn wait_for_rtt(cloud: &RelayClient, pairing: &str, machine_id: MachineId) -> Option<i64> {
