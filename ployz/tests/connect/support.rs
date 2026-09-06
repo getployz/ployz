@@ -20,13 +20,13 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
     CreateVolumeReport, CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume,
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
+    LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
+    MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
     MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
-    PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RemoveMachineRequest, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
-    encode_runtime_watch_frame, op,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -555,7 +555,7 @@ impl MachineRpc for DiscoveryService {
                     },
                     options: Default::default(),
                     labels: Default::default(),
-                    storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                    storage: DockerVolumeStorageObservation::Plain {
                         driver: "local".into(),
                     },
                 }],
@@ -981,4 +981,36 @@ pub(super) fn native_addon() -> PathBuf {
         "ployz-sdk cdylib was not produced under {}",
         target.join(profile).display()
     );
+}
+
+pub(super) fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
+    DockerVolumeId {
+        machine_id,
+        name: DockerVolumeName::parse(name).unwrap(),
+    }
+}
+
+pub(super) fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
+    DockerVolume {
+        id: volume_id(machine_id, name),
+        options: Default::default(),
+        labels: BTreeMap::from([
+            (MANAGED_LABEL.to_owned(), String::new()),
+            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
+        ]),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    }
+}
+
+pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
+    DockerVolume {
+        id: volume_id(machine_id, name),
+        options: Default::default(),
+        labels: Default::default(),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    }
 }

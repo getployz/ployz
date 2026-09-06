@@ -342,11 +342,6 @@ fn parse_log_duration(value: &str) -> Option<i64> {
     (seconds.is_finite() && seconds >= 0.0).then_some(seconds as i64)
 }
 
-#[must_use]
-pub fn service_logs_use_compose(explicit: &[String]) -> bool {
-    explicit.is_empty()
-}
-
 pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
     let (local, remote) = value.split_once(':').map_or(("0", value), |parts| parts);
     if remote.contains(':') {

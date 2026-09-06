@@ -842,7 +842,7 @@ mod tests {
             machine_name: machine.clone(),
             operation: DeployOperation::RunContainer {
                 machine_id,
-                spec: spec.clone(),
+                spec,
                 skip_health_monitor: false,
             },
             display_name: Some("excalidraw-0z12".into()),

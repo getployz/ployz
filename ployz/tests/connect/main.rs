@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -922,9 +922,9 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
-        capabilities: [CapabilityName::parse("ployz.rpc.describe-contract.v1").unwrap()]
-            .into_iter()
-            .collect(),
+        capabilities: BTreeSet::from([
+            CapabilityName::parse("ployz.rpc.describe-contract.v1").unwrap()
+        ]),
     };
     let service = DiscoveryService::new(description.clone());
     let tcp_server = tokio::spawn(

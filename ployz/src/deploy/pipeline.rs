@@ -289,7 +289,7 @@ pub(super) async fn plan_scale(
     replicas: NonZeroU32,
     options: PlanOptions,
 ) -> Result<(DeployPlan, ProjectName), Failure> {
-    let machines = list_machines(client).await?;
+    let machines = client.machines().await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let choice = choose_scale_spec(&snapshot, selector, replicas)?;
     let Some(requested) = choice.requested else {
@@ -375,10 +375,6 @@ fn choose_scale_spec(
         project_name,
         requested: Some(requested),
     })
-}
-
-pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {
-    Ok(client.machines().await?)
 }
 
 async fn gather_snapshot(

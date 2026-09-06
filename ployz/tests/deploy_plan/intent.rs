@@ -144,9 +144,9 @@ fn selected_service_healthy_wait_precedes_the_dependent_hook() {
         },
     )
     .with_dependencies(BTreeMap::from([(
-        web.name.clone(),
+        web.name,
         vec![ServiceDependency {
-            service: db.name.clone(),
+            service: db.name,
             condition: DependencyCondition::ServiceHealthy,
         }],
     )]));
@@ -185,7 +185,7 @@ fn healthy_dependency_does_not_gate_scale_down() {
     .with_dependencies(BTreeMap::from([(
         web.name.clone(),
         vec![ServiceDependency {
-            service: db.name.clone(),
+            service: db.name,
             condition: DependencyCondition::ServiceHealthy,
         }],
     )]));
@@ -225,7 +225,7 @@ fn skip_health_omits_wait_and_warns_for_each_weakened_edge() {
         },
     )
     .with_dependencies(BTreeMap::from([(
-        web.name.clone(),
+        web.name,
         vec![ServiceDependency {
             service: db.name,
             condition: DependencyCondition::ServiceHealthy,

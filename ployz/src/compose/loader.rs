@@ -246,10 +246,10 @@ pub(super) fn compose_command(
     }
     if let Some(override_file) = override_file {
         if options.files.is_empty() {
-            if let Some(mut files) = std::env::var_os("COMPOSE_FILE") {
+            if let Some(mut files) = std::env::var_os(crate::cli::env::COMPOSE_FILE) {
                 files.push(compose_path_separator());
                 files.push(&override_file.path);
-                command.env("COMPOSE_FILE", files);
+                command.env(crate::cli::env::COMPOSE_FILE, files);
             } else {
                 command
                     .arg("--file")
@@ -360,7 +360,7 @@ struct NamedCompose {
 }
 
 fn compose_files_from_environment() -> Vec<PathBuf> {
-    let Some(files) = std::env::var_os("COMPOSE_FILE") else {
+    let Some(files) = std::env::var_os(crate::cli::env::COMPOSE_FILE) else {
         return Vec::new();
     };
     files

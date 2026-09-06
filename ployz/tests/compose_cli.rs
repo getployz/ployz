@@ -29,7 +29,7 @@ exit 1
     );
     let options = LoadOptions {
         command: "deploy".into(),
-        docker: Some(docker.clone()),
+        docker: Some(docker),
         working_dir: Some(root.clone()),
         ..Default::default()
     };

@@ -297,7 +297,7 @@ fn plan_operations(
 }
 
 fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundIntent, PlanError> {
-    let specs = specs_to_plan(intent)?;
+    let specs = order_included(intent, &names_to_plan(intent))?;
     let target: Vec<_> = intent
         .target
         .iter()
@@ -496,10 +496,6 @@ fn removal_operations(
             }
         })
         .collect()
-}
-
-fn specs_to_plan(intent: &DeployIntent) -> Result<Vec<&RequestedServiceSpec>, PlanError> {
-    order_included(intent, &names_to_plan(intent))
 }
 
 fn names_to_plan(intent: &DeployIntent) -> BTreeSet<&ServiceName> {

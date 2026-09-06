@@ -28,7 +28,7 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
         "registry:2",
     ]);
     let mut cleanup = Cleanup {
-        name: name.clone(),
+        name,
         images: Vec::new(),
     };
     let deadline = Instant::now() + Duration::from_secs(10);

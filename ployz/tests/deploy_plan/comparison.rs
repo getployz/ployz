@@ -107,7 +107,7 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
         },
     );
     changes.push(("ulimit", changed));
-    let mut changed = requested.clone();
+    let mut changed = requested;
     changed.container.restart = RestartPolicy::No;
     changes.push(("restart", changed));
 

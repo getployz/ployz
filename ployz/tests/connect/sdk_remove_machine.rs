@@ -6,13 +6,15 @@ use std::{
 
 use ployz::sdk;
 use ployz_core::{
-    ContractDescription, DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MachineId,
-    MachineName, MachineObservation, RpcErrorCode, UnconfirmedDataLoss,
+    ContractDescription, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
+    MachineObservation, RpcErrorCode, UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, confirmation, connected_client, machine, native_addon};
+use super::support::{
+    DiscoveryService, confirmation, connected_client, docker_volume, machine, native_addon,
+};
 
 #[tokio::test]
 async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
@@ -392,20 +394,6 @@ fn volume(machine_id: MachineId, name: &str) -> DataLoss {
         id: DockerVolumeId {
             machine_id,
             name: DockerVolumeName::parse(name).unwrap(),
-        },
-    }
-}
-
-fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: DockerVolumeName::parse(name).unwrap(),
-        },
-        options: Default::default(),
-        labels: Default::default(),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
         },
     }
 }

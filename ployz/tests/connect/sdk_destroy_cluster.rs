@@ -4,14 +4,15 @@ use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration
 
 use ployz::sdk;
 use ployz_core::{
-    ContractDescription, DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachineId, MachineName, MachineObservation, MembershipObservation, PROJECT_NAME_LABEL,
-    RpcErrorCode, UnconfirmedDataLoss,
+    ContractDescription, DataLoss, DockerVolumeId, MachineId, MachineName, MachineObservation,
+    MembershipObservation, RpcErrorCode, UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, confirmation, machine, native_addon};
+use super::support::{
+    DiscoveryService, confirmation, docker_volume, machine, native_addon, owned_volume, volume_id,
+};
 
 struct ClusterLoss {
     shop_data: DockerVolumeId,
@@ -233,36 +234,4 @@ fn cluster_fixture() -> (
         (down.machine.id, vec![]),
     ]);
     (description, loss, worker, down, service)
-}
-
-fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
-    DockerVolumeId {
-        machine_id,
-        name: DockerVolumeName::parse(name).unwrap(),
-    }
-}
-
-fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
-    DockerVolume {
-        id: volume_id(machine_id, name),
-        options: Default::default(),
-        labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
-        ]),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
-}
-
-fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
-    DockerVolume {
-        id: volume_id(machine_id, name),
-        options: Default::default(),
-        labels: Default::default(),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
 }

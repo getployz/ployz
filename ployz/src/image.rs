@@ -693,7 +693,7 @@ mod tests {
             ..machines[0].clone()
         };
         assert_eq!(
-            select_targets(&[named_all.clone(), machines[1].clone()], &["all".into()])
+            select_targets(&[named_all, machines[1].clone()], &["all".into()])
                 .unwrap()
                 .first()
                 .unwrap()

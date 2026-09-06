@@ -194,107 +194,90 @@ where
 
 type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-macro_rules! declare_handler {
-    ($function:ident => $path:literal, $matches:ident $body:block) => {
-        fn $function($matches: &ArgMatches) -> Result<(), Error> $body
-    };
-}
-
-macro_rules! stub_handlers {
-    ($($function:ident $(($matches:ident) $body:block)? => $path:literal);+ $(;)?) => {
-        $(declare_handler!($function => $path $(, $matches $body)?);)+
-
-        fn handler_for(path: &str) -> Option<Handler> {
-            match path {
-                $($path => Some($function),)+
-                _ => None,
-            }
-        }
-    };
-}
-
-stub_handlers! {
-    build(root) { build::run(root) } => "build";
-    ingress_config(root) { ingress::config(root) } => "ingress config";
-    ingress_deploy(root) { ingress::deploy(root) } => "ingress deploy";
-    ingress_logs(root) { operator::ingress_logs(root) } => "ingress logs";
-    context(root) { context::select(root, None) } => "ctx";
-    context_connection(root) {
-        context::connection(
-            root,
-            leaf_matches(root)
-                .get_one::<String>("connection")
-                .map(String::as_str),
-        )
-    } => "ctx connection";
-    context_list(root) { context::list(root) } => "ctx ls";
-    context_show(root) { context::show(root) } => "ctx show";
-    context_use(root) {
-        context::select(
-            root,
-            leaf_matches(root)
-                .get_one::<String>("context-name")
-                .map(String::as_str),
-        )
-    } => "ctx use";
-    deploy(root) { deploy::deploy(root) } => "deploy";
-    dns_release(root) { dns::release(root) } => "dns release";
-    dns_reserve(root) { dns::reserve(root) } => "dns reserve";
-    dns_show(root) { dns::show(root) } => "dns show";
-    exec(root) { operator::exec(root) } => "exec";
-    image_list(root) { image::list(root) } => "image ls";
-    image_push(root) { image::push(root) } => "image push";
-    images(root) { image::list(root) } => "images";
-    cloud_enroll(root) { cloud::enroll(root) } => "cloud enroll";
-    inspect(root) { service::inspect(root) } => "inspect";
-    logs(root) {
-        operator::service_logs(root)
-    } => "logs";
-    list(root) { service::list(root) } => "ls";
-    machine_add(root) { machine::add(root) } => "machine add";
-    machine_init(root) { machine::init(root) } => "machine init";
-    machine_inspect(root) { machine::inspect(root) } => "machine inspect";
-    machine_logs(root) { operator::machine_logs(root) } => "machine logs";
-    machine_list(root) { machine::list(root) } => "machine ls";
-    machine_rename(root) { machine::rename(root) } => "machine rename";
-    machine_remove(root) { machine::remove(root) } => "machine rm";
-    machine_rtt(root) { machine::rtt(root) } => "machine rtt";
-    machine_update(root) { machine::update(root) } => "machine update";
-    proxy(root) { operator::proxy(root) } => "proxy";
-    project_list(root) { project::list(root) } => "project ls";
-    project_remove(root) { project::remove(root) } => "project rm";
-    process_list(root) { service::processes(root) } => "ps";
-    remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
-    run_service(root) { deploy::run(root) } => "run";
-    scale(root) { deploy::scale(root) } => "scale";
-    service_exec(root) { operator::exec(root) } => "service exec";
-    service_inspect(root) { service::inspect(root) } => "service inspect";
-    service_logs(root) { operator::service_logs(root) } => "service logs";
-    service_list(root) { service::list(root) } => "service ls";
-    service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
-    service_run(root) { deploy::run(root) } => "service run";
-    service_scale(root) { deploy::scale(root) } => "service scale";
-    service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";
-    service_stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "service stop";
-    start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "start";
-    stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "stop";
-    version(root) {
-        println!(
-            "{}",
-            version_text(
+fn handler_for(path: &str) -> Option<Handler> {
+    let handler: Handler = match path {
+        "build" => build::run,
+        "ingress config" => ingress::config,
+        "ingress deploy" => ingress::deploy,
+        "ingress logs" => operator::ingress_logs,
+        "ctx" => |root| context::select(root, None),
+        "ctx connection" => |root| {
+            context::connection(
+                root,
                 leaf_matches(root)
-                    .get_one::<String>("output")
+                    .get_one::<String>("connection")
                     .map(String::as_str),
-                env!("CARGO_PKG_VERSION"),
-            )?
-        );
-        Ok(())
-    } => "version";
-    volume_create(root) { volume::create(root) } => "volume create";
-    volume_inspect(root) { volume::inspect(root) } => "volume inspect";
-    volume_list(root) { volume::list(root) } => "volume ls";
-    volume_remove(root) { volume::remove(root) } => "volume rm";
-    wireguard_show(root) { machine::wireguard_show(root) } => "wg show";
+            )
+        },
+        "ctx ls" => context::list,
+        "ctx show" => context::show,
+        "ctx use" => |root| {
+            context::select(
+                root,
+                leaf_matches(root)
+                    .get_one::<String>("context-name")
+                    .map(String::as_str),
+            )
+        },
+        "deploy" => deploy::deploy,
+        "dns release" => dns::release,
+        "dns reserve" => dns::reserve,
+        "dns show" => dns::show,
+        "exec" => operator::exec,
+        "image ls" => image::list,
+        "image push" => image::push,
+        "images" => image::list,
+        "cloud enroll" => cloud::enroll,
+        "inspect" => service::inspect,
+        "logs" => operator::service_logs,
+        "ls" => service::list,
+        "machine add" => machine::add,
+        "machine init" => machine::init,
+        "machine inspect" => machine::inspect,
+        "machine logs" => operator::machine_logs,
+        "machine ls" => machine::list,
+        "machine rename" => machine::rename,
+        "machine rm" => machine::remove,
+        "machine rtt" => machine::rtt,
+        "machine update" => machine::update,
+        "proxy" => operator::proxy,
+        "project ls" => project::list,
+        "project rm" => project::remove,
+        "ps" => service::processes,
+        "rm" => |root| service::change(root, ployz_core::ContainerAction::Remove),
+        "run" => deploy::run,
+        "scale" => deploy::scale,
+        "service exec" => operator::exec,
+        "service inspect" => service::inspect,
+        "service logs" => operator::service_logs,
+        "service ls" => service::list,
+        "service rm" => |root| service::change(root, ployz_core::ContainerAction::Remove),
+        "service run" => deploy::run,
+        "service scale" => deploy::scale,
+        "service start" => |root| service::change(root, ployz_core::ContainerAction::Start),
+        "service stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
+        "start" => |root| service::change(root, ployz_core::ContainerAction::Start),
+        "stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
+        "version" => |root| {
+            println!(
+                "{}",
+                version_text(
+                    leaf_matches(root)
+                        .get_one::<String>("output")
+                        .map(String::as_str),
+                    env!("CARGO_PKG_VERSION"),
+                )?
+            );
+            Ok(())
+        },
+        "volume create" => volume::create,
+        "volume inspect" => volume::inspect,
+        "volume ls" => volume::list,
+        "volume rm" => volume::remove,
+        "wg show" => machine::wireguard_show,
+        _ => return None,
+    };
+    Some(handler)
 }
 
 #[cfg(test)]
