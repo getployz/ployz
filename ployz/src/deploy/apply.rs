@@ -19,7 +19,7 @@ use crate::{
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
-        PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
+        PushOutcome, ReconciliationHints, plan_options, plan_project, plan_scale,
         push_project_images,
     },
     render,
@@ -157,7 +157,7 @@ pub(crate) async fn deploy_project(
     hints: ReconciliationHints,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    let machines = list_machines(client).await?;
+    let machines = client.machines().await?;
     let outcome = push_project_images(client, builds, &machines).await?;
     print_pushed_images(&outcome);
     if !outcome.failures.is_empty() {

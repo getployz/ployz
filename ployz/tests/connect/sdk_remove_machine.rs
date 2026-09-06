@@ -1,18 +1,17 @@
 //! Façade tests for Cloud session Machine removal with named Data Loss.
 
-use std::{
-    collections::BTreeMap, path::PathBuf, process::Command, sync::atomic::Ordering, time::Duration,
-};
+use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
 
 use ployz::sdk;
 use ployz_core::{
-    ContractDescription, DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MachineId,
-    MachineName, MachineObservation, RpcErrorCode, UnconfirmedDataLoss,
+    ContractDescription, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, MachineObservation,
+    RpcErrorCode, UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, confirmation, connected_client, machine, native_addon};
+use super::support::{DiscoveryService, confirmation, connected_client, machine};
+use super::support::{docker_volume, machine_named};
 
 #[tokio::test]
 async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
@@ -280,43 +279,16 @@ async fn node_remove_machine_covers_volumes_and_unconfirmed_missing_names() {
     let (description, worker, empty, service) = removal_cluster();
     let session = RelaySession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let addon = native_addon();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("ployz-sdk");
-    let script = package.join("tests/node_remove_machine.js");
-    let url = session.url.clone();
-    let entry = description.machine_id.as_str().to_owned();
-    let worker_name = worker.machine.name.as_str().to_owned();
-    let empty_name = empty.machine.name.as_str().to_owned();
-
-    let output = timeout(
-        Duration::from_secs(20),
-        tokio::task::spawn_blocking(move || {
-            Command::new("node")
-                .arg(&script)
-                .env("PLOYZ_SDK_ADDON", addon)
-                .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", url)
-                .env("PLOYZ_BEARER", relay::DIAL)
-                .env("PLOYZ_PAIRING", relay::PAIRING)
-                .env("PLOYZ_MACHINE_ID", entry)
-                .env("PLOYZ_WORKER_MACHINE", worker_name)
-                .env("PLOYZ_EMPTY_MACHINE", empty_name)
-                .output()
-        }),
-    )
-    .await
-    .expect("Node Machine removal must not hang")
-    .expect("Node Machine removal task joins")
-    .expect("Node Machine removal spawns");
-
-    assert!(
-        output.status.success(),
-        "Node Machine removal failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    session
+        .assert_sdk_script(
+            "node_remove_machine.js",
+            description.machine_id,
+            &[
+                ("PLOYZ_WORKER_MACHINE", worker.machine.name.as_str()),
+                ("PLOYZ_EMPTY_MACHINE", empty.machine.name.as_str()),
+            ],
+        )
+        .await;
 }
 
 async fn removal_session() -> (
@@ -380,32 +352,11 @@ fn removal_cluster() -> (
     (description, worker, empty, service)
 }
 
-fn machine_named(id: &MachineId, name: &str) -> MachineObservation {
-    let mut observation = machine('a', name);
-    observation.machine.id = *id;
-    observation.machine.name = MachineName::parse(name).unwrap();
-    observation
-}
-
 fn volume(machine_id: MachineId, name: &str) -> DataLoss {
     DataLoss::DockerVolume {
         id: DockerVolumeId {
             machine_id,
             name: DockerVolumeName::parse(name).unwrap(),
-        },
-    }
-}
-
-fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: DockerVolumeName::parse(name).unwrap(),
-        },
-        options: Default::default(),
-        labels: Default::default(),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
         },
     }
 }

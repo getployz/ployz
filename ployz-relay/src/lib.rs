@@ -206,17 +206,9 @@ impl TunnelFrame {
     }
 }
 
-/// Dial-authenticated request to revoke a Pairing Credential.
-#[derive(Clone, PartialEq, Message)]
-pub struct RevokeRequest {}
-
 /// Pairing Credential is no longer accepted on Register.
 #[derive(Clone, PartialEq, Message)]
 pub struct RevokeResponse {}
-
-/// Dial-authenticated request to list held Registers for a pairing.
-#[derive(Clone, PartialEq, Message)]
-pub struct ListRequest {}
 
 /// One held Register as listed for a pairing.
 #[derive(Clone, PartialEq, Message)]

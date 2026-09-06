@@ -797,7 +797,7 @@ mod tests {
         assert!(!changed.all_targets_succeeded());
     }
 
-    fn observation(
+    pub(super) fn observation(
         id: char,
         service_id: &ServiceId,
         name: &str,

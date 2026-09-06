@@ -9,7 +9,7 @@ use ployz_core::{
     ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, HttpProtocol,
     INGRESS_VERIFY_PATH, IngressHost, IngressHostname, IngressLabelTooLong, LiveServices, Machine,
     MachineId, MachineObservation, PortPublication, ProjectName, QualifiedService,
-    RequestedServiceSpec, cluster_dns_verdict, op,
+    RequestedServiceSpec, cluster_dns_verdict, issuance_refusal_reason, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -354,17 +354,6 @@ impl Display for IngressDnsWarning {
     }
 }
 
-fn join_addresses(addresses: &[IpAddr]) -> String {
-    if addresses.is_empty() {
-        return "this Cluster's Machine addresses (none are published)".into();
-    }
-    addresses
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn ingress_targets_from_ports<'a>(
     ports: impl IntoIterator<Item = &'a PortPublication>,
 ) -> BTreeMap<&'a IngressHost, bool> {
@@ -396,17 +385,10 @@ fn miss_warning(
     cluster_addresses: &[IpAddr],
     mentions_certificates: bool,
 ) -> Option<IngressDnsWarning> {
-    let should = join_addresses(cluster_addresses);
-    let body = match cluster_dns_verdict(resolved, cluster_addresses) {
-        ClusterDnsVerdict::PointsAtCluster => return None,
-        ClusterDnsVerdict::DoesNotResolve => {
-            format!("Ingress Hostname {hostname} does not resolve; it should resolve to {should}.")
-        }
-        ClusterDnsVerdict::ResolvesElsewhere => format!(
-            "Ingress Hostname {hostname} resolves to {}; it should resolve to {should}.",
-            join_addresses(resolved)
-        ),
-    };
+    if cluster_dns_verdict(resolved, cluster_addresses) == ClusterDnsVerdict::PointsAtCluster {
+        return None;
+    }
+    let body = issuance_refusal_reason(hostname, resolved, cluster_addresses);
     Some(IngressDnsWarning(if mentions_certificates {
         format!("{body} A certificate cannot be issued until it points at this Cluster.")
     } else {

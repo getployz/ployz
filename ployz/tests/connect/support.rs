@@ -2,8 +2,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,
     num::NonZeroU64,
-    path::PathBuf,
-    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -20,13 +18,13 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
     CreateVolumeReport, CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume,
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
+    LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
+    MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
     MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
-    PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RemoveMachineRequest, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
-    encode_runtime_watch_frame, op,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -904,6 +902,40 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
     )
 }
 
+pub(super) fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
+    DockerVolumeId {
+        machine_id,
+        name: DockerVolumeName::parse(name).unwrap(),
+    }
+}
+
+pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
+    DockerVolume {
+        id: volume_id(machine_id, name),
+        options: Default::default(),
+        labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    }
+}
+
+pub(super) fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
+    DockerVolume {
+        labels: BTreeMap::from([
+            (MANAGED_LABEL.to_owned(), String::new()),
+            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
+        ]),
+        ..docker_volume(machine_id, name)
+    }
+}
+
+pub(super) fn machine_named(id: &MachineId, name: &str) -> MachineObservation {
+    let mut observation = machine('a', name);
+    observation.machine.id = *id;
+    observation
+}
+
 pub(super) fn machine_id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
@@ -945,40 +977,4 @@ pub(super) async fn connected_client(
     .await
     .unwrap();
     (client, server, connects)
-}
-
-pub(super) fn native_addon() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.join("..");
-    let target = option_env!("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target"));
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let names = ["libployz_sdk.so", "libployz_sdk.dylib", "ployz_sdk.dll"];
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-    let status = Command::new("cargo")
-        .args(["build", "-p", "ployz-sdk", "--locked"])
-        .current_dir(&workspace)
-        .status()
-        .expect("cargo build -p ployz-sdk");
-    assert!(status.success(), "cargo build -p ployz-sdk failed");
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-    panic!(
-        "ployz-sdk cdylib was not produced under {}",
-        target.join(profile).display()
-    );
 }
