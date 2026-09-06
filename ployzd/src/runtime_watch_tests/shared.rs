@@ -161,3 +161,35 @@ async fn immediate_reconnect_after_last_disconnect_starts_fresh() {
         .unwrap();
     assert_eq!(next_frame(&mut reconnected).await.volumes, [volume]);
 }
+
+#[tokio::test]
+async fn reconnect_rejects_a_published_error_before_its_sender_is_dropped() {
+    let shared = super::super::RuntimeWatch::default();
+    let (latest, updates) = tokio::sync::watch::channel(None);
+    let updates = Arc::new(updates);
+    *shared.current.lock().await = Arc::downgrade(&updates);
+    let mut failed = super::super::stream_watch(Arc::clone(&updates));
+
+    // Freeze the multithreaded window after publication but before the producer returns.
+    latest.send_replace(Some(Arc::new(Err(tonic::Status::unavailable(
+        "store closed",
+    )))));
+    assert_eq!(
+        failed.next().await.unwrap().unwrap_err().code(),
+        tonic::Code::Unavailable
+    );
+    assert!(
+        updates.has_changed().is_ok(),
+        "the producer's sender is still alive"
+    );
+
+    let entry = machine("edge", ENTRY_ID, 1);
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    let (_wake, changes) = mpsc::channel(1);
+    let mut reconnected = shared
+        .subscribe_with(async || Ok(serve_fixture(entry.id, &fixture, changes)))
+        .await
+        .unwrap();
+    assert_eq!(next_frame(&mut reconnected).await.machines.len(), 1);
+    drop(latest);
+}

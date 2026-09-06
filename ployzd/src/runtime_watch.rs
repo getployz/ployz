@@ -69,10 +69,10 @@ impl RuntimeWatch {
         start: impl AsyncFnOnce() -> Result<RpcStream, Error>,
     ) -> Result<RuntimeWatchStream, Error> {
         let mut current = self.current.lock().await;
-        let updates = match current
-            .upgrade()
-            .filter(|updates| updates.has_changed().is_ok())
-        {
+        let updates = match current.upgrade().filter(|updates| {
+            // The terminal value is stored before wakeups, even while its sender lives.
+            updates.has_changed().is_ok() && !matches!(updates.borrow().as_deref(), Some(Err(_)))
+        }) {
             Some(updates) => updates,
             None => {
                 let updates = share_watch(start().await?);
