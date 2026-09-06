@@ -26,7 +26,7 @@ use crate::{
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
-    runtime_watch::serve_replicated_runtime_watch,
+    runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
 
 /// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
@@ -45,6 +45,7 @@ pub struct MachineService {
     allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     global_reconcile: GlobalReconcileObservations,
+    runtime_watch: Arc<RuntimeWatch>,
 }
 
 impl MachineService {
@@ -64,6 +65,7 @@ impl MachineService {
             allocator_endpoint: None,
             cloud_pairing: None,
             global_reconcile: global_reconcile_observation_channel().1,
+            runtime_watch: Arc::default(),
         }
     }
 
@@ -264,7 +266,7 @@ impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type ContainerLogsStream = RpcStream;
     type MachineLogsStream = RpcStream;
-    type RuntimeWatchStream = RpcStream;
+    type RuntimeWatchStream = RuntimeWatchStream;
 
     async fn describe_contract(
         &self,
@@ -655,14 +657,16 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
         let entry_id = self.local_record()?.id();
-        let stream = serve_replicated_runtime_watch(
-            store,
-            self.local.clone(),
-            entry_id,
-            self.global_reconcile.clone(),
-        )
-        .await
-        .map_err(|error| Status::unavailable(error.to_string()))?;
+        let stream = self
+            .runtime_watch
+            .subscribe(
+                store,
+                self.local.clone(),
+                entry_id,
+                self.global_reconcile.clone(),
+            )
+            .await
+            .map_err(|error| Status::unavailable(error.to_string()))?;
         Ok(Response::new(stream))
     }
 

@@ -3,6 +3,8 @@
 
 use std::{
     future::Future,
+    pin::Pin,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime},
 };
 
@@ -11,11 +13,11 @@ use futures_util::{Stream, StreamExt};
 use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
+    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
     encode_runtime_watch_frame,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
@@ -29,6 +31,95 @@ use crate::{
 
 /// How often Watch samples membership and RTT from the local admin socket.
 const TELEMETRY_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A client's complete observations, with subscription lifetime owned by the stream.
+pub type RuntimeWatchStream = Pin<Box<dyn Stream<Item = Result<OpaquePayload, Status>> + Send>>;
+
+type WatchUpdates = watch::Receiver<Option<Arc<Result<OpaquePayload, Status>>>>;
+
+/// Shares acquisition while clients are connected; failure or the last disconnect
+/// releases it so the next subscriber starts with fresh observations.
+#[derive(Default)]
+pub(crate) struct RuntimeWatch {
+    current: Mutex<Weak<WatchUpdates>>,
+}
+
+impl RuntimeWatch {
+    /// Join the shared producer, starting acquisition if none is active.
+    /// Slow clients may skip superseded complete frames; each stream retains its
+    /// own cancellation and receives terminal acquisition failures.
+    ///
+    /// # Errors
+    /// Returns when the initial Corrosion subscriptions cannot be opened.
+    pub(crate) async fn subscribe(
+        &self,
+        store: ReplicatedStore,
+        local: LocalMachine,
+        entry_id: MachineId,
+        global_reconcile: GlobalReconcileObservations,
+    ) -> Result<RuntimeWatchStream, Error> {
+        self.subscribe_with(async || {
+            serve_replicated_runtime_watch(store, local, entry_id, global_reconcile).await
+        })
+        .await
+    }
+
+    async fn subscribe_with(
+        &self,
+        start: impl AsyncFnOnce() -> Result<RpcStream, Error>,
+    ) -> Result<RuntimeWatchStream, Error> {
+        let mut current = self.current.lock().await;
+        let updates = match current.upgrade().filter(|updates| {
+            // The terminal value is stored before wakeups, even while its sender lives.
+            updates.has_changed().is_ok() && !matches!(updates.borrow().as_deref(), Some(Err(_)))
+        }) {
+            Some(updates) => updates,
+            None => {
+                let updates = share_watch(start().await?);
+                *current = Arc::downgrade(&updates);
+                updates
+            }
+        };
+        Ok(stream_watch(updates))
+    }
+}
+
+fn share_watch(mut source: RpcStream) -> Arc<WatchUpdates> {
+    let (latest, updates) = watch::channel(None);
+    tokio::spawn(async move {
+        loop {
+            let item = tokio::select! {
+                biased;
+                () = latest.closed() => return,
+                item = source.next() => item,
+            };
+            let Some(item) = item else { return };
+            let failed = item.is_err();
+            latest.send_replace(Some(Arc::new(item)));
+            if failed {
+                return;
+            }
+        }
+    });
+    Arc::new(updates)
+}
+
+fn stream_watch(updates: Arc<WatchUpdates>) -> RuntimeWatchStream {
+    let mut changes = updates.as_ref().clone();
+    changes.mark_changed();
+    Box::pin(futures_util::stream::unfold(
+        (updates, changes),
+        |(updates, mut changes)| async move {
+            while changes.changed().await.is_ok() {
+                let item = changes.borrow_and_update().clone();
+                if let Some(item) = item {
+                    return Some((item.as_ref().clone(), (updates, changes)));
+                }
+            }
+            None
+        },
+    ))
+}
 
 /// Replicated observations used to assemble one Runtime Watch frame.
 ///
@@ -141,7 +232,8 @@ where
     T: Stream<Item = ()> + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel(8);
-    tokio::spawn(async move {
+    let disconnected = sender.clone();
+    let producer = async move {
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
         let mut global_reconcile_open = true;
@@ -189,7 +281,6 @@ where
             }
             tokio::select! {
                 biased;
-                () = sender.closed() => return,
                 changed = global_reconcile.changed(), if global_reconcile_open => {
                     if changed.is_err() {
                         global_reconcile_open = false;
@@ -224,6 +315,14 @@ where
                     }
                 },
             }
+        }
+    };
+    tokio::spawn(async move {
+        // Dropping the last subscriber also cancels an in-flight store or telemetry read.
+        tokio::select! {
+            biased;
+            () = disconnected.closed() => {}
+            () = producer => {}
         }
     });
     ReceiverStream::new(receiver)
