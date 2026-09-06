@@ -1,20 +1,45 @@
 //! Shape catalog for generated `@ployz/sdk` TypeScript.
 
+use crate::values::{
+    container_id, data_loss, deploy_event_progress, deploy_operations, deploy_outcome,
+    deploy_outcome_failed, deploy_warnings, docker_volume, execution_error_machine, host_port,
+    ingress_host, ingress_port, named_volume_with_driver, operation_phases, operation_statuses,
+    provisioned_volume_source, replacement_operation, rpc_error, service_volume, to_value,
+};
 use ployz_core::{
-    CertificateAvailability, CertificateFailureKind, HealthObservation, MembershipObservation,
-    RpcErrorCode,
+    BindPropagation, BindRecursive, CertificateAvailability, CertificateFailureKind,
+    ConfiguredHealthcheck, ContainerKind, ContainerRuntimeObservation, CreateVolumeReport,
+    DataLoss, DependencyHealthFailure, DeployEvent, DeployOperation, DeployOutcome, DeployWarning,
+    DockerVolumeName, DockerVolumeStorageObservation, ExecutionError, FailedOperation,
+    HealthFailure, HealthObservation, HealthcheckCommand, HealthcheckSpec, HookFailure, HostBind,
+    HttpProtocol, IngressHostname, MachineAction, MachinePath, MachineStorageObservation,
+    MembershipObservation, ObservationKind, OperationPhase, OperationStatus, PortPublication,
+    PruneRefusal, PullPolicy, QualifiedService, ReplacementCompensation, RestartAttempt,
+    RestartPolicy, RpcErrorCode, ServiceMode, StopAttempt, StopContainerPurpose, StorageChoice,
+    TransportProtocol, UpdateOrder, VolumeRemovalOutcome, VolumeSource,
+};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use std::{
+    net::IpAddr,
+    num::{NonZeroU32, NonZeroU64},
 };
 
 pub(super) enum Shape {
     Alias(&'static str),
     Branded,
     OpenString(&'static [&'static str]),
-    ClosedString(&'static [&'static str]),
+    ClosedString {
+        known: &'static [&'static str],
+        examples: fn() -> Vec<Value>,
+    },
     Object {
         params: &'static str,
         fields: &'static [(&'static str, &'static str)],
     },
     InternallyTagged {
+        decodes: fn(Value) -> bool,
+        examples: fn() -> Vec<Value>,
         tag: &'static str,
         params: &'static str,
         variants: &'static [(&'static str, &'static [(&'static str, &'static str)])],
@@ -54,12 +79,45 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("PidMode", Shape::Alias("string")),
     (
         "PullPolicy",
-        Shape::ClosedString(&["always", "missing", "never"]),
+        Shape::ClosedString {
+            known: &["always", "missing", "never"],
+            examples: || {
+                vec![
+                    to_value(&PullPolicy::Always),
+                    to_value(&PullPolicy::Missing),
+                    to_value(&PullPolicy::Never),
+                ]
+            },
+        },
     ),
-    ("StorageChoice", Shape::ClosedString(&["none", "zfs"])),
+    (
+        "StorageChoice",
+        Shape::ClosedString {
+            known: &["none", "zfs"],
+            examples: || {
+                vec![
+                    to_value(&StorageChoice::None),
+                    to_value(&StorageChoice::Zfs),
+                ]
+            },
+        },
+    ),
     (
         "MachineStorageObservation",
         Shape::InternallyTagged {
+            decodes: decodes::<MachineStorageObservation>,
+            examples: || {
+                vec![
+                    to_value(&MachineStorageObservation::Stateless),
+                    to_value(&MachineStorageObservation::Ready),
+                    to_value(&MachineStorageObservation::Pool {
+                        size_bytes: NonZeroU64::new(4_294_967_296)
+                            .expect("fixture capacity is nonzero"),
+                        used_bytes: 3_865_470_566,
+                        free_bytes: 429_496_730,
+                    }),
+                ]
+            },
             tag: "state",
             params: "",
             variants: &[
@@ -78,13 +136,52 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "UpdateOrder",
-        Shape::ClosedString(&["start_first", "stop_first"]),
+        Shape::ClosedString {
+            known: &["start_first", "stop_first"],
+            examples: || {
+                vec![
+                    to_value(&UpdateOrder::StartFirst),
+                    to_value(&UpdateOrder::StopFirst),
+                ]
+            },
+        },
     ),
-    ("HttpProtocol", Shape::ClosedString(&["http", "https"])),
-    ("TransportProtocol", Shape::ClosedString(&["tcp", "udp"])),
+    (
+        "HttpProtocol",
+        Shape::ClosedString {
+            known: &["http", "https"],
+            examples: || {
+                vec![
+                    to_value(&HttpProtocol::Http),
+                    to_value(&HttpProtocol::Https),
+                ]
+            },
+        },
+    ),
+    (
+        "TransportProtocol",
+        Shape::ClosedString {
+            known: &["tcp", "udp"],
+            examples: || {
+                vec![
+                    to_value(&TransportProtocol::Tcp),
+                    to_value(&TransportProtocol::Udp),
+                ]
+            },
+        },
+    ),
     (
         "ServiceMode",
         Shape::InternallyTagged {
+            decodes: decodes::<ServiceMode>,
+            examples: || {
+                vec![
+                    to_value(&ServiceMode::Replicated {
+                        replicas: NonZeroU32::MIN,
+                    }),
+                    to_value(&ServiceMode::Global),
+                ]
+            },
             tag: "mode",
             params: "",
             variants: &[("replicated", &[("replicas", "number")]), ("global", &[])],
@@ -101,6 +198,19 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "IngressHostname",
         Shape::InternallyTagged {
+            decodes: decodes::<IngressHostname>,
+            examples: || {
+                vec![
+                    to_value(&IngressHostname::cluster_domain()),
+                    to_value(
+                        &IngressHostname::cluster_domain_label("api")
+                            .expect("fixture Cluster Domain label is valid"),
+                    ),
+                    to_value(&IngressHostname::Explicit {
+                        hostname: ingress_host("app.example.com"),
+                    }),
+                ]
+            },
             tag: "kind",
             params: "",
             variants: &[
@@ -112,6 +222,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HostBind",
         Shape::InternallyTagged {
+            decodes: decodes::<HostBind>,
+            examples: || {
+                vec![
+                    to_value(&HostBind::All),
+                    to_value(&HostBind::Address {
+                        address: IpAddr::from([127, 0, 0, 1]),
+                    }),
+                    to_value(
+                        &serde_json::from_value::<HostBind>(
+                            json!({ "kind": "prefix", "prefix": "10.0.0.0/8" }),
+                        )
+                        .expect("fixture HostBind prefix is valid"),
+                    ),
+                ]
+            },
             tag: "kind",
             params: "",
             variants: &[
@@ -124,6 +249,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "PortPublication",
         Shape::InternallyTagged {
+            decodes: decodes::<PortPublication>,
+            examples: || vec![to_value(&ingress_port()), to_value(&host_port())],
             tag: "mode",
             params: "",
             variants: &[
@@ -161,6 +288,42 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "VolumeSource",
         Shape::InternallyTagged {
+            decodes: decodes::<VolumeSource>,
+            examples: || {
+                vec![
+                    to_value(
+                        &ployz_core::RawVolumeSource::Bind {
+                            machine_path: MachinePath::parse("/data")
+                                .expect("fixture bind path is valid"),
+                            create_machine_path: false,
+                            propagation: Some(BindPropagation::Private),
+                            recursive: Some(BindRecursive::Disabled),
+                        }
+                        .admit()
+                        .expect("valid volume declaration"),
+                    ),
+                    to_value(
+                        &ployz_core::RawVolumeSource::External {
+                            name: DockerVolumeName::parse("shared")
+                                .expect("fixture external Volume name is valid"),
+                        }
+                        .admit()
+                        .expect("valid volume declaration"),
+                    ),
+                    to_value(&service_volume().source),
+                    to_value(&named_volume_with_driver().source),
+                    to_value(&provisioned_volume_source()),
+                    to_value(
+                        &ployz_core::RawVolumeSource::Tmpfs {
+                            size_bytes: Some(64),
+                            mode: Some(0o755),
+                            options: Vec::new(),
+                        }
+                        .admit()
+                        .expect("valid volume declaration"),
+                    ),
+                ]
+            },
             tag: "kind",
             params: "",
             variants: &[
@@ -204,6 +367,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HealthcheckSpec",
         Shape::InternallyTagged {
+            decodes: decodes::<HealthcheckSpec>,
+            examples: || {
+                vec![
+                    to_value(&HealthcheckSpec::Disabled),
+                    to_value(&HealthcheckSpec::Configured(ConfiguredHealthcheck {
+                        test: HealthcheckCommand::parse(["CMD", "true"])
+                            .expect("fixture healthcheck command is valid"),
+                        interval_millis: None,
+                        timeout_millis: None,
+                        start_period_millis: None,
+                        start_interval_millis: None,
+                        retries: None,
+                    })),
+                ]
+            },
             tag: "state",
             params: "",
             variants: &[
@@ -225,6 +403,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "RestartPolicy",
         Shape::InternallyTagged {
+            decodes: decodes::<RestartPolicy>,
+            examples: || {
+                vec![
+                    to_value(&RestartPolicy::No),
+                    to_value(&RestartPolicy::Always),
+                    to_value(&RestartPolicy::UnlessStopped),
+                    to_value(&RestartPolicy::OnFailure {
+                        maximum_retry_count: Some(2),
+                    }),
+                ]
+            },
             tag: "name",
             params: "",
             variants: &[
@@ -487,7 +676,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ContainerKind",
-        Shape::ClosedString(&["service_container", "pre_deploy_hook"]),
+        Shape::ClosedString {
+            known: &["service_container", "pre_deploy_hook"],
+            examples: || {
+                vec![
+                    to_value(&ContainerKind::ServiceContainer),
+                    to_value(&ContainerKind::PreDeployHook),
+                ]
+            },
+        },
     ),
     (
         "DockerVolumeId",
@@ -499,6 +696,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DockerVolumeStorageObservation",
         Shape::InternallyTagged {
+            decodes: decodes::<DockerVolumeStorageObservation>,
+            examples: || {
+                vec![
+                    to_value(&DockerVolumeStorageObservation::Plain {
+                        driver: "local".into(),
+                    }),
+                    to_value(&DockerVolumeStorageObservation::Provisioned {
+                        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data")
+                            .expect("fixture mountpoint is valid"),
+                        bound_bytes: NonZeroU64::new(1_073_741_824)
+                            .expect("fixture Provisioned Volume bound is positive"),
+                        used_bytes: 966_367_642,
+                    }),
+                ]
+            },
             tag: "kind",
             params: "",
             variants: &[
@@ -546,6 +758,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "CreateVolumeReport",
         Shape::InternallyTagged {
+            decodes: decodes::<CreateVolumeReport>,
+            examples: || {
+                vec![
+                    to_value(&CreateVolumeReport::Verified {
+                        volume: docker_volume(),
+                    }),
+                    to_value(&CreateVolumeReport::Unverified {
+                        id: docker_volume().id,
+                        error: rpc_error(),
+                    }),
+                ]
+            },
             tag: "verification",
             params: "",
             variants: &[
@@ -570,6 +794,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "VolumeRemovalOutcome",
         Shape::InternallyTagged {
+            decodes: decodes::<VolumeRemovalOutcome>,
+            examples: || {
+                vec![
+                    to_value(&VolumeRemovalOutcome::Removed),
+                    to_value(&VolumeRemovalOutcome::Failed { error: rpc_error() }),
+                    to_value(&VolumeRemovalOutcome::Omitted),
+                ]
+            },
             tag: "status",
             params: "",
             variants: &[
@@ -589,6 +821,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DataLoss",
         Shape::InternallyTagged {
+            decodes: decodes::<DataLoss>,
+            examples: || vec![to_value(&data_loss())],
             tag: "kind",
             params: "",
             variants: &[("docker_volume", &[("id", "DockerVolumeId")])],
@@ -685,6 +919,23 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ContainerRuntimeObservation",
         Shape::InternallyTagged {
+            decodes: decodes::<ContainerRuntimeObservation>,
+            examples: || {
+                vec![
+                    to_value(&ContainerRuntimeObservation::Created),
+                    to_value(&ContainerRuntimeObservation::Running {
+                        health: HealthObservation::Healthy,
+                    }),
+                    to_value(&ContainerRuntimeObservation::Paused),
+                    to_value(&ContainerRuntimeObservation::Restarting),
+                    to_value(&ContainerRuntimeObservation::Exited { code: 0 }),
+                    to_value(&ContainerRuntimeObservation::Removing),
+                    to_value(&ContainerRuntimeObservation::Dead),
+                    to_value(&ContainerRuntimeObservation::Unknown {
+                        raw: json!({ "Status": "hibernating", "ExitCode": 0 }),
+                    }),
+                ]
+            },
             tag: "state",
             params: "",
             variants: &[
@@ -731,11 +982,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ObservationKind",
-        Shape::ClosedString(&["container", "volume"]),
+        Shape::ClosedString {
+            known: &["container", "volume"],
+            examples: || {
+                vec![
+                    to_value(&ObservationKind::Container),
+                    to_value(&ObservationKind::Volume),
+                ]
+            },
+        },
     ),
     (
         "DeployWarning",
         Shape::InternallyTagged {
+            decodes: decodes::<DeployWarning>,
+            examples: || deploy_warnings().iter().map(to_value).collect(),
             tag: "type",
             params: "",
             variants: &[
@@ -769,12 +1030,22 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "PruneRefusal",
-        Shape::ClosedString(&[
-            "incomplete_snapshot",
-            "selected_services",
-            "filtered_profiles",
-            "guessed_project_name",
-        ]),
+        Shape::ClosedString {
+            known: &[
+                "incomplete_snapshot",
+                "selected_services",
+                "filtered_profiles",
+                "guessed_project_name",
+            ],
+            examples: || {
+                vec![
+                    to_value(&PruneRefusal::IncompleteSnapshot),
+                    to_value(&PruneRefusal::SelectedServices),
+                    to_value(&PruneRefusal::FilteredProfiles),
+                    to_value(&PruneRefusal::GuessedProjectName),
+                ]
+            },
+        },
     ),
     (
         "PreservedVolume",
@@ -828,6 +1099,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "OperationStatus",
         Shape::InternallyTagged {
+            decodes: decodes::<OperationStatus>,
+            examples: || operation_statuses().iter().map(to_value).collect(),
             tag: "type",
             params: "",
             variants: &[
@@ -842,6 +1115,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "OperationPhase",
         Shape::InternallyTagged {
+            decodes: decodes::<OperationPhase>,
+            examples: || operation_phases().iter().map(to_value).collect(),
             tag: "type",
             params: "",
             variants: &[
@@ -875,6 +1150,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployEvent",
         Shape::InternallyTagged {
+            decodes: decodes::<DeployEvent>,
+            examples: || {
+                vec![
+                    to_value(&deploy_event_progress()),
+                    to_value(&DeployEvent::Outcome {
+                        outcome: deploy_outcome(),
+                    }),
+                ]
+            },
             tag: "type",
             params: "",
             variants: &[
@@ -904,11 +1188,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "StopContainerPurpose",
-        Shape::ClosedString(&["lifecycle", "free_host_ports"]),
+        Shape::ClosedString {
+            known: &["lifecycle", "free_host_ports"],
+            examples: || {
+                vec![
+                    to_value(&StopContainerPurpose::Lifecycle),
+                    to_value(&StopContainerPurpose::FreeHostPorts),
+                ]
+            },
+        },
     ),
     (
         "DeployOperation",
         Shape::InternallyTagged {
+            decodes: decodes::<DeployOperation>,
+            examples: || deploy_operations().iter().map(to_value).collect(),
             tag: "type",
             params: "",
             variants: &[
@@ -967,18 +1261,40 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "MachineAction",
-        Shape::ClosedString(&[
-            "CreateContainer",
-            "StartContainer",
-            "InspectContainer",
-            "StopContainer",
-            "RemoveContainer",
-            "RemoveVolume",
-        ]),
+        Shape::ClosedString {
+            known: &[
+                "CreateContainer",
+                "StartContainer",
+                "InspectContainer",
+                "StopContainer",
+                "RemoveContainer",
+                "RemoveVolume",
+            ],
+            examples: || {
+                vec![
+                    to_value(&MachineAction::CreateContainer),
+                    to_value(&MachineAction::StartContainer),
+                    to_value(&MachineAction::InspectContainer),
+                    to_value(&MachineAction::StopContainer),
+                    to_value(&MachineAction::RemoveContainer),
+                    to_value(&MachineAction::RemoveVolume),
+                ]
+            },
+        },
     ),
     (
         "HealthFailure",
         Shape::InternallyTagged {
+            decodes: decodes::<HealthFailure>,
+            examples: || {
+                vec![
+                    to_value(&HealthFailure::Cancelled),
+                    to_value(&HealthFailure::TimedOut),
+                    to_value(&HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting,
+                    }),
+                ]
+            },
             tag: "type",
             params: "",
             variants: &[
@@ -991,6 +1307,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "HookFailure",
         Shape::InternallyTagged {
+            decodes: decodes::<HookFailure>,
+            examples: || {
+                vec![
+                    to_value(&HookFailure::Cancelled { stop_error: None }),
+                    to_value(&HookFailure::TimedOut {
+                        stop_error: Some(rpc_error()),
+                    }),
+                    to_value(&HookFailure::Exit { code: 7 }),
+                ]
+            },
             tag: "type",
             params: "",
             variants: &[
@@ -1003,6 +1329,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DependencyHealthFailure",
         Shape::InternallyTagged {
+            decodes: decodes::<DependencyHealthFailure>,
+            examples: || {
+                vec![
+                    to_value(&DependencyHealthFailure::Cancelled),
+                    to_value(&DependencyHealthFailure::NoContainers),
+                    to_value(&DependencyHealthFailure::Observation { error: rpc_error() }),
+                    to_value(&DependencyHealthFailure::Container {
+                        container_id: container_id(),
+                        failure: HealthFailure::TimedOut,
+                    }),
+                ]
+            },
             tag: "type",
             params: "",
             variants: &[
@@ -1022,6 +1360,26 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ExecutionError",
         Shape::InternallyTagged {
+            decodes: decodes::<ExecutionError>,
+            examples: || {
+                vec![
+                    to_value(&execution_error_machine()),
+                    to_value(&ExecutionError::Health {
+                        container_id: container_id(),
+                        failure: HealthFailure::TimedOut,
+                    }),
+                    to_value(&ExecutionError::DependencyHealth {
+                        dependency: QualifiedService::parse("app/db")
+                            .expect("fixture has a valid qualified Service name"),
+                        failure: DependencyHealthFailure::NoContainers,
+                    }),
+                    to_value(&ExecutionError::Hook {
+                        container_id: container_id(),
+                        failure: HookFailure::Exit { code: 1 },
+                    }),
+                    to_value(&ExecutionError::Cancelled),
+                ]
+            },
             tag: "type",
             params: "",
             variants: &[
@@ -1054,6 +1412,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "StopAttempt",
         Shape::InternallyTagged {
+            decodes: decodes::<StopAttempt<ExecutionError>>,
+            examples: || {
+                vec![
+                    to_value(&StopAttempt::<ExecutionError>::Stopped),
+                    to_value(&StopAttempt::Failed {
+                        error: ExecutionError::Cancelled,
+                    }),
+                ]
+            },
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[("stopped", &[]), ("failed", &[("error", "E")])],
@@ -1062,6 +1429,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "RestartAttempt",
         Shape::InternallyTagged {
+            decodes: decodes::<RestartAttempt<ExecutionError>>,
+            examples: || {
+                vec![
+                    to_value(&RestartAttempt::<ExecutionError>::NotAttempted),
+                    to_value(&RestartAttempt::<ExecutionError>::Restarted),
+                    to_value(&RestartAttempt::Failed {
+                        error: ExecutionError::Cancelled,
+                    }),
+                ]
+            },
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1074,6 +1451,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ReplacementCompensation",
         Shape::InternallyTagged {
+            decodes: decodes::<ReplacementCompensation<ExecutionError>>,
+            examples: || {
+                vec![
+                    to_value(&ReplacementCompensation::<ExecutionError>::StartFirst {
+                        stop_new_container: StopAttempt::Stopped,
+                    }),
+                    to_value(&ReplacementCompensation::<ExecutionError>::StopFirst {
+                        stop_new_container: StopAttempt::Stopped,
+                        restart_old_container: RestartAttempt::NotAttempted,
+                    }),
+                ]
+            },
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1091,6 +1480,22 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "FailedOperation",
         Shape::InternallyTagged {
+            decodes: decodes::<FailedOperation<ExecutionError>>,
+            examples: || {
+                let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
+                    panic!("failed fixture is Failed");
+                };
+                vec![
+                    to_value(&failed),
+                    to_value(&FailedOperation::ReplacementHealth {
+                        operation: replacement_operation(),
+                        error: execution_error_machine(),
+                        compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
+                            stop_new_container: StopAttempt::Stopped,
+                        },
+                    }),
+                ]
+            },
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1112,6 +1517,13 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployOutcome",
         Shape::InternallyTagged {
+            decodes: decodes::<DeployOutcome<ExecutionError>>,
+            examples: || {
+                vec![
+                    to_value(&deploy_outcome()),
+                    to_value(&deploy_outcome_failed()),
+                ]
+            },
             tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
@@ -1301,3 +1713,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
 ];
+
+fn decodes<T: DeserializeOwned>(value: Value) -> bool {
+    serde_json::from_value::<T>(value).is_ok()
+}

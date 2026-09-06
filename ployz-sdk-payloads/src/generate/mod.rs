@@ -10,7 +10,7 @@
 //! because Rust passes those through as observed.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -18,7 +18,7 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::values::{catalogued_capabilities, object_examples, tagged_decoders, tagged_examples};
+use crate::values::{catalogued_capabilities, object_examples};
 
 mod catalog;
 use catalog::{PAYLOADS, Shape};
@@ -105,7 +105,7 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
                 quoted_union(known)
             )
         }
-        Shape::ClosedString(known) => {
+        Shape::ClosedString { known, .. } => {
             format!("export type {name} = {};\n", quoted_union(known))
         }
         Shape::Object { params, fields } => emit_object(name, params, fields),
@@ -113,6 +113,7 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
             tag,
             params,
             variants,
+            ..
         } => emit_internally_tagged(name, params, tag, variants),
     }
 }
@@ -224,13 +225,20 @@ fn check_object_fields_match_rust() {
 }
 
 fn check_internally_tagged_variants_match_rust() {
-    let examples = tagged_examples();
     for (name, shape) in PAYLOADS {
-        let Shape::InternallyTagged { tag, variants, .. } = shape else {
+        let Shape::InternallyTagged {
+            tag,
+            variants,
+            examples,
+            ..
+        } = shape
+        else {
             continue;
         };
+        let examples = examples();
+        assert!(!examples.is_empty(), "{name} shape has no serde example");
         let mut seen = BTreeSet::new();
-        for value in serde_examples(name, &examples) {
+        for value in examples {
             let object = value
                 .as_object()
                 .unwrap_or_else(|| panic!("{name} serde example is not an object"));
@@ -268,25 +276,19 @@ fn check_internally_tagged_variants_match_rust() {
 const PASSTHROUGH_PAYLOAD: &str = "ContainerRuntimeObservation";
 
 fn check_tagged_payloads_reject_unknown_tags() {
-    let decoders = tagged_decoders();
-    let examples = tagged_examples();
-    for name in decoders.keys() {
-        assert!(
-            PAYLOADS.iter().any(|(payload, shape)| payload == name
-                && matches!(shape, Shape::InternallyTagged { .. })),
-            "{name} has a decoder but is not a tagged payload in the catalog"
-        );
-    }
     for (name, shape) in PAYLOADS {
-        let Shape::InternallyTagged { tag, .. } = shape else {
+        let Shape::InternallyTagged {
+            tag,
+            decodes,
+            examples,
+            ..
+        } = shape
+        else {
             continue;
         };
-        let decodes = decoders
-            .get(name)
-            .unwrap_or_else(|| panic!("{name} has no decoder"));
-        for example in serde_examples(name, &examples) {
+        for example in examples() {
             assert!(
-                decodes(example.clone()),
+                decodes(example),
                 "{name} decoder rejects its own serde example; the table row names the wrong type"
             );
         }
@@ -312,7 +314,7 @@ fn check_json_value_fields_are_intentional() {
     for (name, shape) in PAYLOADS {
         match shape {
             Shape::Alias(ts) => assert_json_field_is_intentional(name, "alias", ts),
-            Shape::Branded | Shape::OpenString(_) | Shape::ClosedString(_) => {}
+            Shape::Branded | Shape::OpenString(_) | Shape::ClosedString { .. } => {}
             Shape::Object { fields, .. } => {
                 for (field, ts) in *fields {
                     assert_json_field_is_intentional(name, field, ts);
@@ -343,13 +345,14 @@ fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
 }
 
 fn check_closed_strings_match_rust() {
-    let examples = tagged_examples();
     for (name, shape) in PAYLOADS {
-        let Shape::ClosedString(known) = shape else {
+        let Shape::ClosedString { known, examples } = shape else {
             continue;
         };
+        let examples = examples();
+        assert!(!examples.is_empty(), "{name} shape has no serde example");
         let mut seen = BTreeSet::new();
-        for value in serde_examples(name, &examples) {
+        for value in examples {
             let wire = value
                 .as_str()
                 .unwrap_or_else(|| panic!("{name} serde example is not a string"));
@@ -366,14 +369,6 @@ fn check_closed_strings_match_rust() {
             );
         }
     }
-}
-
-fn serde_examples<'a>(name: &str, examples: &'a BTreeMap<&'static str, Vec<Value>>) -> &'a [Value] {
-    let values = examples
-        .get(name)
-        .unwrap_or_else(|| panic!("{name} shape has no serde example"));
-    assert!(!values.is_empty(), "{name} shape has no serde example");
-    values
 }
 
 fn strip_optional(ts: &str) -> (&str, bool) {
