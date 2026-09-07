@@ -636,8 +636,8 @@ fn not_found(output: &Output) -> bool {
 mod tests {
     use super::*;
     use ployz_core::{
-        EnsureImageIngestRequest, ImageSummary, ListImagesRequest, MachineId, MachineImages,
-        MachineName, MachineObservation, MembershipObservation, RpcErrorCode, WireGuardPublicKey,
+        ImageSummary, MachineId, MachineImages, MachineName, MachineObservation,
+        MembershipObservation, RpcErrorCode, WireGuardPublicKey,
     };
     use serde_json::Value;
 
@@ -793,15 +793,6 @@ mod tests {
             .to_string(),
             "Cluster operation failed: image ingest: transport error"
         );
-    }
-
-    #[test]
-    fn image_push_opens_ingest_instead_of_listing_images() {
-        let ingest = op::EnsureImageIngest::into_request(EnsureImageIngestRequest {});
-        let list = op::ListImages::into_request(ListImagesRequest { reference: None });
-        assert_eq!(ingest.body.command(), "ensure_image_ingest");
-        assert_eq!(list.body.command(), "list_images");
-        assert_ne!(ingest.body.command(), list.body.command());
     }
 
     fn listing(seed: u8, tags: &[&str]) -> MachineSuccess<MachineImagesObservation> {

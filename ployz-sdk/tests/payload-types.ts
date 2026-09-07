@@ -4,12 +4,19 @@ import type {
   ClusterTeardown,
   ConfigMount,
   ConfigSpec,
+  ContainerHostname,
   ContainerRuntimeObservation,
   DataLoss,
   DeployEvent,
   DeployIntent,
   DeviceMapping,
   HealthcheckSpec,
+  HealthcheckCommand,
+  ExtraHost,
+  ByteQuantity,
+  CpuNanos,
+  ProvisionedVolumeMaximumBytes,
+  VolumeDriver,
   LocalMachineRemoved,
   MachineId,
   MachinePath,
@@ -107,6 +114,13 @@ new RpcError({ code: "unavailable", message: "Watch interrupted", details: null 
 ({ machine_path: "/dev/fuse", container_path: "/dev/fuse", cgroup_permissions: "rwm" }) satisfies DeviceMapping;
 ({ soft: 1024, hard: 2048 }) satisfies Ulimit;
 ({ state: "disabled" }) satisfies HealthcheckSpec;
+"api" satisfies ContainerHostname;
+"gateway:host-gateway" satisfies ExtraHost;
+["CMD", "--config", "/etc/app.toml"] satisfies HealthcheckCommand;
+42 satisfies CpuNanos;
+4096 satisfies ByteQuantity;
+1 satisfies ProvisionedVolumeMaximumBytes;
+({ name: "local", options: { type: "none" } }) satisfies VolumeDriver;
 
 // @ts-expect-error DeviceMapping requires cgroup_permissions
 const invalidDevice: DeviceMapping = { machine_path: "/dev/fuse", container_path: "/dev/fuse" };
@@ -114,6 +128,10 @@ const invalidDevice: DeviceMapping = { machine_path: "/dev/fuse", container_path
 const invalidConfig: ConfigSpec = { name: "settings", content: "port = 8080" };
 // @ts-expect-error Ulimit requires hard
 const invalidUlimit: Ulimit = { soft: 1024 };
+// @ts-expect-error a healthcheck command has at least one argument
+const invalidHealthcheckCommand: HealthcheckCommand = [];
+// @ts-expect-error a volume driver includes its options map
+const invalidVolumeDriver: VolumeDriver = { name: "local" };
 
 // Payloads are plain object types, so a misspelled field is rejected, not absorbed.
 ({

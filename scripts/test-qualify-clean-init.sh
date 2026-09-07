@@ -7,7 +7,16 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 LOG=$TMP/calls.log
 export LOG
-diagnostics='systemctl status ployz.service --no-pager || true; journalctl -u ployz.service --no-pager -n 200 || true; docker inspect ployz-corrosion || true; docker logs --tail 200 ployz-corrosion || true; ss -H -lntup || true'
+FAKE_BIN=$TMP/fake-bin
+export FAKE_BIN
+mkdir -p "$FAKE_BIN"
+for command in systemctl journalctl docker ss; do
+    cat > "$FAKE_BIN/$command" <<EOF
+#!/bin/sh
+printf '%s %s\\n' '$command' "\$*" >> "\$LOG"
+EOF
+    chmod 0755 "$FAKE_BIN/$command"
+done
 
 cat > "$TMP/ployz" <<'EOF'
 #!/bin/sh
@@ -19,9 +28,8 @@ printf '\n' >> "$LOG"
 EOF
 cat > "$TMP/ssh" <<'EOF'
 #!/bin/sh
-printf 'ssh' >> "$LOG"
-printf ' <%s>' "$@" >> "$LOG"
-printf '\n' >> "$LOG"
+printf 'ssh <%s>\n' "$1" >> "$LOG"
+PATH="$FAKE_BIN:$PATH" sh -c "$2"
 EOF
 chmod 0755 "$TMP/ployz" "$TMP/ssh"
 
@@ -50,7 +58,18 @@ fi
 grep -Fxq 'ployz <machine> <init> <root@one> <--context> <qualify-run-1> <--name> <qualify-1> <--version> <0.1.2-beta.23> <--storage> <none> <--no-dns>' "$LOG"
 grep -Fxq 'ployz <machine> <init> <root@two> <--context> <qualify-run-2> <--name> <qualify-2> <--version> <0.1.2-beta.23> <--storage> <none> <--no-dns>' "$LOG"
 grep -Fxq 'ployz <machine> <init> <root@three> <--context> <qualify-run-3> <--name> <qualify-3> <--version> <0.1.2-beta.23> <--storage> <none> <--no-dns>' "$LOG"
-grep -Fxq "ssh <root@two> <$diagnostics>" "$LOG"
+grep -Fxq 'ssh <root@two>' "$LOG"
+for evidence in \
+    'systemctl status ployz.service --no-pager' \
+    'journalctl -u ployz.service --no-pager -n 200' \
+    'docker inspect ployz-corrosion' \
+    'docker logs --tail 200 ployz-corrosion' \
+    'ss -H -lntup'; do
+    grep -Fq "$evidence" "$LOG" || {
+        echo "diagnostics omitted: $evidence" >&2
+        exit 1
+    }
+done
 grep -Fq '1/3 clean founder initializations failed' "$TMP/output"
 
 echo "clean-init qualification interface passed"

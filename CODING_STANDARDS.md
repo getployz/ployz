@@ -4,6 +4,8 @@ Apply to new and touched code. rustfmt and the workspace Clippy lints in `Cargo.
 
 Architecture and the current compatibility policy live in [DESIGN.md](DESIGN.md).
 
+Tests verify observable behavior or explicit contracts; reject change-detector assertions that merely mirror source text, incidental formatting, constants, or internal call counts.
+
 ## Names
 
 Accessors omit `get_`: `name()`, `as_str()`.

@@ -152,7 +152,9 @@ assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 inherited_apt_config=$(mktemp)
 printf 'Acquire::Retries "7";' > "$inherited_apt_config"
 APT_CONFIG=$inherited_apt_config configure_apt_lock_wait
-assert_eq "$(cat "$APT_CONFIG")" $'Acquire::Retries "7";\nDPkg::Lock::Timeout "300";'
+# Load the generated fixture last so runner-wide APT settings cannot override it.
+assert_eq "$(apt-config -c "$APT_CONFIG" shell retries Acquire::Retries)" "retries='7'"
+assert_eq "$(apt-config -c "$APT_CONFIG" shell timeout DPkg::Lock::Timeout)" "timeout='300'"
 assert_eq "$(run_with_apt_lock_wait sh -c 'printf %s "$LC_ALL"')" C
 rm -f "$inherited_apt_config"
 apt_root=$(mktemp -d)
@@ -558,12 +560,6 @@ assert_eq "$(release_artifacts_needed pull_request scripts/build-relay-image.sh)
 assert_eq "$(release_artifacts_needed pull_request scripts/verify-relay-image.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/publish-relay-image.sh)" true
 
-# upload-artifact drops the parent directory of a single search path, so the
-# macOS archives land at the artifact root and the pack job must read them there.
-release_workflow=$ROOT/.github/workflows/release-contracts.yml
-assert_eq "$(grep -m1 -A1 'name: release-darwin' "$release_workflow" | tail -n1 | tr -d ' ')" "path:dist"
-assert_contains "$release_workflow" 'cp darwin/*.tar.gz dist/'
-
 PLOYZ_BOUNCE_RELEASE_TEST_ONLY=true source "$ROOT/scripts/bounce-release-to-main.sh"
 assert_eq "$(printf '%s\n' '[{"databaseId":2,"displayTitle":"Release v1.2.3"},{"databaseId":3,"displayTitle":"Release v1.2.3"}]' | newest_run_id_named_except "Release v1.2.3" $'2\n')" "3"
 assert_eq "$(printf '%s\n' '[]' | newest_run_id_named_except "Release v1.2.3" "")" ""
@@ -647,11 +643,21 @@ printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","main":"index.js","files":
 PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_bindings"/*.node
 assert_eq "$(cat "$sdk_dest/npm/linux-x64/ployz-sdk.node")" linux
 assert_eq "$(cat "$sdk_dest/npm/darwin-arm64/ployz-sdk.node")" darwin
-assert_contains "$sdk_dest/npm/linux-x64/package.json" '"name": "@ployz/sdk-linux-x64"'
-assert_contains "$sdk_dest/npm/linux-x64/package.json" '"os": ['
-assert_contains "$sdk_dest/npm/darwin-arm64/package.json" '"arm64"'
-assert_contains "$sdk_dest/package.json" '"@ployz/sdk-darwin-arm64": "1.2.3"'
-assert_contains "$sdk_dest/package.json" '"access": "public"'
+node - "$sdk_dest" <<'NODE'
+const fs = require("node:fs");
+const assert = require("node:assert/strict");
+const [, , dest] = process.argv;
+const main = JSON.parse(fs.readFileSync(dest + "/package.json"));
+const linux = JSON.parse(fs.readFileSync(dest + "/npm/linux-x64/package.json"));
+const darwin = JSON.parse(fs.readFileSync(dest + "/npm/darwin-arm64/package.json"));
+assert.equal(main.optionalDependencies["@ployz/sdk-darwin-arm64"], "1.2.3");
+assert.equal(main.publishConfig?.access, "public");
+assert.deepEqual(linux.os, ["linux"]);
+assert.deepEqual(linux.cpu, ["x64"]);
+assert.deepEqual(darwin.os, ["darwin"]);
+assert.deepEqual(darwin.cpu, ["arm64"]);
+assert.equal(linux.name, "@ployz/sdk-linux-x64");
+NODE
 assert_eq "$(cat "$sdk_dest/browser.mjs")" browser
 if [ -e "$sdk_dest/ployz-sdk.node" ]; then
     echo "the js package still ships a native binding" >&2

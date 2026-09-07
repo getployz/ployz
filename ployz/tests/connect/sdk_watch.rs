@@ -136,28 +136,27 @@ async fn watch_server_sends_negotiated_gzip() {
 
 #[tokio::test]
 async fn watch_enriches_machine_storage_only_when_the_target_advertises_it() {
-    let description = storage_watch_description();
-    let session = RelaySession::start().await;
-    let service = DiscoveryService::new(description.clone());
-    service.push_watch_frame(frozen_frame());
-    let _machine = session
-        .spawn_machine(description.machine_id, service.clone())
-        .await;
-    let client = connect(&session.url, description.machine_id.as_str()).await;
-    let watch = client.watch().await.unwrap();
+    for advertised in [true, false] {
+        let description = if advertised {
+            storage_watch_description()
+        } else {
+            watch_description()
+        };
+        let machine_id = description.machine_id;
+        let session = RelaySession::start().await;
+        let service = DiscoveryService::new(description);
+        service.push_watch_frame(frozen_frame());
+        let _machine = session.spawn_machine(machine_id, service).await;
+        let client = connect(&session.url, machine_id.as_str()).await;
+        let watch = client.watch().await.unwrap();
 
-    let frame = next_frame(&watch).await;
+        let frame = next_frame(&watch).await;
 
-    assert_eq!(
-        frame.machines.first().and_then(|machine| machine.storage),
-        Some(MachineStorageObservation::Ready)
-    );
-    assert_eq!(
-        service
-            .inspect_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1
-    );
+        assert_eq!(
+            frame.machines.first().and_then(|machine| machine.storage),
+            advertised.then_some(MachineStorageObservation::Ready)
+        );
+    }
 }
 
 #[tokio::test]
