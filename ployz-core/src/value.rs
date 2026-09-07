@@ -464,6 +464,7 @@ impl ProjectName {
 /// A Service ID is a separate opaque deployment identity that survives updates.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
 pub struct QualifiedService {
     pub project: ProjectName,
     pub name: ServiceName,

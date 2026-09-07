@@ -12,7 +12,10 @@ import type {
   HealthcheckSpec,
   LocalMachineRemoved,
   MachineId,
+  PidMode,
+  PreDeployCommand,
   ProjectName,
+  QualifiedService,
   RegisterRequest,
   Registered,
   RequestedServiceSpec,
@@ -206,3 +209,11 @@ connect({ ...connectOptions, machineId: "machine" });
 
 declare const watchFrame: RuntimeWatchView;
 watchFrame.services satisfies ServiceObservation[];
+
+// Types that convert through a wire form keep that form in TypeScript.
+"shop/api" satisfies QualifiedService;
+"host" satisfies PidMode;
+"container:abc" satisfies PidMode;
+["sh", "-c", "migrate"] satisfies PreDeployCommand;
+// @ts-expect-error a pre-deploy command has at least one argument
+[] satisfies PreDeployCommand;

@@ -280,6 +280,7 @@ impl From<ProvisionedVolumeMaximumBytes> for u64 {
 /// A Docker Volume driver that cannot name Ployz's reserved Provisioned Volume driver.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "VolumeDriverData")]
+#[ts(as = "VolumeDriverData")]
 pub struct VolumeDriver {
     name: String,
     #[serde(default)]
@@ -321,7 +322,7 @@ impl VolumeDriver {
 }
 
 /// Unchecked driver declaration; admission refuses the reserved Provisioned Volume driver.
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 struct VolumeDriverData {
     name: String,
     #[serde(default)]

@@ -228,6 +228,7 @@ impl HealthcheckSpec {
 /// A Healthcheck command that is non-empty and does not begin with Docker's disable sentinel.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[ts(type = "[string, ...string[]]")]
 pub struct HealthcheckCommand(Vec<String>);
 
 impl HealthcheckCommand {
@@ -349,6 +350,7 @@ pub struct ContainerResources {
 /// A pre-deploy hook command with at least one argument.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[ts(type = "[string, ...string[]]")]
 pub struct PreDeployCommand(Vec<String>);
 
 impl PreDeployCommand {

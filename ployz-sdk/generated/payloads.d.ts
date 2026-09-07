@@ -195,7 +195,7 @@ export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | 
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | string;
 
-export type HealthcheckCommand = Array<string>;
+export type HealthcheckCommand = [string, ...string[]];
 
 export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" } & ConfiguredHealthcheck;
 
@@ -313,7 +313,7 @@ export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failure
  */
 omissions: Array<MachineId>, };
 
-export type PidMode = "Host" | { "Container": string };
+export type PidMode = string;
 
 export type Placement = { 
 /**
@@ -341,7 +341,7 @@ selected: Array<ServiceAttempt>, };
 
 export type PortPublication = { "mode": "ingress", hostname: IngressHostname, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 
-export type PreDeployCommand = Array<string>;
+export type PreDeployCommand = [string, ...string[]];
 
 export type PreDeployHook = { command: PreDeployCommand, environment: { [key in string]: string }, privileged: boolean | null, timeout_millis: number | null, user: string | null, };
 
@@ -363,7 +363,7 @@ export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filter
 
 export type PullPolicy = "always" | "missing" | "never";
 
-export type QualifiedService = { project: ProjectName, name: ServiceName, };
+export type QualifiedService = string;
 
 export type RegisterRequest = { name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 

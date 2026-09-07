@@ -106,6 +106,7 @@ impl FromStr for BindPropagation {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
 pub enum PidMode {
     Host,
     Container(String),
