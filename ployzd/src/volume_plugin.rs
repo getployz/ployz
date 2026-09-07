@@ -138,7 +138,9 @@ impl VolumeStorage {
                 .ok_or_else(|| {
                     VolumeError::from("Provisioned Volume commitments overflowed u64")
                 })?;
-            self.pool.ensure_capacity(pool, commitment).await?;
+            self.pool
+                .ensure_capacity(pool, commitment, name, requested)
+                .await?;
         }
 
         if !datasets.iter().any(|dataset| dataset.name == root) {

@@ -76,7 +76,7 @@ impl VolumeStorage {
                 .await;
         }
 
-        let pool = self.pool.create(requested).await?;
+        let pool = self.pool.create(name, requested).await?;
         match self
             .create_volume(
                 pool.machine_pool(),
@@ -259,9 +259,13 @@ impl PoolStorage {
     /// # Errors
     ///
     /// Returns an error when reserve, allocation, Pool creation, or verification fails.
-    pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
+    pub(super) async fn create(
+        &self,
+        name: &DockerVolumeName,
+        requested: u64,
+    ) -> Result<CreatedPool<'_>> {
         let capacity = capacity_with_headroom(requested)?;
-        let host = self.check_host_root(capacity).await?;
+        let host = self.check_host_root(capacity, name, requested).await?;
         let ashift = self.host_root_ashift(&host)?;
         let backing = self.backing_text()?;
         fs::OpenOptions::new()
@@ -305,7 +309,10 @@ impl PoolStorage {
         }
         match self.one_usable().await {
             Ok(Some(pool)) if pool.name() == POOL_NAME => {
-                if let Err(error) = self.ensure_capacity(&pool, requested).await {
+                if let Err(error) = self
+                    .ensure_capacity(&pool, requested, name, requested)
+                    .await
+                {
                     return Err(self.cleanup(error).await);
                 }
                 Ok(CreatedPool {
@@ -336,7 +343,13 @@ impl PoolStorage {
     /// # Errors
     ///
     /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
-    pub(super) async fn ensure_capacity(&self, pool: &MachinePool, commitment: u64) -> Result<()> {
+    pub(super) async fn ensure_capacity(
+        &self,
+        pool: &MachinePool,
+        commitment: u64,
+        name: &DockerVolumeName,
+        requested: u64,
+    ) -> Result<()> {
         let minimum = capacity_with_headroom(commitment)?;
         if pool.size_bytes().get() >= minimum {
             return Ok(());
@@ -366,7 +379,8 @@ impl PoolStorage {
                 growth_target(length, observed, minimum)?
             };
             if allocated < target {
-                self.check_host_root(target - allocated).await?;
+                self.check_host_root(target - allocated, name, requested)
+                    .await?;
                 let target_text = target.to_string();
                 checked_command(&self.fallocate, &["-l", &target_text, backing]).await?;
                 self.verify_preallocation(backing, target).await?;
@@ -426,7 +440,12 @@ impl PoolStorage {
         self.cleanup_backing(failure)
     }
 
-    async fn check_host_root(&self, allocation: u64) -> Result<fs::Metadata> {
+    async fn check_host_root(
+        &self,
+        allocation: u64,
+        name: &DockerVolumeName,
+        requested: u64,
+    ) -> Result<fs::Metadata> {
         let host = fs::metadata(&self.host_root).map_err(|error| {
             format!(
                 "could not inspect host root {}: {error}",
@@ -473,9 +492,13 @@ impl PoolStorage {
             .checked_add(allocation)
             .ok_or_else(|| VolumeError::from("host-root reserve calculation overflowed u64"))?;
         if available < required {
-            let shortfall = required - available;
+            let shortfall = readable_size(required - available, true);
+            let requested = readable_size(requested, false);
             return Err(format!(
-                "Host root is {shortfall} bytes short: {available} bytes are available, Machine Pool growth needs {allocation} bytes, and the host-root reserve is {reserve} bytes"
+                "Not enough disk space on this machine to create {name}.\n\
+                 Requested volume size: {requested}.\n\
+                 About {shortfall} more free space is needed, including storage overhead and OS reserve.\n\
+                 Free up disk space, expand the disk, or request a smaller volume."
             )
             .into());
         }
@@ -586,6 +609,24 @@ impl PoolStorage {
     }
 }
 
+fn readable_size(bytes: u64, round_up: bool) -> String {
+    for (unit, label) in [
+        (1024_u64.pow(4), "TiB"),
+        (GIBIBYTE, "GiB"),
+        (1024_u64.pow(2), "MiB"),
+        (1024, "KiB"),
+    ] {
+        if bytes >= unit {
+            if round_up {
+                let tenths = (u128::from(bytes) * 10).div_ceil(u128::from(unit));
+                return format!("{}.{} {label}", tenths / 10, tenths % 10);
+            }
+            return format!("{:.1} {label}", bytes as f64 / unit as f64);
+        }
+    }
+    format!("{bytes} B")
+}
+
 fn capacity_with_headroom(commitment: u64) -> Result<u64> {
     commitment
         .checked_add((commitment / 10).max(GIBIBYTE))
@@ -637,6 +678,34 @@ fn safe_ashift(physical_block_size: u64) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_error_sizes_are_readable_even_below_one_gibibyte() {
+        for (bytes, expected) in [
+            (1, "1 B"),
+            (1024, "1.0 KiB"),
+            (512 * 1024 * 1024, "512.0 MiB"),
+            (43_744_232_448, "40.7 GiB"),
+            (1_100_000, "1.0 MiB"),
+            (1024_u64.pow(4), "1.0 TiB"),
+        ] {
+            assert_eq!(readable_size(bytes, false), expected);
+        }
+    }
+
+    #[test]
+    fn disk_space_shortfalls_round_up() {
+        for (bytes, expected) in [
+            (1, "1 B"),
+            (1024, "1.0 KiB"),
+            (1_100_000, "1.1 MiB"),
+            (43_744_232_448, "40.8 GiB"),
+            (1024_u64.pow(4) + 1, "1.1 TiB"),
+            (u64::MAX, "16777216.0 TiB"),
+        ] {
+            assert_eq!(readable_size(bytes, true), expected);
+        }
+    }
 
     #[test]
     fn default_backing_file_survives_machine_state_reset() {

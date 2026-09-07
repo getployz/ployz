@@ -296,10 +296,9 @@ async fn growth_reserve_refusal_reports_the_shortfall_before_mutation() {
     server.abort();
 
     let message = error(&response);
-    assert!(message.contains("1073741824 bytes short"), "{message}");
-    assert!(
-        message.contains("host-root reserve is 10737418240 bytes"),
-        "{message}"
+    assert_eq!(
+        message,
+        "Not enough disk space on this machine to create other.\nRequested volume size: 2.0 GiB.\nAbout 1.0 GiB more free space is needed, including storage overhead and OS reserve.\nFree up disk space, expand the disk, or request a smaller volume."
     );
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
@@ -690,7 +689,10 @@ async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken(
 
     let response = create_first_volume(&test, 4096, "1g").await;
 
-    assert!(error(&response).contains("host-root reserve"));
+    assert_eq!(
+        error(&response),
+        "Not enough disk space on this machine to create data.\nRequested volume size: 1.0 GiB.\nAbout 1.0 GiB more free space is needed, including storage overhead and OS reserve.\nFree up disk space, expand the disk, or request a smaller volume."
+    );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert!(!log.contains("fallocate"));
     assert!(!log.contains("zpool create"));
