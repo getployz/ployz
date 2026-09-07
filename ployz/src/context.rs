@@ -37,6 +37,12 @@ pub struct Config {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemovedContext {
+    Current,
+    Other,
+}
+
 fn none_if_empty(name: Option<String>) -> Option<String> {
     name.filter(|name| !name.is_empty())
 }
@@ -48,11 +54,13 @@ impl Config {
         current_context: Option<String>,
         contexts: BTreeMap<String, Context>,
     ) -> Self {
-        Self {
+        let mut config = Self {
             current_context: none_if_empty(current_context),
             contexts,
             path: path.into(),
-        }
+        };
+        config.drop_unknown_current();
+        config
     }
 
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, ConfigError> {
@@ -74,6 +82,7 @@ impl Config {
             return Err(ConfigError::EmptyCurrentContext(path));
         }
         config.path = path;
+        config.drop_unknown_current();
         Ok(config)
     }
 
@@ -82,8 +91,54 @@ impl Config {
         self.current_context.as_deref()
     }
 
-    pub fn set_current_context(&mut self, name: Option<String>) {
-        self.current_context = none_if_empty(name);
+    fn drop_unknown_current(&mut self) {
+        if self
+            .current_context
+            .as_ref()
+            .is_some_and(|name| !self.contexts.contains_key(name))
+        {
+            self.current_context = None;
+        }
+    }
+
+    /// Unset current, or set it to an existing context name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::ContextNotFound`] when the name is missing from `contexts`.
+    pub fn set_current_context(&mut self, name: Option<String>) -> Result<(), ContextError> {
+        match none_if_empty(name) {
+            Some(name) if !self.contexts.contains_key(&name) => {
+                Err(ContextError::ContextNotFound {
+                    name,
+                    path: self.path.clone(),
+                })
+            }
+            name => {
+                self.current_context = name;
+                Ok(())
+            }
+        }
+    }
+
+    /// Remove a named context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::ContextNotFound`] when the name is missing. The map is unchanged.
+    pub fn remove_context(&mut self, name: &str) -> Result<RemovedContext, ContextError> {
+        if self.contexts.remove(name).is_none() {
+            return Err(ContextError::ContextNotFound {
+                name: name.to_owned(),
+                path: self.path.clone(),
+            });
+        }
+        if self.current_context.as_deref() == Some(name) {
+            self.current_context = None;
+            Ok(RemovedContext::Current)
+        } else {
+            Ok(RemovedContext::Other)
+        }
     }
 
     #[must_use]
@@ -632,4 +687,140 @@ pub enum ContextError {
     NoConnections { name: String, path: PathBuf },
     #[error(transparent)]
     Connection(ConnectionError),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs, path::PathBuf};
+
+    use super::{Config, Context, ContextError, RemovedContext};
+
+    #[test]
+    fn removing_a_non_current_context_leaves_current_and_the_other_entry() {
+        let mut config = Config::new(
+            "/tmp/config.yaml",
+            Some("prod".into()),
+            BTreeMap::from([
+                ("default".into(), Context::default()),
+                ("prod".into(), Context::default()),
+            ]),
+        );
+
+        assert_eq!(
+            config.remove_context("default").unwrap(),
+            RemovedContext::Other
+        );
+        assert_eq!(config.current_context(), Some("prod"));
+        assert!(config.contexts.contains_key("prod"));
+        assert!(!config.contexts.contains_key("default"));
+    }
+
+    #[test]
+    fn removing_the_current_context_unsets_current_and_drops_that_entry() {
+        let mut config = Config::new(
+            "/tmp/config.yaml",
+            Some("prod".into()),
+            BTreeMap::from([
+                ("default".into(), Context::default()),
+                ("prod".into(), Context::default()),
+            ]),
+        );
+
+        assert_eq!(
+            config.remove_context("prod").unwrap(),
+            RemovedContext::Current
+        );
+        assert_eq!(config.current_context(), None);
+        assert!(config.contexts.contains_key("default"));
+        assert!(!config.contexts.contains_key("prod"));
+    }
+
+    #[test]
+    fn removing_the_last_context_leaves_an_empty_map_and_no_current() {
+        let mut config = Config::new(
+            "/tmp/config.yaml",
+            Some("default".into()),
+            BTreeMap::from([("default".into(), Context::default())]),
+        );
+
+        assert_eq!(
+            config.remove_context("default").unwrap(),
+            RemovedContext::Current
+        );
+        assert!(config.contexts.is_empty());
+        assert_eq!(config.current_context(), None);
+    }
+
+    #[test]
+    fn removing_a_missing_context_is_context_not_found_and_does_not_mutate() {
+        let path = PathBuf::from("/tmp/config.yaml");
+        let mut config = Config::new(
+            &path,
+            Some("prod".into()),
+            BTreeMap::from([("prod".into(), Context::default())]),
+        );
+        let before = config.clone();
+
+        assert_eq!(
+            config.remove_context("gone"),
+            Err(ContextError::ContextNotFound {
+                name: "gone".into(),
+                path,
+            })
+        );
+        assert_eq!(config, before);
+    }
+
+    #[test]
+    fn new_config_with_a_dangling_current_name_stores_none() {
+        let config = Config::new(
+            "/tmp/config.yaml",
+            Some("gone".into()),
+            BTreeMap::from([("prod".into(), Context::default())]),
+        );
+
+        assert_eq!(config.current_context(), None);
+        assert!(config.contexts.contains_key("prod"));
+    }
+
+    #[test]
+    fn dangling_current_context_yaml_loads_as_none() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-dangling-current-yaml-{}",
+            std::process::id()
+        ));
+        let path = root.join("config.yaml");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &path,
+            "current_context: gone\ncontexts:\n  prod:\n    connections: []\n",
+        )
+        .unwrap();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.current_context(), None);
+        assert!(config.contexts.contains_key("prod"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn set_current_context_rejects_an_unknown_name() {
+        let path = PathBuf::from("/tmp/config.yaml");
+        let mut config = Config::new(
+            &path,
+            Some("prod".into()),
+            BTreeMap::from([("prod".into(), Context::default())]),
+        );
+
+        assert_eq!(
+            config.set_current_context(Some("gone".into())),
+            Err(ContextError::ContextNotFound {
+                name: "gone".into(),
+                path,
+            })
+        );
+        assert_eq!(config.current_context(), Some("prod"));
+    }
 }

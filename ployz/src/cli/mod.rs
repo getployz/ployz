@@ -180,6 +180,11 @@ fn ctx() -> Command {
         .subcommand(base("ls", "List contexts").visible_alias("list"))
         .subcommand(base("show", "Show a context"))
         .subcommand(base("use", "Select a context").arg(positional("context-name", false)))
+        .subcommand(
+            base("rm", "Remove a local context")
+                .visible_aliases(["remove", "delete"])
+                .arg(positional("context-name", true)),
+        )
 }
 
 fn dns() -> Command {

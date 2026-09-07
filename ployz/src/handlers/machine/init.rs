@@ -98,13 +98,13 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>((machine, connection))
     })?;
 
-    config.set_current_context(Some(context_name.clone()));
     config.contexts.insert(
-        context_name,
+        context_name.clone(),
         Context {
             connections: vec![connection.clone()],
         },
     );
+    config.set_current_context(Some(context_name))?;
     config.save()?;
     if let Some(current_context) = config.current_context() {
         println!("Switched context to '{current_context}'");

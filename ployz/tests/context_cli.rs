@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, process::Command};
 
-use ployz::context::{Config, Connection, Context};
+use ployz::context::{Config, Connection, Context, ContextError};
 
 #[test]
 fn context_commands_list_show_and_persist_an_explicit_selection() {
@@ -344,4 +344,307 @@ fn a_filename_only_config_override_saves_in_the_current_directory() {
     );
     assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctx_rm_of_a_non_current_context_persists() {
+    let root =
+        std::env::temp_dir().join(format!("ployz-ctx-rm-non-current-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    Config::new(
+        &path,
+        Some("prod".into()),
+        BTreeMap::from([
+            (
+                "default".into(),
+                Context {
+                    connections: vec![Connection::unix("/tmp/default.sock").unwrap()],
+                },
+            ),
+            (
+                "prod".into(),
+                Context {
+                    connections: vec![Connection::unix("/tmp/prod.sock").unwrap()],
+                },
+            ),
+        ]),
+    )
+    .save()
+    .unwrap();
+
+    let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "rm",
+            "default",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(removed.stdout).unwrap().trim(),
+        r#"Removed context "default"."#
+    );
+
+    let config = Config::load(&path).unwrap();
+    assert_eq!(config.current_context(), Some("prod"));
+    assert!(!config.contexts.contains_key("default"));
+    assert!(config.contexts.contains_key("prod"));
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let listed = String::from_utf8(listed.stdout).unwrap();
+    assert!(!listed.contains("default"), "{listed}");
+    assert!(listed.contains("prod"), "{listed}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctx_rm_of_the_current_context_unsets_current() {
+    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-current-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    Config::new(
+        &path,
+        Some("prod".into()),
+        BTreeMap::from([
+            (
+                "dev".into(),
+                Context {
+                    connections: vec![Connection::unix("/tmp/dev.sock").unwrap()],
+                },
+            ),
+            (
+                "prod".into(),
+                Context {
+                    connections: vec![Connection::unix("/tmp/prod.sock").unwrap()],
+                },
+            ),
+        ]),
+    )
+    .save()
+    .unwrap();
+
+    let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "rm",
+            "prod",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let stdout = String::from_utf8(removed.stdout).unwrap();
+    assert!(stdout.contains(r#"Removed context "prod"."#), "{stdout}");
+    assert!(stdout.contains("Current context is now unset."), "{stdout}");
+
+    let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ctx", "show", "--ployz-config", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    assert_eq!(String::from_utf8(shown.stdout).unwrap().trim(), "");
+
+    let config = Config::load(&path).unwrap();
+    assert_eq!(config.current_context(), None);
+    assert!(!config.contexts.contains_key("prod"));
+    let yaml = fs::read_to_string(&path).unwrap();
+    assert!(
+        !yaml.contains("current_context:"),
+        "dangling current context was stored: {yaml}"
+    );
+
+    let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "use",
+            "dev",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctx_rm_of_the_last_context_leaves_an_empty_file() {
+    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-last-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    Config::new(
+        &path,
+        Some("default".into()),
+        BTreeMap::from([(
+            "default".into(),
+            Context {
+                connections: vec![Connection::unix("/tmp/default.sock").unwrap()],
+            },
+        )]),
+    )
+    .save()
+    .unwrap();
+
+    let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "rm",
+            "default",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+
+    assert!(path.exists());
+    let config = Config::load(&path).unwrap();
+    assert!(config.contexts.is_empty());
+    assert_eq!(config.current_context(), None);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
+    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-unknown-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    let before = Config::new(
+        &path,
+        Some("prod".into()),
+        BTreeMap::from([(
+            "prod".into(),
+            Context {
+                connections: vec![Connection::unix("/tmp/prod.sock").unwrap()],
+            },
+        )]),
+    );
+    before.save().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "rm",
+            "gone",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        ContextError::ContextNotFound {
+            name: "gone".into(),
+            path: path.clone(),
+        }
+        .to_string()
+    );
+    assert_eq!(Config::load(&path).unwrap(), before);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctx_rm_rejects_a_direct_connection() {
+    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-connect-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    let before = Config::new(
+        &path,
+        Some("prod".into()),
+        BTreeMap::from([(
+            "prod".into(),
+            Context {
+                connections: vec![Connection::unix("/tmp/prod.sock").unwrap()],
+            },
+        )]),
+    );
+    before.save().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            "tcp://127.0.0.1:1",
+            "ctx",
+            "rm",
+            "prod",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "context management is unavailable with a direct connection"
+    );
+    assert_eq!(Config::load(&path).unwrap(), before);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctx_rm_help_describes_local_removal() {
+    let rm = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ctx", "rm", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        rm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rm.stderr)
+    );
+    let help = String::from_utf8(rm.stdout).unwrap();
+    assert!(help.contains("local"), "{help}");
+    assert!(help.contains("<context-name>"), "{help}");
+
+    let parent = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ctx", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        parent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parent.stderr)
+    );
+    let parent = String::from_utf8(parent.stdout).unwrap();
+    assert!(parent.contains("[aliases: remove, delete]"), "{parent}");
 }

@@ -210,6 +210,7 @@ fn handler_for(path: &str) -> Option<Handler> {
             )
         },
         "ctx ls" => context::list,
+        "ctx rm" => context::remove,
         "ctx show" => context::show,
         "ctx use" => |root| {
             context::select(

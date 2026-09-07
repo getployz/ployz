@@ -382,7 +382,7 @@ fn config_cannot_store_current_context_as_empty_string() {
     assert_eq!(Config::load(&path).unwrap().current_context(), None);
 
     let mut config = Config::load(&path).unwrap();
-    config.set_current_context(Some(String::new()));
+    config.set_current_context(Some(String::new())).unwrap();
     config.save().unwrap();
     let yaml = fs::read_to_string(&path).unwrap();
     assert!(
@@ -465,7 +465,7 @@ fn selecting_connections_with_a_missing_name_is_context_not_found() {
     let path = PathBuf::from("/tmp/config.yaml");
     let config = Config::new(
         &path,
-        Some("gone".into()),
+        Some("prod".into()),
         BTreeMap::from([(
             "prod".into(),
             Context {
@@ -475,7 +475,13 @@ fn selecting_connections_with_a_missing_name_is_context_not_found() {
     );
 
     assert_eq!(
-        select_connections(None, Some(&config), None, true, "/run/ployz/ployz.sock"),
+        select_connections(
+            None,
+            Some(&config),
+            Some("gone"),
+            true,
+            "/run/ployz/ployz.sock"
+        ),
         Err(ContextError::ContextNotFound {
             name: "gone".into(),
             path,

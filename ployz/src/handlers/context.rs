@@ -5,9 +5,9 @@ use std::{
 
 use clap::ArgMatches;
 
-use crate::context::{Config, expand_home};
+use crate::context::{Config, RemovedContext, expand_home};
 
-use super::Error;
+use super::{Error, leaf_matches, required};
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
@@ -77,12 +77,21 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
                 .to_string()
         }
     };
-    if !config.contexts.contains_key(&selected) {
-        return Err(Error::usage(format!("context {selected:?} not found")));
-    }
-    config.set_current_context(Some(selected.clone()));
+    config.set_current_context(Some(selected.clone()))?;
     config.save()?;
     println!("Current context is now {selected:?}.");
+    Ok(())
+}
+
+pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
+    let mut config = config(matches)?;
+    let name = required(leaf_matches(matches), "context-name")?;
+    let removed = config.remove_context(&name)?;
+    config.save()?;
+    println!("Removed context {name:?}.");
+    if removed == RemovedContext::Current {
+        println!("Current context is now unset.");
+    }
     Ok(())
 }
 
