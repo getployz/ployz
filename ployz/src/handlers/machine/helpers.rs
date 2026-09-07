@@ -6,8 +6,8 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest, LocalMachinePhase, MachineName, MachineToken,
-    MachineTokenRequest, PublicIpDiscovery, op,
+    DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest, LocalMachinePhase, MACHINE_START_WAIT,
+    MachineName, MachineToken, MachineTokenRequest, PublicIpDiscovery, op,
 };
 
 use super::parse_endpoints;
@@ -95,7 +95,7 @@ pub(super) async fn wait_direct_participating(
     connection: &Connection,
     timeout_message: &str,
 ) -> Result<Client, Error> {
-    match tokio::time::timeout(Duration::from_secs(60), async {
+    match tokio::time::timeout(MACHINE_START_WAIT, async {
         loop {
             if let Ok(mut client) = connect_direct(connection).await
                 && client
@@ -115,9 +115,9 @@ pub(super) async fn wait_direct_participating(
     }
 }
 
-pub(super) fn readiness_timeout_message(message: &str) -> String {
+pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
     format!(
-        "{message}; if ployzd refused a Docker network, safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}"
+        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if ployzd refused a Docker network, safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}"
     )
 }
 
@@ -143,7 +143,7 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{MACHINE_API_PORT, MachineToken};
+    use ployz_core::{DOCKER_NETWORK_CONFLICT_RECOVERY, MACHINE_API_PORT, MachineToken};
 
     use super::*;
 
@@ -184,6 +184,21 @@ mod tests {
         assert_eq!(
             machine_name(None, &token).unwrap_err().to_string(),
             "Machine name is required because the remote hostname is empty"
+        );
+    }
+
+    #[test]
+    fn readiness_timeout_names_the_start_delay_and_docker_network_recovery() {
+        let message = readiness_timeout_message("initial Machine did not become ready");
+        assert!(
+            message.contains("initial Machine did not become ready"),
+            "{message}"
+        );
+        assert!(message.contains("journalctl -u ployz"), "{message}");
+        assert!(message.contains("Corrosion"), "{message}");
+        assert!(
+            message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY),
+            "{message}"
         );
     }
 

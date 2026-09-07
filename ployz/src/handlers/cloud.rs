@@ -457,7 +457,13 @@ async fn wait_phase(
     phase: LocalMachinePhase,
     timeout_message: &str,
 ) -> Result<Client, Error> {
-    tokio::time::timeout(Duration::from_secs(60), async {
+    let participating = phase == LocalMachinePhase::Participating;
+    let wait = if participating {
+        ployz_core::MACHINE_START_WAIT
+    } else {
+        Duration::from_secs(60)
+    };
+    tokio::time::timeout(wait, async {
         loop {
             if let Ok(mut client) = connect_client(matches, None).await
                 && client
@@ -471,7 +477,13 @@ async fn wait_phase(
         }
     })
     .await
-    .map_err(|_| Error::usage(timeout_message.to_owned()))
+    .map_err(|_| {
+        Error::usage(if participating {
+            crate::handlers::machine::readiness_timeout_message(timeout_message)
+        } else {
+            timeout_message.to_owned()
+        })
+    })
 }
 
 #[cfg(test)]

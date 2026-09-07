@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{CORROSION_API_PORT, LocalMachinePhase};
+use ployz_core::{CORROSION_API_PORT, LocalMachinePhase, MACHINE_START_WAIT};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -100,7 +100,7 @@ impl Daemon {
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
         let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
-        let (rpc_listener, socket_lock) = bind_socket(&config.socket)?;
+        let socket_lock = claim_socket(&config.socket)?;
         let local_record = store
             .lock()
             .map_err(|_| Error::StorePoisoned)?
@@ -180,6 +180,7 @@ impl Daemon {
             .build()
             .map_err(|_| Error::StorePoisoned)?;
 
+        let rpc_listener = listen_socket(&config.socket)?;
         let rpc = Server::builder().serve_with_incoming_shutdown(
             machine_api.clone(),
             UnixListenerStream::new(rpc_listener),
@@ -552,7 +553,7 @@ async fn start_corrosion(
             CORROSION_GOSSIP_PORT,
         )
     });
-    // TimeoutStartSec=20; EXTEND_TIMEOUT covers Corrosion image pull and wait_ready.
+    // MACHINE_START_WAIT covers Corrosion image pull and wait_ready via EXTEND_TIMEOUT.
     let _extend = extend_systemd_start_timeout();
     Ok(Some(
         CorrosionConfig::new(
@@ -596,7 +597,7 @@ enum StopKind {
     WatchFailed(&'static str),
 }
 
-fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
+fn claim_socket(path: &Path) -> io::Result<File> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
@@ -625,7 +626,10 @@ fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
             error
         }
     })?;
+    Ok(lock)
+}
 
+fn listen_socket(path: &Path) -> io::Result<UnixListener> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
         Ok(_) => {
@@ -640,7 +644,7 @@ fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
     set_ployz_group(path)?;
-    Ok((listener, lock))
+    Ok(listener)
 }
 
 fn notify(state: NotifyState<'_>) {
@@ -650,7 +654,6 @@ fn notify(state: NotifyState<'_>) {
 }
 
 const SYSTEMD_START_TIMEOUT_EXTENSION: Duration = Duration::from_secs(30);
-const SYSTEMD_START_TIMEOUT_EXTEND_MAX: Duration = Duration::from_secs(5 * 60);
 
 #[must_use]
 struct SystemdStartTimeoutExtend {
@@ -666,7 +669,7 @@ impl Drop for SystemdStartTimeoutExtend {
 fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
     let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
         .expect("30s start-timeout extension fits u32 microseconds");
-    let deadline = Instant::now() + SYSTEMD_START_TIMEOUT_EXTEND_MAX;
+    let deadline = Instant::now() + MACHINE_START_WAIT;
     SystemdStartTimeoutExtend {
         task: tokio::spawn(async move {
             loop {
@@ -689,7 +692,7 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs, io,
         path::{Path, PathBuf},
     };
 
@@ -702,7 +705,8 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, wait_for_participation, wait_until_socket_accepts,
+        ContainerMode, Daemon, DaemonConfig, claim_socket, listen_socket, wait_for_participation,
+        wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -870,6 +874,28 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn claimed_socket_path_refuses_connections_until_listen() {
+        let root = TestDir::new("ployzd-socket-claim");
+        fs::create_dir_all(root.0.join("run")).unwrap();
+        let path = root.0.join("run/ployz.sock");
+        let _lock = claim_socket(&path).unwrap();
+        let error = tokio::net::UnixStream::connect(&path)
+            .await
+            .expect_err("claim must not listen");
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ),
+            "{error}"
+        );
+        let _listener = listen_socket(&path).unwrap();
+        tokio::net::UnixStream::connect(&path)
+            .await
+            .expect("listen must queue connections");
     }
 
     #[tokio::test]
