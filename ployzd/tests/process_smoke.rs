@@ -3,7 +3,6 @@ mod test_dir;
 use std::{
     fs,
     io::{Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     os::unix::net::UnixDatagram,
     path::Path,
     process::{Child, Command, Stdio},
@@ -46,19 +45,12 @@ fn version_notify_socket_modes_and_signal() {
     let socket = root.0.join("run/ployz.sock");
     let notify_socket = root.0.join("notify.sock");
 
-    let (mut daemon, metrics_address) = start_daemon(&data_dir, &socket, &notify_socket);
+    let mut daemon = start_daemon(&data_dir, &socket, &notify_socket);
     assert_eq!(mode(socket.parent().unwrap()), 0o750);
     assert_eq!(mode(&socket), 0o660);
     let first = describe(&socket);
     assert_eq!(first.daemon_version, env!("CARGO_PKG_VERSION"));
     assert!(first.supports(DESCRIBE_CONTRACT_CAPABILITY));
-    assert!(metrics(metrics_address).contains(&format!(
-        "ployz_ployzd_build_info{{version=\"{}\"}} 1",
-        env!("CARGO_PKG_VERSION")
-    )));
-    let disconnected = TcpStream::connect(metrics_address).unwrap();
-    disconnected.shutdown(Shutdown::Both).unwrap();
-    thread::sleep(Duration::from_millis(20));
     assert_eq!(describe(&socket).machine_id, first.machine_id);
     let stderr = terminate(&mut daemon.0);
     assert!(
@@ -74,7 +66,7 @@ fn version_notify_socket_modes_and_signal() {
     fs::create_dir(&existing_parent).unwrap();
     set_mode(&existing_parent, 0o711);
     let existing_socket = existing_parent.join("ployz.sock");
-    let (mut daemon, _) = start_daemon(
+    let mut daemon = start_daemon(
         &root.0.join("second-data"),
         &existing_socket,
         &notify_socket,
@@ -136,7 +128,7 @@ fn join_leaves_a_journal_line_and_records_the_restart() {
     fs::create_dir_all(&root.0).unwrap();
     let notify_socket = root.0.join("notify.sock");
     let socket = root.0.join("run/ployz.sock");
-    let (mut daemon, _) = start_daemon(&root.0.join("data"), &socket, &notify_socket);
+    let mut daemon = start_daemon(&root.0.join("data"), &socket, &notify_socket);
     join(&socket);
     let stderr = wait_and_stderr(&mut daemon.0, "join");
     assert!(
@@ -155,7 +147,7 @@ fn verbosity_is_raised_without_editing_the_unit() {
     fs::create_dir_all(&root.0).unwrap();
     let notify_socket = root.0.join("notify.sock");
 
-    let (mut quiet, _) = start_daemon_with(
+    let mut quiet = start_daemon_with(
         &root.0.join("quiet-data"),
         &root.0.join("quiet/ployz.sock"),
         &notify_socket,
@@ -168,7 +160,7 @@ fn verbosity_is_raised_without_editing_the_unit() {
         "PLOYZ_LOG=error still emitted start: {stderr}"
     );
 
-    let (mut debug, _) = start_daemon_with(
+    let mut debug = start_daemon_with(
         &root.0.join("debug-data"),
         &root.0.join("debug/ployz.sock"),
         &notify_socket,
@@ -196,7 +188,7 @@ fn invalid_log_level_fails_before_start() {
     );
 }
 
-fn start_daemon(data_dir: &Path, socket: &Path, notify_socket: &Path) -> (ChildGuard, SocketAddr) {
+fn start_daemon(data_dir: &Path, socket: &Path, notify_socket: &Path) -> ChildGuard {
     start_daemon_with(data_dir, socket, notify_socket, &[], &[])
 }
 
@@ -206,13 +198,12 @@ fn start_daemon_with(
     notify_socket: &Path,
     env: &[(&str, &str)],
     extra_args: &[&str],
-) -> (ChildGuard, SocketAddr) {
+) -> ChildGuard {
     let _ = fs::remove_file(notify_socket);
     let notify = UnixDatagram::bind(notify_socket).unwrap();
     notify
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let metrics_address = unused_address();
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployzd"));
     command
         .args([
@@ -220,8 +211,6 @@ fn start_daemon_with(
             data_dir.to_str().unwrap(),
             "--socket",
             socket.to_str().unwrap(),
-            "--metrics-address",
-            &metrics_address.to_string(),
         ])
         .args(extra_args)
         .env("NOTIFY_SOCKET", notify_socket)
@@ -234,12 +223,7 @@ fn start_daemon_with(
     let mut message = [0; 64];
     let length = notify.recv(&mut message).unwrap();
     assert_eq!(message.get(..length).unwrap(), b"READY=1\n");
-    (child, metrics_address)
-}
-
-fn unused_address() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    child
 }
 
 fn mode(path: &Path) -> u32 {
@@ -279,22 +263,6 @@ fn describe(path: &Path) -> ployz_core::ContractDescription {
             .unwrap()
             .clone()
     })
-}
-
-fn metrics(address: SocketAddr) -> String {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match TcpStream::connect(address) {
-            Ok(mut stream) => {
-                stream.write_all(b"GET /metrics HTTP/1.0\r\n\r\n").unwrap();
-                let mut response = String::new();
-                stream.read_to_string(&mut response).unwrap();
-                return response;
-            }
-            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-            Err(error) => panic!("metrics server did not start: {error}"),
-        }
-    }
 }
 
 fn terminate(child: &mut Child) -> String {
