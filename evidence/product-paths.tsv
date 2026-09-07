@@ -33,6 +33,7 @@ runtime-watch-sharing	ployzd/src/runtime_watch_tests/shared.rs::clients_share_ac
 compose-helper-contract	ployz/tests/compose_helper_contract.rs::helper_emits_the_existing_requested_service_contract	ployz/tests/compose.rs::normalized_surface_reaches_requested_specs	ployz/tests/compose_cli.rs::compose_loading_does_not_invoke_docker	-	-
 global-catch-up	ployz/src/global_catch_up_tests.rs::provisioned_globals_use_target_storage_and_report_unknown	-	-	-	-
 global-catch-up-partial-observation	ployz/src/global_catch_up_tests.rs::partial_observations_reject_catch_up_before_any_placement	-	-	-	-
+direct-image-transfer	ployz/src/image.rs::ingest_errors_keep_unsupported_store_distinct	ployz/tests/connect/main.rs::unary_call_retries_unavailable_after_redial	-	ployz-testkit/tests/cluster.rs::direct_image_transfer_reconciles_and_stays_machine_only	scripts/qualify-release.sh
 volume-plugin-command	ployzd/src/volume_plugin/tests/remove_tests.rs::busy_executable_retries_are_bounded_and_do_not_repeat_commands	-	-	-	-
 compose-secret-source	ployz/compose-helper/main_test.go::TestCommandSecretRejectsDriverOptions	ployz/tests/compose.rs::classifier_keeps_the_warning_error_split_and_incomplete_boundary	-	-	-
 compose-x-volume-bound	ployz/compose-helper/main_test.go::TestProvisionedVolumeMaximumBytesIsAJsonNumber	ployz/tests/compose.rs::mounted_x_volume_resolves_to_a_provisioned_source	ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	-	-

@@ -131,7 +131,7 @@ pub async fn push(
 }
 
 pub(crate) async fn push_using_machines(
-    client: &Client,
+    client: &mut Client,
     image: &str,
     platform: Option<&str>,
     selectors: &[String],
@@ -256,21 +256,21 @@ pub(crate) fn select_targets(
 }
 
 async fn push_to_machine(
-    client: &Client,
+    client: &mut Client,
     image: &str,
     platform: Option<&str>,
     machine: &Machine,
     mode: ProxyMode,
     cancellation: &mut Cancellation,
 ) -> Result<ImageIngestDestination, PushError> {
+    // EnsureImageIngest is idempotent; a dropped RPC must not fail the Machine.
     let opened = cancellation
-        .race(client.invoke::<op::EnsureImageIngest>(
+        .race(client.call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            &MachineTarget::from(&machine.id),
-            None,
+            Some(&MachineTarget::from(&machine.id)),
         ))
         .await?
-        .map_err(ingest_error)?;
+        .map_err(|error| ingest_error(rpc_error(error)))?;
     let remote = format!(
         "[{}]:{}",
         opened.destination.management_address.0, opened.destination.port
@@ -284,24 +284,23 @@ async fn push_to_machine(
 }
 
 async fn pull_on_machine(
-    client: &Client,
+    client: &mut Client,
     image: &str,
     machine: &Machine,
     source: ImageIngestDestination,
     cancellation: &mut Cancellation,
 ) -> Result<(), PushError> {
     cancellation
-        .race(client.invoke::<op::PullImageFromMachine>(
+        .race(client.call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source,
             },
-            &MachineTarget::from(&machine.id),
-            None,
+            Some(&MachineTarget::from(&machine.id)),
         ))
         .await?
         .map(|_| ())
-        .map_err(PushError::PeerPull)
+        .map_err(|error| PushError::PeerPull(rpc_error(error)))
 }
 
 /// Pull a missing image from a cluster peer that already has it.
@@ -340,24 +339,24 @@ pub(crate) async fn ensure_cluster_image(
     let Some(peer) = peer_with_image(dest, &listings.successes, image) else {
         return Ok(());
     };
-    let opened = client
-        .invoke::<op::EnsureImageIngest>(
+    let opened = listing_client
+        .call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            &MachineTarget::from(&peer),
-            None,
+            Some(&MachineTarget::from(&peer)),
         )
-        .await?;
-    client
-        .invoke::<op::PullImageFromMachine>(
+        .await
+        .map_err(rpc_error)?;
+    listing_client
+        .call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source: opened.destination,
             },
-            &MachineTarget::from(dest),
-            None,
+            Some(&MachineTarget::from(dest)),
         )
         .await
         .map(|_| ())
+        .map_err(rpc_error)
 }
 
 fn destination_has_image(
@@ -787,6 +786,13 @@ mod tests {
             }),
             PushError::ImageIngest(_)
         ));
+        assert_eq!(
+            ingest_error(rpc_error(crate::connect::ConnectError::from(
+                tonic::Status::unavailable("transport error")
+            )))
+            .to_string(),
+            "Cluster operation failed: image ingest: transport error"
+        );
     }
 
     #[test]
