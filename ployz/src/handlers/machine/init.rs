@@ -60,9 +60,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
 
     let (machine, connection) = runtime()?.block_on(async {
         let mut target = if !no_install {
-            helpers::reconnect_direct(&connection).await?
+            helpers::reconnect_direct(matches, &connection).await?
         } else {
-            helpers::connect_direct(&connection).await?
+            helpers::connect_direct(matches, &connection).await?
         };
         let mut token = target
             .call_repeatable::<op::MachineToken>(token_request.clone(), None)
@@ -73,7 +73,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         if details.phase != LocalMachinePhase::Uninitialized {
             helpers::confirm(yes, "Reset the Machine before initialising a new Cluster?")?;
             helpers::reset(&mut target).await?;
-            target = helpers::reconnect_direct(&connection).await?;
+            target = helpers::reconnect_direct(matches, &connection).await?;
             token = target
                 .call_repeatable::<op::MachineToken>(token_request, None)
                 .await?;
@@ -119,7 +119,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     );
     runtime()?.block_on(async {
         let mut ready =
-            helpers::wait_direct_participating(&connection, "initial Machine did not become ready")
+            helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
         if want_dns {
             let endpoint = matches

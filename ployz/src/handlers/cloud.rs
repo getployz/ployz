@@ -325,7 +325,14 @@ async fn synchronize_daemon(
 async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
     let config = config_path(matches)?;
     let connect = matches.get_one::<String>("connect").map(String::as_str);
-    match crate::connect::connect(&config, connect, None).await {
+    match crate::connect::connect_with_ssh_timeout(
+        &config,
+        connect,
+        None,
+        crate::cli::ssh_timeout(matches),
+    )
+    .await
+    {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
             crate::provisioning::provision_local(ployz_core::StorageChoice::None)?;
@@ -347,7 +354,15 @@ async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
         "Waiting for local daemon",
         crate::setup_retry::WAIT,
         retry_local_connect,
-        async |_| crate::connect::connect(&config, connect, None).await,
+        async |_| {
+            crate::connect::connect_with_ssh_timeout(
+                &config,
+                connect,
+                None,
+                crate::cli::ssh_timeout(matches),
+            )
+            .await
+        },
     )
     .await
     .map_err(Into::into)
@@ -400,7 +415,13 @@ async fn wait_phase(
         wait,
         ConnectError::is_setup_retryable,
         async |_| {
-            let mut client = crate::connect::connect(&config, connect, None).await?;
+            let mut client = crate::connect::connect_with_ssh_timeout(
+                &config,
+                connect,
+                None,
+                crate::cli::ssh_timeout(matches),
+            )
+            .await?;
             let details = client
                 .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;

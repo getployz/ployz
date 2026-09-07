@@ -138,10 +138,11 @@ async fn connect_client(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
-    Ok(crate::connect::connect(
+    Ok(crate::connect::connect_with_ssh_timeout(
         &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
         context,
+        crate::cli::ssh_timeout(matches),
     )
     .await?)
 }
@@ -158,7 +159,15 @@ async fn reconnect_client(
         "Reconnecting to the Cluster",
         crate::setup_retry::WAIT,
         crate::connect::ConnectError::is_setup_retryable,
-        async |_| crate::connect::connect(&config, connect, context).await,
+        async |_| {
+            crate::connect::connect_with_ssh_timeout(
+                &config,
+                connect,
+                context,
+                crate::cli::ssh_timeout(matches),
+            )
+            .await
+        },
     )
     .await
     .map_err(Into::into)

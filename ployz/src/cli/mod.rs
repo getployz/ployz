@@ -56,6 +56,13 @@ fn base(name: &'static str, about: &'static str) -> Command {
 fn connection_args(include_context: bool) -> Vec<Arg> {
     let mut args = vec![
         value("connect", None).env(env::CONNECT).global(true),
+        value("ssh-timeout", None)
+            .value_name("SECONDS")
+            .help("SSH setup timeout in seconds (provisioning: network connection only)")
+            .long_help("SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.")
+            .value_parser(clap::value_parser!(u32).range(1..))
+            .default_value("5")
+            .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
             .default_value("~/.config/ployz/config.yaml")
@@ -66,6 +73,15 @@ fn connection_args(include_context: bool) -> Vec<Arg> {
         args.push(value("context", Some('c')).env(env::CONTEXT));
     }
     args
+}
+
+/// SSH setup budget shared by every CLI connection path.
+pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::from(
+        *matches
+            .get_one::<u32>("ssh-timeout")
+            .expect("ssh-timeout has a default"),
+    ))
 }
 
 fn value(name: &'static str, short: Option<char>) -> Arg {

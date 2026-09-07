@@ -35,9 +35,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let mut entry = connect_client(matches, options.context()).await?;
         let visible = entry.machines().await?;
         let mut target_client = if matches.get_flag("no-install") {
-            helpers::connect_direct(&connection).await?
+            helpers::connect_direct(matches, &connection).await?
         } else {
-            helpers::reconnect_direct(&connection).await?
+            helpers::reconnect_direct(matches, &connection).await?
         };
         let mut token = target_client
             .call_repeatable::<op::MachineToken>(token_request.clone(), None)
@@ -55,7 +55,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             cluster_membership_conflict(&details.phase, &visible, &token.public_key)?;
             helpers::confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
             helpers::reset(&mut target_client).await?;
-            target_client = helpers::reconnect_direct(&connection).await?;
+            target_client = helpers::reconnect_direct(matches, &connection).await?;
             token = target_client
                 .call_repeatable::<op::MachineToken>(token_request, None)
                 .await?;
@@ -101,6 +101,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     println!("{}", added_machine_line(&assigned));
 
     runtime()?.block_on(helpers::wait_direct_participating(
+        matches,
         &connection,
         "added Machine did not become ready",
     ))?;

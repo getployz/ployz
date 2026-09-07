@@ -77,6 +77,7 @@ pub trait Connector: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct SystemConnector {
     ssh_program: PathBuf,
+    ssh_timeout: Duration,
 }
 
 impl Default for SystemConnector {
@@ -89,7 +90,15 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
+            ssh_timeout: Duration::from_secs(5),
         }
+    }
+
+    /// Set the budget for SSH connection establishment, including the probe.
+    #[must_use]
+    pub fn with_ssh_timeout(mut self, timeout: Duration) -> Self {
+        self.ssh_timeout = timeout;
+        self
     }
 }
 
@@ -102,7 +111,26 @@ impl Connector for SystemConnector {
             Transport::Ssh {
                 destination,
                 key_file,
-            } => connect_ssh(destination, key_file.as_deref(), &self.ssh_program).await,
+            } => tokio::time::timeout(
+                self.ssh_timeout,
+                connect_ssh(
+                    destination,
+                    key_file.as_deref(),
+                    &self.ssh_program,
+                    self.ssh_timeout,
+                ),
+            )
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "SSH connection to {} timed out after {} seconds",
+                        destination.target(),
+                        self.ssh_timeout.as_secs()
+                    ),
+                )
+            })?,
             Transport::Relay {
                 url,
                 credential,
@@ -135,8 +163,12 @@ impl Connector for SystemConnector {
                 destination,
                 key_file,
             } => {
-                let mut args =
-                    ssh_base_args(destination, key_file.as_deref(), control_path().as_deref());
+                let mut args = ssh_base_args(
+                    destination,
+                    key_file.as_deref(),
+                    control_path().as_deref(),
+                    self.ssh_timeout,
+                );
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
                 spawn_ssh(&self.ssh_program, &args)
                     .map(|stream| Box::new(stream) as BoxProxyStream)
@@ -159,30 +191,35 @@ async fn connect_ssh(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     program: &Path,
+    timeout: Duration,
 ) -> Result<Channel, ConnectError> {
     let control_path = control_path();
-    let mut probe_args = ssh_base_args(destination, key_file, control_path.as_deref());
+    let mut probe_args = ssh_base_args(destination, key_file, control_path.as_deref(), timeout);
     probe_args.extend([destination.target().into(), "true".into()]);
     // TODO: cancelling drops this probe promptly, but a ControlMaster
     // created during OpenSSH establishment may outlive it until ControlPersist expires.
     let output = Command::new(program)
         .args(&probe_args)
-        .stdin(Stdio::inherit())
+        .stdin(Stdio::null())
         .kill_on_drop(true)
         .output()
         .await
         .map_err(ConnectError::from_ssh_spawn)?;
     if !output.status.success() {
+        let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if detail.contains("Permission denied") {
+            detail.push_str("; SSH authentication is noninteractive: unlock your key with ssh-add or configure credentials that do not require a prompt");
+        }
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
             status: output.status,
-            detail: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            detail,
         });
     }
-    let args = ssh_args(destination, key_file, control_path.as_deref());
+    let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
     let program = program.to_owned();
     Endpoint::from_static("http://[::]:50051")
-        .connect_timeout(Duration::from_secs(5))
+        .connect_timeout(timeout)
         .connect_with_connector(tower::service_fn(move |_| {
             let args = args.clone();
             let program = program.clone();
@@ -196,8 +233,9 @@ fn ssh_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
+    timeout: Duration,
 ) -> Vec<String> {
-    let mut args = ssh_base_args(destination, key_file, control_path);
+    let mut args = ssh_base_args(destination, key_file, control_path, timeout);
     args.extend([
         destination.target().into(),
         "ployzd".into(),
@@ -210,7 +248,29 @@ fn ssh_base_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
+    timeout: Duration,
 ) -> Vec<String> {
+    let mut args = ssh_control_args(control_path);
+    args.extend([
+        "-o".into(),
+        format!("ConnectTimeout={}", timeout.as_secs().max(1)),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-T".into(),
+    ]);
+    if let Some(port) = destination.port() {
+        args.extend(["-p".into(), port.to_string()]);
+    }
+    if let Some(path) = key_file {
+        args.extend(["-i".into(), expand_home(path).display().to_string()]);
+    }
+    args
+}
+
+/// OpenSSH multiplexing options shared by provisioning and management connections.
+pub(crate) fn ssh_control_args(control_path: Option<&Path>) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(path) = control_path {
         args.extend([
@@ -226,23 +286,11 @@ fn ssh_base_args(
             ),
         ]);
     }
-    args.extend([
-        "-o".into(),
-        "ConnectTimeout=5".into(),
-        "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
-        "-T".into(),
-    ]);
-    if let Some(port) = destination.port() {
-        args.extend(["-p".into(), port.to_string()]);
-    }
-    if let Some(path) = key_file {
-        args.extend(["-i".into(), expand_home(path).display().to_string()]);
-    }
     args
 }
 
-fn control_path() -> Option<PathBuf> {
+/// Select the existing runtime or SSH directory for shared control sockets.
+pub(crate) fn control_path() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
         && directory.is_dir()
     {
@@ -479,13 +527,37 @@ pub async fn connect(
     direct: Option<&str>,
     context_override: Option<&str>,
 ) -> Result<Client, ConnectError> {
+    connect_with_ssh_timeout(
+        config_path,
+        direct,
+        context_override,
+        Duration::from_secs(5),
+    )
+    .await
+}
+
+/// Select a management connection with the supplied SSH setup budget.
+///
+/// # Errors
+///
+/// Returns configuration or connection errors when no selected entry is reachable.
+pub(crate) async fn connect_with_ssh_timeout(
+    config_path: &Path,
+    direct: Option<&str>,
+    context_override: Option<&str>,
+    ssh_timeout: Duration,
+) -> Result<Client, ConnectError> {
     let selected = resolve_connections(
         config_path,
         direct,
         context_override,
         Path::new(DEFAULT_LOCAL_SOCKET),
     )?;
-    connect_selected_with(selected, Arc::new(SystemConnector::default())).await
+    connect_selected_with(
+        selected,
+        Arc::new(SystemConnector::default().with_ssh_timeout(ssh_timeout)),
+    )
+    .await
 }
 
 /// Open a Machine RPC channel through Cloud Relay.

@@ -67,30 +67,37 @@ pub(super) fn configure_ssh_key(
     Ok(connection)
 }
 
-pub(super) async fn connect_direct(connection: &Connection) -> Result<Client, ConnectError> {
+pub(super) async fn connect_direct(
+    matches: &ArgMatches,
+    connection: &Connection,
+) -> Result<Client, ConnectError> {
     connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![connection.clone()],
         },
-        Arc::new(SystemConnector::default()),
+        Arc::new(SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches))),
     )
     .await
 }
 
-pub(super) async fn reconnect_direct(connection: &Connection) -> Result<Client, Error> {
+pub(super) async fn reconnect_direct(
+    matches: &ArgMatches,
+    connection: &Connection,
+) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
         &format!("Reconnecting to {connection}"),
         crate::setup_retry::WAIT,
         ConnectError::is_setup_retryable,
-        async |_| connect_direct(connection).await,
+        async |_| connect_direct(matches, connection).await,
     )
     .await
     .map_err(Into::into)
 }
 
 pub(super) async fn wait_direct_participating(
+    matches: &ArgMatches,
     connection: &Connection,
     timeout_message: &str,
 ) -> Result<Client, Error> {
@@ -100,7 +107,7 @@ pub(super) async fn wait_direct_participating(
         MACHINE_START_WAIT,
         ConnectError::is_setup_retryable,
         async |_| {
-            let mut client = connect_direct(connection).await?;
+            let mut client = connect_direct(matches, connection).await?;
             let details = client
                 .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;
