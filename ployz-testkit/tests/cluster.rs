@@ -47,13 +47,6 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
                 .all(|machine| machine.membership == MembershipObservation::Up)
         );
     }
-    let metrics = cluster
-        .machine_shell(0, "curl -fsS http://127.0.0.1:51090/metrics")
-        .unwrap();
-    assert!(metrics.contains(&format!(
-        "ployz_ployzd_build_info{{version=\"{}\"}} 1",
-        env!("CARGO_PKG_VERSION")
-    )));
 
     cluster.restart(1).unwrap();
     cluster.wait_ready(Duration::from_secs(60)).await.unwrap();

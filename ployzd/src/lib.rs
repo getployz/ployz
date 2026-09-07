@@ -27,7 +27,6 @@ pub mod machine;
 pub mod machine_api;
 #[doc(hidden)]
 pub mod machine_pool;
-pub mod metrics;
 pub mod network;
 pub mod relay;
 pub(crate) mod runtime_watch;

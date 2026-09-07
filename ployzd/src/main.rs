@@ -22,7 +22,6 @@ use ployzd::{
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
-const DEFAULT_METRICS_ADDRESS: &str = "127.0.0.1:51090";
 const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Parser)]
@@ -34,8 +33,6 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
     socket: PathBuf,
-    #[arg(long, default_value = DEFAULT_METRICS_ADDRESS)]
-    metrics_address: SocketAddr,
     #[arg(long = "dns-upstream", value_name = "ADDR")]
     dns_upstreams: Vec<SocketAddr>,
     #[arg(long, hide = true)]
@@ -109,7 +106,6 @@ async fn run(args: Args) -> Result<(), Error> {
     let daemon = Daemon::start(DaemonConfig {
         data_dir: args.data_dir,
         socket: args.socket,
-        metrics_address: args.metrics_address,
         dns_upstreams: args.dns_upstreams,
         machine_api_address: args.machine_api_address,
         containerd_socket: args.containerd_socket,
