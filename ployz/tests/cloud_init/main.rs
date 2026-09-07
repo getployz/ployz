@@ -30,7 +30,7 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
         "registration": registration,
     }))
     .await;
-    let daemon = JoinDaemon::new(registration.clone());
+    let daemon = JoinDaemon::new(registration.clone()).lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -59,6 +59,11 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     assert!(
         stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
         "{stdout}"
+    );
+    assert_eq!(
+        daemon.join_attempts(),
+        1,
+        "lost Join reply must be recovered by Inspect"
     );
     let joined = daemon.join_request();
     let pairing_json = serde_json::to_value(joined.cloud_pairing.as_ref().unwrap()).unwrap();
@@ -273,7 +278,7 @@ async fn caddy_lookup_failure_happens_before_initialize() {
 
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("list Docker Hub Caddy tags"),
+        String::from_utf8_lossy(&output.stderr).contains("Discovering Caddy image at Docker Hub"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

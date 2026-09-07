@@ -20,7 +20,9 @@ mod inspect;
 mod remove;
 
 pub(super) use add::add;
-pub(super) use helpers::{confirm, machine_name, readiness_timeout_message};
+pub(super) use helpers::{
+    confirm, initialize, join, machine_name, readiness_timeout_message, reset,
+};
 pub(super) use init::init;
 pub(super) use inspect::{inspect, list, rtt, wireguard_show};
 pub(super) use remove::remove;

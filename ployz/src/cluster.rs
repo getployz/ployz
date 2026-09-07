@@ -126,6 +126,62 @@ impl Client {
         self.call_retried::<T>(payload, target, None).await
     }
 
+    /// Retry only reads or known-idempotent setup RPCs with short attempts.
+    /// Callers must use `call_unretried` for mutations with uncertain outcomes.
+    pub(crate) async fn call_repeatable<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: Option<&MachineTarget>,
+    ) -> Result<T::Response, ConnectError> {
+        let payload = T::into_request(request).encode()?;
+        let mut redial = false;
+        let operation = T::PATH.rsplit('/').next().unwrap_or(T::PATH);
+        let destination = target.map_or_else(
+            || self.connection.to_string(),
+            |target| format!("{target:?} via {}", self.connection),
+        );
+        let progress = format!("{operation} on {destination}");
+        crate::setup_retry::run(
+            self,
+            &progress,
+            crate::setup_retry::WAIT,
+            ConnectError::is_setup_retryable,
+            async |client| {
+                let reconnect = redial;
+                redial = true;
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    client.unary_attempt::<T>(payload.clone(), target, reconnect),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(tonic::Status::deadline_exceeded("Machine setup read timed out").into())
+                })
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            crate::setup_retry::Error::Permanent(error) => error,
+            crate::setup_retry::Error::Exhausted(message) => ConnectError::Attempt(message.into()),
+        })
+    }
+
+    /// Setup mutations must not be replayed after a lost response.
+    pub(crate) async fn call_unretried<T: Rpc>(
+        &self,
+        request: T::Request,
+        target: Option<&MachineTarget>,
+    ) -> Result<T::Response, ConnectError> {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.call_once::<T>(T::into_request(request).encode()?, target),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(tonic::Status::deadline_exceeded("Machine setup mutation reply timed out").into())
+        })
+    }
+
     /// Issue a retryable read-only targeted RPC with a deadline per attempt.
     ///
     /// # Errors

@@ -57,13 +57,23 @@ async fn apply_spec(
     context: &str,
     project: Option<&ResolvedProject>,
 ) -> Result<(), ApplyError> {
-    let preview = client
-        .preview(DeployIntent::apply_one(
-            project_name.clone(),
-            requested.clone(),
-            plan_options(force_recreate, skip_health_monitor),
-        ))
-        .await?;
+    let preview = crate::setup_retry::run(
+        client,
+        "Preparing service deployment",
+        crate::setup_retry::WAIT,
+        |error| matches!(error, DeployError::Connect(error) if error.is_setup_retryable()),
+        async |client| {
+            client
+                .preview(DeployIntent::apply_one(
+                    project_name.clone(),
+                    requested.clone(),
+                    plan_options(force_recreate, skip_health_monitor),
+                ))
+                .await
+        },
+    )
+    .await
+    .map_err(|error| ApplyError::Prepare(error.into()))?;
     print_warnings(&preview);
     if preview.noop() {
         let source = project.map(|project| project.source.to_string());
@@ -100,10 +110,10 @@ pub(crate) async fn apply_requested(
     .await
 }
 
-/// A system-service Apply failure kept typed for enrollment retry decisions.
+/// Keep execution evidence available for the closing deployment report.
 #[derive(Debug)]
 pub(crate) enum ApplyError {
-    Prepare(DeployError),
+    Prepare(Failure),
     Execute {
         outcome: Box<DeployOutcome<ExecutionError>>,
         rows: Vec<OperationRow>,
@@ -111,37 +121,16 @@ pub(crate) enum ApplyError {
     },
 }
 
-impl ApplyError {
-    pub(crate) fn is_retryable_transport(&self) -> bool {
-        match self {
-            Self::Prepare(DeployError::Connect(error)) => error.is_retryable(),
-            Self::Execute { outcome, .. } => matches!(
-                outcome.as_ref(),
-                DeployOutcome::Failed { failed, .. } if matches!(
-                failed_error(failed),
-                ExecutionError::Machine { error, .. }
-                    if matches!(
-                        error.code,
-                        ployz_core::RpcErrorCode::Unavailable
-                            | ployz_core::RpcErrorCode::Ambiguous
-                    )
-                )
-            ),
-            Self::Prepare(_) => false,
-        }
-    }
-}
-
 impl From<DeployError> for ApplyError {
     fn from(error: DeployError) -> Self {
-        Self::Prepare(error)
+        Self::Prepare(error.into())
     }
 }
 
 impl From<ApplyError> for Failure {
     fn from(error: ApplyError) -> Self {
         match error {
-            ApplyError::Prepare(error) => error.into(),
+            ApplyError::Prepare(error) => error,
             ApplyError::Execute {
                 outcome,
                 rows,
@@ -421,13 +410,6 @@ fn finish(
     }
 }
 
-fn failed_error(failed: &ployz_core::FailedOperation<ExecutionError>) -> &ExecutionError {
-    match failed {
-        ployz_core::FailedOperation::Operation { error, .. }
-        | ployz_core::FailedOperation::ReplacementHealth { error, .. } => error,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::pipeline::project_not_found;
@@ -507,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_retryable_transport_matches_outcome_after_stderr() {
+    fn interrupted_execution_keeps_outcome_after_stderr() {
         let machine_id = MachineId::parse("d".repeat(32)).unwrap();
         let outcome = DeployOutcome::Failed {
             completed: Vec::new(),
@@ -539,7 +521,6 @@ mod tests {
             rows: Vec::new(),
             live_shown: false,
         };
-        assert!(error.is_retryable_transport());
         let failure = Failure::from(error);
         assert!(format!("{failure}").contains("create failed"));
     }

@@ -49,7 +49,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     );
     assert_eq!(
         enroll.callbacks(),
-        vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 3]
+        vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 1]
     );
     wait_for_held(&relay.url, PAIRING, machine_id).await;
 
@@ -69,7 +69,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     );
     assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.callbacks().len(), 3);
+    assert_eq!(enroll.callbacks().len(), 1);
 }
 
 #[tokio::test]
@@ -90,7 +90,8 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
-    });
+    })
+    .lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
@@ -295,7 +296,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
 }
 
 #[tokio::test]
-async fn founder_tail_retries_transport_and_converges_in_order() {
+async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let mut founder = founder_machine();
     founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let machine_id = founder.id;
@@ -304,12 +305,14 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::script_recording(
-        [json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": pairing,
-        })],
+        [
+            json!({
+                "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
+            }),
+            json!({
+                "kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing,
+            }),
+        ],
         events.clone(),
     )
     .await;
@@ -321,34 +324,56 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
     .with_events(events.clone())
     .transient_founder_tail_failures(1);
     let machine_addr = serve_machine(daemon.clone()).await;
-    let (probe, probe_port) = serve_ingress_probe(machine_id).await;
+    let (probe, probe_port) =
+        serve_ingress_probe(machine_id, std::time::Duration::from_secs(6)).await;
 
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--ingress-image",
-            "caddy:2.10.0",
-            "--yes",
-        ])
-        .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
-        .env("HTTPS_PROXY", &proxy)
-        .env("https_proxy", &proxy)
-        .env("NO_PROXY", "127.0.0.1,localhost")
-        .env("no_proxy", "127.0.0.1,localhost")
-        .output()
-        .await
-        .unwrap();
+    let command = || {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .args([
+                "--connect",
+                &format!("tcp://{machine_addr}"),
+                "cloud",
+                "enroll",
+                TOKEN,
+                "--cloud-url",
+                &enroll.url,
+                "--name",
+                "founder",
+                "--ingress-image",
+                "caddy:2.10.0",
+                "--yes",
+            ])
+            .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
+            .env("HTTPS_PROXY", &proxy)
+            .env("https_proxy", &proxy)
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("no_proxy", "127.0.0.1,localhost");
+        command
+    };
+    let first = command().arg("--reset").output().await.unwrap();
+    assert!(!first.status.success());
+    assert!(String::from_utf8_lossy(&first.stderr).contains(
+        "rerun the same ployz cloud enroll command without --reset (keep all other options)"
+    ));
+    assert!(String::from_utf8_lossy(&first.stderr).contains("Machine setup read timed out"));
+    assert_eq!(daemon.founder_tail_attempts(), [1, 1, 0, 0]);
+    assert_eq!(
+        daemon.initialize_requests().len(),
+        1,
+        "lost Initialize reply must be recovered by Inspect"
+    );
+    assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(
+        daemon.containers().len(),
+        1,
+        "lost create reply must not cause an automatic second Create"
+    );
+
+    let output = command().output().await.unwrap();
     probe.abort();
 
     assert!(
@@ -357,7 +382,8 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(daemon.founder_tail_attempts(), [2, 2, 2, 2]);
+    assert_eq!(daemon.reset_count(), 0, "resume must omit --reset");
+    assert_eq!(daemon.founder_tail_attempts(), [1, 2, 2, 2]);
     let containers = daemon.containers();
     assert_eq!(containers.len(), 1);
     assert_eq!(
@@ -382,7 +408,63 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
         ]
     );
     assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.posts().len(), 1);
+    assert_eq!(enroll.posts().len(), 2);
     assert_eq!(enroll.callbacks().len(), 1);
     wait_for_held(&relay.url, PAIRING, machine_id).await;
+}
+
+#[tokio::test]
+async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservation() {
+    for replaced in [true, false] {
+        let relay = RelayListen::start().await;
+        let pairing =
+            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let enroll = EnrollListen::start(json!({
+            "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
+        }))
+        .await;
+        let daemon = JoinDaemon::new(Registered {
+            assigned_machine: founder_machine(),
+            visible_peers: Vec::new(),
+            target_versions: Default::default(),
+        });
+        let daemon = if replaced {
+            daemon.replace_identity_on_initialize()
+        } else {
+            daemon.fail_reservation()
+        };
+        let address = serve_machine(daemon.clone()).await;
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args([
+                "--connect",
+                &format!("tcp://{address}"),
+                "cloud",
+                "enroll",
+                TOKEN,
+                "--cloud-url",
+                &enroll.url,
+                "--name",
+                "founder",
+                "--no-ingress",
+                "--reset",
+                "--yes",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        if replaced {
+            assert!(error.contains("different Machine identity"), "{error}");
+        } else {
+            assert!(error.contains("DNS reservation pending"), "{error}");
+            assert!(
+                error.contains("without --reset (keep all other options)"),
+                "{error}"
+            );
+        }
+        assert_eq!(daemon.initialize_requests().len(), 1);
+        assert_eq!(daemon.reset_count(), 0);
+        assert!(enroll.callbacks().is_empty());
+    }
 }

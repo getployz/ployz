@@ -17,4 +17,5 @@ pub mod project;
 mod provisioning;
 pub mod sdk;
 pub mod service;
+mod setup_retry;
 pub mod volume;

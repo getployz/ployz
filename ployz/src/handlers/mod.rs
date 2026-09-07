@@ -146,6 +146,35 @@ async fn connect_client(
     .await?)
 }
 
+/// Re-establish a management connection after setup has already started.
+async fn reconnect_client(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<crate::connect::Client, Error> {
+    let config = config_path(matches)?;
+    let connect = matches.get_one::<String>("connect").map(String::as_str);
+    crate::setup_retry::run(
+        &mut (),
+        "Reconnecting to the Cluster",
+        crate::setup_retry::WAIT,
+        crate::connect::ConnectError::is_setup_retryable,
+        async |_| crate::connect::connect(&config, connect, context).await,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
+    let config = config_path(matches).expect("setup already resolved the config path");
+    let config = config.to_string_lossy();
+    shell_words::join(
+        ["ployz", "--ployz-config", config.as_ref()]
+            .into_iter()
+            .chain(command.iter().copied())
+            .chain(["--context", context]),
+    )
+}
+
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
 where
     F: for<'a> FnOnce(
@@ -287,6 +316,34 @@ mod tests {
     }
 
     #[test]
+    fn setup_recovery_preserves_config_and_context_and_parses_as_a_command() {
+        let matches = command()
+            .try_get_matches_from([
+                "ployz",
+                "--ployz-config",
+                "/tmp/a config.yaml",
+                "machine",
+                "init",
+                "root@host",
+                "--context",
+                "staging",
+            ])
+            .unwrap();
+        let recovery = recovery_command(leaf_matches(&matches), "staging", &["ingress", "deploy"]);
+        let args = shell_words::split(&recovery).unwrap();
+        let parsed = command().try_get_matches_from(args).unwrap();
+        let leaf = leaf_matches(&parsed);
+        assert_eq!(
+            leaf.get_one::<String>("context").map(String::as_str),
+            Some("staging")
+        );
+        assert_eq!(
+            leaf.get_one::<String>("ployz-config").map(String::as_str),
+            Some("/tmp/a config.yaml")
+        );
+    }
+
+    #[test]
     fn version_output_template_must_be_usable() {
         let mut command = command();
         let matches = command
@@ -406,7 +463,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "all 1 connections from Direct failed",
+            "all 1 connections from Direct failed: connection attempt failed: transport error",
         );
     }
 

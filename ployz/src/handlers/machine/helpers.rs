@@ -1,7 +1,6 @@
 use std::{
     io::{self, IsTerminal, Write},
     sync::Arc,
-    time::Duration,
 };
 
 use clap::ArgMatches;
@@ -12,7 +11,7 @@ use ployz_core::{
 
 use super::parse_endpoints;
 use crate::{
-    connect::{Client, SystemConnector, connect_selected_with},
+    connect::{Client, ConnectError, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections, Transport},
     handlers::{Error, string_values},
 };
@@ -68,51 +67,158 @@ pub(super) fn configure_ssh_key(
     Ok(connection)
 }
 
-pub(super) async fn connect_direct(connection: &Connection) -> Result<Client, Error> {
-    Ok(connect_selected_with(
+pub(super) async fn connect_direct(connection: &Connection) -> Result<Client, ConnectError> {
+    connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![connection.clone()],
         },
         Arc::new(SystemConnector::default()),
     )
-    .await?)
+    .await
 }
 
 pub(super) async fn reconnect_direct(connection: &Connection) -> Result<Client, Error> {
-    let mut last = None;
-    for _ in 0..40 {
-        match connect_direct(connection).await {
-            Ok(client) => return Ok(client),
-            Err(error) => last = Some(error),
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    Err(last.unwrap_or_else(|| Error::usage("Machine did not become reachable after reset")))
+    crate::setup_retry::run(
+        &mut (),
+        &format!("Reconnecting to {connection}"),
+        crate::setup_retry::WAIT,
+        ConnectError::is_setup_retryable,
+        async |_| connect_direct(connection).await,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(super) async fn wait_direct_participating(
     connection: &Connection,
     timeout_message: &str,
 ) -> Result<Client, Error> {
-    match tokio::time::timeout(MACHINE_START_WAIT, async {
-        loop {
-            if let Ok(mut client) = connect_direct(connection).await
-                && client
-                    .call::<op::Inspect>(InspectRequest::default(), None)
-                    .await
-                    .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
-            {
-                return client;
+    crate::setup_retry::run(
+        &mut (),
+        &format!("Waiting for {connection} to participate"),
+        MACHINE_START_WAIT,
+        ConnectError::is_setup_retryable,
+        async |_| {
+            let mut client = connect_direct(connection).await?;
+            let details = client
+                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+                .await?;
+            if details.phase != LocalMachinePhase::Participating {
+                return Err(ConnectError::Attempt(
+                    format!("Machine phase is {:?}", details.phase).into(),
+                ));
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+            Ok(client)
+        },
+    )
     .await
-    {
-        Ok(client) => Ok(client),
-        Err(_) => Err(Error::usage(readiness_timeout_message(timeout_message))),
+    .map_err(|error| {
+        Error::usage(format!(
+            "{}: {error}",
+            readiness_timeout_message(timeout_message)
+        ))
+    })
+}
+
+/// Recover a lost Initialize reply without initializing or resetting twice.
+pub(in crate::handlers) async fn initialize(
+    client: &mut Client,
+    request: ployz_core::InitializeRequest,
+) -> Result<ployz_core::Initialized, Error> {
+    let identity = client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?;
+    let name = request.name.clone();
+    match client.call_unretried::<op::Initialize>(request, None).await {
+        Ok(initialized) => Ok(initialized),
+        Err(error) if error.is_setup_retryable() => {
+            let details = observe_mutation(
+                client,
+                "Initialization",
+                &error,
+                MACHINE_START_WAIT,
+                |details| {
+                    details.phase == LocalMachinePhase::Participating
+                        && details
+                            .machine
+                            .as_ref()
+                            .is_some_and(|machine| machine.name == name)
+                },
+            )
+            .await?;
+            if details.id != identity.id || details.public_key != identity.public_key {
+                return Err(Error::usage(
+                    "Initialization outcome belongs to a different Machine identity; inspect the Machine before retrying; do not reset it",
+                ));
+            }
+            Ok(ployz_core::Initialized {
+                machine: details
+                    .machine
+                    .expect("observed predicate verified the initialized Machine"),
+            })
+        }
+        Err(error) => Err(error.into()),
     }
+}
+
+/// Check local state after an interrupted reset instead of issuing another reset.
+pub(in crate::handlers) async fn reset(client: &mut Client) -> Result<(), Error> {
+    match client
+        .call_unretried::<op::Reset>(ployz_core::ResetRequest {}, None)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.is_setup_retryable() => observe_mutation(
+            client,
+            "Reset",
+            &error,
+            crate::setup_retry::WAIT,
+            |details| details.phase == LocalMachinePhase::Uninitialized,
+        )
+        .await
+        .map(drop),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A lost Join reply is success only when the assigned identity is observed joining.
+pub(in crate::handlers) async fn join(
+    client: &mut Client,
+    request: ployz_core::JoinRequest,
+) -> Result<(), Error> {
+    let assigned = request.registration.assigned_machine.id;
+    match client.call_unretried::<op::Join>(request, None).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.is_setup_retryable() => {
+            observe_mutation(client, "Join", &error, MACHINE_START_WAIT, |details| {
+                details.id == assigned
+                    && matches!(
+                        details.phase,
+                        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+                    )
+            })
+            .await
+            .map(drop)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn observe_mutation(
+    client: &mut Client,
+    operation: &str,
+    original: &ConnectError,
+    wait: std::time::Duration,
+    observed: impl Fn(&ployz_core::MachineDetails) -> bool,
+) -> Result<ployz_core::MachineDetails, Error> {
+    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), wait,
+        ConnectError::is_setup_retryable,
+        async |client| {
+            let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
+            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {:?}; expected {operation} outcome not yet observed", details.phase).into())) }
+        },
+    ).await.map_err(|error| Error::usage(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
 }
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {

@@ -57,7 +57,14 @@ struct JoinInner {
     daemon_version: Mutex<String>,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
+    join_attempts: AtomicUsize,
+    lose_lifecycle_reply: AtomicBool,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
+    lose_initialize_reply: AtomicBool,
+    hold_inspect_once: AtomicBool,
+    startup_ready_at: Mutex<Option<std::time::Instant>>,
+    replace_identity_on_initialize: AtomicBool,
+    fail_reservation: AtomicBool,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
     reserve_attempts: AtomicUsize,
     transient_reserve_failures: AtomicUsize,
@@ -93,7 +100,14 @@ impl JoinDaemon {
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
+                join_attempts: AtomicUsize::new(0),
+                lose_lifecycle_reply: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
+                lose_initialize_reply: AtomicBool::new(false),
+                hold_inspect_once: AtomicBool::new(false),
+                startup_ready_at: Mutex::new(None),
+                replace_identity_on_initialize: AtomicBool::new(false),
+                fail_reservation: AtomicBool::new(false),
                 reserve_request: Mutex::new(None),
                 reserve_attempts: AtomicUsize::new(0),
                 transient_reserve_failures: AtomicUsize::new(0),
@@ -190,7 +204,33 @@ impl JoinDaemon {
         self
     }
 
+    pub fn lose_lifecycle_reply(self) -> Self {
+        self.inner
+            .lose_lifecycle_reply
+            .store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn replace_identity_on_initialize(self) -> Self {
+        self.inner
+            .replace_identity_on_initialize
+            .store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn fail_reservation(self) -> Self {
+        self.inner.fail_reservation.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn join_attempts(&self) -> usize {
+        self.inner.join_attempts.load(Ordering::SeqCst)
+    }
+
     pub fn transient_founder_tail_failures(self, failures: usize) -> Self {
+        self.inner
+            .lose_initialize_reply
+            .store(failures > 0, Ordering::SeqCst);
         self.inner
             .transient_reserve_failures
             .store(failures, Ordering::SeqCst);
@@ -298,6 +338,20 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.inner.hold_inspect_once.swap(false, Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        }
+        if self
+            .inner
+            .startup_ready_at
+            .lock()
+            .unwrap()
+            .is_some_and(|ready| std::time::Instant::now() < ready)
+        {
+            return Err(Status::unavailable(
+                "first startup is still pulling Corrosion",
+            ));
+        }
         if request
             .metadata()
             .contains_key(ployz_core::ONE_TARGET_HEADER)
@@ -365,6 +419,7 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.inner.join_attempts.fetch_add(1, Ordering::SeqCst);
         let decoded = request
             .into_inner()
             .decode_request()
@@ -390,6 +445,13 @@ impl MachineRpc for JoinDaemon {
         }
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
+        if self
+            .inner
+            .lose_lifecycle_reply
+            .swap(false, Ordering::SeqCst)
+        {
+            return std::future::pending().await; // Applied, but the response stays open.
+        }
         rpc_ok(JoinAccepted {})
     }
 
@@ -466,6 +528,26 @@ impl MachineRpc for JoinDaemon {
                 });
             }
             return Err(status);
+        }
+        if self
+            .inner
+            .replace_identity_on_initialize
+            .swap(false, Ordering::SeqCst)
+        {
+            *self.inner.public_key.lock().unwrap() = WireGuardPublicKey([99; 32]);
+            return Err(Status::unavailable(
+                "another operator replaced this Machine",
+            ));
+        }
+        if self
+            .inner
+            .lose_initialize_reply
+            .swap(false, Ordering::SeqCst)
+        {
+            self.inner.hold_inspect_once.store(true, Ordering::SeqCst);
+            *self.inner.startup_ready_at.lock().unwrap() =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(70));
+            return std::future::pending().await; // Applied, but the response stays open.
         }
         rpc_ok(Initialized { machine })
     }
@@ -571,9 +653,6 @@ impl MachineRpc for JoinDaemon {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
-        if consume_transient_failure(&self.inner.transient_create_failures) {
-            return Err(Status::unavailable("transient Ingress deployment failure"));
-        }
         let decoded = request
             .into_inner()
             .decode_request()
@@ -600,6 +679,9 @@ impl MachineRpc for JoinDaemon {
             })
             .unwrap(),
         );
+        if consume_transient_failure(&self.inner.transient_create_failures) {
+            return Err(Status::unavailable("lost Ingress container creation reply"));
+        }
         rpc_ok(ContainerCreated {
             container_id,
             display_name,
@@ -696,15 +778,32 @@ impl MachineRpc for JoinDaemon {
     }
     async fn stop_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::StopContainer(stop) = decoded.body else {
+            return unused();
+        };
+        rpc_ok(ContainerChanged {
+            container_id: stop.container_id,
+        })
     }
     async fn remove_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::RemoveContainer(remove) = decoded.body else {
+            return unused();
+        };
+        self.inner
+            .containers
+            .lock()
+            .unwrap()
+            .retain(|container| container.container_id != remove.container_id);
+        rpc_ok(ContainerChanged {
+            container_id: remove.container_id,
+        })
     }
     async fn list_images(
         &self,
@@ -738,8 +837,8 @@ impl MachineRpc for JoinDaemon {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.reserve_attempts.fetch_add(1, Ordering::SeqCst);
-        if consume_transient_failure(&self.inner.transient_reserve_failures) {
-            return Err(Status::unavailable("transient domain reservation failure"));
+        if self.inner.fail_reservation.load(Ordering::SeqCst) {
+            return Err(Status::permission_denied("DNS reservation rejected"));
         }
         let decoded = request
             .into_inner()
@@ -751,6 +850,9 @@ impl MachineRpc for JoinDaemon {
         *self.inner.reserve_request.lock().unwrap() = Some(reserve);
         self.inner.domain_reserved.store(true, Ordering::SeqCst);
         self.record("reserve_domain");
+        if consume_transient_failure(&self.inner.transient_reserve_failures) {
+            return Err(Status::unavailable("lost domain reservation reply"));
+        }
         rpc_ok(Domain {
             name: CLUSTER_DOMAIN.into(),
         })
@@ -813,6 +915,13 @@ impl MachineRpc for JoinDaemon {
         *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
         if let Some(hold) = self.inner._register.lock().unwrap().take() {
             hold.abort();
+        }
+        if self
+            .inner
+            .lose_lifecycle_reply
+            .swap(false, Ordering::SeqCst)
+        {
+            return std::future::pending().await; // Applied, but the response stays open.
         }
         rpc_ok(ResetAccepted {})
     }

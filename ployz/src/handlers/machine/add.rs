@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineObservation,
-    RegisterRequest, ResetRequest, WireGuardPublicKey, op,
+    RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_client, runtime};
@@ -32,14 +32,22 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
 
     let assigned = runtime()?.block_on(async {
-        let mut entry = connect_client(matches, options.context()).await?;
+        let mut entry = if matches.get_flag("no-install") {
+            connect_client(matches, options.context()).await?
+        } else {
+            super::super::reconnect_client(matches, options.context()).await?
+        };
         let visible = entry.machines().await?;
-        let mut target_client = helpers::connect_direct(&connection).await?;
+        let mut target_client = if matches.get_flag("no-install") {
+            helpers::connect_direct(&connection).await?
+        } else {
+            helpers::reconnect_direct(&connection).await?
+        };
         let mut token = target_client
-            .call::<op::MachineToken>(token_request.clone(), None)
+            .call_repeatable::<op::MachineToken>(token_request.clone(), None)
             .await?;
         let details = target_client
-            .call::<op::Inspect>(
+            .call_repeatable::<op::Inspect>(
                 InspectRequest {
                     advertised_endpoints: token.advertised_endpoints.clone(),
                     ..Default::default()
@@ -50,19 +58,17 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         if details.phase != LocalMachinePhase::Uninitialized {
             cluster_membership_conflict(&details.phase, &visible, &token.public_key)?;
             helpers::confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
-            target_client
-                .call::<op::Reset>(ResetRequest {}, None)
-                .await?;
+            helpers::reset(&mut target_client).await?;
             target_client = helpers::reconnect_direct(&connection).await?;
             token = target_client
-                .call::<op::MachineToken>(token_request, None)
+                .call_repeatable::<op::MachineToken>(token_request, None)
                 .await?;
         }
         let name = helpers::machine_name(requested_name, &token)?;
 
-        // TODO: registration is intentionally unfenced and may succeed on a minority.
+        // Register recognizes the same public key and name and returns its committed assignment.
         let registration = entry
-            .call::<op::Register>(
+            .call_repeatable::<op::Register>(
                 RegisterRequest {
                     name,
                     storage,
@@ -75,16 +81,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?;
         let assigned = registration.assigned_machine.clone();
-        target_client
-            .call::<op::Join>(
-                JoinRequest {
-                    registration,
-                    wireguard_mtu,
-                    cloud_pairing: None,
-                },
-                None,
-            )
-            .await?;
+        helpers::join(
+            &mut target_client,
+            JoinRequest {
+                registration,
+                wireguard_mtu,
+                cloud_pairing: None,
+            },
+        )
+        .await?;
 
         Ok::<_, Error>(assigned)
     })?;
@@ -105,22 +110,28 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     ))?;
 
     let catch_up = runtime()?.block_on(async {
-        let mut entry = connect_client(matches, options.context()).await?;
+        let mut entry = super::super::reconnect_client(matches, options.context()).await?;
         Ok::<_, Error>(
             crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_ingress).await,
         )
     })?;
     if let Err(error) = catch_up {
-        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
-            error,
+        let recovery =
+            super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
+        return Err(Error::usage(format!(
+            "{}\nFor ingress, continue with: {recovery}",
+            crate::global_catch_up::joined_catch_up_error(error)
         )));
     }
     let dns_result = runtime()?.block_on(async {
-        let mut entry = connect_client(matches, options.context()).await?;
+        let mut entry = super::super::reconnect_client(matches, options.context()).await?;
         crate::dns::update_records_if_reserved(&mut entry).await?;
         Ok::<_, Error>(())
     });
     if let Err(error) = dns_result {
+        let recovery =
+            super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
+        eprintln!("Machine joined; DNS publication pending. Continue with: {recovery}");
         eprintln!(
             "{}",
             Error::warned("hosted DNS refresh failed after adding the Machine", error)

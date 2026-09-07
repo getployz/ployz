@@ -1,22 +1,21 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::{self, Display, Formatter},
-    net::{IpAddr, SocketAddr},
-    time::Duration,
+    net::IpAddr,
 };
 
 use ployz_core::{
     ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, HttpProtocol,
-    INGRESS_VERIFY_PATH, IngressHost, IngressHostname, IngressLabelTooLong, LiveServices, Machine,
-    MachineId, MachineObservation, PortPublication, ProjectName, QualifiedService,
-    RequestedServiceSpec, cluster_dns_verdict, issuance_refusal_reason, op,
+    IngressHost, IngressHostname, IngressLabelTooLong, LiveServices, Machine, MachineId,
+    MachineObservation, PortPublication, ProjectName, QualifiedService, RequestedServiceSpec,
+    cluster_dns_verdict, issuance_refusal_reason, op,
 };
-use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
 
 use crate::connect::{Client, ConnectError};
 
-const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+mod probe;
+use probe::probe_machines;
 
 /// Default hosted DNS API (`dns.uncloud.run` until Ployz hosts its own).
 /// `dns reserve`, `machine init`, and `cloud enroll` share this.
@@ -30,20 +29,18 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error(transparent)]
     NoReachableMachines(#[from] NoReachableMachines),
-}
-
-impl Error {
-    pub(crate) fn is_retryable_transport(&self) -> bool {
-        match self {
-            Self::Connect(error) => error.is_retryable(),
-            Self::Http(error) => error.is_connect() || error.is_timeout() || error.is_request(),
-            Self::NoReachableMachines(_) => false,
-        }
-    }
+    #[error("no Ingress Proxy Machines reachable from this computer:\n{0}")]
+    Probes(String),
+    #[error("{0}")]
+    Setup(String),
+    #[error(
+        "Domain reservation was interrupted: {0}; no saved reservation was observed. Check `ployz dns show` before reserving again."
+    )]
+    ReservationInterrupted(ConnectError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("no publicly reachable Ingress Proxy Machines found")]
+#[error("no eligible Ingress Proxy Machines with a public IP found")]
 pub struct NoReachableMachines;
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -72,13 +69,55 @@ fn protocol_label(protocol: &HttpProtocol) -> &'static str {
     }
 }
 
+/// Reservation is not replayable. Recover a lost reply by reading the saved
+/// reservation, never by making a second reservation request.
+pub(crate) async fn reserve_if_missing(
+    client: &mut Client,
+    endpoint: String,
+) -> Result<String, Error> {
+    if let Some(domain) = reserved_domain(client).await? {
+        return Ok(domain);
+    }
+    match client
+        .call_unretried::<op::ReserveDomain>(ployz_core::ReserveDomainRequest { endpoint }, None)
+        .await
+    {
+        Ok(domain) => Ok(domain.name),
+        Err(error) if error.is_setup_retryable() => match reserved_domain(client).await? {
+            Some(domain) => Ok(domain),
+            None => Err(Error::ReservationInterrupted(error)),
+        },
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn reserved_domain(client: &mut Client) -> Result<Option<String>, Error> {
+    match client
+        .call_repeatable::<op::GetDomain>(ployz_core::GetDomainRequest {}, None)
+        .await
+    {
+        Ok(domain) => Ok(Some(domain.name)),
+        Err(ConnectError::Remote(error)) if error.code == ployz_core::RpcErrorCode::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn retry_error(error: crate::setup_retry::Error<ConnectError>) -> Error {
+    match error {
+        crate::setup_retry::Error::Permanent(error) => Error::Connect(error),
+        crate::setup_retry::Error::Exhausted(message) => Error::Setup(message),
+    }
+}
+
 /// Publish Ingress Proxy wildcard records when a Cluster domain is reserved.
 ///
 /// # Errors
 ///
 /// Returns a connection, hosted-DNS, or reachability error from the Ingress Proxy refresh.
 pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error> {
-    match client.domain_if_reserved().await? {
+    match reserved_domain(client).await? {
         Some(_) => update_records_for_ingress(client).await,
         None => Ok(()),
     }
@@ -106,8 +145,11 @@ pub(crate) async fn update_records_after_removal<E>(
         removed,
         &ingress_machine_ids(live),
     );
-    let reachable = probe_machines(remaining).await?;
+    let (reachable, failures) = probe_machines(remaining).await?;
     if reachable.is_empty() {
+        for failure in failures {
+            eprintln!("Ingress verification: {failure}");
+        }
         return Ok(());
     }
     publish_records(client, records_from_machines(&reachable)?).await
@@ -119,8 +161,24 @@ pub(crate) async fn update_records_after_removal<E>(
 ///
 /// Returns a connection, hosted-DNS, or [`NoReachableMachines`] error.
 pub async fn update_records_for_ingress(client: &mut Client) -> Result<(), Error> {
-    let observations = client.machines().await?;
-    let live = client.live_services_from(&observations).await?;
+    let observations = crate::setup_retry::run(
+        client,
+        "Reading ingress Machines",
+        crate::setup_retry::WAIT,
+        ConnectError::is_setup_retryable,
+        async |client| client.machines().await,
+    )
+    .await
+    .map_err(retry_error)?;
+    let live = crate::setup_retry::run(
+        client,
+        "Reading ingress services",
+        crate::setup_retry::WAIT,
+        ConnectError::is_setup_retryable,
+        async |client| client.live_services_from(&observations).await,
+    )
+    .await
+    .map_err(retry_error)?;
     let ingress_machines = ingress_machine_ids(&live);
     if ingress_machines.is_empty() {
         return Ok(());
@@ -132,60 +190,20 @@ pub async fn update_records_for_ingress(client: &mut Client) -> Result<(), Error
         .map(|observation| observation.machine)
         .filter(|machine| ingress_machines.contains(&machine.id) && machine.public_ip.is_some())
         .collect::<Vec<_>>();
-    let records = records_from_machines(&probe_machines(machines).await?)?;
+    let (reachable, failures) = probe_machines(machines).await?;
+    if reachable.is_empty() && !failures.is_empty() {
+        return Err(Error::Probes(failures.join("\n")));
+    }
+    let records = records_from_machines(&reachable)?;
     publish_records(client, records).await
 }
 
-async fn probe_machines(machines: Vec<Machine>) -> Result<Vec<Machine>, Error> {
-    let http = HttpClient::builder()
-        .no_proxy()
-        .redirect(Policy::none())
-        .timeout(REACHABILITY_TIMEOUT)
-        .build()
-        .map_err(Error::from)?;
-    Ok(
-        futures_util::future::join_all(machines.into_iter().map(|machine| {
-            let http = &http;
-            async move { probe_machine(http, &machine).await.then_some(machine) }
-        }))
-        .await
-        .into_iter()
-        .flatten()
-        .collect(),
-    )
-}
-
 async fn publish_records(client: &mut Client, records: Vec<DnsRecord>) -> Result<(), Error> {
+    // Hosted records are upserted. Repeating these same values is safe.
     client
-        .call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
-        .await
-        .map(drop)
-        .map_err(Into::into)
-}
-
-async fn probe_machine(http: &HttpClient, machine: &Machine) -> bool {
-    let Some(public_ip) = machine.public_ip else {
-        return false;
-    };
-    let port = std::env::var("PLOYZ_INGRESS_VERIFY_PORT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(80);
-    let address = SocketAddr::new(public_ip, port);
-    let Ok(response) = http
-        .get(format!("http://{address}{INGRESS_VERIFY_PATH}"))
-        .send()
-        .await
-    else {
-        return false;
-    };
-    let status = response.status().as_u16();
-    let body = response.bytes().await.ok();
-    reachability_matches(&machine.id, status, body.as_deref())
-}
-
-fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>) -> bool {
-    status == 200 && body == Some(machine_id.as_str().as_bytes())
+        .call_repeatable::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
+        .await?;
+    Ok(())
 }
 
 fn ingress_machine_ids<E>(live: &LiveServices<E>) -> BTreeSet<MachineId> {
@@ -471,7 +489,7 @@ mod tests {
 
     use super::{
         DomainRequired, ExpandIngressError, NoReachableMachines, expand_ingress_ports,
-        ingress_dns_warnings, reachability_matches, records_from_machines,
+        ingress_dns_warnings, probe::reachability_matches, records_from_machines,
         remaining_ingress_members, resolve_ingress_addresses,
     };
 

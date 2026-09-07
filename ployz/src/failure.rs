@@ -301,6 +301,7 @@ mod tests {
         let failure = Failure::from(ConnectError::AllFailed {
             source: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
+            setup_retryable: true,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
                 io::ErrorKind::ConnectionRefused,
             )))),
