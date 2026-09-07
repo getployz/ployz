@@ -140,7 +140,7 @@ impl Connector for SystemConnector {
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
                 spawn_ssh(&self.ssh_program, &args)
                     .map(|stream| Box::new(stream) as BoxProxyStream)
-                    .map_err(ConnectError::from)
+                    .map_err(ConnectError::from_ssh_spawn)
             }
             Transport::Relay { .. } => Err(ConnectError::ProxyUnsupported(connection.to_string())),
         }
@@ -169,7 +169,8 @@ async fn connect_ssh(
         .args(&probe_args)
         .kill_on_drop(true)
         .status()
-        .await?;
+        .await
+        .map_err(ConnectError::from_ssh_spawn)?;
     if !status.success() {
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
@@ -329,6 +330,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
+        | ConnectError::SshClientMissing(_)
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
         | ConnectError::Join(_)
@@ -518,6 +520,8 @@ pub enum ConnectError {
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
+    #[error("local ssh client not found; install an ssh client")]
+    SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}")]
     SshProbe {
         target: String,
@@ -565,6 +569,14 @@ impl From<tonic::Status> for ConnectError {
 }
 
 impl ConnectError {
+    fn from_ssh_spawn(error: io::Error) -> Self {
+        if error.kind() == io::ErrorKind::NotFound {
+            Self::SshClientMissing(error)
+        } else {
+            Self::Io(error)
+        }
+    }
+
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::Attempt(_)
@@ -577,6 +589,7 @@ impl ConnectError {
             | Self::InvalidDialCredential
             | Self::UnknownMachine
             | Self::MissingMachineDetails
+            | Self::SshClientMissing(_)
             | Self::Routing(_)
             | Self::ProxyUnsupported(_)
             | Self::UnsupportedNetwork(_)
@@ -861,5 +874,24 @@ mod tests {
         }
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_ssh_program_names_the_local_client() {
+        let connector = SystemConnector::new("/ployz-missing-ssh-client");
+        let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
+        let message = connector
+            .connect(&connection)
+            .await
+            .expect_err("missing ssh program must fail");
+        assert!(
+            matches!(message, ConnectError::SshClientMissing(_)),
+            "{message:?}"
+        );
+        assert_eq!(
+            message.to_string(),
+            "local ssh client not found; install an ssh client"
+        );
+        assert!(!message.to_string().contains("os error"), "{message}");
     }
 }

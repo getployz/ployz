@@ -54,6 +54,7 @@ jobs:
       - run: bash scripts/check-sdk-types.sh
       - run: bash scripts/test-release-contracts.sh
       - run: bash scripts/test-cli-installer.sh
+      - run: bash scripts/test-missing-ssh-client.sh
       - run: bash scripts/test-daemon-lifecycle.sh
       - run: bash scripts/test-qualify-release.sh
       - name: Check the daemon stays outside the CLI graph
