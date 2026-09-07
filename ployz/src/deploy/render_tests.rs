@@ -931,35 +931,6 @@ fn colored_failed_footer_does_not_color_the_service_name() {
     assert!(color.contains("cashdash-frontend"), "{color:?}");
 }
 
-#[test]
-fn success_with_ingress_prints_endpoints_footer() {
-    let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": "a".repeat(32),
-        "name": "excalidraw",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "excalidraw/excalidraw:latest", "pull_policy": "missing" },
-        "ports": [{
-            "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "excalidraw.acme.ployz.app" },
-            "load_balancer_port": 443,
-            "container_port": 80,
-            "http_protocol": "https"
-        }]
-    }))
-    .unwrap();
-    let machine_id = MachineId::parse("d".repeat(32)).unwrap();
-    let outcome = DeployOutcome::Success {
-        completed: vec![DeployOperation::RunContainer {
-            machine_id,
-            spec,
-            skip_health_monitor: true,
-        }],
-    };
-    let text = outcome_text(&outcome);
-    assert!(text.contains("excalidraw endpoints:"));
-    assert!(text.contains("https://excalidraw.acme.ployz.app → :80"));
-}
-
 fn timed_out_create() -> ExecutionError {
     ExecutionError::Machine {
         action: MachineAction::CreateContainer,

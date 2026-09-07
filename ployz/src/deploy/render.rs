@@ -2,18 +2,20 @@
 //!
 //! No planner lives here. The CLI passes a preview and a recorded event stream.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use ployz_core::{
-    DeployOperation, DeployOutcome, DeployPreview, ExecutionError, HttpProtocol, OperationPhase,
-    OperationRow, OperationStatus, PortPublication, ReplacementOperation, UpdateOrder,
+    DeployOperation, DeployPreview, HttpProtocol, OperationPhase, OperationRow, OperationStatus,
+    PortPublication, ReplacementOperation, UpdateOrder,
 };
 
 #[cfg(test)]
-use ployz_core::DeployEvent;
+use ployz_core::{DeployEvent, DeployOutcome, ExecutionError};
 
-use super::report::{self, Ink};
+use super::report;
+#[cfg(test)]
+use super::report::Ink;
 
 #[must_use]
 #[cfg(test)]
@@ -141,9 +143,10 @@ pub fn confirm_prompt(context: &str) -> String {
 
 /// Endpoints on success; synthesized live list plus footer when no printer ran.
 #[must_use]
+#[cfg(test)]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
-        DeployOutcome::Success { completed } => endpoints_footer(completed).unwrap_or_default(),
+        DeployOutcome::Success { completed } => endpoints_footer(completed, None),
         DeployOutcome::Failed { .. } => report::paint_closing(outcome, &[], false, &Ink::plain()),
     }
 }
@@ -335,8 +338,63 @@ pub(super) fn status_kind(status: &OperationStatus) -> &'static str {
     }
 }
 
-fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
-    let mut by_service: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// Compact success report using only completed operations.
+#[must_use]
+pub(super) fn success_text(
+    completed: &[DeployOperation],
+    title: &str,
+    cluster_domain: Option<&str>,
+) -> String {
+    let mut counts = BTreeMap::new();
+    let mut ready = 0;
+    let mut unchecked = 0;
+    let mut machines = BTreeSet::new();
+    for operation in completed {
+        machines.insert(operation.machine_id());
+        let (word, skip_health_monitor) = match operation {
+            DeployOperation::RunContainer {
+                skip_health_monitor,
+                ..
+            } => ("created", Some(*skip_health_monitor)),
+            DeployOperation::ReplaceContainer(replacement) => {
+                ("replaced", Some(replacement.skip_health_monitor))
+            }
+            DeployOperation::RemoveContainer { .. } => ("removed", None),
+            DeployOperation::StopContainer { .. } => ("stopped", None),
+            DeployOperation::RemoveVolume { .. } => ("removed", None),
+            DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::StopHook { .. } => continue,
+        };
+        *counts.entry(word).or_insert(0) += 1;
+        if let Some(skip) = skip_health_monitor {
+            ready += 1;
+            unchecked += usize::from(skip);
+        }
+    }
+    let mut parts = Vec::new();
+    if ready > 0 {
+        parts.push(format!("{ready} ready"));
+    }
+    if unchecked > 0 {
+        parts.push(format!("health checks skipped: {unchecked}"));
+    }
+    // Keep creation and replacement counts ahead of cleanup operations.
+    for word in ["created", "replaced", "stopped", "removed"] {
+        if let Some(count) = counts.get(word) {
+            parts.push(format!("{count} {word}"));
+        }
+    }
+    let count = machines.len();
+    let noun = if count == 1 { "machine" } else { "machines" };
+    parts.push(format!("{count} {noun}"));
+    let mut out = format!("✓ {title}\n  {}\n", parts.join(" · "));
+    out.push_str(&endpoints_footer(completed, cluster_domain));
+    out
+}
+
+fn endpoints_footer(completed: &[DeployOperation], cluster_domain: Option<&str>) -> String {
+    let mut by_service = BTreeMap::<_, BTreeSet<_>>::new();
     for operation in completed {
         let spec = match operation {
             DeployOperation::RunContainer { spec, .. } => spec,
@@ -352,8 +410,8 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
             let PortPublication::Ingress {
                 hostname,
                 container_port,
+                load_balancer_port,
                 http_protocol,
-                ..
             } = port
             else {
                 continue;
@@ -361,29 +419,34 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
             let Some(hostname) = hostname.as_explicit_host() else {
                 continue;
             };
-            let scheme = match http_protocol {
-                HttpProtocol::Https => "https",
-                HttpProtocol::Http => "http",
+            let (scheme, default_port) = match http_protocol {
+                HttpProtocol::Https => ("https", 443),
+                HttpProtocol::Http => ("http", 80),
             };
+            let mut url = format!("{scheme}://{hostname}");
+            if load_balancer_port.get() != default_port {
+                let _ = write!(url, ":{load_balancer_port}");
+            }
             by_service
-                .entry(spec.name.to_string())
+                .entry((&spec.name, container_port))
                 .or_default()
-                .push(format!(" • {scheme}://{hostname} → :{container_port}"));
+                .insert((hostname.under_cluster_domain(cluster_domain), url));
         }
-    }
-    if by_service.is_empty() {
-        return None;
     }
     let mut out = String::new();
-    for (service, lines) in by_service {
-        let _ = writeln!(out, "\n{service} endpoints:");
-        for line in lines {
-            let _ = writeln!(out, "{line}");
+    for ((service, port), endpoints) in by_service {
+        let _ = writeln!(out, "\n{service} → :{port}");
+        for (_, url) in endpoints {
+            let _ = writeln!(out, "  {url}");
         }
     }
-    Some(out)
+    out
 }
 
 #[cfg(test)]
 #[path = "render_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "render_success_tests.rs"]
+mod success_tests;

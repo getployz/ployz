@@ -8,6 +8,8 @@ use ployz_core::{
     RequestedServiceSpec, ServiceSelector,
 };
 use tokio_util::sync::CancellationToken;
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
     compose::{BuildService, ComposeProject},
@@ -91,6 +93,8 @@ async fn apply_spec(
             Ink::detect(io::stdout()),
         )
         .await,
+        &format!("Deployed to {context}"),
+        preview.cluster_domain.as_deref(),
     )
 }
 
@@ -236,6 +240,8 @@ async fn confirm_and_execute(
             Ink::detect(io::stdout()),
         )
         .await,
+        &format!("Deployed to {}", gate.context),
+        preview.cluster_domain.as_deref(),
     )
     .map_err(Into::into)
 }
@@ -264,6 +270,8 @@ pub(crate) async fn remove_project(
             Ink::detect(io::stdout()),
         )
         .await,
+        &format!("Removed Project {name} from {context}"),
+        preview.cluster_domain.as_deref(),
     )
     .map_err(Into::into)
 }
@@ -308,7 +316,7 @@ struct ProgressPrinter {
     last_rows: Vec<OperationRow>,
     live_shown: bool,
     ink: Ink,
-    last_lines: usize,
+    last_terminal_rows: usize,
     last_signature: Option<String>,
 }
 
@@ -319,7 +327,7 @@ impl ProgressPrinter {
             last_rows: Vec::new(),
             live_shown: false,
             ink,
-            last_lines: 0,
+            last_terminal_rows: 0,
             last_signature: None,
         }
     }
@@ -340,15 +348,39 @@ impl ProgressPrinter {
         }
         self.last_rows = rows.clone();
         let text = report::paint_live(&self.title, *completed, *total, rows, &self.ink);
-        if tty && self.last_lines > 0 {
-            print!("\x1b[{}F\x1b[J", self.last_lines);
+        if tty && self.last_terminal_rows > 0 {
+            print!("\x1b[{}F\x1b[J", self.last_terminal_rows);
         }
         print!("{text}");
         let _ = io::stdout().flush();
-        self.last_lines = text.lines().count();
+        if tty {
+            let columns = crossterm::terminal::size().map_or(80, |(columns, _)| columns);
+            let plain = report::paint_live(&self.title, *completed, *total, rows, &Ink::plain());
+            self.last_terminal_rows = terminal_rows(&plain, usize::from(columns));
+        }
         self.last_signature = Some(signature);
         self.live_shown = true;
     }
+}
+
+fn terminal_rows(plain_text: &str, columns: usize) -> usize {
+    let columns = columns.max(1);
+    plain_text
+        .lines()
+        .map(|line| {
+            let mut rows = 1;
+            let mut column = 0;
+            for grapheme in line.graphemes(true) {
+                let width = grapheme.width();
+                if width > 0 && column > 0 && column + width > columns {
+                    rows += 1;
+                    column = 0;
+                }
+                column += width;
+            }
+            rows
+        })
+        .sum()
 }
 
 fn progress_signature(event: &DeployEvent) -> String {
@@ -393,13 +425,16 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
 
 fn finish(
     (outcome, printer): (DeployOutcome<ExecutionError>, ProgressPrinter),
+    success_title: &str,
+    cluster_domain: Option<&str>,
 ) -> Result<(), ApplyError> {
     match outcome {
-        success @ DeployOutcome::Success { .. } => {
-            let text = render::outcome_text(&success);
-            if !text.is_empty() {
-                print!("{text}");
+        DeployOutcome::Success { completed } => {
+            let text = render::success_text(&completed, success_title, cluster_domain);
+            if io::stdout().is_terminal() && printer.last_terminal_rows > 0 {
+                print!("\x1b[{}F\x1b[J", printer.last_terminal_rows);
             }
+            print!("{text}");
             Ok(())
         }
         failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute {
@@ -420,6 +455,30 @@ mod tests {
         DeployOperation, FailedOperation, MachineAction, MachineId, PruneRefusal,
         RequestedServiceSpec, RpcError, RpcErrorCode,
     };
+
+    #[test]
+    fn progress_frame_counts_soft_wrapped_terminal_rows() {
+        for (text, columns, expected) in [
+            (
+                "[+] Deploying to default 1/1\n✔ Container cashdash-frontend on machine1 Healthy\n",
+                20,
+                5,
+            ),
+            ("abcd\n", 4, 1),
+            ("abcde\n\n", 4, 3),
+            ("界界界\n", 3, 3),
+            ("e\u{301}e\u{301}\n", 2, 1),
+            ("👩‍💻👩‍💻\n", 2, 2),
+            ("ab\n", 0, 2),
+            ("", 20, 0),
+        ] {
+            assert_eq!(
+                terminal_rows(text, columns),
+                expected,
+                "{columns}: {text:?}"
+            );
+        }
+    }
 
     #[test]
     fn deploy_prints_ingress_misses_as_warning_lines_without_failing() {

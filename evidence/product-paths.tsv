@@ -1,6 +1,6 @@
 path	rung1	rung2	rung3	rung4	rung5
 compose-normalize	ployz-core/src/domain/resources.rs::checked_cpu_conversion_rejects_overflow_without_saturation	ployz/tests/compose.rs::normalized_surface_reaches_requested_specs	ployz/tests/compose_cli.rs::real_compose_normalizes_without_a_daemon_and_project_inputs_stay_relative	-	-
-cluster-deploy	-	ployz/tests/compose.rs::compose_plan_separates_volume_preview_from_service_operations	-	ployz/src/deploy/exec_cluster_tests.rs::deploy_execution_preserves_partial_effects_and_never_repairs_them	scripts/qualify-release.sh
+cluster-deploy	ployz/src/deploy/render_success_tests.rs::success_with_ingress_deduplicates_endpoints	ployz/tests/compose.rs::compose_plan_separates_volume_preview_from_service_operations	-	ployz/src/deploy/exec_cluster_tests.rs::deploy_execution_preserves_partial_effects_and_never_repairs_them	scripts/qualify-release.sh
 named-volume	ployz-core/tests/contract.rs::managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope	ployz/tests/compose.rs::one_named_volume_can_have_different_options_per_mount	-	ployz/tests/volume_layer3.rs::volume_cli_mounts_and_partial_results_stay_machine_local	scripts/qualify-release.sh
 machine-init-ssh	scripts/test-missing-ssh-client.sh	ployz/src/connect/tests.rs::missing_ssh_client_survives_connection_selection	-	-	scripts/qualify-release.sh
 machine-init-local	ployz/src/handlers/mod.rs::local_machine_init_requires_root_to_install	-	-	-	-
@@ -41,3 +41,4 @@ compose-x-volume-bound	ployz/compose-helper/main_test.go::TestProvisionedVolumeM
 compose-helper-execution	ployz/src/compose/loader.rs::linux_helper_does_not_use_tmpdir	-	ployz/tests/compose_cli.rs::compose_loading_does_not_invoke_docker	-	-
 local-context	ployz/src/context.rs::removing_the_current_context_unsets_current_and_drops_that_entry	-	ployz/tests/context_cli.rs::ctx_rm_of_the_current_context_unsets_current	-	-
 destructive-confirmation	ployz/src/handlers/data_loss.rs::non_tty_requires_all_names_even_with_yes_and_never_reads_piped_input	ployz/tests/deploy_client/removal.rs::removal_tty_retry_enter_eof_and_ctrl_c_precede_mutation	-	-	-
+deploy-progress	ployz/src/deploy/apply.rs::progress_frame_counts_soft_wrapped_terminal_rows	-	-	-	-

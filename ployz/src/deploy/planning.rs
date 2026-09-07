@@ -79,6 +79,7 @@ struct Planned {
 pub struct DeployPlan {
     operations: Vec<DeployOperation>,
     preview: DeployPreview,
+    pub(super) cluster_domain: Option<String>,
 }
 
 impl DeployPlan {
@@ -117,6 +118,7 @@ impl DeployPlan {
         Self {
             operations: Vec::new(),
             preview: DeployPreview::new(Vec::new(), warnings, project),
+            cluster_domain: None,
         }
     }
 
@@ -129,6 +131,7 @@ impl DeployPlan {
         Self {
             operations,
             preview: DeployPreview::new(rows, Vec::new(), project),
+            cluster_domain: None,
         }
     }
 }
@@ -236,7 +239,9 @@ pub fn plan_deploy(
     ingress: IngressContext<'_>,
 ) -> Result<DeployPlan, PlanError> {
     let planned = plan_operations(intent, snapshot, ingress)?;
-    Ok(seal_plan(planned, snapshot, &intent.project_name))
+    let mut plan = seal_plan(planned, snapshot, &intent.project_name);
+    plan.cluster_domain = ingress.cluster_domain.map(str::to_owned);
+    Ok(plan)
 }
 
 fn seal_plan(
@@ -282,6 +287,7 @@ fn seal_plan(
     DeployPlan {
         operations: planned.operations,
         preview,
+        cluster_domain: None,
     }
 }
 
