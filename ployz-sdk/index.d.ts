@@ -58,6 +58,7 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
+export declare function packageName(): "@ployz/sdk";
 export declare function connect(options: ConnectOptions): Promise<Client>;
 export declare function listHeld(
   relayUrl: string,

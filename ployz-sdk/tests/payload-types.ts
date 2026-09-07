@@ -36,6 +36,7 @@ import {
   Client,
   connect,
   listHeld,
+  packageName,
   register,
   RpcError,
 } from "../index";
@@ -222,3 +223,5 @@ watchFrame.services satisfies ServiceObservation[];
 ["sh", "-c", "migrate"] satisfies PreDeployCommand;
 // @ts-expect-error a pre-deploy command has at least one argument
 [] satisfies PreDeployCommand;
+
+packageName() satisfies "@ployz/sdk";

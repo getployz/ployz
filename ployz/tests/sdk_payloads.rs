@@ -53,45 +53,46 @@ fn visit(dir: &Path, offenders: &mut Vec<String>) {
 
 fn check_file(path: &Path, offenders: &mut Vec<String>) {
     let source = fs::read_to_string(path).expect("read source file");
-    let lines: Vec<&str> = source.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        let converts = line.contains("#[serde(")
-            && (line.contains("try_from = \"")
-                || line.contains("into = \"")
-                || line.contains(" from = \""));
-        if !converts {
+    // Attributes and doc comments preceding an item, joined so a `#[serde(...)]`
+    // that rustfmt spread over several lines reads as one.
+    let mut attributes = String::new();
+    let mut first_line = 0;
+    let mut open_brackets = 0;
+    let mut close_brackets = 0;
+    for (index, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        let continues = open_brackets > close_brackets;
+        if continues || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            if attributes.is_empty() {
+                first_line = index + 1;
+            }
+            attributes.push_str(trimmed);
+            attributes.push(' ');
+            if continues || trimmed.starts_with('#') {
+                open_brackets += trimmed.matches('[').count();
+                close_brackets += trimmed.matches(']').count();
+            }
             continue;
         }
-        let (before, from_here) = lines.split_at(index);
-        let attributes: Vec<&str> = before
-            .iter()
-            .rev()
-            .take_while(|line| {
-                let trimmed = line.trim_start();
-                trimmed.starts_with('#') || trimmed.starts_with("///")
-            })
-            .chain(
-                from_here
-                    .iter()
-                    .take_while(|line| line.trim_start().starts_with('#')),
-            )
-            .copied()
-            .collect();
-        let derives_ts = attributes
-            .iter()
-            .any(|line| line.contains("derive(") && line.contains("TS"));
-        let declared = attributes.iter().any(|line| {
-            let trimmed = line.trim_start();
-            trimmed.starts_with("#[ts(as") || trimmed.starts_with("#[ts(type")
-        });
-        let item = from_here
-            .iter()
-            .find(|line| !line.trim_start().starts_with('#'))
-            .map(|line| line.trim())
-            .unwrap_or_default();
-        let newtype = item.contains("struct ") && item.contains('(');
-        if derives_ts && !declared && !newtype {
-            offenders.push(format!("{}:{}: {item}", path.display(), index + 1));
+        if trimmed.is_empty() {
+            continue;
         }
+        let converts = attributes.contains("try_from = \"")
+            || attributes.contains("into = \"")
+            || attributes.contains("(from = \"")
+            || attributes.contains(" from = \"");
+        let derives_ts = attributes
+            .split("derive(")
+            .skip(1)
+            .filter_map(|rest| rest.split(')').next())
+            .any(|list| list.split(',').any(|name| name.trim() == "TS"));
+        let declared = attributes.contains("#[ts(as") || attributes.contains("#[ts(type");
+        let newtype = trimmed.contains("struct ") && trimmed.contains('(');
+        if converts && derives_ts && !declared && !newtype {
+            offenders.push(format!("{}:{first_line}: {trimmed}", path.display()));
+        }
+        attributes.clear();
+        open_brackets = 0;
+        close_brackets = 0;
     }
 }
