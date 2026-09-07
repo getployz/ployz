@@ -13,6 +13,7 @@ pub(super) enum Query {
 pub(super) enum InternalQuery {
     Empty,
     Service(QualifiedService),
+    CallerService(ServiceName),
     Nearest(QualifiedService),
     ServiceId(ServiceId),
     Machine(MachineServiceTarget),
@@ -51,6 +52,9 @@ fn parse_internal(selector: &str) -> InternalQuery {
         labels.next(),
     );
     match labels {
+        (Some(service), None, None, None, None) => ServiceName::parse(service)
+            .map(InternalQuery::CallerService)
+            .unwrap_or(InternalQuery::Empty),
         (Some(service), Some(project), None, None, None) => {
             identity(service, project).map_or(InternalQuery::Empty, InternalQuery::Service)
         }
@@ -88,6 +92,16 @@ fn identity(service: &str, project: &str) -> Option<QualifiedService> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_label_internal_name_is_caller_service() {
+        assert_eq!(
+            query("web.internal."),
+            internal(InternalQuery::CallerService(
+                ServiceName::parse("web").unwrap()
+            ))
+        );
+    }
 
     #[test]
     fn forwards_names_outside_the_internal_zone() {
@@ -156,7 +170,9 @@ mod tests {
         );
         assert_eq!(
             query(&format!("{name}.internal.")),
-            internal(InternalQuery::Empty)
+            internal(InternalQuery::CallerService(
+                ServiceName::parse(name).unwrap()
+            ))
         );
     }
 
@@ -165,7 +181,6 @@ mod tests {
         let machine_id = "a".repeat(32);
         for name in [
             "internal.".to_owned(),
-            "web.internal.".to_owned(),
             "rr.web.shop.internal.".to_owned(),
             "web.shop.lookup.internal.".to_owned(),
             "web.shop.nearest.extra.internal.".to_owned(),

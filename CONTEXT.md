@@ -267,7 +267,7 @@ An observer-local, TTL-zero A answer derived from Serving Containers and optiona
 _Avoid_: Service registry record, Cluster-wide endpoint set
 
 **Caller Project**:
-The Project attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Project.
+The Project attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Project. A `{service}.internal` query uses that Project as the missing label; without a Caller Project the name is NXDOMAIN.
 _Avoid_: caller identity, authenticated client, source registry
 
 **Ingress Hostname**:

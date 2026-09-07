@@ -251,6 +251,118 @@ fn cross_project_and_reserved_names_are_resolved_structurally() {
 }
 
 #[test]
+fn caller_project_answers_service_internal() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let api = observation(
+        1,
+        &machine,
+        &ServiceId::parse("b".repeat(32)).unwrap(),
+        &ServiceName::parse("api").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    );
+    let web = observation(
+        2,
+        &machine,
+        &ServiceId::parse("c".repeat(32)).unwrap(),
+        &ServiceName::parse("web").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Starting),
+        Some([10, 210, 1, 3]),
+    );
+    let shop_api = in_project(
+        observation(
+            3,
+            &machine,
+            &ServiceId::parse("d".repeat(32)).unwrap(),
+            &ServiceName::parse("api").unwrap(),
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 4]),
+        ),
+        "shop",
+    );
+    let projection = unfiltered_projection(&[api, web, shop_api]);
+    let caller = Ipv4Addr::new(10, 210, 1, 3);
+
+    assert_eq!(
+        addresses(plan_from(
+            &projection,
+            "api.internal.",
+            RecordType::A,
+            caller,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    assert_eq!(
+        addresses(plan_from(
+            &projection,
+            "api.shop.internal.",
+            RecordType::A,
+            caller,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 4)]
+    );
+    assert_nxdomain(plan(&projection, "api.internal.", RecordType::A));
+}
+
+#[test]
+fn caller_project_requires_exactly_one_visible_service_container() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let api = observation(
+        1,
+        &machine,
+        &ServiceId::parse("b".repeat(32)).unwrap(),
+        &ServiceName::parse("api").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    );
+    let hook = observation(
+        2,
+        &machine,
+        &ServiceId::parse("c".repeat(32)).unwrap(),
+        &ServiceName::parse("migrate").unwrap(),
+        ContainerKind::PreDeployHook,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 9]),
+    );
+    let first_share = observation(
+        3,
+        &machine,
+        &ServiceId::parse("d".repeat(32)).unwrap(),
+        &ServiceName::parse("web").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 8]),
+    );
+    let second_share = observation(
+        4,
+        &machine,
+        &ServiceId::parse("e".repeat(32)).unwrap(),
+        &ServiceName::parse("worker").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Starting),
+        Some([10, 210, 1, 8]),
+    );
+    let projection = unfiltered_projection(&[api, hook, first_share, second_share]);
+
+    assert_nxdomain(plan_from(
+        &projection,
+        "api.internal.",
+        RecordType::A,
+        Ipv4Addr::new(10, 210, 1, 9),
+    ));
+    assert_nxdomain(plan_from(
+        &projection,
+        "api.internal.",
+        RecordType::A,
+        Ipv4Addr::new(10, 210, 1, 8),
+    ));
+}
+
+#[test]
 fn exact_selectors_do_not_fall_back_when_their_endpoint_is_ineligible() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
@@ -559,10 +671,20 @@ fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {
 }
 
 fn plan(projection: &Projection, name: &str, record_type: RecordType) -> ResponsePlan {
+    plan_from(projection, name, record_type, Ipv4Addr::UNSPECIFIED)
+}
+
+fn plan_from(
+    projection: &Projection,
+    name: &str,
+    record_type: RecordType,
+    source: Ipv4Addr,
+) -> ResponsePlan {
     projection.plan(
         &Name::from_ascii(name).unwrap(),
         record_type,
         SUBNET.parse().unwrap(),
+        IpAddr::V4(source),
     )
 }
 

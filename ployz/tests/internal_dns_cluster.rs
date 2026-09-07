@@ -152,6 +152,22 @@ async fn assert_internal_selectors(
     for address in expected {
         assert!(searched.contains(&address.to_string()));
     }
+    let project_relative = probe
+        .cluster
+        .machine_shell(
+            0,
+            &format!(
+                "docker exec {} nslookup dns-api.internal",
+                probe.container_id
+            ),
+        )
+        .unwrap();
+    for address in expected {
+        assert!(
+            project_relative.contains(&address.to_string()),
+            "dns-api.internal from a Caller Project should answer {address}: {project_relative}"
+        );
+    }
     probe.assert_addresses(&format!("{service_id}.id.lookup.internal"), expected);
     for machine in machines {
         probe.assert_addresses(

@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, MachineId, MembershipObservation, QualifiedService, ServiceId,
-    service_containers, serving_containers, synthesize_membership,
+    ContainerObservation, Machine, MachineId, MembershipObservation, ProjectName, QualifiedService,
+    ServiceContainer, ServiceId, service_containers, serving_containers, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -65,6 +65,7 @@ struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
+    caller_projects: HashMap<Ipv4Addr, ProjectName>,
 }
 
 struct ProjectionInputs {
@@ -159,13 +160,22 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
+            caller_projects: unique_caller_projects(&containers),
         }
     }
 
-    fn plan(&self, name: &Name, record_type: RecordType, local_subnet: Ipv4Net) -> ResponsePlan {
+    fn plan(
+        &self,
+        name: &Name,
+        record_type: RecordType,
+        local_subnet: Ipv4Net,
+        source: IpAddr,
+    ) -> ResponsePlan {
         match parse(name) {
             Query::Forward => ResponsePlan::Forward,
-            Query::Internal(query) => self.plan_internal(name, record_type, local_subnet, query),
+            Query::Internal(query) => {
+                self.plan_internal(name, record_type, local_subnet, query, source)
+            }
         }
     }
 
@@ -175,6 +185,7 @@ impl Projection {
         record_type: RecordType,
         local_subnet: Ipv4Net,
         query: InternalQuery,
+        source: IpAddr,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
             // TODO: internal records remain A-only; other types return an authoritative
@@ -189,6 +200,16 @@ impl Projection {
             InternalQuery::Service(identity) => (
                 self.identities
                     .get(&identity)
+                    .map(ServiceAddresses::rotated)
+                    .unwrap_or_default(),
+                false,
+            ),
+            InternalQuery::CallerService(service) => (
+                self.caller_project(source)
+                    .and_then(|project| {
+                        self.identities
+                            .get(&QualifiedService::new(project.clone(), service))
+                    })
                     .map(ServiceAddresses::rotated)
                     .unwrap_or_default(),
                 false,
@@ -231,6 +252,34 @@ impl Projection {
             answers,
         }
     }
+
+    fn caller_project(&self, source: IpAddr) -> Option<&ProjectName> {
+        let IpAddr::V4(address) = source else {
+            return None;
+        };
+        self.caller_projects.get(&address)
+    }
+}
+
+fn unique_caller_projects(containers: &[ServiceContainer]) -> HashMap<Ipv4Addr, ProjectName> {
+    let mut by_address = HashMap::<Ipv4Addr, Vec<ProjectName>>::new();
+    for container in containers {
+        let Some(address) = container.as_observation().address else {
+            continue;
+        };
+        by_address
+            .entry(address.0)
+            .or_default()
+            .push(container.as_observation().project_name.clone());
+    }
+    by_address
+        .into_iter()
+        .filter_map(|(address, projects)| {
+            <[ProjectName; 1]>::try_from(projects)
+                .ok()
+                .map(|[project]| (address, project))
+        })
+        .collect()
 }
 
 struct Handler {
@@ -257,6 +306,7 @@ impl RequestHandler for Handler {
                     info.query.original().name(),
                     info.query.query_type(),
                     self.local_subnet,
+                    info.src.ip(),
                 )
             })
             .unwrap_or(ResponsePlan::Internal {
