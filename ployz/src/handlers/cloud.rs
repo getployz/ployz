@@ -16,29 +16,16 @@ use crate::cloud_enroll::{self, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
 use crate::context::{ContextError, Transport};
 
-/// Installs the local Machine daemon for Cloud enrollment.
-pub trait EnrollInstaller {
-    /// Install this CLI's daemon version without preparing storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns the installer failure reported to the CLI.
-    fn install_cli_daemon_without_storage(&self) -> Result<(), Error>;
-}
-
-struct EmbeddedInstaller;
-
-impl EnrollInstaller for EmbeddedInstaller {
-    fn install_cli_daemon_without_storage(&self) -> Result<(), Error> {
-        crate::provisioning::provision_local(StorageChoice::None).map_err(Into::into)
-    }
-}
-
 pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
-    enroll_with_installer(root, &EmbeddedInstaller)
+    enroll_with_installer(root, &|| {
+        crate::provisioning::provision_local(StorageChoice::None).map_err(Into::into)
+    })
 }
 
-/// Run Cloud enrollment with an injected local Machine installer.
+/// Run Cloud enrollment, installing this CLI's daemon version with `install`.
+///
+/// `install` prepares no storage; tests substitute it to avoid provisioning a
+/// real daemon.
 ///
 /// # Errors
 ///
@@ -46,7 +33,7 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
 #[doc(hidden)]
 pub fn enroll_with_installer(
     root: &ArgMatches,
-    installer: &impl EnrollInstaller,
+    install: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let token = CloudEnrollToken::parse(required(matches, "token")?)?;
@@ -67,7 +54,7 @@ pub fn enroll_with_installer(
 
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
-        client = synchronize_daemon(matches, client, installer).await?;
+        client = synchronize_daemon(matches, client, install).await?;
         if matches.get_flag("reset") {
             client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
         }
@@ -373,7 +360,7 @@ fn provision_storage(client: &Client, storage: StorageChoice) -> Result<(), Erro
 async fn synchronize_daemon(
     matches: &ArgMatches,
     mut client: Client,
-    installer: &impl EnrollInstaller,
+    install: &dyn Fn() -> Result<(), Error>,
 ) -> Result<Client, Error> {
     let daemon = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)
@@ -387,7 +374,7 @@ async fn synchronize_daemon(
             client.connection()
         )));
     }
-    installer.install_cli_daemon_without_storage()?;
+    install()?;
     let mut client = wait_client(matches).await?;
     let daemon = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)
