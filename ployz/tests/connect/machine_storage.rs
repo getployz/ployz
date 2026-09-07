@@ -117,7 +117,7 @@ async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_ta
         "placement": { "machines": ["one"] },
         "volumes": [{
             "reference": "data",
-            "source": { "kind": "provisioned", "name": "data", "maximum_bytes": "1024" }
+            "source": { "kind": "provisioned", "name": "data", "maximum_bytes": 1024 }
         }],
         "mounts": [{ "volume": "data", "target": "/data" }]
     }))

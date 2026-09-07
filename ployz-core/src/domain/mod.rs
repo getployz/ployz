@@ -33,6 +33,7 @@ pub use spec::*;
 pub use volume::*;
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::MachineId;
 
@@ -88,14 +89,14 @@ impl<T> NameMatches<T> {
 }
 
 /// A successful response from one fan-out target.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineSuccess<T> {
     pub machine_id: MachineId,
     pub value: T,
 }
 
 /// A typed failure returned for one fan-out target.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineFailure<E> {
     pub machine_id: MachineId,
     pub error: E,
@@ -107,6 +108,7 @@ pub struct MachineFailure<E> {
     serialize = "T: Serialize, E: Serialize",
     deserialize = "T: Deserialize<'de>, E: Deserialize<'de>"
 ))]
+#[derive(TS)]
 pub struct PartialResult<T, E> {
     #[serde(default)]
     pub successes: Vec<MachineSuccess<T>>,

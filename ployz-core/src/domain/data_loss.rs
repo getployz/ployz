@@ -1,6 +1,7 @@
 //! Data Loss: one named thing an operation will destroy.
 
 use std::fmt;
+use ts_rs::TS;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,7 +15,7 @@ use crate::{DockerVolumeId, LocalMachineRemoved, ProjectName, RpcError, RpcError
 /// name. A kind cannot be paired with an identity that does not belong to it,
 /// so each kind nests its own identity under `id` rather than spreading fields
 /// beside the tag.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DataLoss {
     /// A Docker Volume identified by its Machine together with its name.
@@ -42,13 +43,13 @@ impl fmt::Display for DataLoss {
 }
 
 /// Live Observation of Data Loss. Not a complete Cluster view.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ObservedDataLoss {
     pub data_loss: Vec<DataLoss>,
 }
 
 /// Exact Data Loss identities approved from one Live Observation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DataLossConfirmation {
     confirmed: Vec<DataLoss>,
 }
@@ -137,7 +138,7 @@ impl UnconfirmedDataLoss {
 /// in `machines.failures` rather than being omitted. `pairing_revoked` is
 /// independent of Machine reset so a repeated attempt can finish leftover work
 /// over Dial after Register is already closed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ClusterTeardown {
     pub destroyed_projects: Vec<ProjectName>,
     pub machines: PartialResult<LocalMachineRemoved, RpcError>,

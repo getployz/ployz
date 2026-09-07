@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
 /// A rejected shared value. Validation is identical on both sides of the wire.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -118,13 +119,40 @@ macro_rules! hex_id_newtype {
                 value.as_str().to_owned()
             }
         }
+
+        /// Branded on the TypeScript side: an identity is never interchangeable
+        /// with a selector or another identity, even though both are strings.
+        /// Hand-written because `#[ts(type = "...")]` takes only a literal, and
+        /// the brand carries the type name.
+        impl TS for $name {
+            type WithoutGenerics = Self;
+            type OptionInnerType = Self;
+
+            fn name(_: &ts_rs::Config) -> String {
+                stringify!($name).to_owned()
+            }
+
+            fn inline(_: &ts_rs::Config) -> String {
+                concat!("string & { readonly __brand: \"", stringify!($name), "\" }").to_owned()
+            }
+
+            fn decl(cfg: &ts_rs::Config) -> String {
+                format!("type {} = {};", Self::name(cfg), Self::inline(cfg))
+            }
+
+            // `Some` marks a type with its own declaration; the path itself is
+            // never written. Primitives return `None`.
+            fn output_path() -> Option<std::path::PathBuf> {
+                Some(std::path::PathBuf::from(concat!(stringify!($name), ".ts")))
+            }
+        }
     };
 }
 
 macro_rules! validated_string_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
         $(#[$attribute])*
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 
@@ -230,9 +258,12 @@ impl TunnelId {
 
 macro_rules! open_string_enum {
     ($name:ident, $fallback:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
-        #[derive(Clone, Debug, Eq, PartialEq)]
+        /// Known spellings plus the observed value of any spelling this reader
+        /// does not know, carried verbatim.
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
         pub enum $name {
-            $($variant,)+
+            $(#[serde(rename = $wire)] $variant,)+
+            #[serde(untagged)]
             $fallback(String),
         }
 
@@ -242,34 +273,6 @@ macro_rules! open_string_enum {
                     $(Self::$variant => $wire,)+
                     Self::$fallback(value) => value,
                 }
-            }
-
-            /// Known wire spellings, excluding the unknown fallback.
-            #[must_use]
-            pub const fn known_wires() -> &'static [&'static str] {
-                &[$($wire,)+]
-            }
-        }
-
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                serializer.serialize_str(self.as_str())
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                let value = String::deserialize(deserializer)?;
-                Ok(match value.as_str() {
-                    $($wire => Self::$variant,)+
-                    _ => Self::$fallback(value),
-                })
             }
         }
     };
@@ -406,7 +409,7 @@ impl From<FanoutSelector> for String {
 }
 
 /// A machine-local Docker Volume identity.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 pub struct DockerVolumeId {
     pub machine_id: MachineId,
     pub name: DockerVolumeName,
@@ -459,8 +462,9 @@ impl ProjectName {
 /// Logical Service identity: Project Name plus Service Name, written `project/name`.
 ///
 /// A Service ID is a separate opaque deployment identity that survives updates.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
 pub struct QualifiedService {
     pub project: ProjectName,
     pub name: ServiceName,
@@ -612,8 +616,9 @@ validated_string_newtype!(
 /// One Machine's optimistic container subnet candidate.
 ///
 /// A Machine Subnet is always an IPv4 `/24`.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
 pub struct MachineSubnet(Ipv4Net);
 
 impl MachineSubnet {
@@ -705,19 +710,19 @@ pub struct ManagementAddress(pub Ipv6Addr);
 #[serde(transparent)]
 pub struct MachineGateway(pub Ipv4Addr);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct ContainerAddress(pub Ipv4Addr);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct AdvertisedEndpoint(pub SocketAddr);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct SelectedEndpoint(pub SocketAddr);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct WireGuardPublicKey(pub [u8; 32]);
 

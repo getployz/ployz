@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
 use crate::{
     CodecError, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost,
@@ -23,7 +24,7 @@ crate::value::open_string_enum!(CertificateFailureKind, Unrecognized {
 });
 
 /// Shared backoff clock after a refusal or an authority failure.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateBackoff {
     pub failure_kind: CertificateFailureKind,
     pub next_attempt_at: String,
@@ -33,18 +34,18 @@ pub struct CertificateBackoff {
 /// Redacted certificate status keyed by Ingress Hostname.
 ///
 /// Never carries Certificate Material or HTTP-01 challenge bytes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateObservation {
     pub hostname: IngressHost,
     pub status: CertificateAvailability,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub backoff: Option<CertificateBackoff>,
 }
 
 /// Typed incomplete replicated IDs. An incomplete row is not a delete.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RuntimeWatchIncompleteIds {
     #[serde(default)]
     pub machines: Vec<MachineId>,
@@ -57,7 +58,7 @@ pub struct RuntimeWatchIncompleteIds {
 }
 
 /// One complete Runtime Watch observation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct RuntimeWatchFrame {
     #[serde(default)]
     pub machines: Vec<MachineObservation>,
@@ -68,7 +69,7 @@ pub struct RuntimeWatchFrame {
     #[serde(default)]
     pub certificates: Vec<CertificateObservation>,
     /// Hosted DNS hostname only; never the renewal token or endpoint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub hosted_dns_hostname: Option<String>,
     #[serde(default)]
     pub incomplete_ids: RuntimeWatchIncompleteIds,

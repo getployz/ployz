@@ -6,9 +6,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use crate::connect::{
     Client, ConnectError, DialCredential, HeldRegister, PairingCredential, TransportError,
@@ -20,8 +22,28 @@ use ployz_core::{
     DescribeContractRequest, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
     ObservedDataLoss, OpaquePayload, ProjectName, RUNTIME_WATCH_CAPABILITY, RegisterRequest,
     Registered, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeRemoval, decode_runtime_watch_frame, op,
+    RuntimeWatchRequest, ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
 };
+
+pub use payloads::typescript_declarations;
+
+mod payloads;
+
+/// The public SDK Watch frame: the RPC frame plus the Services this observer
+/// derives from its Containers. The RPC frame carries only Container observations.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+pub struct RuntimeWatchView {
+    #[serde(flatten)]
+    pub frame: RuntimeWatchFrame,
+    pub services: Vec<ServiceObservation>,
+}
+
+impl From<RuntimeWatchFrame> for RuntimeWatchView {
+    fn from(frame: RuntimeWatchFrame) -> Self {
+        let services = frame.services();
+        Self { frame, services }
+    }
+}
 
 struct SessionInner {
     client: Mutex<Option<Client>>,

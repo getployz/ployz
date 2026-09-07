@@ -35,6 +35,7 @@ tokio-stream = "0.1.19"
 tokio-util = "0.7.19"
 tonic = { version = "0.13.1", features = ["gzip", "transport"] }
 tower = { version = "0.5.3", features = ["util"] }
+ts-rs.workspace = true
 
 [dev-dependencies]
 ployz-testkit.workspace = true

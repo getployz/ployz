@@ -1,4 +1,5 @@
-//! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
+//! Napi package `@ployz/sdk`. Public payloads are derived from the Rust wire types
+//! (`ployz::sdk::typescript_declarations`).
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / listHeld / register / revokePairing /
@@ -363,7 +364,7 @@ impl RunningDeployHandle {
 
 #[napi]
 impl WatchStream {
-    /// Next complete `RuntimeWatchFrame`, or `null` when this stream was cancelled.
+    /// Next complete `RuntimeWatchView`, or `null` when this stream was cancelled.
     ///
     /// # Errors
     ///
@@ -372,7 +373,7 @@ impl WatchStream {
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
-            Ok(Some(frame)) => to_json(&ployz_sdk_payloads::runtime_watch_view(&frame)).map(Some),
+            Ok(Some(frame)) => to_json(&sdk::RuntimeWatchView::from(frame)).map(Some),
             Ok(None) => Ok(None),
             Err(error) => Err(rpc_to_napi(error)),
         }

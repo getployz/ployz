@@ -6,7 +6,8 @@ use std::{
     num::NonZeroU64,
 };
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
@@ -14,14 +15,14 @@ use crate::{
 };
 
 /// A storage source declared under a service-local reference.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceVolume {
     pub reference: ServiceVolumeReference,
     pub source: VolumeSource,
 }
 
 /// A container mount that refers to a declared Service Volume by its local name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceMount {
     /// Service-local Volume Reference to mount.
     pub volume: ServiceVolumeReference,
@@ -38,8 +39,9 @@ pub struct ServiceMount {
     pub subpath: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[ts(rename = "VolumeSource")]
 pub enum RawVolumeSource {
     Bind {
         machine_path: MachinePath,
@@ -80,16 +82,19 @@ pub enum RawVolumeSource {
 }
 
 /// A source admitted from a raw declaration, or retained from a resolved observation.
-/// Its scoping state is private and cannot be asserted by a user-supplied label.
-/// Scoped observations serialize only through [`ResolvedVolumeSource`], never as raw input.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Its scoping state is private and cannot be asserted by a user-supplied label: the
+/// wire form is the raw declaration, and observed scope travels only on
+/// [`ResolvedVolumeSource`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "RawVolumeSource", into = "RawVolumeSource")]
+#[ts(as = "RawVolumeSource")]
 pub struct VolumeSource {
     source: RawVolumeSource,
     scope: Option<ScopedVolumeSource>,
 }
 
 /// Checked Project and logical identity from which a physical name and owner labels derive.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ScopedVolumeSource {
     project: ProjectName,
@@ -124,32 +129,11 @@ impl TryFrom<RawVolumeSource> for VolumeSource {
     }
 }
 
-impl Serialize for VolumeSource {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.scope.is_some() {
-            return Err(serde::ser::Error::custom(
-                "scoped observations cannot be serialized as raw volume declarations",
-            ));
-        }
-        self.source.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for VolumeSource {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Request {
-            #[serde(flatten)]
-            source: RawVolumeSource,
-            #[serde(default, rename = "scope", deserialize_with = "reject_scope")]
-            _scope: (),
-        }
-        fn reject_scope<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
-            Err(D::Error::custom(
-                "raw volume declarations cannot assert observed scope",
-            ))
-        }
-        Self::try_from(Request::deserialize(deserializer)?.source).map_err(D::Error::custom)
+/// A raw declaration is the only wire form; observed scope travels on the
+/// resolved wire, never on a declaration.
+impl From<VolumeSource> for RawVolumeSource {
+    fn from(value: VolumeSource) -> Self {
+        value.source
     }
 }
 
@@ -249,7 +233,8 @@ impl VolumeSource {
 pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
 
 /// A positive maximum byte count for one Provisioned Volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(try_from = "u64", into = "u64")]
 pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
 
 impl ProvisionedVolumeMaximumBytes {
@@ -272,29 +257,30 @@ impl Display for ProvisionedVolumeMaximumBytes {
     }
 }
 
-impl Serialize for ProvisionedVolumeMaximumBytes {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(self)
+impl TryFrom<u64> for ProvisionedVolumeMaximumBytes {
+    type Error = ValueError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        NonZeroU64::new(value).map(Self).ok_or_else(|| {
+            ValueError::new(
+                "Provisioned Volume maximum bytes",
+                value.to_string(),
+                "a positive byte count",
+            )
+        })
     }
 }
 
-impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse::<NonZeroU64>()
-            .map(Self)
-            .map_err(D::Error::custom)
+impl From<ProvisionedVolumeMaximumBytes> for u64 {
+    fn from(value: ProvisionedVolumeMaximumBytes) -> Self {
+        value.get()
     }
 }
 
 /// A Docker Volume driver that cannot name Ployz's reserved Provisioned Volume driver.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "VolumeDriverData")]
+#[ts(as = "VolumeDriverData")]
 pub struct VolumeDriver {
     name: String,
     #[serde(default)]
@@ -335,25 +321,24 @@ impl VolumeDriver {
     }
 }
 
-impl<'de> Deserialize<'de> for VolumeDriver {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Data {
-            name: String,
-            #[serde(default)]
-            options: BTreeMap<String, String>,
-        }
+/// Unchecked driver declaration; admission refuses the reserved Provisioned Volume driver.
+#[derive(Deserialize, TS)]
+struct VolumeDriverData {
+    name: String,
+    #[serde(default)]
+    options: BTreeMap<String, String>,
+}
 
-        let driver = Data::deserialize(deserializer)?;
-        Self::parse(driver.name, driver.options).map_err(D::Error::custom)
+impl TryFrom<VolumeDriverData> for VolumeDriver {
+    type Error = ValueError;
+
+    fn try_from(driver: VolumeDriverData) -> Result<Self, Self::Error> {
+        Self::parse(driver.name, driver.options)
     }
 }
 
 /// Current storage evidence for one observed Docker Volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DockerVolumeStorageObservation {
     /// A Docker Volume without a Ployz-managed byte bound.
@@ -373,7 +358,7 @@ pub enum DockerVolumeStorageObservation {
 }
 
 /// One Docker Volume observed on one Machine.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DockerVolume {
     pub id: DockerVolumeId,
     #[serde(default)]
@@ -396,7 +381,7 @@ impl DockerVolume {
 }
 
 /// Destroy these Docker Volumes. The list is the confirmation.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RemoveVolumesRequest {
     pub volumes: Vec<DockerVolumeId>,
     /// Force-remove an in-use Docker Volume. Defaults to false.
@@ -411,6 +396,43 @@ pub struct RemoveVolumesRequest {
     into = "ResolvedVolumeSourceWire"
 )]
 pub struct ResolvedVolumeSource(VolumeSource);
+
+/// Says in TypeScript what [`TryFrom<ResolvedVolumeSourceWire>`] enforces: a
+/// managed source carries its scope and no other source does. A derive on the
+/// flattened wire struct would allow either combination.
+impl TS for ResolvedVolumeSource {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_: &ts_rs::Config) -> String {
+        "ResolvedVolumeSource".to_owned()
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        let source = VolumeSource::name(cfg);
+        let scope = ScopedVolumeSource::name(cfg);
+        let managed = "{ kind: \"ordinary\" | \"provisioned\" }";
+        format!(
+            "(Extract<{source}, {managed}> & {{ scope: {scope} }}) | (Exclude<{source}, {managed}> & {{ scope: null }})"
+        )
+    }
+
+    fn decl(cfg: &ts_rs::Config) -> String {
+        format!("type {} = {};", Self::name(cfg), Self::inline(cfg))
+    }
+
+    fn output_path() -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from("ResolvedVolumeSource.ts"))
+    }
+
+    fn visit_dependencies(visitor: &mut impl ts_rs::TypeVisitor)
+    where
+        Self: 'static,
+    {
+        visitor.visit::<VolumeSource>();
+        visitor.visit::<ScopedVolumeSource>();
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct ResolvedVolumeSourceWire {
@@ -481,14 +503,14 @@ impl RawVolumeSource {
 }
 
 /// The outcome of attempting to remove one Machine-local Docker Volume.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeRemoval {
     pub id: DockerVolumeId,
     pub outcome: VolumeRemovalOutcome,
 }
 
 /// Evidence from one bounded removal attempt, never an atomicity guarantee.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum VolumeRemovalOutcome {
     /// Removed or already absent.

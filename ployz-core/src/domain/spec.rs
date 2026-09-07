@@ -11,6 +11,7 @@ use std::{
 
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::{
     ByteQuantity, CpuNanos, ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph,
@@ -21,7 +22,7 @@ use crate::{
     ServiceVolume, ValueError,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "mode")]
 pub enum ServiceMode {
     Replicated { replicas: NonZeroU32 },
@@ -33,14 +34,14 @@ pub fn same_service_mode_kind(left: &ServiceMode, right: &ServiceMode) -> bool {
     std::mem::discriminant(left) == std::mem::discriminant(right)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum HttpProtocol {
     Http,
     Https,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportProtocol {
     Tcp,
@@ -48,7 +49,7 @@ pub enum TransportProtocol {
 }
 
 /// Non-empty raw Caddy configuration for the reserved Ingress Proxy Service.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct IngressProxyFragment(String);
 
@@ -92,20 +93,25 @@ impl From<IngressProxyFragment> for String {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum HostBind {
     All,
-    Address { address: IpAddr },
-    Prefix { prefix: IpNet },
+    Address {
+        address: IpAddr,
+    },
+    Prefix {
+        #[ts(as = "String")]
+        prefix: IpNet,
+    },
 }
 
 /// How an HTTP ingress publication obtains its hostname.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum IngressHostname {
     ClusterDomain {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         label: Option<ClusterDomainLabel>,
     },
     Explicit {
@@ -152,7 +158,7 @@ impl IngressHostname {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "mode")]
 pub enum PortPublication {
     Ingress {
@@ -169,14 +175,14 @@ pub enum PortPublication {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfigSpec {
     pub name: String,
     #[serde(default)]
     pub content: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfigMount {
     pub config_name: String,
     /// Omission defaults to `/{config_name}`. Admitted specs retain the canonical target.
@@ -190,7 +196,7 @@ pub struct ConfigMount {
     pub mode: Option<u32>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Placement {
     /// Machine Targets. An empty list remains every eligible Machine.
     #[serde(default)]
@@ -201,7 +207,7 @@ pub struct Placement {
 pub const HEALTHCHECK_DISABLE_SENTINEL: &str = "NONE";
 
 /// A present Healthcheck: explicitly disabled, or configured with a real command.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum HealthcheckSpec {
     Disabled,
@@ -220,8 +226,9 @@ impl HealthcheckSpec {
 }
 
 /// A Healthcheck command that is non-empty and does not begin with Docker's disable sentinel.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[ts(type = "[string, ...string[]]")]
 pub struct HealthcheckCommand(Vec<String>);
 
 impl HealthcheckCommand {
@@ -273,7 +280,7 @@ impl TryFrom<Vec<String>> for HealthcheckCommand {
 }
 
 /// Timing and command for a Configured Healthcheck.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfiguredHealthcheck {
     pub test: HealthcheckCommand,
     #[serde(default)]
@@ -288,21 +295,21 @@ pub struct ConfiguredHealthcheck {
     pub retries: Option<u32>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LogDriver {
     pub name: String,
     #[serde(default)]
     pub options: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeviceMapping {
     pub machine_path: MachinePath,
     pub container_path: ContainerPath,
     pub cgroup_permissions: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeviceReservation {
     #[serde(default)]
     pub driver: Option<String>,
@@ -316,13 +323,13 @@ pub struct DeviceReservation {
     pub options: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Ulimit {
     pub soft: i64,
     pub hard: i64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ContainerResources {
     #[serde(default)]
     pub cpu_nanos: Option<CpuNanos>,
@@ -341,8 +348,9 @@ pub struct ContainerResources {
 }
 
 /// A pre-deploy hook command with at least one argument.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[ts(type = "[string, ...string[]]")]
 pub struct PreDeployCommand(Vec<String>);
 
 impl PreDeployCommand {
@@ -388,7 +396,7 @@ impl TryFrom<Vec<String>> for PreDeployCommand {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PreDeployHook {
     pub command: PreDeployCommand,
     #[serde(default)]
@@ -401,7 +409,7 @@ pub struct PreDeployHook {
     pub user: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct UpdateConfig {
     /// Absence means derive the order from the deploy snapshot.
     #[serde(default)]
@@ -411,7 +419,7 @@ pub struct UpdateConfig {
 }
 
 /// Update configuration after deploy-time order resolution.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ResolvedUpdateConfig {
     pub order: UpdateOrder,
     #[serde(default)]
@@ -427,7 +435,7 @@ impl Default for ResolvedUpdateConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum PullPolicy {
     Always,
@@ -435,7 +443,7 @@ pub enum PullPolicy {
     Never,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateOrder {
     StartFirst,
@@ -451,7 +459,7 @@ pub enum SpecChange {
 }
 
 /// Runtime configuration shared by requested and resolved Service Specs.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceContainerSpec {
     pub image: String,
     #[serde(default)]
@@ -503,11 +511,12 @@ pub struct ServiceContainerSpec {
 }
 
 /// Normalized deploy input before placement and container-specific resolution.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     try_from = "RequestedServiceSpecWire",
     into = "RequestedServiceSpecWire"
 )]
+#[ts(as = "RequestedServiceSpecWire")]
 pub struct RequestedServiceSpec {
     pub name: ServiceName,
     pub mode: ServiceMode,
@@ -522,8 +531,9 @@ pub struct RequestedServiceSpec {
 }
 
 /// The exact, fully resolved Service Spec attached to one created container.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "ResolvedServiceSpecWire", into = "ResolvedServiceSpecWire")]
+#[ts(as = "ResolvedServiceSpecWire")]
 pub struct ResolvedServiceSpec {
     pub service_id: ServiceId,
     pub name: ServiceName,

@@ -1,6 +1,7 @@
 //! Validated native container metadata shared by requested and resolved specs.
 
 use std::{collections::BTreeMap, fmt, net::IpAddr, str::FromStr};
+use ts_rs::TS;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,7 @@ fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
     try_from = "BTreeMap<String, String>",
     into = "BTreeMap<String, String>"
 )]
+#[derive(TS)]
 pub struct ContainerLabels(BTreeMap<String, String>);
 
 impl ContainerLabels {
@@ -78,7 +80,7 @@ fn is_rfc1123_hostname(value: &str) -> bool {
 }
 
 /// A container's UTS hostname. It has no Service, DNS, ingress, placement, or Machine meaning.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct ContainerHostname(String);
 
@@ -137,7 +139,7 @@ impl From<ContainerHostname> for String {
 }
 
 /// One container-local Docker `/etc/hosts` entry.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct ExtraHost(String);
 

@@ -19,7 +19,7 @@ import type {
   RemoveVolumesRequest,
   RequestedServiceSpec,
   RpcError,
-  RuntimeWatchFrame,
+  RuntimeWatchView,
 } from "./generated/payloads";
 export * from "./generated/payloads";
 
@@ -58,6 +58,7 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
+export declare function packageName(): "@ployz/sdk";
 export declare function connect(options: ConnectOptions): Promise<Client>;
 export declare function listHeld(
   relayUrl: string,
@@ -92,7 +93,7 @@ export declare function applyOne(
 export declare class Client {
   about(): Promise<ContractDescription>;
   readonly runtime: {
-    watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>;
+    watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewProjectRemoval(

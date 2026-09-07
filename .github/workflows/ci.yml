@@ -48,7 +48,10 @@ jobs:
                 - tcp: 127.0.0.1:1
           EOF
           cargo test --workspace --all-features --locked
-      - run: bash scripts/check-sdk-package.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/check-sdk-types.sh
       - run: bash scripts/test-release-contracts.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-daemon-lifecycle.sh

@@ -1,11 +1,12 @@
 //! Checked CPU and memory quantities in the Docker integer range.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::ValueError;
 
 /// CPU nanounits in Docker's nonnegative signed integer range.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "i64", into = "i64")]
 pub struct CpuNanos(i64);
 
@@ -56,7 +57,7 @@ impl From<CpuNanos> for i64 {
 }
 
 /// Bytes in Docker's nonnegative signed integer range, including zero and i64::MAX.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "i64", into = "i64")]
 pub struct ByteQuantity(i64);
 

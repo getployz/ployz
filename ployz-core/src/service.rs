@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use ts_rs::TS;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -18,7 +19,7 @@ pub use eligibility::{
 pub use serving::{ServingContainer, SlotOccupancy, serving_containers};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceObservation {
     pub identity: QualifiedService,
     pub service_id: ServiceId,

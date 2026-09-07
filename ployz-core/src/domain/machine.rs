@@ -5,6 +5,7 @@ use std::{
     num::NonZeroU64,
     str::FromStr,
 };
+use ts_rs::TS;
 
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -34,13 +35,13 @@ pub(super) fn resolve_machine_text<'a>(
 }
 
 /// One Machine's durable advertised record.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
     pub id: MachineId,
     pub name: MachineName,
     pub subnet: MachineSubnet,
     pub public_key: WireGuardPublicKey,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub public_ip: Option<IpAddr>,
     #[serde(default)]
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
@@ -65,7 +66,7 @@ pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
     ManagementAddress(std::net::Ipv6Addr::from(address))
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(default)]
 pub struct MachineRuntime {
     pub daemon_version: String,
@@ -77,7 +78,7 @@ pub struct MachineRuntime {
 }
 
 /// Storage preparation requested while enrolling one Machine.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageChoice {
     #[default]
@@ -136,7 +137,7 @@ pub enum PublicIpDiscovery {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineToken {
     pub public_key: WireGuardPublicKey,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
@@ -205,11 +206,11 @@ pub enum PublicIpUpdate {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub name: Option<MachineName>,
     #[serde(default)]
     pub public_ip: PublicIpUpdate,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub advertised_endpoints: Option<Vec<AdvertisedEndpoint>>,
 }
 
@@ -267,7 +268,7 @@ pub fn apply_machine_update(
 }
 
 /// Current storage evidence observed from one Machine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MachineStorageObservation {
     /// Usable ZFS support was not observed.
@@ -286,17 +287,17 @@ pub enum MachineStorageObservation {
 }
 
 /// An observer-relative view layered over a Machine's advertised record.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineObservation {
     pub machine: Machine,
     pub membership: MembershipObservation,
     /// Current storage evidence, absent when this observer could not obtain it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub storage: Option<MachineStorageObservation>,
     #[serde(default)]
     pub selected_endpoint: Option<SelectedEndpoint>,
     /// Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rtt: Option<RttStatistics>,
 }
 
@@ -423,7 +424,7 @@ pub fn synthesize_membership(
         .collect()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RttStatistics {
     pub median_ns: u64,
     pub population_stddev_ns: u64,
@@ -434,7 +435,7 @@ pub struct RttStatistics {
 pub struct RttObservation {
     pub peer_id: String,
     pub address: SocketAddr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub machine: Option<MachineIdentity>,
     pub statistics: RttStatistics,
 }
@@ -482,17 +483,17 @@ pub struct WireGuardDevice {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WireGuardPeer {
     pub public_key: WireGuardPublicKey,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub endpoint: Option<SocketAddr>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_handshake_unix_seconds: Option<u64>,
     pub received_bytes: u64,
     pub sent_bytes: u64,
     #[serde(default)]
     pub allowed_ips: Vec<IpNet>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub machine: Option<MachineIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rtt: Option<RttStatistics>,
 }
 

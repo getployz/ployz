@@ -44,7 +44,7 @@ impl Default for InspectRequest {
 pub struct MachineDetails {
     pub id: MachineId,
     pub phase: LocalMachinePhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub machine: Option<Machine>,
     pub public_key: WireGuardPublicKey,
     #[serde(default)]
@@ -54,12 +54,12 @@ pub struct MachineDetails {
     #[serde(default)]
     pub rtts: Vec<RttObservation>,
     /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub cloud_paired: bool,
     /// Fresh telemetry requested only by targeted inspect.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub telemetry: Option<TelemetryObservation>,
     /// Current local storage evidence when the daemon advertises support.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub storage: Option<MachineStorageObservation>,
 }
