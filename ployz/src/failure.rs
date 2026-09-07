@@ -185,6 +185,9 @@ impl From<ConnectError> for Failure {
         match error {
             ConnectError::Context(error) => error.into(),
             ConnectError::Value(error) => error.into(),
+            ConnectError::AllFailed {
+                last: Some(last), ..
+            } if matches!(last.as_ref(), ConnectError::SshClientMissing(_)) => (*last).into(),
             error => Self::command(error),
         }
     }

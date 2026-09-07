@@ -894,4 +894,28 @@ mod tests {
         );
         assert!(!message.to_string().contains("os error"), "{message}");
     }
+
+    #[tokio::test]
+    async fn missing_ssh_client_survives_connection_selection() {
+        let error = match connect_selected_with(
+            SelectedConnections {
+                source: ConnectionSource::Direct,
+                connections: vec![Connection::ssh(
+                    SshDestination::parse("user@example.com").unwrap(),
+                )],
+            },
+            Arc::new(SystemConnector::new("/ployz-missing-ssh-client")),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("missing ssh program must fail"),
+        };
+        let failure = crate::failure::Failure::from(error);
+        assert_eq!(
+            failure.to_string(),
+            "local ssh client not found; install an ssh client"
+        );
+        assert!(!failure.to_string().contains("os error"), "{failure}");
+    }
 }
