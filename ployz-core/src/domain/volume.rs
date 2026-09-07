@@ -390,16 +390,51 @@ pub struct RemoveVolumesRequest {
 }
 
 /// Wire source in a Resolved Service Spec. Import checks physical identity correspondence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     try_from = "ResolvedVolumeSourceWire",
     into = "ResolvedVolumeSourceWire"
 )]
-#[ts(as = "ResolvedVolumeSourceWire")]
 pub struct ResolvedVolumeSource(VolumeSource);
 
-#[derive(Serialize, Deserialize, TS)]
-#[ts(rename = "ResolvedVolumeSource")]
+/// Says in TypeScript what [`TryFrom<ResolvedVolumeSourceWire>`] enforces: a
+/// managed source carries its scope and no other source does. A derive on the
+/// flattened wire struct would allow either combination.
+impl TS for ResolvedVolumeSource {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_: &ts_rs::Config) -> String {
+        "ResolvedVolumeSource".to_owned()
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        let source = VolumeSource::name(cfg);
+        let scope = ScopedVolumeSource::name(cfg);
+        let managed = "{ kind: \"ordinary\" | \"provisioned\" }";
+        format!(
+            "(Extract<{source}, {managed}> & {{ scope: {scope} }}) | (Exclude<{source}, {managed}> & {{ scope: null }})"
+        )
+    }
+
+    fn decl(cfg: &ts_rs::Config) -> String {
+        format!("type {} = {};", Self::name(cfg), Self::inline(cfg))
+    }
+
+    fn output_path() -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from("ResolvedVolumeSource.ts"))
+    }
+
+    fn visit_dependencies(visitor: &mut impl ts_rs::TypeVisitor)
+    where
+        Self: 'static,
+    {
+        visitor.visit::<VolumeSource>();
+        visitor.visit::<ScopedVolumeSource>();
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 struct ResolvedVolumeSourceWire {
     #[serde(flatten)]
     source: RawVolumeSource,

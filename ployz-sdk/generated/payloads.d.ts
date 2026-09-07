@@ -403,19 +403,7 @@ export type ResolvedServiceVolume = { reference: ServiceVolumeReference, source:
 
 export type ResolvedUpdateConfig = { order: UpdateOrder, monitor_millis: number | null, };
 
-export type ResolvedVolumeSource = { scope: ScopedVolumeSource | null, } & ({ "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned", 
-/**
- * Logical declaration name; immutable scoped views expose the physical name.
- */
-name: DockerVolumeName, 
-/**
- * Required positive storage maximum.
- */
-maximum_bytes: ProvisionedVolumeMaximumBytes, 
-/**
- * Labels applied when the Docker Volume is created.
- */
-labels: { [key in string]: string }, } | { "kind": "tmpfs", size_bytes: number | null, mode: number | null, options: Array<Array<string>>, });
+export type ResolvedVolumeSource = (Extract<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope: ScopedVolumeSource }) | (Exclude<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope: null });
 
 export type RestartAttempt<E> = { "type": "not_attempted" } | { "type": "restarted" } | { "type": "failed", error: E, };
 

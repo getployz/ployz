@@ -12,6 +12,7 @@ import type {
   HealthcheckSpec,
   LocalMachineRemoved,
   MachineId,
+  MachinePath,
   PidMode,
   PreDeployCommand,
   ProjectName,
@@ -169,6 +170,10 @@ ordinary satisfies VolumeSource;
 ({ ...ordinary, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
 // @ts-expect-error a resolved source always states its scope, even when absent
 ordinary satisfies ResolvedVolumeSource;
+const bind = { kind: "bind", machine_path: "/srv" as MachinePath, create_machine_path: false, propagation: null, recursive: null } as const;
+({ ...bind, scope: null }) satisfies ResolvedVolumeSource;
+// @ts-expect-error only a managed source carries a scope
+({ ...bind, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
 
 // The façade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;
