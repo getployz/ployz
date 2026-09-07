@@ -49,7 +49,9 @@ async fn machine_removal_reports_complete_and_partial_results() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("Removed Machine one"), "{stdout}");
         assert!(
-            stdout.contains("Volumes losing Cluster access: 1"),
+            stdout.contains(
+                "Volumes losing access through the cluster (1). Their data will not be erased:"
+            ),
             "{stdout}"
         );
         assert!(

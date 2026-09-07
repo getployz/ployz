@@ -102,7 +102,7 @@ fn confirm_with(
     } = options;
     writeln!(
         output,
-        "Live Observation from one observer; not a globally complete Cluster view."
+        "Based on what the connected machine can see; other machines may have additional resources."
     )?;
     match volume_effect {
         VolumeEffect::Preserve => writeln!(output, "Volumes will be kept.")?,
@@ -111,17 +111,18 @@ fn confirm_with(
         }
         VolumeEffect::Delete => writeln!(
             output,
-            "Permanently delete {} volumes:",
+            "Permanently delete these volumes and their data ({}):",
             observed.data_loss.len()
         )?,
         VolumeEffect::LoseAccess => writeln!(
             output,
-            "Volumes losing Cluster access: {}. Reset does not erase their data:",
+            "Volumes losing access through the cluster ({}). Their data will not be erased:",
             observed.data_loss.len()
         )?,
     }
     for loss in &observed.data_loss {
-        writeln!(output, "  {loss}")?;
+        let ployz_core::DataLoss::DockerVolume { id } = loss;
+        writeln!(output, "  {} (machine ID: {})", id.name, id.machine_id)?;
     }
     let names = observed
         .data_loss
@@ -203,21 +204,26 @@ fn prompt(
     output: &mut dyn Write,
     mut read: impl FnMut(&str) -> io::Result<Option<String>>,
 ) -> Result<bool, Error> {
+    if !targets.is_empty() {
+        let consequence = match volume_effect {
+            VolumeEffect::Delete => "permanently delete the listed volumes and their data",
+            VolumeEffect::LoseAccess => {
+                "lose access to the listed volumes through the cluster; their data will not be erased"
+            }
+            VolumeEffect::Preserve => "keep the listed volumes",
+        };
+        writeln!(
+            output,
+            "\nThis will remove {} and {consequence}.",
+            targets.join(", ")
+        )?;
+        writeln!(output, "Press Enter without typing to cancel.")?;
+    }
     loop {
         let question = if targets.is_empty() {
-            "Remove the listed targets? [y/N] (Enter cancels): ".to_owned()
+            "Continue with removal? Type yes to confirm, or press Enter to cancel: ".to_owned()
         } else {
-            let consequence = match volume_effect {
-                VolumeEffect::Delete => "permanently delete the listed volumes",
-                VolumeEffect::LoseAccess => {
-                    "lose Cluster access to the listed volumes; their data will not be erased"
-                }
-                VolumeEffect::Preserve => "keep the listed volumes",
-            };
-            format!(
-                "Type {} (space-separated target names) to remove the targets and {consequence} (Enter cancels): ",
-                targets.join(" ")
-            )
+            format!("Type \"{}\" to confirm: ", targets.join(" "))
         };
         output.flush()?;
         let Some(answer) = read(&question)? else {
@@ -332,9 +338,7 @@ mod tests {
             &[],
             &mut output,
             |question| {
-                assert!(question.contains("lose Cluster access"), "{question}");
-                assert!(question.contains("data will not be erased"), "{question}");
-                assert!(!question.contains("delete"), "{question}");
+                assert_eq!(question, "Type \"worker\" to confirm: ");
                 Ok(Some("worker".into()))
             },
         )
@@ -342,10 +346,12 @@ mod tests {
         .unwrap();
         assert!(observed.require(&confirmation).is_ok());
         let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("Their data will not be erased"), "{output}");
         assert!(
-            output.contains("Reset does not erase their data"),
+            output.contains("lose access to the listed volumes through the cluster"),
             "{output}"
         );
+        assert!(output.contains("data will not be erased"), "{output}");
         assert!(!output.contains("Permanently delete"), "{output}");
     }
 
@@ -469,7 +475,7 @@ mod tests {
             &[],
             &mut output,
             |question| {
-                assert!(question.contains("space-separated"));
+                assert_eq!(question, "Type \"app/db app/api\" to confirm: ");
                 assert!(!question.contains("[y/N]"));
                 Ok(input.next().unwrap())
             },
@@ -478,6 +484,10 @@ mod tests {
         .unwrap();
         assert!(observed.require(&confirmed).is_ok());
         let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("This will remove app/db, app/api and permanently delete the listed volumes and their data."));
+        assert!(output.contains("Press Enter without typing to cancel."));
+        assert!(output.contains("Permanently delete these volumes and their data (1):"));
+        assert!(output.contains("(machine ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
         assert!(output.contains("Names did not match"));
         assert!(!output.contains("[y/N]"));
         for answer in [None, Some(String::new())] {
@@ -590,7 +600,13 @@ mod tests {
                     },
                     &[],
                     &mut Vec::new(),
-                    |_| Ok(Some("y".into()))
+                    |question| {
+                        assert_eq!(
+                            question,
+                            "Continue with removal? Type yes to confirm, or press Enter to cancel: "
+                        );
+                        Ok(Some("y".into()))
+                    }
                 )
                 .unwrap()
                 .is_some()

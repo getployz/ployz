@@ -35,8 +35,8 @@ async fn removal_tty_retry_enter_eof_and_ctrl_c_precede_mutation() {
         let mut stdout = child.stdout.take().unwrap();
         let mut transcript = Vec::new();
         for (expected, input) in [
-            ("(Enter cancels): ", b"wrong\n".as_slice()),
-            ("(Enter cancels): ", answer),
+            ("Type \"app/web\" to confirm: ", b"wrong\n".as_slice()),
+            ("Type \"app/web\" to confirm: ", answer),
         ] {
             let mut part = Vec::new();
             tokio::time::timeout(Duration::from_secs(5), async {

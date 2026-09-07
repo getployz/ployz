@@ -236,14 +236,17 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
             "cannot confirm {prompt:?} without a terminal; pass --yes"
         )));
     }
-    print!("{prompt} [y/N] ");
+    println!("{prompt}");
+    println!("This removes Ployz-managed containers and resets this machine's cluster membership.");
+    println!("Volume data will not be erased, but will lose access through the current cluster.");
+    print!("Type yes to confirm, or press Enter to cancel: ");
     io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         Ok(())
     } else {
-        Err(Error::usage("aborted"))
+        Err(Error::usage("Cancelled. The machine was not reset."))
     }
 }
 

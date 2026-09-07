@@ -241,14 +241,18 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             if volumes.is_empty() {
                 return Err(Error::usage(volume_failure_summary(&result)));
             }
+            let context = match client.connection_source() {
+                crate::context::ConnectionSource::Context(name) => name.as_str(),
+                crate::context::ConnectionSource::Direct => "direct connection",
+                crate::context::ConnectionSource::LocalSocket => "local socket",
+            };
             println!(
-                "Remove Docker Volumes\nContext: {:?}\nLive Observation from one observer; not a globally complete Cluster view.\nPermanently delete {} volumes:",
-                client.connection_source(),
+                "Remove volumes\nContext: {context}\nBased on what the connected machine can see; other machines may have additional resources.\nPermanently delete these volumes and their data ({}):",
                 volumes.len()
             );
             for volume in &volumes {
                 println!(
-                    "  {} on {} ({})",
+                    "  {} on {} (machine ID: {})",
                     volume.volume.id.name, volume.machine_name, volume.volume.id.machine_id
                 );
             }
