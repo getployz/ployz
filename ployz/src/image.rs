@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 
 use crate::{
     cluster::MachineImagesObservation,
-    connect::{Client, rpc_error},
+    connect::{Client, UNARY_RETRY_DELAYS, rpc_error},
 };
 
 use self::proxy::{ImageProxy, ProxyMode, detect_mode};
@@ -276,7 +276,7 @@ async fn push_to_machine(
         opened.destination.management_address.0, opened.destination.port
     );
     cancellation
-        .race(client.dial_proxy("tcp", &remote))
+        .race(proxy::dial_with_retry(client, &remote))
         .await?
         .map_err(PushError::Unregistry)?;
     PushSession::run(client, remote, mode, image, platform, cancellation).await?;
@@ -475,35 +475,46 @@ impl PushSession {
                 diagnostic: format!("exited with {tagged}"),
             });
         }
-        let mut command = Command::new("docker");
-        command.arg("push");
-        if let Some(platform) = platform {
-            command.args(["--platform", platform]);
-        }
-        self.command = Some(command.arg(&temporary).kill_on_drop(true).spawn().map_err(
-            |error| PushError::Docker {
-                action: "push",
-                diagnostic: error.to_string(),
-            },
-        )?);
-        let push = self
-            .command
-            .as_mut()
-            .expect("push command was stored")
-            .wait();
-        // TODO: direct push keeps Docker's progress stream; no quiet mode is exposed.
-        tokio::select! {
-            outcome = push => {
-                let status = outcome.map_err(|error| PushError::Docker {
+        // A dropped Machine tunnel fails `docker push`; another attempt reuses
+        // layers already on unregistry.
+        let mut delays = UNARY_RETRY_DELAYS.iter().copied();
+        loop {
+            let mut command = Command::new("docker");
+            command.arg("push");
+            if let Some(platform) = platform {
+                command.args(["--platform", platform]);
+            }
+            self.command = Some(command.arg(&temporary).kill_on_drop(true).spawn().map_err(
+                |error| PushError::Docker {
                     action: "push",
                     diagnostic: error.to_string(),
-                })?;
-                status.success().then_some(()).ok_or(PushError::Docker {
-                    action: "push",
-                    diagnostic: format!("exited with {status}"),
-                })
-            },
-            outcome = self.proxy.serve(client.clone(), remote) => outcome,
+                },
+            )?);
+            let push = self
+                .command
+                .as_mut()
+                .expect("push command was stored")
+                .wait();
+            // TODO: direct push keeps Docker's progress stream; no quiet mode is exposed.
+            tokio::select! {
+                outcome = push => {
+                    let status = outcome.map_err(|error| PushError::Docker {
+                        action: "push",
+                        diagnostic: error.to_string(),
+                    })?;
+                    if status.success() {
+                        return Ok(());
+                    }
+                    let Some(delay) = delays.next() else {
+                        return Err(PushError::Docker {
+                            action: "push",
+                            diagnostic: format!("exited with {status}"),
+                        });
+                    };
+                    tokio::time::sleep(delay).await;
+                },
+                outcome = self.proxy.serve(client.clone(), remote.clone()) => return outcome,
+            }
         }
     }
 

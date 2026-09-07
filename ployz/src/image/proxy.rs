@@ -14,7 +14,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::connect::{BoxProxyStream, Client};
+use crate::connect::{BoxProxyStream, Client, ConnectError, UNARY_RETRY_DELAYS};
 
 use super::{Cancellation, PushError, command_error, docker_output, not_found, stop_command};
 
@@ -169,7 +169,7 @@ impl ImageProxy {
             let client = client.clone();
             let remote = remote.clone();
             self.connections.spawn(async move {
-                if let Ok(mut target) = client.dial_proxy("tcp", &remote).await {
+                if let Ok(mut target) = dial_with_retry(&client, &remote).await {
                     let mut stream = stream;
                     let _ = copy_bidirectional(&mut stream, &mut target).await;
                 }
@@ -289,6 +289,26 @@ impl Listener {
     }
 }
 
+/// Retry a dropped Machine dial while Docker's accepted connection stays open.
+pub(super) async fn dial_with_retry(
+    client: &Client,
+    remote: &str,
+) -> Result<BoxProxyStream, ConnectError> {
+    let mut delays = UNARY_RETRY_DELAYS.iter().copied();
+    loop {
+        match client.dial_proxy("tcp", remote).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) if error.is_retryable() => {
+                let Some(delay) = delays.next() else {
+                    return Err(error);
+                };
+                tokio::time::sleep(delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn start_helper(name: &str, destination: &str, bind: Option<String>) -> Result<Child, PushError> {
     // TODO: the helper image is intentionally fixed rather than configurable.
     let mut command = Command::new("docker");
@@ -366,5 +386,164 @@ async fn remove_helper(id: &str) -> Result<(), PushError> {
         Ok(())
     } else {
         Err(command_error("remove proxy helper", &output))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+    use tonic::transport::{Channel, Endpoint};
+
+    use super::*;
+    use crate::{
+        cluster::Client,
+        connect::{BoxProxyStream, ConnectError, Connector, UNARY_RETRY_DELAYS},
+        context::{Connection, ConnectionSource},
+    };
+
+    struct RecoveringDial {
+        failures: AtomicUsize,
+        target: String,
+    }
+
+    struct FailingDial {
+        attempts: Arc<AtomicUsize>,
+        error: fn() -> ConnectError,
+    }
+
+    fn unused_connect() -> Result<Channel, ConnectError> {
+        Err(ConnectError::Attempt("unused".into()))
+    }
+
+    fn network_reset() -> ConnectError {
+        ConnectError::Attempt("network reset".into())
+    }
+
+    fn unsupported_proxy() -> ConnectError {
+        ConnectError::ProxyUnsupported("tcp".into())
+    }
+
+    fn client(connector: impl Connector + 'static) -> Client {
+        Client::new(
+            Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+            Connection::unix("/tmp/ployz-unused.sock").unwrap(),
+            ConnectionSource::Direct,
+            Arc::new(connector),
+        )
+    }
+
+    #[tonic::async_trait]
+    impl Connector for RecoveringDial {
+        async fn connect(&self, _connection: &Connection) -> Result<Channel, ConnectError> {
+            unused_connect()
+        }
+
+        async fn dial_proxy(
+            &self,
+            _connection: &Connection,
+            _network: &str,
+            _address: &str,
+        ) -> Result<BoxProxyStream, ConnectError> {
+            if self.failures.fetch_add(1, Ordering::SeqCst) < 2 {
+                return Err(network_reset());
+            }
+            TcpStream::connect(&self.target)
+                .await
+                .map(|stream| Box::new(stream) as BoxProxyStream)
+                .map_err(ConnectError::from)
+        }
+    }
+
+    #[tonic::async_trait]
+    impl Connector for FailingDial {
+        async fn connect(&self, _connection: &Connection) -> Result<Channel, ConnectError> {
+            unused_connect()
+        }
+
+        async fn dial_proxy(
+            &self,
+            _connection: &Connection,
+            _network: &str,
+            _address: &str,
+        ) -> Result<BoxProxyStream, ConnectError> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err((self.error)())
+        }
+    }
+
+    #[tokio::test]
+    async fn image_proxy_holds_docker_connection_across_a_dropped_machine_dial() {
+        let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = echo.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut stream, _) = echo.accept().await.unwrap();
+            let mut buffer = [0; 5];
+            stream.read_exact(&mut buffer).await.unwrap();
+            stream.write_all(&buffer).await.unwrap();
+        });
+
+        let mut cancellation = super::super::Cancellation::new();
+        let mut proxy = ImageProxy::open(ProxyMode::Native, &mut cancellation)
+            .await
+            .unwrap();
+        let port = proxy.push_port();
+        let client = client(RecoveringDial {
+            failures: AtomicUsize::new(0),
+            target,
+        });
+        let remote = "[fd00::1]:5000".into();
+        let serving = tokio::spawn(async move { proxy.serve(client, remote).await });
+
+        let mut docker = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        docker.write_all(b"hello").await.unwrap();
+        let mut buffer = [0; 5];
+        tokio::time::timeout(Duration::from_secs(5), docker.read_exact(&mut buffer))
+            .await
+            .expect("docker connection stayed open across the dropped machine dial")
+            .unwrap();
+        assert_eq!(&buffer, b"hello");
+        serving.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_with_retry_stops_after_the_bounded_delays() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let client = client(FailingDial {
+            attempts: Arc::clone(&attempts),
+            error: network_reset,
+        });
+        let Err(error) = dial_with_retry(&client, "127.0.0.1:1").await else {
+            panic!("retryable dials should exhaust");
+        };
+        assert!(matches!(error, ConnectError::Attempt(_)));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1 + UNARY_RETRY_DELAYS.len()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_with_retry_does_not_retry_unsupported_proxy_dials() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let client = client(FailingDial {
+            attempts: Arc::clone(&attempts),
+            error: unsupported_proxy,
+        });
+        let Err(error) = dial_with_retry(&client, "127.0.0.1:1").await else {
+            panic!("unsupported proxy dials should not retry");
+        };
+        assert!(matches!(error, ConnectError::ProxyUnsupported(_)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }
