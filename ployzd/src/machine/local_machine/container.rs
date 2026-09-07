@@ -18,6 +18,70 @@ impl LocalMachine {
         local_storage(Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
     }
 
+    /// Recheck the complete local placement and secure all provisioned Volumes before applications start.
+    pub(crate) async fn prepare_volumes(
+        &self,
+        specs: Vec<ployz_core::ServiceStorageSpec>,
+    ) -> Result<ployz_core::PreparedVolumes, Error> {
+        use ployz_core::{RawVolumeSource, RpcError};
+        let admission = self.lock_store()?.admission_lock.clone();
+        let guard = admission.lock_owned().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let record = local.record()?;
+            if !matches!(
+                record.phase(),
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating
+            ) {
+                return Err(Error::NotParticipating);
+            }
+            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let storage = local.observe_storage().await;
+            let mut requested = std::collections::BTreeMap::new();
+            for spec in &specs {
+                crate::docker::require_eligible(
+                    spec.placement_eligibility(machine, storage.as_ref()),
+                )?;
+                for volume in spec.volume_graph().mounted_provisioned_volumes() {
+                    let RawVolumeSource::Provisioned {
+                        name,
+                        maximum_bytes,
+                        ..
+                    } = volume.source.kind()
+                    else {
+                        unreachable!("provisioned iterator")
+                    };
+                    if let Some(existing) = requested.insert(name.clone(), *maximum_bytes)
+                        && existing != *maximum_bytes
+                    {
+                        return Err(ployz_core::StorageCapacityError::VolumeSizeConflict {
+                            name: name.clone(),
+                        }
+                        .into_rpc_error()
+                        .into());
+                    }
+                }
+            }
+            containers
+                .validate_provisioned_volumes(&machine.id, &specs)
+                .await?;
+            let names: Vec<ployz_core::DockerVolumeName> =
+                crate::storage::plugin("Storage.Prepare", &requested).await?;
+            containers
+                .ensure_provisioned_volumes(&machine.id, &specs)
+                .await
+                .map_err(|error| {
+                    let mut error = RpcError::from(&error);
+                    error.details = serde_json::json!({ "prepared_volumes": names });
+                    error
+                })?;
+            Ok(ployz_core::PreparedVolumes { names })
+        })
+        .await?
+    }
+
     /// Create a container after storage admission and deferred Machine-local validation.
     ///
     /// # Errors

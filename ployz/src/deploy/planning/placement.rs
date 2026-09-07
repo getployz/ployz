@@ -3,13 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
-    MachineObservation, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, SpecChange, UpdateOrder, compare_specs,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId, PortPublication,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
+    ServiceMode, ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
+use super::volumes::VolumePlacement;
 use super::{DeployOperation, PlanError, PlanOptions, ReplacementOperation};
 
 pub(super) struct PlacementState {
@@ -210,11 +210,10 @@ pub(super) struct GlobalPlacement<'placement> {
     pub(super) service_id: &'placement ServiceId,
     pub(super) current: &'placement [ServiceContainer],
     pub(super) hooks: &'placement [HookContainer],
-    pub(super) machines: Vec<&'placement MachineObservation>,
+    pub(super) volumes: VolumePlacement<'placement>,
 }
 
 pub(super) fn plan_global(
-    requested: &RequestedServiceSpec,
     target: GlobalPlacement<'_>,
     placement: &mut PlacementState,
     options: &PlanOptions,
@@ -223,8 +222,9 @@ pub(super) fn plan_global(
         service_id,
         current,
         hooks,
-        machines,
+        volumes,
     } = target;
+    let (requested, machines) = volumes.into_parts();
     let endpoint_demand = EndpointDemand::for_operation;
     let has_changes = machines.iter().any(|machine| {
         !matches!(
@@ -392,18 +392,18 @@ enum ReplicaAction {
 }
 
 pub(super) struct ReplicatedPlacement<'a> {
-    pub(super) machines: Vec<&'a MachineObservation>,
+    pub(super) volumes: VolumePlacement<'a>,
     pub(super) admission: CapacityAdmission,
 }
 
 pub(super) fn plan_replicated(
-    requested: &RequestedServiceSpec,
     service_id: &ServiceId,
     current: &[ServiceContainer],
     target: ReplicatedPlacement<'_>,
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
+    let (requested, machines) = target.volumes.into_parts();
     let reservation = match target.admission {
         CapacityAdmission::Reserved { reservation } => reservation,
         CapacityAdmission::Pending { error } => {
@@ -412,11 +412,7 @@ pub(super) fn plan_replicated(
             select_replicated(
                 requested,
                 current,
-                target
-                    .machines
-                    .iter()
-                    .map(|machine| machine.machine.id)
-                    .collect(),
+                machines.iter().map(|machine| machine.machine.id).collect(),
                 &placement.occupancy,
                 (&mut placement.capacity, &mut sockets),
                 error,

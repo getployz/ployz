@@ -70,6 +70,11 @@ fn replacement_health_failure_outcome_from<E>(
 }
 
 pub(super) trait MachineOperations {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError>;
     async fn wait_for_container_observations(
         &self,
         container_ids: &[ContainerId],
@@ -112,6 +117,20 @@ pub(super) trait MachineOperations {
 }
 
 impl MachineOperations for Client {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        self.invoke::<op::PrepareVolumes>(
+            ployz_core::PrepareVolumesRequest {
+                specs: specs.to_vec(),
+            },
+            &MachineTarget::from(machine_id),
+            Some(Duration::from_secs(120)),
+        )
+        .await
+    }
     async fn wait_for_container_observations(
         &self,
         container_ids: &[ContainerId],
@@ -303,6 +322,13 @@ struct RestartTolerant<'a, C> {
 }
 
 impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        self.inner.prepare_volumes(machine_id, specs).await
+    }
     async fn wait_for_container_observations(
         &self,
         container_ids: &[ContainerId],
@@ -425,12 +451,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
     let project_name = &plan.project_name;
+    let mut progress = Progress::new(plan.pending_rows(), tx);
+    progress.emit();
     let client = RestartTolerant {
         inner: client,
         cancellation,
     };
-    let mut progress = Progress::new(plan.pending_rows(), tx);
-    progress.emit();
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);
@@ -493,6 +519,21 @@ async fn execute_operation<C: MachineOperations>(
 ) -> Result<(), OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
+        DeployOperation::PrepareVolumes { machine_id, specs } => client
+            .prepare_volumes(machine_id, specs)
+            .await
+            .map(|_| ())
+            .map_err(|mut error| {
+                if !error.details.is_object() {
+                    error.details = serde_json::json!({});
+                }
+                error
+                    .details
+                    .as_object_mut()
+                    .expect("details normalized to object")
+                    .insert("machine_id".into(), serde_json::json!(machine_id));
+                machine_error(MachineAction::PrepareVolumes, error).into()
+            }),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)
                 .await

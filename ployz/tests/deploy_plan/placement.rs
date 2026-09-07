@@ -107,6 +107,7 @@ fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
                 | DeployOperation::ReplaceContainer(_)
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
+                | DeployOperation::PrepareVolumes { .. }
                 | DeployOperation::RemoveVolume { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -386,6 +387,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
             | DeployOperation::ReplaceContainer(..)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>();
@@ -411,6 +413,7 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
                 | DeployOperation::ReplaceContainer(..)
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
+                | DeployOperation::PrepareVolumes { .. }
                 | DeployOperation::RemoveVolume { .. }) => {
                     panic!("unexpected operation: {other:?}")
                 }
@@ -563,6 +566,21 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                 };
                 target_machine.storage = Some(MachineStorageObservation::Ready);
                 snapshot.machines = vec![target_machine.clone()];
+                snapshot.storage_capacity.insert(
+                    target_machine.machine.id,
+                    Ok(ployz_core::StorageCapacity {
+                        backing: ployz_core::StorageBacking::Fixed {
+                            pool_size_bytes: 10 * ployz_core::STORAGE_GIB,
+                        },
+                        unmanaged_used_bytes: 0,
+                        volumes: BTreeMap::from([(
+                            app_volume("data"),
+                            ployz_core::ProvisionedVolumeMaximumBytes::new(
+                                NonZeroU64::new(1_073_741_824).unwrap(),
+                            ),
+                        )]),
+                    }),
+                );
             }
             snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(vec![existing])
                 .expect("valid Volume Snapshot fixture");
@@ -580,6 +598,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
+                | DeployOperation::PrepareVolumes { .. }
                 | DeployOperation::RemoveVolume { .. } => None,
             })
             .unwrap();
@@ -965,6 +984,7 @@ fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect()

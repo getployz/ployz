@@ -62,6 +62,18 @@ impl ResolvedServiceSpec {
     }
 }
 
+impl crate::ServiceStorageSpec {
+    /// Recheck storage requirements and selectors on the preparing Machine.
+    #[must_use]
+    pub fn placement_eligibility(
+        &self,
+        machine: &Machine,
+        storage: Option<&MachineStorageObservation>,
+    ) -> ServicePlacementEligibility {
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
+    }
+}
+
 /// Evaluate placement constraints and mounted Provisioned Volume capability.
 ///
 /// Membership Observation is intentionally a consumer concern. Provisioned
@@ -127,6 +139,13 @@ mod tests {
             .admit()
             .expect("valid volume declaration"),
             true,
+        );
+        assert!(
+            crate::ServiceStorageSpec::try_from(&requested(
+                Placement::default(),
+                provisioned.clone()
+            ))
+            .is_err()
         );
         let unused_provisioned = volume_graph(
             crate::RawVolumeSource::Provisioned {
@@ -210,17 +229,50 @@ mod tests {
                         .unwrap(),
                 )
                 .unwrap();
+            let storage_spec = crate::ServiceStorageSpec::try_from(&requested).unwrap();
+            let mut wire = serde_json::to_value(&storage_spec).unwrap();
+            assert_eq!(
+                serde_json::from_value::<crate::ServiceStorageSpec>(wire.clone()).unwrap(),
+                storage_spec
+            );
+            if let Some(volume) = wire
+                .get_mut("volumes")
+                .unwrap()
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|volume| {
+                    matches!(
+                        volume.get("source").unwrap().get("kind").unwrap().as_str(),
+                        Some("ordinary" | "provisioned")
+                    )
+                })
+            {
+                volume
+                    .get_mut("source")
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("scope");
+                assert!(serde_json::from_value::<crate::ServiceStorageSpec>(wire).is_err());
+            }
+
+            assert_eq!(
+                storage_spec.placement_eligibility(&machine, storage.as_ref()),
+                expected
+            );
             assert_eq!(
                 requested.placement_eligibility(&machine, storage.as_ref()),
                 expected
             );
+            let resolved = requested
+                .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                .expect("volume graph is scoped");
             assert_eq!(
-                requested
-                    .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
-                    .expect("volume graph is scoped")
-                    .placement_eligibility(&machine, storage.as_ref()),
+                resolved.placement_eligibility(&machine, storage.as_ref()),
                 expected
             );
+            assert_eq!(crate::ServiceStorageSpec::from(&resolved), storage_spec);
         }
     }
 

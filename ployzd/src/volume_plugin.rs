@@ -17,6 +17,7 @@ use ployzd::machine_pool::MachinePool;
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
 
+mod capacity;
 mod pool;
 mod removal;
 
@@ -27,18 +28,22 @@ const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
 type Result<T> = std::result::Result<T, VolumeError>;
 
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-struct VolumeError(String);
+enum VolumeError {
+    #[error("{0}")]
+    Message(String),
+    #[error(transparent)]
+    Capacity(#[from] ployz_core::StorageCapacityError),
+}
 
 impl From<String> for VolumeError {
     fn from(message: String) -> Self {
-        Self(message)
+        Self::Message(message)
     }
 }
 
 impl From<&str> for VolumeError {
     fn from(message: &str) -> Self {
-        Self(message.to_owned())
+        Self::Message(message.to_owned())
     }
 }
 
@@ -79,9 +84,9 @@ struct VolumeStorage {
     mutation: Arc<Mutex<()>>,
 }
 
-enum PoolOrigin {
-    Existing,
-    CreatedForRequest,
+enum CapacityAdmission {
+    Required,
+    Ensured,
 }
 
 impl VolumeStorage {
@@ -109,7 +114,7 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &DockerVolumeName,
         requested: u64,
-        origin: PoolOrigin,
+        origin: CapacityAdmission,
     ) -> Result<()> {
         let datasets = self.datasets(pool).await?;
         let root = format!("{}/{DATASET_ROOT}", pool.name());
@@ -129,7 +134,7 @@ impl VolumeStorage {
             };
         }
 
-        if matches!(origin, PoolOrigin::Existing) {
+        if matches!(origin, CapacityAdmission::Required) {
             let commitment = datasets
                 .iter()
                 .filter(|dataset| dataset.name.starts_with(&format!("{root}/")))
@@ -138,8 +143,18 @@ impl VolumeStorage {
                 .ok_or_else(|| {
                     VolumeError::from("Provisioned Volume commitments overflowed u64")
                 })?;
+            let managed_used = datasets
+                .iter()
+                .filter(|dataset| dataset.name.starts_with(&format!("{root}/")))
+                .map(|dataset| dataset.active_used_bytes)
+                .try_fold(0u64, u64::checked_add)
+                .ok_or("Dataset occupancy overflows u64")?;
             self.pool
-                .ensure_capacity(pool, commitment, name, requested)
+                .ensure_capacity(
+                    pool,
+                    commitment,
+                    pool.used_bytes().saturating_sub(managed_used),
+                )
                 .await?;
         }
 
@@ -195,7 +210,7 @@ impl VolumeStorage {
                 "list",
                 "-Hp",
                 "-o",
-                "name,refquota,used,mountpoint,mounted,readonly",
+                "name,refquota,used,usedbydataset,mountpoint,mounted,readonly",
                 "-r",
                 pool.name(),
             ])
@@ -246,6 +261,7 @@ struct Dataset {
     name: String,
     refquota: u64,
     used_bytes: u64,
+    active_used_bytes: u64,
     mountpoint: String,
     mounted: bool,
     readonly: bool,
@@ -259,6 +275,7 @@ impl Dataset {
             Some(name),
             Some(refquota),
             Some(used_bytes),
+            Some(active_used_bytes),
             Some(mountpoint),
             Some(mounted),
             Some(readonly),
@@ -271,15 +288,21 @@ impl Dataset {
             fields.next(),
             fields.next(),
             fields.next(),
+            fields.next(),
         )
         else {
             return Err(invalid().into());
         };
         let used_bytes = used_bytes.parse::<u64>().map_err(|_| invalid())?;
+        let active_used_bytes = active_used_bytes.parse::<u64>().map_err(|_| invalid())?;
+        if active_used_bytes > used_bytes {
+            return Err(invalid().into());
+        }
         Ok(Self {
             name: name.to_owned(),
             refquota: parse_zfs_bytes(refquota)?,
             used_bytes,
+            active_used_bytes,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
             readonly: match readonly {
@@ -460,6 +483,8 @@ pub(super) async fn run(listener: StdUnixListener) -> io::Result<()> {
 async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()> {
     let router = Router::new()
         .route("/Plugin.Activate", post(activate))
+        .route("/Storage.Inspect", post(capacity::inspect))
+        .route("/Storage.Prepare", post(capacity::prepare))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -586,6 +611,9 @@ mod tests {
 
     #[path = "first_pool_tests.rs"]
     mod first_pool_tests;
+
+    #[path = "capacity_tests.rs"]
+    mod capacity_tests;
 
     #[path = "fake_zfs.rs"]
     mod fake_zfs;

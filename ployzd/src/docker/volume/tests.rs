@@ -779,3 +779,22 @@ fn provisioned_volume_rejects_a_relative_mountpoint() {
 
     assert!(error.to_string().contains("invalid mountpoint"));
 }
+
+#[tokio::test]
+async fn preparation_rejects_conflicting_definitions_without_creating_a_volume() {
+    let (runtime, fake) = fake_runtime().await;
+    let specs = [
+        spec_with_sources(vec![provisioned_source("data", 1073741824)]),
+        spec_with_sources(vec![provisioned_source("data", 2147483648)]),
+    ]
+    .iter()
+    .map(ployz_core::ServiceStorageSpec::from)
+    .collect::<Vec<_>>();
+    assert!(matches!(
+        runtime
+            .validate_provisioned_volumes(&MachineId::random(), &specs)
+            .await,
+        Err(Error::VolumeShapeMismatch { .. })
+    ));
+    assert!(fake.volumes.lock().unwrap().is_empty());
+}

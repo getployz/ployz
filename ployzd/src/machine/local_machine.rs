@@ -81,6 +81,9 @@ impl RuntimeWatchTelemetry {
 /// Failures from Local Machine operations. The RPC adapter maps these once.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Machine-local storage admission or preparation failed with structured details.
+    #[error(transparent)]
+    StoragePreparation(#[from] ployz_core::RpcError),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error("Machine is not participating")]

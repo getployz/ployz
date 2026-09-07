@@ -272,6 +272,8 @@ impl VolumeSnapshot {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
+    /// Fresh machine-local storage commitments and physical capacity, including read failures.
+    pub storage_capacity: BTreeMap<MachineId, Result<ployz_core::StorageCapacity, RpcError>>,
     pub containers: Vec<ContainerObservation>,
     /// Successful, failed, and omitted Docker Volume observations by Machine.
     pub volume_snapshot: VolumeSnapshot,
@@ -452,6 +454,17 @@ impl fmt::Display for EliminatingConstraints {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
+    /// Complete provisioned storage demand cannot be admitted on this Machine.
+    #[error("Machine {machine}: {source}")]
+    Storage {
+        /// Durable identity of the Machine whose budget failed.
+        machine_id: MachineId,
+        /// Human-facing Machine name from the plan observation.
+        machine: MachineName,
+        /// Typed capacity failure and recovery details.
+        #[source]
+        source: ployz_core::StorageCapacityError,
+    },
     /// The Service declares overlapping exclusive host publications.
     #[error("Service {service} declares conflicting host socket publications")]
     ConflictingHostPublications { service: ServiceName },
@@ -596,6 +609,56 @@ pub fn plan_compose(
 }
 
 impl PlanError {
+    /// Readable SDK failure with structured storage details preserved through service context.
+    #[must_use]
+    pub fn into_rpc_error(self) -> RpcError {
+        match self {
+            Self::Storage {
+                machine_id,
+                machine,
+                source,
+            } => {
+                let mut error = source.into_rpc_error();
+                error.message = format!("Machine {machine}: {}", error.message);
+                let details = error
+                    .details
+                    .as_object_mut()
+                    .expect("storage errors have object details");
+                details.insert("machine_id".into(), serde_json::json!(machine_id));
+                details.insert("machine".into(), serde_json::json!(machine));
+                error
+            }
+            Self::Service { service, source } => {
+                let mut error = source.into_rpc_error();
+                error.message = format!("Service {service}: {}", error.message);
+                error
+            }
+            error @ (Self::ConflictingHostPublications { .. }
+            | Self::HostPortConflict { .. }
+            | Self::CapacityUnknown
+            | Self::InsufficientCapacity
+            | Self::NoEligibleMachines { .. }
+            | Self::ServiceModeCannotChange
+            | Self::ConflictingDockerVolumeDefinitions { .. }
+            | Self::DuplicateTargetService { .. }
+            | Self::ProvisionedVolumeStorageRequired { .. }
+            | Self::ProvisionedVolumeStorageUnavailable
+            | Self::ProvisionedVolumeStorageUnknown { .. }
+            | Self::ExistingPlainVolume { .. }
+            | Self::ExistingProvisionedVolumeMismatch { .. }
+            | Self::MixedVolumeModes { .. }
+            | Self::DependencyCycle { .. }
+            | Self::DockerVolumeUnavailable { .. }
+            | Self::HostnameConflict { .. }
+            | Self::DomainRequired(_)
+            | Self::GeneratedLabel(_)) => RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+            },
+        }
+    }
+
     pub(crate) fn no_eligible_machines(constraints: Vec<EliminatingConstraint>) -> Self {
         Self::NoEligibleMachines {
             constraints: EliminatingConstraints::new(constraints),

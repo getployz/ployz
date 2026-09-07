@@ -76,6 +76,7 @@ struct TaskView {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Subject {
+    Storage { name: String },
     Container { name: String },
     Volume { name: String },
     Dependency { name: String },
@@ -84,6 +85,7 @@ enum Subject {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Verb {
+    Prepare,
     Create,
     Replace,
     Remove,
@@ -113,6 +115,7 @@ enum Pulse {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DoneWord {
+    Ready,
     Healthy,
     Removed,
 }
@@ -154,6 +157,7 @@ enum Cause {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActionWord {
+    PrepareVolumes,
     Create,
     Start,
     Inspect,
@@ -326,7 +330,8 @@ impl TaskView {
 impl Subject {
     fn name(&self) -> &str {
         match self {
-            Self::Container { name }
+            Self::Storage { name }
+            | Self::Container { name }
             | Self::Volume { name }
             | Self::Dependency { name }
             | Self::Hook { name } => name,
@@ -335,6 +340,7 @@ impl Subject {
 
     fn kind(&self) -> &'static str {
         match self {
+            Self::Storage { .. } => "Storage",
             Self::Container { .. } => "Container",
             Self::Volume { .. } => "Volume",
             Self::Dependency { .. } => "Dependency",
@@ -346,6 +352,7 @@ impl Subject {
 impl Verb {
     fn word(self) -> &'static str {
         match self {
+            Self::Prepare => "prepare",
             Self::Create => "create",
             Self::Replace => "replace",
             Self::Remove => "remove",
@@ -360,6 +367,7 @@ impl Verb {
 impl ActionWord {
     fn from_machine(action: MachineAction) -> Self {
         match action {
+            MachineAction::PrepareVolumes => Self::PrepareVolumes,
             MachineAction::CreateContainer => Self::Create,
             MachineAction::StartContainer => Self::Start,
             MachineAction::InspectContainer => Self::Inspect,
@@ -371,6 +379,7 @@ impl ActionWord {
 
     fn word(self) -> &'static str {
         match self {
+            Self::PrepareVolumes => "prepare storage",
             Self::Create => "create",
             Self::Start => "start",
             Self::Inspect => "inspect",
@@ -492,6 +501,7 @@ fn row_matches_failed(row: &OperationRow, failed: &FailedOperation<ExecutionErro
 
 fn subject_of(operation: &DeployOperation, name: String) -> Subject {
     match operation {
+        DeployOperation::PrepareVolumes { .. } => Subject::Storage { name },
         DeployOperation::WaitHealthy { .. } => Subject::Dependency { name },
         DeployOperation::RemoveVolume { .. } => Subject::Volume { name },
         DeployOperation::RunHook { .. } | DeployOperation::StopHook { .. } => {
@@ -506,6 +516,7 @@ fn subject_of(operation: &DeployOperation, name: String) -> Subject {
 
 fn verb_of(operation: &DeployOperation) -> Verb {
     match operation {
+        DeployOperation::PrepareVolumes { .. } => Verb::Prepare,
         DeployOperation::RunContainer { .. } => Verb::Create,
         DeployOperation::ReplaceContainer(_) => Verb::Replace,
         DeployOperation::RemoveContainer { .. } | DeployOperation::RemoveVolume { .. } => {
@@ -561,6 +572,7 @@ fn pulse_of(phase: &OperationPhase) -> Pulse {
 
 fn done_word(operation: &DeployOperation) -> DoneWord {
     match operation {
+        DeployOperation::PrepareVolumes { .. } => DoneWord::Ready,
         DeployOperation::RemoveContainer { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::StopHook { .. }
@@ -581,6 +593,7 @@ fn visible_name(
         return display.to_owned();
     }
     match operation {
+        DeployOperation::PrepareVolumes { .. } => "provisioned volumes".into(),
         DeployOperation::WaitHealthy { dependency, .. } => dependency.to_string(),
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
             spec.name.to_string()
@@ -805,6 +818,9 @@ fn status_paint(state: &TaskState) -> (&'static str, &'static str, String, Role)
     match state {
         TaskState::Pending => ("•", "Pending", String::new(), Role::Idle),
         TaskState::Unexecuted => ("•", "Unexecuted", String::new(), Role::Idle),
+        TaskState::Done {
+            word: DoneWord::Ready,
+        } => ("✔", "Ready", String::new(), Role::Done),
         TaskState::Done {
             word: DoneWord::Healthy,
         } => ("✔", "Healthy", String::new(), Role::Done),

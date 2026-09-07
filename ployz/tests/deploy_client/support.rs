@@ -206,6 +206,29 @@ impl DeployService {
 
 #[tonic::async_trait]
 impl MachineRpc for DeployService {
+    async fn inspect_storage(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        encoded(RpcResponse::from(ployz_core::StorageCapacity {
+            backing: ployz_core::StorageBacking::Unallocated {
+                host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+                host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: BTreeMap::new(),
+        }))
+    }
+
+    async fn prepare_volumes(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        encoded(RpcResponse::from(ployz_core::PreparedVolumes {
+            names: Vec::new(),
+        }))
+    }
+
     type ExecStream = tokio_stream::wrappers::ReceiverStream<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;

@@ -189,3 +189,53 @@ struct ResolvedServiceVolumeWire {
     reference: crate::ServiceVolumeReference,
     source: crate::ResolvedVolumeSource,
 }
+
+/// Storage-only wire admission retains the same checked scope as resolved Services.
+#[derive(Serialize, Deserialize, TS)]
+#[ts(rename = "ServiceStorageSpec")]
+pub(super) struct ServiceStorageSpecWire {
+    placement: Placement,
+    volumes: Vec<ResolvedServiceVolumeWire>,
+    mounts: Vec<ServiceMount>,
+}
+
+impl TryFrom<ServiceStorageSpecWire> for super::ServiceStorageSpec {
+    type Error = crate::ServiceVolumeGraphError;
+
+    fn try_from(wire: ServiceStorageSpecWire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            placement: wire.placement,
+            volumes: ServiceVolumeGraph::parse(
+                wire.volumes
+                    .into_iter()
+                    .map(|volume| ServiceVolume {
+                        reference: volume.reference,
+                        source: volume.source.into_requested(),
+                    })
+                    .collect(),
+                wire.mounts,
+            )?
+            .try_into()?,
+        })
+    }
+}
+
+impl From<super::ServiceStorageSpec> for ServiceStorageSpecWire {
+    fn from(spec: super::ServiceStorageSpec) -> Self {
+        let (volumes, mounts) = spec.volumes.into_parts();
+        Self {
+            placement: spec.placement,
+            volumes: volumes
+                .into_iter()
+                .map(|volume| ResolvedServiceVolumeWire {
+                    reference: volume.reference,
+                    source: volume
+                        .source
+                        .try_into()
+                        .expect("resolved graph establishes scope"),
+                })
+                .collect(),
+            mounts,
+        }
+    }
+}

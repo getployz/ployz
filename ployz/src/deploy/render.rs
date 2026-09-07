@@ -68,6 +68,25 @@ fn titled_plan_text(
     }
     out.push_str(&service_trees(preview));
     out.push_str(&volumes_to_create_lines(preview));
+    for storage in &preview.storage {
+        let budget = &storage.budget;
+        let gib = ployz_core::STORAGE_GIB as f64;
+        let headroom = budget
+            .available_bytes
+            .saturating_sub(budget.reserve_bytes)
+            .saturating_sub(budget.required_growth_bytes);
+        let _ = writeln!(
+            out,
+            "Storage on {}: {:.2} GiB requested, {:.2} GiB estimated pool growth, {:.2} GiB remaining after OS reserve",
+            storage.machine_name,
+            budget.requested_bytes as f64 / gib,
+            budget.required_growth_bytes as f64 / gib,
+            headroom as f64 / gib
+        );
+    }
+    if !preview.storage.is_empty() {
+        out.push_str("Storage is rechecked and prepared before applications start.\n");
+    }
     if !preview.operations.is_empty() {
         out.push_str("──────────────────────────────────────────\n");
         out.push_str(&plan_footer(preview));
@@ -165,7 +184,10 @@ fn service_trees(preview: &DeployPreview) -> String {
     let mut groups: BTreeMap<String, Vec<&OperationRow>> = BTreeMap::new();
     let mut out = String::new();
     for row in &preview.operations {
-        if matches!(row.operation, DeployOperation::RemoveVolume { .. }) {
+        if matches!(
+            row.operation,
+            DeployOperation::RemoveVolume { .. } | DeployOperation::PrepareVolumes { .. }
+        ) {
             let _ = writeln!(out, "{}", child_line(row));
             continue;
         }
@@ -236,6 +258,9 @@ fn child_line(row: &OperationRow) -> String {
     let machine = machine_label(row);
     let name = report::visible_row_name(row);
     match &row.operation {
+        DeployOperation::PrepareVolumes { .. } => {
+            format!("+ prepare provisioned storage on {machine}")
+        }
         DeployOperation::WaitHealthy {
             dependent,
             dependency,
@@ -264,6 +289,7 @@ fn child_line(row: &OperationRow) -> String {
 }
 
 fn plan_footer(preview: &DeployPreview) -> String {
+    let mut preparations = 0;
     let mut creates = 0;
     let mut replaces = 0;
     let mut removes = 0;
@@ -272,6 +298,7 @@ fn plan_footer(preview: &DeployPreview) -> String {
     for row in &preview.operations {
         machines.insert(row.machine_id, ());
         match &row.operation {
+            DeployOperation::PrepareVolumes { .. } => preparations += 1,
             DeployOperation::RunContainer { .. } => {
                 creates += 1;
             }
@@ -290,6 +317,9 @@ fn plan_footer(preview: &DeployPreview) -> String {
         }
     }
     let mut parts = Vec::new();
+    if preparations > 0 {
+        parts.push(format!("{preparations} storage preparation"));
+    }
     if creates > 0 {
         parts.push(format!("{creates} create"));
     }
@@ -362,7 +392,8 @@ pub(super) fn success_text(
             DeployOperation::RemoveContainer { .. } => ("removed", None),
             DeployOperation::StopContainer { .. } => ("stopped", None),
             DeployOperation::RemoveVolume { .. } => ("removed", None),
-            DeployOperation::WaitHealthy { .. }
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::StopHook { .. } => continue,
         };
@@ -404,6 +435,7 @@ fn endpoints_footer(completed: &[DeployOperation], cluster_domain: Option<&str>)
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => continue,
         };
         for port in &spec.ports {

@@ -48,7 +48,7 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
             Vec::new(),
         )
         .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
+        ..storage_snapshot()
     };
 
     let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
@@ -94,7 +94,7 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
             Vec::new(),
         )
         .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
+        ..storage_snapshot()
     };
 
     let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
@@ -128,7 +128,7 @@ fn named_volume_planning_rejects_an_only_incomplete_candidate() {
             vec![machine_id('1')],
         )
         .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
+        ..storage_snapshot()
     };
 
     let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
@@ -176,7 +176,7 @@ fn explicitly_targeted_provisioned_deploy(
             machines: vec![target],
             volume_snapshot: VolumeSnapshot::try_from_observations(volumes)
                 .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -191,6 +191,7 @@ fn missing_managed_volumes_are_informational_and_container_order_stays_exact() {
     assert!(matches!(
         operations(&preview).as_slice(),
         [
+            DeployOperation::PrepareVolumes { .. },
             DeployOperation::RunHook { .. },
             DeployOperation::RunContainer { .. }
         ]
@@ -279,7 +280,7 @@ fn ordinary_volume_does_not_adopt_an_existing_provisioned_volume() {
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
-            ..Default::default()
+            ..storage_snapshot()
         },
         PlanOptions::default(),
     )
@@ -316,7 +317,7 @@ fn omitted_driver_means_exactly_local_with_no_options() {
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
                 volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
-                ..Default::default()
+                ..storage_snapshot()
             },
             PlanOptions::default(),
         )
@@ -421,7 +422,7 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
                 "data",
             )])
             .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -429,7 +430,7 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
 
     assert!(matches!(
         operations(&preview).as_slice(),
-        [DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('2')
+        [DeployOperation::PrepareVolumes { .. }, DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('2')
     ));
     assert!(matches!(
         &preview.volumes_to_create[..],
@@ -454,7 +455,7 @@ fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
                 "data",
             )])
             .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -462,13 +463,14 @@ fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
 
     assert!(matches!(
         operations(&preview).as_slice(),
-        [DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('1')
+        [DeployOperation::PrepareVolumes { .. }, DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('1')
     ));
-    assert_eq!(
-        preview.warnings,
-        [ployz_core::DeployWarning::StorageObservationUnknown {
-            machine_id: machine_id('2'),
-        }]
+    assert!(
+        preview
+            .warnings
+            .contains(&ployz_core::DeployWarning::StorageObservationUnknown {
+                machine_id: machine_id('2')
+            })
     );
 }
 
@@ -482,7 +484,7 @@ fn automatic_provisioned_volume_reports_unknown_storage_guidance() {
         &intent,
         &DeploySnapshot {
             machines: vec![stateless, machine('2', "unobserved")],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -516,7 +518,7 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
                 "data",
             )])
             .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -553,7 +555,7 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
                 machines: vec![pinned, other],
                 volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing])
                     .expect("valid Volume Snapshot fixture"),
-                ..Default::default()
+                ..storage_snapshot()
             },
             IngressContext::default(),
         ),
@@ -594,7 +596,7 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
         &intent,
         &DeploySnapshot {
             machines: vec![stateless],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -676,7 +678,7 @@ fn disjoint_global_volumes_may_have_different_bounds() {
         &intent,
         &DeploySnapshot {
             machines: vec![first_machine, second_machine],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -702,7 +704,7 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
         &intent,
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     );
@@ -741,7 +743,7 @@ fn colocated_global_services_reject_conflicting_provisioned_labels() {
         &intent,
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     );
@@ -771,7 +773,7 @@ fn profile_filtered_service_still_contributes_to_bound_conflicts() {
         &intent,
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     );
@@ -803,7 +805,7 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
         &intent,
         &DeploySnapshot {
             machines: vec![ready],
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -811,7 +813,10 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
 
     assert!(matches!(
         operations(&preview).as_slice(),
-        [DeployOperation::RunContainer { .. }]
+        [
+            DeployOperation::PrepareVolumes { .. },
+            DeployOperation::RunContainer { .. }
+        ]
     ));
     assert!(preview.volumes_to_create.iter().any(|item| {
         item.name.as_str() == "app_data" && item.maximum_bytes == Some(maximum_bytes(1_073_741_824))
@@ -862,7 +867,7 @@ fn already_owned_volume_names_are_not_prefixed_again() {
                 "data",
             )])
             .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         PlanOptions::default(),
     )
@@ -901,7 +906,7 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
                 owned_volume(machine_id('1'), "worker-data"),
             ])
             .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         IngressContext::default(),
     )
@@ -925,7 +930,7 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
                 owned_volume(machine_id('1'), "keep-a"),
             ])
             .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
+            ..storage_snapshot()
         },
         PlanOptions::default(),
     )
@@ -943,4 +948,27 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
             },
         ]
     );
+}
+
+// These fixtures exercise volume identity and eligibility with ample physical capacity.
+fn storage_snapshot() -> DeploySnapshot {
+    DeploySnapshot {
+        storage_capacity: "0123456789abcdef"
+            .chars()
+            .map(|id| {
+                let machine = machine(id, "fixture");
+                (
+                    machine.machine.id,
+                    Ok(ployz_core::StorageCapacity {
+                        backing: ployz_core::StorageBacking::Fixed {
+                            pool_size_bytes: 1024 * ployz_core::STORAGE_GIB,
+                        },
+                        unmanaged_used_bytes: 0,
+                        volumes: BTreeMap::new(),
+                    }),
+                )
+            })
+            .collect(),
+        ..Default::default()
+    }
 }

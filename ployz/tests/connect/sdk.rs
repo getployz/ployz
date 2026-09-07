@@ -615,3 +615,144 @@ fn skip_health() -> PlanOptions {
         ..PlanOptions::default()
     }
 }
+
+#[tokio::test]
+async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
+    let mut description = advertised_description();
+    description
+        .capabilities
+        .insert(CapabilityName::parse(ployz_core::MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap());
+    let session = RelaySession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.storage_capacity = Some(ployz_core::StorageCapacity {
+        backing: ployz_core::StorageBacking::Unallocated {
+            host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+            host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+        },
+        unmanaged_used_bytes: 0,
+        volumes: Default::default(),
+    });
+    let created = service.created_volumes.clone();
+    let target_id = service.machines.first().unwrap().machine.id;
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
+    let services = ["data", "server"].map(|name| {
+        let mut value = serde_json::to_value(spec_with_volume(name, name)).unwrap();
+        *value.pointer_mut("/volumes/0/source").unwrap() = serde_json::json!({ "kind":"provisioned", "name":name, "maximum_bytes":30 * ployz_core::STORAGE_GIB });
+        serde_json::from_value::<RequestedServiceSpec>(value).unwrap()
+    });
+    let error = client
+        .preview(DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
+            services.iter(),
+            skip_health(),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.details.get("code").unwrap(), "insufficient_storage");
+    assert_eq!(error.details.get("machine_id").unwrap(), target_id.as_str());
+    assert_eq!(
+        error.details.get("shortfall_bytes").unwrap(),
+        2 * ployz_core::STORAGE_GIB
+    );
+    assert!(error.message.contains("2.00 GiB"), "{error}");
+    assert!(
+        error
+            .details
+            .get("suggestions")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|suggestion| suggestion == "Expand the disk")
+    );
+    assert!(created.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
+    let mut description = advertised_description();
+    description
+        .capabilities
+        .insert(CapabilityName::parse(ployz_core::MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap());
+    let session = RelaySession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    let target = service.machines.first().unwrap().machine.id;
+    let project = ProjectName::parse("app").unwrap();
+    let mut value = serde_json::to_value(spec_with_volume("api", "data")).unwrap();
+    *value.pointer_mut("/volumes/0/source").unwrap() = serde_json::json!({
+        "kind":"provisioned", "name":"data", "maximum_bytes":ployz_core::STORAGE_GIB
+    });
+    let requested: RequestedServiceSpec = serde_json::from_value(value).unwrap();
+    let mut source = requested
+        .volume_graph()
+        .volumes()
+        .first()
+        .unwrap()
+        .source
+        .clone();
+    source.scope_to_project(&project);
+    let volume = super::support::created_volume(target, source.to_create_volume_request().unwrap());
+    service.storage_capacity = Some(ployz_core::StorageCapacity {
+        backing: ployz_core::StorageBacking::Fixed {
+            pool_size_bytes: 10 * ployz_core::STORAGE_GIB,
+        },
+        unmanaged_used_bytes: 0,
+        volumes: [(
+            volume.id.name.clone(),
+            ployz_core::ProvisionedVolumeMaximumBytes::new(
+                std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
+            ),
+        )]
+        .into(),
+    });
+    service
+        .listed_volumes
+        .lock()
+        .unwrap()
+        .insert(target, Vec::new());
+    service.volume_observation_failures.lock().unwrap().insert(
+        target,
+        vec![ployz_core::VolumeObservationFailure {
+            id: volume.id.clone(),
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Pool is not imported".into(),
+                details: serde_json::Value::Null,
+            },
+        }],
+    );
+    service.recover_volume_on_storage_inspect = Some(volume);
+    let created = service.created_volumes.clone();
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
+    let preview = client
+        .preview(DeployIntent::apply_one(project, requested, skip_health()))
+        .await
+        .unwrap();
+    assert_eq!(
+        preview
+            .storage
+            .first()
+            .unwrap()
+            .budget
+            .additional_commitment_bytes,
+        0
+    );
+    assert!(preview.volumes_to_create.is_empty());
+    assert!(created.lock().unwrap().is_empty());
+}

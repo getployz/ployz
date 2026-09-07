@@ -662,6 +662,8 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
             }
             DeployWarning::ObservationFailed { .. }
             | DeployWarning::ObservationOmitted { .. }
+            | DeployWarning::StorageHeadroom { .. }
+            | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. } => false,

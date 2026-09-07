@@ -11,6 +11,7 @@ pub mod routing;
 pub mod rpc;
 mod rpc_catalog;
 pub mod service;
+mod storage_capacity;
 pub mod stream;
 pub mod value;
 
@@ -24,6 +25,7 @@ pub use project::*;
 pub use routing::*;
 pub use rpc::*;
 pub use service::*;
+pub use storage_capacity::*;
 pub use stream::*;
 pub use value::*;
 

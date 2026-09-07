@@ -1,3 +1,4 @@
+use crate::StorageCapacity;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
@@ -812,6 +813,8 @@ define_responses! {
     ContainerChanged(ContainerChanged) => "container_changed";
     DockerVolume(DockerVolume) => "docker_volume";
     CreateVolumeReport(CreateVolumeReport) => "create_volume_report";
+    StorageCapacity(crate::StorageCapacity) => "storage_capacity";
+    PreparedVolumes(PreparedVolumes) => "prepared_volumes";
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     MachineImages(MachineImages) => "machine_images";

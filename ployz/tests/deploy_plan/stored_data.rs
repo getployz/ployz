@@ -12,6 +12,7 @@ fn destroys_stored_data(operation: &DeployOperation) -> bool {
         | DeployOperation::RemoveContainer { .. }
         | DeployOperation::ReplaceContainer(_)
         | DeployOperation::StopHook { .. }
+        | DeployOperation::PrepareVolumes { .. }
         | DeployOperation::RunHook { .. } => false,
     }
 }

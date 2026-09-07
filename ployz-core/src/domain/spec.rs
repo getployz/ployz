@@ -1,7 +1,7 @@
 //! Requested and resolved Service configuration with admitted mount graphs.
 
 mod wire;
-use wire::{RequestedServiceSpecWire, ResolvedServiceSpecWire};
+use wire::{RequestedServiceSpecWire, ResolvedServiceSpecWire, ServiceStorageSpecWire};
 
 use std::{
     collections::BTreeMap,
@@ -508,6 +508,50 @@ pub struct ServiceContainerSpec {
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
     pub restart: RestartPolicy,
+}
+
+/// One Service's placement constraints and scoped mounted storage requirements.
+/// Storage preparation does not need a container identity or an update strategy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "ServiceStorageSpecWire", into = "ServiceStorageSpecWire")]
+#[ts(as = "ServiceStorageSpecWire")]
+pub struct ServiceStorageSpec {
+    /// Selectors that the preparing Machine must still satisfy.
+    pub placement: Placement,
+    /// Admitted mounts with Project-scoped managed Volume names.
+    pub volumes: crate::ResolvedServiceVolumeGraph,
+}
+
+impl ServiceStorageSpec {
+    /// Scoped Volume declarations and the mounts that use them.
+    #[must_use]
+    pub fn volume_graph(&self) -> &crate::ResolvedServiceVolumeGraph {
+        &self.volumes
+    }
+}
+
+impl TryFrom<&RequestedServiceSpec> for ServiceStorageSpec {
+    type Error = crate::ServiceVolumeGraphError;
+
+    /// Project the requirements after Project scoping.
+    ///
+    /// # Errors
+    /// Rejects managed Volumes whose Project scope is unresolved.
+    fn try_from(spec: &RequestedServiceSpec) -> Result<Self, Self::Error> {
+        Ok(Self {
+            placement: spec.placement.clone(),
+            volumes: spec.volume_graph().clone().try_into()?,
+        })
+    }
+}
+
+impl From<&ResolvedServiceSpec> for ServiceStorageSpec {
+    fn from(spec: &ResolvedServiceSpec) -> Self {
+        Self {
+            placement: spec.placement.clone(),
+            volumes: spec.volume_graph().clone(),
+        }
+    }
 }
 
 /// Normalized deploy input before placement and container-specific resolution.

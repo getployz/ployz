@@ -232,6 +232,7 @@ fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect::<Vec<_>>();

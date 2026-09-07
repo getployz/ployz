@@ -97,11 +97,23 @@ target: Array<RequestedServiceSpec>,
  */
 options: PlanOptions, };
 
-export type DeployOperation = { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, purpose: StopContainerPurpose, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
+export type DeployOperation = { "type": "prepare_volumes", 
+/**
+ * Machine that owns the local Volumes.
+ */
+machine_id: MachineId, 
+/**
+ * Assigned storage requirements, including reused Volumes, prepared as one batch.
+ */
+specs: Array<ServiceStorageSpec>, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, purpose: StopContainerPurpose, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
 
 export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, };
 
 export type DeployPreview = { 
+/**
+ * Capacity budget for every Machine receiving provisioned storage.
+ */
+storage: Array<MachineStorageBudget>, 
 /**
  * Project this preview describes.
  */
@@ -116,7 +128,8 @@ operations: Array<OperationRow>,
 warnings: Array<DeployWarning>, 
 /**
  * Missing managed Docker Volumes the shown container operations would create on their target
- * Machines during Volume Ensure. These are informational, not executable plan rows.
+ * Machines during preparation or Volume Ensure. These are informational;
+ * provisioned storage preparation appears separately in `operations`.
  */
 volumes_to_create: Array<VolumeToCreate>, 
 /**
@@ -133,7 +146,15 @@ preserved_volumes: Array<PreservedVolume>,
  */
 prune_refusal: PruneRefusal | null, };
 
-export type DeployWarning = { "type": "observation_failed", kind: ObservationKind, machine_id: MachineId, message: string, } | { "type": "observation_omitted", kind: ObservationKind, machine_id: MachineId, } | { "type": "storage_observation_unknown", 
+export type DeployWarning = { "type": "storage_headroom", 
+/**
+ * Machine with limited remaining capacity.
+ */
+machine_id: MachineId, 
+/**
+ * Bytes left after preparation and the OS reserve.
+ */
+remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "observation_failed", kind: ObservationKind, machine_id: MachineId, message: string, } | { "type": "observation_omitted", kind: ObservationKind, machine_id: MachineId, } | { "type": "storage_observation_unknown", 
 /**
  * Machine whose storage capability could not be checked.
  */
@@ -207,7 +228,7 @@ export type LogDriver = { name: string, options: { [key in string]: string }, };
 
 export type Machine = { id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
-export type MachineAction = "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
+export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 
@@ -228,6 +249,20 @@ rtt: RttStatistics | null, };
 export type MachinePath = string;
 
 export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string, };
+
+export type MachineStorageBudget = { 
+/**
+ * Durable identity of the Machine selected by this plan.
+ */
+machine_id: MachineId, 
+/**
+ * Human-facing name from the same observation.
+ */
+machine_name: MachineName, 
+/**
+ * Aggregate capacity for the selected provisioned Volumes on this Machine.
+ */
+budget: StorageBudget, };
 
 export type MachineStorageObservation = { "state": "stateless" } | { "state": "ready" } | { "state": "pool", 
 /**
@@ -465,6 +500,8 @@ export type ServiceName = string;
 
 export type ServiceObservation = { identity: QualifiedService, service_id: ServiceId, containers: Array<ServiceContainer>, hook_containers: Array<HookContainer>, };
 
+export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
+
 export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
 export type ServiceVolumeReference = string;
@@ -472,6 +509,59 @@ export type ServiceVolumeReference = string;
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 
 export type StopContainerPurpose = "lifecycle" | "free_host_ports";
+
+export type StorageBudget = { 
+/**
+ * Sum of unique bounds requested by this deployment, including reused Volumes.
+ */
+requested_bytes: number, 
+/**
+ * Bounds not already committed by existing managed datasets.
+ */
+additional_commitment_bytes: number, 
+/**
+ * Conservative backing-growth estimate; initial Pools include one GiB for ZFS size loss.
+ * Allocation rechecks actual usable capacity, which cannot be known before Pool creation.
+ */
+required_growth_bytes: number, 
+/**
+ * Free host filesystem bytes, or remaining usable capacity for a fixed Pool.
+ */
+available_bytes: number, 
+/**
+ * Host filesystem bytes retained for the OS; zero for a fixed Pool.
+ */
+reserve_bytes: number, };
+
+export type StorageCapacityError = { "code": "insufficient_storage", 
+/**
+ * Additional physical backing required in bytes.
+ */
+required_growth_bytes: number, 
+/**
+ * Observed available bytes before preserving the reserve.
+ */
+available_bytes: number, 
+/**
+ * Host bytes retained for the operating system.
+ */
+reserve_bytes: number, } | { "code": "pool_cannot_grow", 
+/**
+ * Total Pool capacity required including overhead and occupancy.
+ */
+required_bytes: number, 
+/**
+ * Observed usable capacity of the fixed Pool.
+ */
+capacity_bytes: number, } | { "code": "storage_capacity_unknown", 
+/**
+ * The missing or invalid evidence.
+ */
+message: string, } | { "code": "volume_size_conflict", 
+/**
+ * The conflicting Volume.
+ */
+name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
 

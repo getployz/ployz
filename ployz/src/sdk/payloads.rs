@@ -83,6 +83,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<RemoveVolumesRequest>();
     declarations.add::<RequestedServiceSpec>();
     declarations.add::<RpcError>();
+    declarations.add::<ployz_core::StorageCapacityError>();
     declarations.add::<RuntimeWatchView>();
     declarations.add::<VolumeRemoval>();
 

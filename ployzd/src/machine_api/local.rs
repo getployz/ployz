@@ -521,6 +521,25 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn inspect_storage(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::InspectStorage>(request)?;
+        match crate::storage::plugin::<ployz_core::StorageCapacity>("Storage.Inspect", &()).await {
+            Ok(capacity) => respond(capacity),
+            Err(error) => respond(error),
+        }
+    }
+
+    async fn prepare_volumes(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PrepareVolumes>(request)?;
+        finish(self.local.prepare_volumes(request.specs).await)
+    }
+
     async fn list_volumes(
         &self,
         request: Request<OpaquePayload>,
@@ -934,6 +953,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         }),
         LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
+        LocalMachineError::StoragePreparation(error) => respond(error),
         LocalMachineError::Cleanup(message) => respond(RpcError {
             code: RpcErrorCode::Internal,
             message,

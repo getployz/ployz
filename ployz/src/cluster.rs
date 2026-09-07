@@ -757,6 +757,7 @@ pub(crate) fn snapshot_from_partial(
         omissions: container_omissions,
     } = containers;
     Ok(DeploySnapshot {
+        storage_capacity: Default::default(),
         machines,
         containers: container_successes
             .into_iter()

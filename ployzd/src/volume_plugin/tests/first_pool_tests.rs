@@ -167,7 +167,7 @@ async fn growth_overflow_is_refused_before_mutation() {
     .await;
     server.abort();
 
-    assert!(error(&response).contains("backing capacity overflowed u64"));
+    assert!(error(&response).contains("Pool growth overflow"));
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
         "2147483648\n"
@@ -298,7 +298,7 @@ async fn growth_reserve_refusal_reports_the_shortfall_before_mutation() {
     let message = error(&response);
     assert_eq!(
         message,
-        "Not enough disk space on this machine to create other.\nRequested volume size: 2.0 GiB.\nAbout 1.0 GiB more free space is needed, including storage overhead and OS reserve.\nFree up disk space, expand the disk, or request a smaller volume."
+        "Not enough disk space: about 1.00 GiB more free space is needed, including storage overhead and OS reserve. Free disk space, expand the disk, or reduce requested volume sizes."
     );
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
@@ -691,7 +691,7 @@ async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken(
 
     assert_eq!(
         error(&response),
-        "Not enough disk space on this machine to create data.\nRequested volume size: 1.0 GiB.\nAbout 1.0 GiB more free space is needed, including storage overhead and OS reserve.\nFree up disk space, expand the disk, or request a smaller volume."
+        "Not enough disk space: about 1.00 GiB more free space is needed, including storage overhead and OS reserve. Free disk space, expand the disk, or reduce requested volume sizes."
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert!(!log.contains("fallocate"));
@@ -758,7 +758,8 @@ async fn create_first_volume(test: &TestDir, physical_block_size: u64, size: &st
     response
 }
 
-fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage {
+/// Fake storage programs for root-backed Pool and capacity route tests.
+pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage {
     let script = directory.join("fake-storage");
     let commands = directory.join("commands");
     let pool = directory.join("pool");
@@ -862,11 +863,11 @@ case "$name" in
     ;;
   zfs)
     case "$*" in
-      'list -Hp -o name,refquota,used,mountpoint,mounted,readonly -r ployz')
-        printf 'ployz\t0\t0\t/ployz\tyes\toff\n'
-        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
-        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
-        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
+      'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r ployz')
+        printf 'ployz\t0\t0\t0\t/ployz\tyes\toff\n'
+        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')

@@ -16,17 +16,14 @@ use super::{
 
 pub(super) mod capacity;
 mod placement;
+mod storage;
 mod volumes;
 
 use placement::{
     CapacityAdmission, GlobalPlacement, PlacementReservations, PlacementState, ReplicatedPlacement,
     is_up_to_date, plan_global, plan_replicated,
 };
-use volumes::{
-    VolumePins, constrain_volume_candidates, managed_volume_uses, plan_volume_operations,
-    prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
-    scope_requested,
-};
+use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,7 +50,7 @@ struct BoundIntent {
 /// Operations and prune results before pending rows are attached.
 struct Planned {
     operations: Vec<DeployOperation>,
-    volumes_to_create: Vec<(MachineId, ployz_core::ServiceVolume)>,
+    volumes: PlannedVolumes,
     would_remove: Vec<QualifiedService>,
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
@@ -238,8 +235,28 @@ pub fn plan_deploy(
     snapshot: &DeploySnapshot,
     ingress: IngressContext<'_>,
 ) -> Result<DeployPlan, PlanError> {
-    let planned = plan_operations(intent, snapshot, ingress)?;
+    let mut planned = plan_operations(intent, snapshot, ingress)?;
+    let budgets = std::mem::take(&mut planned.volumes.budgets);
     let mut plan = seal_plan(planned, snapshot, &intent.project_name);
+    if !budgets.is_empty() {
+        plan.preview
+            .warnings
+            .push(DeployWarning::UnbudgetedDiskUsage);
+    }
+    for storage in &budgets {
+        let budget = &storage.budget;
+        let remaining_bytes = budget
+            .available_bytes
+            .saturating_sub(budget.reserve_bytes)
+            .saturating_sub(budget.required_growth_bytes);
+        if budget.required_growth_bytes > 0 && remaining_bytes < ployz_core::STORAGE_GIB {
+            plan.preview.warnings.push(DeployWarning::StorageHeadroom {
+                machine_id: storage.machine_id,
+                remaining_bytes,
+            });
+        }
+    }
+    plan.preview.storage = budgets;
     plan.cluster_domain = ingress.cluster_domain.map(str::to_owned);
     Ok(plan)
 }
@@ -250,11 +267,13 @@ fn seal_plan(
     project_name: &ProjectName,
 ) -> DeployPlan {
     let preview = DeployPreview {
+        storage: Vec::new(),
         project_name: project_name.clone(),
         operations: super::pending_rows(&planned.operations, snapshot),
         warnings: planned.warnings,
         volumes_to_create: planned
-            .volumes_to_create
+            .volumes
+            .creates
             .into_iter()
             .filter_map(|(machine_id, volume)| {
                 let (name, maximum_bytes) = match volume.source.kind() {
@@ -354,22 +373,11 @@ fn assemble_plan(
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let volume_uses = managed_volume_uses(&requested);
-    reject_mixed_volume_modes(&volume_uses)?;
-    let mut pins = VolumePins::new();
-    pins.validate_provisioned_volume_definitions(&target, snapshot)?;
+    let mut volume_plan = VolumePlan::new(snapshot, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut reservations = PlacementReservations::new(snapshot);
-    prepare_shared_replicated_volumes(
-        &volume_uses,
-        snapshot,
-        &requested,
-        &services,
-        &mut pins,
-        &mut reservations,
-        &intent.options,
-    )?;
+    volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
     let mut placement = reservations.into_placement(snapshot);
     let mut service_operations = Vec::new();
     for spec in &requested {
@@ -378,7 +386,7 @@ fn assemble_plan(
             &intent.project_name,
             snapshot,
             &services,
-            &mut pins,
+            &mut volume_plan,
             &mut placement,
             &intent.options,
         )
@@ -393,6 +401,7 @@ fn assemble_plan(
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         }) {
             for dependency in intent.dependencies().get(&spec.name).into_iter().flatten() {
@@ -419,7 +428,7 @@ fn assemble_plan(
         }
         service_operations.extend(operations);
     }
-    let volumes_to_create = pins.into_creates_for(&service_operations);
+    let volumes = volume_plan.finish(&mut service_operations)?;
     let mut operations = service_operations;
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
@@ -429,7 +438,7 @@ fn assemble_plan(
     }
     Ok(Planned {
         operations,
-        volumes_to_create,
+        volumes,
         would_remove,
         preserved_volumes,
         prune_refusal,
@@ -613,12 +622,12 @@ fn order_included<'intent>(
     Ok(ordered)
 }
 
-fn plan_one_service(
+fn plan_one_service<'snapshot>(
     requested: &RequestedServiceSpec,
     project_name: &ProjectName,
-    snapshot: &DeploySnapshot,
+    snapshot: &'snapshot DeploySnapshot,
     services: &[ServiceObservation],
-    pins: &mut VolumePins,
+    volume_plan: &mut VolumePlan<'snapshot>,
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
@@ -646,7 +655,7 @@ fn plan_one_service(
     let reservation = placement.take_reservation(&requested.name);
     let mut capacity_error = None;
     if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
-        constrain_volume_candidates(requested, snapshot, pins, &mut machines)?;
+        volume_plan.constrain_candidates(requested, &mut machines)?;
         let ServiceMode::Replicated { replicas } = requested.mode else {
             unreachable!("replicated branch has replicated mode")
         };
@@ -677,14 +686,13 @@ fn plan_one_service(
             return Err(placement.capacity_error_for(&relevant));
         }
     }
-    plan_volume_operations(requested, snapshot, pins, &mut machines)?;
+    let volumes = volume_plan.place(requested, machines)?;
     let (service_operations, hook_machine) = match requested.mode {
         ServiceMode::Replicated { .. } => plan_replicated(
-            requested,
             &service_id,
             current,
             ReplicatedPlacement {
-                machines,
+                volumes,
                 admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
                     error: capacity_error.expect("unreserved capacity has relevant Machines"),
                 }),
@@ -693,12 +701,11 @@ fn plan_one_service(
             options,
         )?,
         ServiceMode::Global => plan_global(
-            requested,
             GlobalPlacement {
                 service_id: &service_id,
                 current,
                 hooks,
-                machines,
+                volumes,
             },
             placement,
             options,
@@ -902,6 +909,7 @@ fn pre_deploy_operations(
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         });
     let Some((machine_id, spec)) = target else {

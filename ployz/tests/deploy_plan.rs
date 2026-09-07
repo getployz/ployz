@@ -24,3 +24,6 @@ mod validation;
 mod volume_identity;
 #[path = "deploy_plan/volumes.rs"]
 mod volumes;
+
+#[path = "deploy_plan/storage.rs"]
+mod storage;

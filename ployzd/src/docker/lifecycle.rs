@@ -133,19 +133,12 @@ impl ContainerRuntime {
             },
             "create container"
         );
-        match self
-            .admit_and_ensure_volumes(machine, spec, storage)
-            .await
-            .map_err(E::from)?
-        {
-            ServicePlacementEligibility::Eligible => {}
-            ServicePlacementEligibility::Ineligible(reason) => {
-                return Err(E::from(ineligible_error(reason)));
-            }
-            ServicePlacementEligibility::Unknown(reason) => {
-                return Err(E::from(unknown_error(reason)));
-            }
-        }
+        require_eligible(
+            self.admit_and_ensure_volumes(machine, spec, storage)
+                .await
+                .map_err(E::from)?,
+        )
+        .map_err(E::from)?;
         admission.await?;
         self.prepare_and_create(machine, kind, project_name, spec, None)
             .await
@@ -588,6 +581,15 @@ fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
     let id = spec.service_id.as_str();
     let suffix = id.get(..8).unwrap_or(id);
     format!("{}-{suffix}-{}", spec.name, spec.serving_shape().token())
+}
+
+/// Refuse unsupported or unobservable placement without conflating the two.
+pub(crate) fn require_eligible(eligibility: ServicePlacementEligibility) -> Result<(), Error> {
+    match eligibility {
+        ServicePlacementEligibility::Eligible => Ok(()),
+        ServicePlacementEligibility::Ineligible(reason) => Err(ineligible_error(reason)),
+        ServicePlacementEligibility::Unknown(reason) => Err(unknown_error(reason)),
+    }
 }
 
 fn ineligible_error(reason: ServicePlacementIneligibleReason) -> Error {

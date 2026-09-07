@@ -86,6 +86,53 @@ impl ContainerRuntime {
         }
     }
 
+    /// Validate every existing provisioned Volume before allocating any new storage.
+    pub(crate) async fn validate_provisioned_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<(), Error> {
+        let mut definitions = BTreeMap::new();
+        for spec in specs {
+            for volume in spec.volume_graph().mounted_provisioned_volumes() {
+                let name = volume
+                    .source
+                    .docker_volume_name()
+                    .expect("provisioned Volume has a name");
+                if let Some(existing) = definitions.insert(name, &volume.source) {
+                    if existing != &volume.source {
+                        return Err(Error::VolumeShapeMismatch {
+                            name: name.clone(),
+                            reason: "batch contains conflicting definitions".into(),
+                        });
+                    }
+                    continue;
+                }
+                match self.inspect_volume(machine_id, name).await {
+                    Ok(existing) => verify_volume(&volume.source, &existing)?,
+                    Err(error) if volume_not_found(&error) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Finish Docker metadata for storage already secured by the volume plugin.
+    pub(crate) async fn ensure_provisioned_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<(), Error> {
+        for spec in specs {
+            for volume in spec.volume_graph().mounted_provisioned_volumes() {
+                self.ensure_volume_source(machine_id, &volume.source)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Create a Docker Volume and verify its observable state when possible.
     ///
     /// # Errors

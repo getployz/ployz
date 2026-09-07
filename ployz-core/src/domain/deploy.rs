@@ -360,6 +360,13 @@ pub enum StopContainerPurpose {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployOperation {
+    /// Fresh admission and preparation of every provisioned Volume for this Machine.
+    PrepareVolumes {
+        /// Machine that owns the local Volumes.
+        machine_id: MachineId,
+        /// Assigned storage requirements, including reused Volumes, prepared as one batch.
+        specs: Vec<crate::ServiceStorageSpec>,
+    },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {
         machine_id: MachineId,
@@ -407,6 +414,9 @@ pub enum DeployOperation {
 /// The client retains a separately admitted plan for confirmation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeployPreview {
+    /// Capacity budget for every Machine receiving provisioned storage.
+    #[serde(default)]
+    pub storage: Vec<MachineStorageBudget>,
     /// Project this preview describes.
     pub project_name: ProjectName,
     /// Pending rows for the operations this snapshot would execute.
@@ -414,7 +424,8 @@ pub struct DeployPreview {
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
     pub warnings: Vec<DeployWarning>,
     /// Missing managed Docker Volumes the shown container operations would create on their target
-    /// Machines during Volume Ensure. These are informational, not executable plan rows.
+    /// Machines during preparation or Volume Ensure. These are informational;
+    /// provisioned storage preparation appears separately in `operations`.
     #[serde(default)]
     pub volumes_to_create: Vec<VolumeToCreate>,
     /// Visible Services in the Project that Compose no longer declares.
@@ -518,6 +529,7 @@ impl DeployPreview {
             project_name,
             operations,
             warnings,
+            storage: Vec::new(),
             volumes_to_create: Vec::new(),
             would_remove: Vec::new(),
             preserved_volumes: Vec::new(),
@@ -553,6 +565,16 @@ impl Display for ObservationKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployWarning {
+    /// The admitted storage budget leaves less than one GiB beyond the OS reserve.
+    StorageHeadroom {
+        /// Machine with limited remaining capacity.
+        machine_id: MachineId,
+        /// Bytes left after preparation and the OS reserve.
+        remaining_bytes: u64,
+    },
+    /// Unbounded image extraction and application writes cannot be guaranteed by volume admission.
+    UnbudgetedDiskUsage,
+
     /// Listing containers or volumes on `machine_id` returned `message`.
     ObservationFailed {
         kind: ObservationKind,
@@ -583,6 +605,8 @@ pub enum DeployWarning {
 impl Display for DeployWarning {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::StorageHeadroom { machine_id, remaining_bytes } => write!(f, "Machine {machine_id} has only {remaining_bytes} bytes of disk headroom after storage preparation and the OS reserve"),
+            Self::UnbudgetedDiskUsage => f.write_str("Storage admission covers provisioned Volumes; image pulls and application writes may need additional disk space."),
             Self::ObservationFailed {
                 kind,
                 machine_id,
@@ -613,6 +637,8 @@ impl Display for DeployWarning {
 /// Machine RPC invoked while executing one Deploy Operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub enum MachineAction {
+    /// Prepare the Machine-local batch of provisioned Volumes.
+    PrepareVolumes,
     CreateContainer,
     StartContainer,
     InspectContainer,
@@ -792,7 +818,8 @@ impl DeployOperation {
     #[must_use]
     pub fn machine_id(&self) -> MachineId {
         match self {
-            Self::WaitHealthy { machine_id, .. }
+            Self::PrepareVolumes { machine_id, .. }
+            | Self::WaitHealthy { machine_id, .. }
             | Self::RunContainer { machine_id, .. }
             | Self::StopContainer { machine_id, .. }
             | Self::RemoveContainer { machine_id, .. }
@@ -813,6 +840,7 @@ impl DeployOperation {
             Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
+            | Self::PrepareVolumes { .. }
             | Self::RemoveVolume { .. } => None,
         }
     }
@@ -828,6 +856,7 @@ impl DeployOperation {
             Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
+            | Self::PrepareVolumes { .. }
             | Self::RemoveVolume { .. } => None,
         }
     }
@@ -842,7 +871,19 @@ impl DeployOperation {
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
+            | Self::PrepareVolumes { .. }
             | Self::RemoveVolume { .. } => None,
         }
     }
+}
+
+/// The complete storage budget for a planned Machine placement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MachineStorageBudget {
+    /// Durable identity of the Machine selected by this plan.
+    pub machine_id: MachineId,
+    /// Human-facing name from the same observation.
+    pub machine_name: MachineName,
+    /// Aggregate capacity for the selected provisioned Volumes on this Machine.
+    pub budget: crate::StorageBudget,
 }

@@ -636,6 +636,23 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn inspect_storage(
+        &self,
+        _request: tonic::Request<ployz_core::OpaquePayload>,
+    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "storage capacity not supplied by this fixture",
+        ))
+    }
+    async fn prepare_volumes(
+        &self,
+        _request: tonic::Request<ployz_core::OpaquePayload>,
+    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "storage preparation not supplied by this fixture",
+        ))
+    }
+
     async fn list_volumes(
         &self,
         _request: Request<OpaquePayload>,

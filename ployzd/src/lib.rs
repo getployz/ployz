@@ -30,6 +30,7 @@ pub mod machine_pool;
 pub mod network;
 pub mod relay;
 pub(crate) mod runtime_watch;
+mod storage;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]
 mod test_dir;

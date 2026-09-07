@@ -301,6 +301,7 @@ fn run_names(plan: &ployz::deploy::DeployPreview) -> Vec<&str> {
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect()
@@ -315,6 +316,7 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
         DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::RunHook { .. }
+        | DeployOperation::PrepareVolumes { .. }
         | DeployOperation::RemoveVolume { .. } => false,
     })
 }

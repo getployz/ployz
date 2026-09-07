@@ -42,6 +42,7 @@ async fn execute_with<C: MachineOperations>(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
+    Prepare(MachineId),
     Wait(Vec<ContainerId>, ContainerObservationCondition),
     List(QualifiedService),
     Create(MachineId, ContainerKind),
@@ -72,6 +73,7 @@ struct Step(Call, Reply);
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
+    cancel_on_prepare: Option<CancellationToken>,
 }
 
 impl Scripted {
@@ -79,6 +81,7 @@ impl Scripted {
         Self {
             steps: Mutex::new(steps.into()),
             observations: None,
+            cancel_on_prepare: None,
         }
     }
 
@@ -99,6 +102,17 @@ impl Scripted {
 }
 
 impl MachineOperations for Scripted {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        _specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        unit(self.next(Call::Prepare(*machine_id)))?;
+        if let Some(cancel) = &self.cancel_on_prepare {
+            cancel.cancel();
+        }
+        Ok(ployz_core::PreparedVolumes { names: Vec::new() })
+    }
     async fn wait_for_container_observations(
         &self,
         container_ids: &[ContainerId],
@@ -449,4 +463,135 @@ fn unavailable(message: &str) -> RpcError {
 
 fn failed_unavailable(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(unavailable(message)))
+}
+
+#[tokio::test]
+async fn storage_preparation_failure_leaves_all_application_operations_unexecuted() {
+    let first = machine('1');
+    let second = machine('2');
+    let service = provisioned_spec();
+    let mut plan = [first, second]
+        .map(|machine_id| DeployOperation::PrepareVolumes {
+            machine_id,
+            specs: vec![ployz_core::ServiceStorageSpec::from(&service)],
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let operations = vec![
+        run(&first, service.clone(), true),
+        run(&second, service, true),
+    ];
+    plan.extend(operations.clone());
+    let client = Scripted::new(vec![
+        ok(Call::Prepare(first)),
+        Step(
+            Call::Prepare(second),
+            Reply::Error(error("insufficient storage")),
+        ),
+    ]);
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+    let DeployOutcome::Failed {
+        completed,
+        unexecuted,
+        failed,
+    } = outcome
+    else {
+        panic!("preparation must fail")
+    };
+    assert!(
+        matches!(completed.as_slice(), [DeployOperation::PrepareVolumes { machine_id, .. }] if *machine_id == first)
+    );
+    assert_eq!(unexecuted, operations);
+    assert!(matches!(
+        failed,
+        FailedOperation::Operation {
+            error: ExecutionError::Machine {
+                action: MachineAction::PrepareVolumes,
+                ..
+            },
+            ..
+        }
+    ));
+    client.assert_done();
+}
+
+fn provisioned_spec() -> ResolvedServiceSpec {
+    let mut service = spec(None, None, None);
+    let mut source = ployz_core::RawVolumeSource::Provisioned {
+        name: DockerVolumeName::parse("data").unwrap(),
+        maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
+        ),
+        labels: Default::default(),
+    }
+    .admit()
+    .unwrap();
+    source.scope_to_project(&test_project());
+    let reference = ployz_core::ServiceVolumeReference::parse("data").unwrap();
+    service
+        .set_volume_graph(
+            ployz_core::ServiceVolumeGraph::parse(
+                vec![ployz_core::ServiceVolume {
+                    reference: reference.clone(),
+                    source,
+                }],
+                vec![ployz_core::ServiceMount {
+                    volume: reference,
+                    target: ployz_core::ContainerPath::parse("/data").unwrap(),
+                    read_only: false,
+                    no_copy: false,
+                    subpath: None,
+                }],
+            )
+            .unwrap()
+            .try_into()
+            .unwrap(),
+        )
+        .unwrap();
+    service
+}
+
+#[tokio::test]
+async fn application_failure_and_cancellation_retain_prepared_storage() {
+    let target = machine('1');
+    let service = provisioned_spec();
+    let operations = vec![
+        DeployOperation::PrepareVolumes {
+            machine_id: target,
+            specs: vec![ployz_core::ServiceStorageSpec::from(&service)],
+        },
+        run(&target, service, true),
+    ];
+    for cancel_after_prepare in [false, true] {
+        let cancellation = CancellationToken::new();
+        let mut steps = vec![ok(Call::Prepare(target))];
+        if !cancel_after_prepare {
+            steps.push(Step(
+                Call::Create(target, ContainerKind::ServiceContainer),
+                Reply::Error(error("image failed")),
+            ));
+        }
+        let mut client = Scripted::new(steps);
+        client.cancel_on_prepare = cancel_after_prepare.then(|| cancellation.clone());
+        let DeployOutcome::Failed {
+            completed,
+            failed,
+            unexecuted,
+        } = execute_with(&operations, &client, &cancellation).await
+        else {
+            panic!("expected interruption")
+        };
+        assert!(
+            matches!(completed.as_slice(), [DeployOperation::PrepareVolumes { machine_id, .. }] if *machine_id == target)
+        );
+        assert!(matches!(
+            failed,
+            FailedOperation::Operation {
+                operation: DeployOperation::RunContainer { .. },
+                ..
+            }
+        ));
+        assert!(unexecuted.is_empty());
+        client.assert_done();
+    }
 }

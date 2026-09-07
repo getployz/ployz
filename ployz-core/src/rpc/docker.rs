@@ -147,3 +147,21 @@ mod tests {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeRemoved {}
+
+/// Request fresh storage commitments and physical backing capacity.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InspectStorageRequest {}
+
+/// Secure mounted provisioned storage for the complete set of local placements.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PrepareVolumesRequest {
+    /// Complete assigned storage requirements, including reused Volumes.
+    pub specs: Vec<crate::ServiceStorageSpec>,
+}
+
+/// Provisioned Volumes whose datasets and Docker metadata are ready for use.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreparedVolumes {
+    /// Durable names ready to be reused by the upcoming Container creations.
+    pub names: Vec<DockerVolumeName>,
+}

@@ -194,6 +194,7 @@ fn other_project_resources_are_left_alone() {
         | DeployOperation::StopContainer { .. }
         | DeployOperation::ReplaceContainer(_)
         | DeployOperation::StopHook { .. }
+        | DeployOperation::PrepareVolumes { .. }
         | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
     }));
 }

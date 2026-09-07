@@ -120,6 +120,7 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
         }];
         let client = Scripted {
             observations: Some(vec![observed]),
+            cancel_on_prepare: None,
             ..Scripted::new(Vec::new())
         };
 

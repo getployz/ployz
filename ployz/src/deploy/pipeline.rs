@@ -240,7 +240,7 @@ impl From<DeployError> for RpcError {
     fn from(error: DeployError) -> Self {
         match error {
             DeployError::Connect(error) => error.into(),
-            DeployError::Plan(error) => invalid_argument(error.to_string()),
+            DeployError::Plan(error) => error.into_rpc_error(),
             DeployError::Project(error) => invalid_argument(error.to_string()),
         }
     }
@@ -325,6 +325,15 @@ pub(super) async fn plan_scale(
         ));
     };
     let intent = DeployIntent::apply_one(choice.project_name.clone(), requested, options);
+    let (snapshot, warnings) = if intent
+        .target
+        .iter()
+        .any(|spec| spec.volume_graph().has_mounted_provisioned_volume())
+    {
+        gather_deploy_snapshot(client, snapshot.machines, &intent).await?
+    } else {
+        (snapshot, warnings)
+    };
     Ok((
         preview_gathered(client, snapshot, warnings, &intent).await?,
         choice.project_name,
@@ -422,14 +431,39 @@ async fn gather_deploy_snapshot(
     mut machines: Vec<MachineObservation>,
     intent: &DeployIntent,
 ) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
+    // Import recovery must precede Docker volume reads, whose plugin Get needs the Pool.
+    let mut storage_capacity = std::collections::BTreeMap::new();
     if intent
         .target
         .iter()
         .any(|spec| spec.volume_graph().has_mounted_provisioned_volume())
     {
+        let mut reads = tokio::task::JoinSet::new();
+        for machine in machines
+            .iter()
+            .filter(|machine| machine.membership.invites_rpc())
+        {
+            let mut client = client.clone();
+            let id = machine.machine.id;
+            reads.spawn(async move {
+                let result = client
+                    .read::<ployz_core::op::InspectStorage>(
+                        ployz_core::InspectStorageRequest {},
+                        &ployz_core::MachineTarget::from(&id),
+                    )
+                    .await;
+                (id, result)
+            });
+        }
+        while let Some(result) = reads.join_next().await {
+            let (id, capacity) = result.expect("storage observation task does not panic");
+            storage_capacity.insert(id, capacity);
+        }
         client.observe_machine_storage(&mut machines).await;
     }
-    gather_snapshot(client, machines).await
+    let (mut snapshot, warnings) = gather_snapshot(client, machines).await?;
+    snapshot.storage_capacity = storage_capacity;
+    Ok((snapshot, warnings))
 }
 
 fn observation_warnings(
