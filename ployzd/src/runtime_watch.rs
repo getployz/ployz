@@ -3,6 +3,8 @@
 
 use std::{
     future::Future,
+    pin::Pin,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime},
 };
 
@@ -11,17 +13,16 @@ use futures_util::{Stream, StreamExt};
 use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
+    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
     encode_runtime_watch_frame,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
 use crate::{
     corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
-    global_reconcile::GlobalReconcileObservations,
     hosted_dns::Reservation,
     logs::RpcStream,
     machine::{LocalMachine, RuntimeWatchTelemetry},
@@ -29,6 +30,92 @@ use crate::{
 
 /// How often Watch samples membership and RTT from the local admin socket.
 const TELEMETRY_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A client's complete observations, with subscription lifetime owned by the stream.
+pub type RuntimeWatchStream = Pin<Box<dyn Stream<Item = Result<OpaquePayload, Status>> + Send>>;
+
+type WatchUpdates = watch::Receiver<Option<Arc<Result<OpaquePayload, Status>>>>;
+
+/// Shares acquisition while clients are connected; failure or the last disconnect
+/// releases it so the next subscriber starts with fresh observations.
+#[derive(Default)]
+pub(crate) struct RuntimeWatch {
+    current: Mutex<Weak<WatchUpdates>>,
+}
+
+impl RuntimeWatch {
+    /// Join the shared producer, starting acquisition if none is active.
+    /// Slow clients may skip superseded complete frames; each stream retains its
+    /// own cancellation and receives terminal acquisition failures.
+    ///
+    /// # Errors
+    /// Returns when the initial Corrosion subscriptions cannot be opened.
+    pub(crate) async fn subscribe(
+        &self,
+        store: ReplicatedStore,
+        local: LocalMachine,
+        entry_id: MachineId,
+    ) -> Result<RuntimeWatchStream, Error> {
+        self.subscribe_with(async || serve_replicated_runtime_watch(store, local, entry_id).await)
+            .await
+    }
+
+    async fn subscribe_with(
+        &self,
+        start: impl AsyncFnOnce() -> Result<RpcStream, Error>,
+    ) -> Result<RuntimeWatchStream, Error> {
+        let mut current = self.current.lock().await;
+        let updates = match current.upgrade().filter(|updates| {
+            // The terminal value is stored before wakeups, even while its sender lives.
+            updates.has_changed().is_ok() && !matches!(updates.borrow().as_deref(), Some(Err(_)))
+        }) {
+            Some(updates) => updates,
+            None => {
+                let updates = share_watch(start().await?);
+                *current = Arc::downgrade(&updates);
+                updates
+            }
+        };
+        Ok(stream_watch(updates))
+    }
+}
+
+fn share_watch(mut source: RpcStream) -> Arc<WatchUpdates> {
+    let (latest, updates) = watch::channel(None);
+    tokio::spawn(async move {
+        loop {
+            let item = tokio::select! {
+                biased;
+                () = latest.closed() => return,
+                item = source.next() => item,
+            };
+            let Some(item) = item else { return };
+            let failed = item.is_err();
+            latest.send_replace(Some(Arc::new(item)));
+            if failed {
+                return;
+            }
+        }
+    });
+    Arc::new(updates)
+}
+
+fn stream_watch(updates: Arc<WatchUpdates>) -> RuntimeWatchStream {
+    let mut changes = updates.as_ref().clone();
+    changes.mark_changed();
+    Box::pin(futures_util::stream::unfold(
+        (updates, changes),
+        |(updates, mut changes)| async move {
+            while changes.changed().await.is_ok() {
+                let item = changes.borrow_and_update().clone();
+                if let Some(item) = item {
+                    return Some((item.as_ref().clone(), (updates, changes)));
+                }
+            }
+            None
+        },
+    ))
+}
 
 /// Replicated observations used to assemble one Runtime Watch frame.
 ///
@@ -69,7 +156,7 @@ impl RuntimeWatchSnapshot {
 /// Serve complete Runtime Watch frames from the replicated store.
 ///
 /// Subscribes first, then yields one complete frame immediately. Later frames
-/// are assembled on store wakeups, Global reconcile observation changes, or
+/// are assembled on store wakeups or
 /// once-per-second membership/RTT samples from the same local admin source as
 /// ListMachines and inspect RTT. The
 /// notification payload is not the observation. Unchanged observations do not
@@ -83,7 +170,6 @@ pub(crate) async fn serve_replicated_runtime_watch(
     store: ReplicatedStore,
     local: LocalMachine,
     entry_id: MachineId,
-    global_reconcile: GlobalReconcileObservations,
 ) -> Result<RpcStream, Error> {
     let changes = store.subscribe_runtime_watch_changes().await?;
     let mut interval = tokio::time::interval_at(
@@ -111,7 +197,6 @@ pub(crate) async fn serve_replicated_runtime_watch(
             interval.tick().await;
             Some(((), interval))
         }),
-        global_reconcile,
     ))
 }
 
@@ -130,7 +215,6 @@ fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
     sample: S,
     changes: C,
     ticks: T,
-    mut global_reconcile: GlobalReconcileObservations,
 ) -> RpcStream
 where
     L: Fn() -> Fut + Send + 'static,
@@ -141,10 +225,10 @@ where
     T: Stream<Item = ()> + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel(8);
-    tokio::spawn(async move {
+    let disconnected = sender.clone();
+    let producer = async move {
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
-        let mut global_reconcile_open = true;
         let mut last = None;
         let (loaded, mut latest) = tokio::join!(load(), sample());
         let mut snapshot = match loaded {
@@ -162,7 +246,6 @@ where
                 snapshot.clone(),
                 &entry_id,
                 latest.telemetry.as_ref(),
-                global_reconcile.borrow().clone(),
                 latest.observed_at.clone(),
             );
             if last
@@ -189,12 +272,6 @@ where
             }
             tokio::select! {
                 biased;
-                () = sender.closed() => return,
-                changed = global_reconcile.changed(), if global_reconcile_open => {
-                    if changed.is_err() {
-                        global_reconcile_open = false;
-                    }
-                }
                 Some(()) = ticks.next() => {
                     latest = sample().await;
                 }
@@ -224,6 +301,14 @@ where
                     }
                 },
             }
+        }
+    };
+    tokio::spawn(async move {
+        // Dropping the last subscriber also cancels an in-flight store or telemetry read.
+        tokio::select! {
+            biased;
+            () = disconnected.closed() => {}
+            () = producer => {}
         }
     });
     ReceiverStream::new(receiver)
@@ -269,19 +354,12 @@ pub(crate) fn assemble_runtime_watch_frame(
     snapshot: RuntimeWatchSnapshot,
     entry_id: &MachineId,
     telemetry: Option<&RuntimeWatchTelemetry>,
-    global_reconcile_failures: Vec<ployz_core::GlobalReconcileFailureObservation>,
     observed_at: String,
 ) -> RuntimeWatchFrame {
-    let mut machines = match telemetry {
+    let machines = match telemetry {
         Some(telemetry) => telemetry.overlay(snapshot.machines.observations, entry_id),
         None => unavailable_machine_observations(snapshot.machines.observations, entry_id),
     };
-    if let Some(entry) = machines
-        .iter_mut()
-        .find(|observation| observation.machine.id == *entry_id)
-    {
-        entry.global_reconcile_failures = global_reconcile_failures;
-    }
     let mut containers = snapshot.containers.observations;
     containers.sort_by_key(|container| container.container_id);
     let certificates = snapshot

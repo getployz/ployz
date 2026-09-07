@@ -13,8 +13,8 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use super::{NameMatches, RelayEndpoint};
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
-    ManagementAddress, PairingCredential, Placement, QualifiedService, SelectedEndpoint,
-    ValueError, WireGuardPublicKey,
+    ManagementAddress, PairingCredential, Placement, SelectedEndpoint, ValueError,
+    WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -286,17 +286,6 @@ pub enum MachineStorageObservation {
     },
 }
 
-/// The latest failed Global reconciliation attempt for one Service on a Machine.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct GlobalReconcileFailureObservation {
-    /// Global Service whose local slot could not be reconciled.
-    pub service: QualifiedService,
-    /// Last error returned by this Machine's Global slot ensure or retirement path.
-    pub last_error: String,
-    /// RFC 3339 time of the failed reconciliation attempt.
-    pub observed_at: String,
-}
-
 /// An observer-relative view layered over a Machine's advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineObservation {
@@ -310,9 +299,6 @@ pub struct MachineObservation {
     /// Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
     #[serde(default)]
     pub rtt: Option<RttStatistics>,
-    /// Current failed Machine-local Global reconciliations. Success removes an entry.
-    #[serde(default)]
-    pub global_reconcile_failures: Vec<GlobalReconcileFailureObservation>,
 }
 
 impl MachineObservation {
@@ -325,7 +311,6 @@ impl MachineObservation {
             storage: None,
             selected_endpoint: None,
             rtt: None,
-            global_reconcile_failures: Vec::new(),
         }
     }
 }

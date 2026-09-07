@@ -177,20 +177,6 @@ export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement_health", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
-export type GlobalReconcileFailureObservation = { 
-/**
- * Global Service whose local slot could not be reconciled.
- */
-service: QualifiedService, 
-/**
- * Last error returned by this Machine's Global slot ensure or retirement path.
- */
-last_error: string, 
-/**
- * RFC 3339 time of the failed reconciliation attempt.
- */
-observed_at: string, };
-
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | string;
@@ -237,11 +223,7 @@ storage: MachineStorageObservation | null, selected_endpoint: SelectedEndpoint |
 /**
  * Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
  */
-rtt: RttStatistics | null, 
-/**
- * Current failed Machine-local Global reconciliations. Success removes an entry.
- */
-global_reconcile_failures: Array<GlobalReconcileFailureObservation>, };
+rtt: RttStatistics | null, };
 
 export type MachinePath = string;
 

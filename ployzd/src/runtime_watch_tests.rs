@@ -11,9 +11,8 @@ use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, CertificateAvailability, CertificateBackoff,
     CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, GlobalReconcileFailureObservation, HealthObservation, IngressHost,
-    IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName, MachineObservation,
-    MachineRuntime, MembershipObservation, ProjectName, QualifiedService,
+    DockerVolumeName, HealthObservation, IngressHost, IssuanceClock, IssuanceFailure, Machine,
+    MachineId, MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -25,7 +24,6 @@ use super::{
     serve_runtime_watch,
 };
 use crate::corrosion::{CertificateChallenge, CertificateRow, Error, ReplicatedObservations};
-use crate::global_reconcile::global_reconcile_observation_channel;
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -80,7 +78,6 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         },
         &entry.id,
         Some(&telemetry),
-        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -115,32 +112,6 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         Some("cluster.example.ts.net")
     );
     assert_eq!(frame.observed_at, OBSERVED_AT);
-}
-
-#[test]
-fn assembled_frame_attaches_reconcile_failures_only_to_the_entry_machine() {
-    let entry = machine("edge", ENTRY_ID, 1);
-    let peer = machine("peer", PEER_ID, 2);
-    let failure = GlobalReconcileFailureObservation {
-        service: QualifiedService::system_ingress(),
-        last_error: "image pull failed".into(),
-        observed_at: OBSERVED_AT.into(),
-    };
-
-    let frame = assemble_runtime_watch_frame(
-        snapshot(vec![entry.clone(), peer], Vec::new()),
-        &entry.id,
-        None,
-        vec![failure.clone()],
-        OBSERVED_AT.into(),
-    );
-
-    let failures = frame
-        .machines
-        .iter()
-        .map(|machine| machine.global_reconcile_failures.as_slice())
-        .collect::<Vec<_>>();
-    assert_eq!(failures, [std::slice::from_ref(&failure), &[]]);
 }
 
 #[test]
@@ -181,7 +152,6 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
         },
         &entry.id,
         None,
-        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -239,7 +209,6 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         },
         &entry.id,
         None,
-        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -318,7 +287,6 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
         },
         &entry.id,
         None,
-        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -585,35 +553,6 @@ async fn unchanged_assembled_observation_does_not_yield() {
 }
 
 #[tokio::test]
-async fn reconcile_observation_change_yields_without_another_wakeup() {
-    let entry = machine("edge", ENTRY_ID, 1);
-    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
-    let (_wake, changes) = mpsc::channel(1);
-    let (publisher, observations) = global_reconcile_observation_channel();
-    let mut stream = serve_sampled_with_observations(
-        entry.id,
-        &fixture,
-        changes,
-        mpsc::channel(1).1,
-        observations,
-    );
-    let _first = next_frame(&mut stream).await;
-    let failure = GlobalReconcileFailureObservation {
-        service: QualifiedService::system_ingress(),
-        last_error: "image pull failed".into(),
-        observed_at: OBSERVED_AT.into(),
-    };
-
-    publisher.send_replace(vec![failure.clone()]);
-
-    let frame = next_frame(&mut stream).await;
-    assert_eq!(
-        frame.machines.first().unwrap().global_reconcile_failures,
-        [failure]
-    );
-}
-
-#[tokio::test]
 async fn reordered_container_rows_do_not_yield_a_phantom_update() {
     let entry = machine("edge", ENTRY_ID, 1);
     let service = container(CONTAINER_ID, "api", ContainerKind::ServiceContainer);
@@ -866,17 +805,6 @@ fn serve_sampled(
     changes: mpsc::Receiver<Result<(), Error>>,
     ticks: mpsc::Receiver<()>,
 ) -> crate::logs::RpcStream {
-    let (_, observations) = global_reconcile_observation_channel();
-    serve_sampled_with_observations(entry_id, fixture, changes, ticks, observations)
-}
-
-fn serve_sampled_with_observations(
-    entry_id: MachineId,
-    fixture: &WatchFixture,
-    changes: mpsc::Receiver<Result<(), Error>>,
-    ticks: mpsc::Receiver<()>,
-    observations: crate::global_reconcile::GlobalReconcileObservations,
-) -> crate::logs::RpcStream {
     let load_fixture = fixture.clone();
     let sample_fixture = fixture.clone();
     serve_runtime_watch(
@@ -891,11 +819,14 @@ fn serve_sampled_with_observations(
         },
         ReceiverStream::new(changes),
         ReceiverStream::new(ticks),
-        observations,
     )
 }
 
-async fn next_frame(stream: &mut crate::logs::RpcStream) -> ployz_core::RuntimeWatchFrame {
+async fn next_frame(
+    stream: &mut (
+             impl futures_util::Stream<Item = Result<ployz_core::OpaquePayload, tonic::Status>> + Unpin
+         ),
+) -> ployz_core::RuntimeWatchFrame {
     let payload = tokio::time::timeout(Duration::from_secs(1), stream.next())
         .await
         .expect("Watch frame")
@@ -916,3 +847,6 @@ fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchS
         hosted_dns: None,
     }
 }
+
+#[path = "runtime_watch_tests/shared.rs"]
+mod shared;

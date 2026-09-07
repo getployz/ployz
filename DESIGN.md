@@ -63,13 +63,13 @@ consistency into mesh behavior.
 ## 3. Bounded imperative commands
 
 **The bet.** A Deploy is a bounded attempt: calculate against an observer-relative
-snapshot, execute, report, stop. No cluster-wide process runs forever. The only
-continuous convergence permitted is machine-local — a Machine converging its own
-Global slots.
-
-From local Replicated Observations, the daemon may ensure missing known-eligible
-Global slots, leave unknown eligibility unchanged for retry, and retire definitely
-ineligible slots. It never moves eligible slots or schedules replicated Services.
+snapshot, execute, report, stop. No Service placement process runs forever.
+Global Services are placed by Deploy and by bounded catch-up when a Machine joins.
+Catch-up rejects partial Live Observations before planning, reads fresh target
+storage evidence, reports unknown eligibility or
+incomplete placement, and stops; it does not leave work for a background loop.
+Deleted slots, later eligibility changes, and transient failures require an
+explicit redeploy.
 
 **Why.** Imperative errors surface predictably at the caller that can act on them.
 Declarative reconciliation decouples components but multiplies edge cases and
@@ -190,7 +190,7 @@ daemon reassesses the complete Resolved Service placement against fresh local
 evidence and ensures mounted Volume readiness, including Provisioned Volumes.
 Ordinary mutations are refused when eligibility is ineligible or unknown.
 Observer-side eligibility remains advisory, including an Unknown safe hold. A
-dispatched Global convergence operation makes exactly one fresh target-local
+dispatched Global catch-up operation makes exactly one fresh target-local
 eligibility decision: ensure eligible slots, retire definitely ineligible slots,
 or hold unknown slots unchanged. These checks admit work for an already-selected
 target; they do not schedule work across Machines.

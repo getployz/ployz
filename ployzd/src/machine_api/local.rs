@@ -22,11 +22,10 @@ use tonic::{Request, Response, Status};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
-    global_reconcile::{GlobalReconcileObservations, global_reconcile_observation_channel},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
-    runtime_watch::serve_replicated_runtime_watch,
+    runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
 
 /// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
@@ -44,7 +43,7 @@ pub struct MachineService {
     #[cfg(test)]
     allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
-    global_reconcile: GlobalReconcileObservations,
+    runtime_watch: Arc<RuntimeWatch>,
 }
 
 impl MachineService {
@@ -63,7 +62,7 @@ impl MachineService {
             #[cfg(test)]
             allocator_endpoint: None,
             cloud_pairing: None,
-            global_reconcile: global_reconcile_observation_channel().1,
+            runtime_watch: Arc::default(),
         }
     }
 
@@ -108,17 +107,7 @@ impl MachineService {
         self
     }
 
-    /// Install the receiver for Machine-local Global reconcile observations.
-    #[must_use]
-    pub(crate) fn with_global_reconcile_observations(
-        mut self,
-        observations: GlobalReconcileObservations,
-    ) -> Self {
-        self.global_reconcile = observations;
-        self
-    }
-
-    /// Local Machine operations shared with daemon-owned maintenance loops.
+    /// Local Machine used to construct routing from this Machine's record and store.
     #[must_use]
     pub(crate) fn local(&self) -> LocalMachine {
         self.local.clone()
@@ -264,7 +253,7 @@ impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type ContainerLogsStream = RpcStream;
     type MachineLogsStream = RpcStream;
-    type RuntimeWatchStream = RpcStream;
+    type RuntimeWatchStream = RuntimeWatchStream;
 
     async fn describe_contract(
         &self,
@@ -655,14 +644,11 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
         let entry_id = self.local_record()?.id();
-        let stream = serve_replicated_runtime_watch(
-            store,
-            self.local.clone(),
-            entry_id,
-            self.global_reconcile.clone(),
-        )
-        .await
-        .map_err(|error| Status::unavailable(error.to_string()))?;
+        let stream = self
+            .runtime_watch
+            .subscribe(store, self.local.clone(), entry_id)
+            .await
+            .map_err(|error| Status::unavailable(error.to_string()))?;
         Ok(Response::new(stream))
     }
 

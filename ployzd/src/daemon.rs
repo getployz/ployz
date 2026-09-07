@@ -33,7 +33,6 @@ use crate::{
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
-    global_reconcile::{self, global_reconcile_observation_channel},
     ingress,
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
     machine_api::MachineApi,
@@ -160,8 +159,6 @@ impl Daemon {
         );
         let (participating, participating_rx) =
             watch::channel(local_phase == LocalMachinePhase::Participating);
-        let (global_reconcile_publisher, global_reconcile_observations) =
-            global_reconcile_observation_channel();
         let (cloud_pairing_tx, cloud_pairing_rx) = watch::channel(local_record.cloud_pairing);
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
@@ -183,7 +180,6 @@ impl Daemon {
             .with_ingress_data_dir(config.data_dir.clone())
             .with_image_ingest(Arc::clone(&ingest))
             .with_cloud_pairing(cloud_pairing_tx)
-            .with_global_reconcile_observations(global_reconcile_observations)
             .build()
             .map_err(|_| Error::StorePoisoned)?;
 
@@ -307,24 +303,6 @@ impl Daemon {
                     }
                 }
             };
-            let global_reconcile_local = machine_api.local();
-            let global_reconcile = async {
-                match replicated_store.clone() {
-                    Some(replicated) => global_reconcile::run(
-                        replicated,
-                        global_reconcile_local,
-                        global_reconcile_publisher,
-                        participating_rx.clone(),
-                        shutdown.clone(),
-                    )
-                    .await
-                    .map_err(io::Error::other),
-                    None => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
-                }
-            };
             let relay_register = async {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
@@ -341,7 +319,6 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
-                global_reconcile,
                 relay_register,
             )
             .map(|_| ())
