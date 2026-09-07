@@ -9,6 +9,10 @@ inputs:
 runs:
   using: composite
   steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: ployz/compose-helper/go.mod
+        cache-dependency-path: ployz/compose-helper/go.sum
     - uses: dtolnay/rust-toolchain@1.97.1
     - uses: Swatinem/rust-cache@v2
       with:

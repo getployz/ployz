@@ -110,6 +110,10 @@ jobs:
           ref: ${{ inputs.release-tag || github.sha }}
           fetch-depth: 0
           fetch-tags: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ployz/compose-helper/go.mod
+          cache-dependency-path: ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -148,6 +152,10 @@ jobs:
           ref: ${{ inputs.release-tag || github.sha }}
           fetch-depth: 0
           fetch-tags: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ployz/compose-helper/go.mod
+          cache-dependency-path: ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}

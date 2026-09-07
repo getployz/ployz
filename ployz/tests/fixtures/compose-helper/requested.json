@@ -1,0 +1,392 @@
+{
+  "api": {
+    "name": "api",
+    "mode": {
+      "mode": "replicated",
+      "replicas": 3
+    },
+    "container": {
+      "image": "registry.example/api:v1",
+      "command": [
+        "serve",
+        "--port",
+        "8080"
+      ],
+      "entrypoint": [
+        "/entrypoint"
+      ],
+      "environment": {
+        "BOOL": "true",
+        "EMPTY": ""
+      },
+      "labels": {},
+      "hostname": null,
+      "extra_hosts": [],
+      "cap_add": [
+        "NET_ADMIN"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "healthcheck": {
+        "state": "configured",
+        "test": [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost"
+        ],
+        "interval_millis": 90000,
+        "timeout_millis": 10000,
+        "start_period_millis": 15000,
+        "start_interval_millis": 2000,
+        "retries": 5
+      },
+      "pull_policy": "missing",
+      "init": true,
+      "user": "1000:1000",
+      "working_directory": "/app",
+      "tty": true,
+      "open_stdin": true,
+      "privileged": true,
+      "pid_mode": "host",
+      "log_driver": {
+        "name": "local",
+        "options": {}
+      },
+      "resources": {
+        "cpu_nanos": 500000000,
+        "memory_bytes": 104857600,
+        "memory_reservation_bytes": 52428800,
+        "shared_memory_bytes": 268435456,
+        "devices": [
+          {
+            "machine_path": "/dev/sda",
+            "container_path": "/dev/xvda",
+            "cgroup_permissions": "rw"
+          }
+        ],
+        "device_reservations": [
+          {
+            "driver": "cdi",
+            "count": null,
+            "device_ids": [
+              "vendor.example/device=one",
+              "vendor.example/device=two"
+            ],
+            "capabilities": [],
+            "options": {}
+          },
+          {
+            "driver": null,
+            "count": -1,
+            "device_ids": [],
+            "capabilities": [
+              [
+                "gpu"
+              ]
+            ],
+            "options": {}
+          }
+        ],
+        "ulimits": {
+          "nofile": {
+            "soft": 20000,
+            "hard": 40000
+          },
+          "nproc": {
+            "soft": 65535,
+            "hard": 65535
+          }
+        }
+      },
+      "stop_timeout_secs": 30,
+      "sysctls": {
+        "net.ipv4.ip_forward": "1"
+      },
+      "restart": {
+        "name": "on-failure",
+        "maximum_retry_count": 5
+      },
+      "config_mounts": [
+        {
+          "config_name": "inline",
+          "target": "/etc/inline",
+          "uid": 1000,
+          "gid": 1001,
+          "mode": 416
+        },
+        {
+          "config_name": "file",
+          "target": "/etc/file",
+          "uid": null,
+          "gid": null,
+          "mode": null
+        }
+      ]
+    },
+    "placement": {
+      "machines": [
+        "machine-1",
+        "machine-2"
+      ]
+    },
+    "ports": [
+      {
+        "mode": "ingress",
+        "hostname": {
+          "kind": "explicit",
+          "hostname": "api.example.com"
+        },
+        "load_balancer_port": 8443,
+        "container_port": 8080,
+        "http_protocol": "https"
+      },
+      {
+        "mode": "host",
+        "bind": {
+          "kind": "all"
+        },
+        "published_port": 5000,
+        "container_port": 3000,
+        "transport_protocol": "tcp"
+      }
+    ],
+    "volumes": [
+      {
+        "reference": "bind-76fada32e2f068aea4409889fd26d1fa0e97697a82575018dd613edf3f9ddf08",
+        "source": {
+          "kind": "bind",
+          "machine_path": "/srv/api",
+          "create_machine_path": true,
+          "propagation": "rprivate",
+          "recursive": "disabled"
+        }
+      },
+      {
+        "reference": "data",
+        "source": {
+          "kind": "ordinary",
+          "name": "data",
+          "driver": {
+            "name": "local",
+            "options": {
+              "type": "tmpfs"
+            }
+          },
+          "labels": {
+            "tier": "app"
+          }
+        }
+      },
+      {
+        "reference": "tmpfs-e9671acd244849c57167c658fa2f969752048f7ab184a3dcf5c46cb4d56ae124",
+        "source": {
+          "kind": "tmpfs",
+          "size_bytes": 10485760,
+          "mode": 1770,
+          "options": []
+        }
+      }
+    ],
+    "mounts": [
+      {
+        "volume": "bind-76fada32e2f068aea4409889fd26d1fa0e97697a82575018dd613edf3f9ddf08",
+        "target": "/host",
+        "read_only": false,
+        "no_copy": false,
+        "subpath": null
+      },
+      {
+        "volume": "data",
+        "target": "/data",
+        "read_only": false,
+        "no_copy": true,
+        "subpath": "current"
+      },
+      {
+        "volume": "tmpfs-e9671acd244849c57167c658fa2f969752048f7ab184a3dcf5c46cb4d56ae124",
+        "target": "/tmp",
+        "read_only": false,
+        "no_copy": false,
+        "subpath": null
+      }
+    ],
+    "configs": [
+      {
+        "name": "file",
+        "content": [
+          101,
+          110,
+          97,
+          98,
+          108,
+          101,
+          100,
+          61,
+          116,
+          114,
+          117,
+          101,
+          10
+        ]
+      },
+      {
+        "name": "inline",
+        "content": [
+          104,
+          101,
+          108,
+          108,
+          111
+        ]
+      }
+    ],
+    "pre_deploy": {
+      "command": [
+        "sh",
+        "-c",
+        "migrate"
+      ],
+      "environment": {
+        "DB_HOST": "db"
+      },
+      "privileged": true,
+      "timeout_millis": 150000,
+      "user": null
+    },
+    "ingress_proxy_fragment": null,
+    "update": {
+      "order": "stop_first",
+      "monitor_millis": 45000
+    }
+  },
+  "caddy": {
+    "name": "caddy",
+    "mode": {
+      "mode": "replicated",
+      "replicas": 1
+    },
+    "container": {
+      "image": "caddy:2",
+      "command": [],
+      "entrypoint": [],
+      "environment": {},
+      "labels": {},
+      "hostname": null,
+      "extra_hosts": [],
+      "cap_add": [],
+      "cap_drop": [],
+      "healthcheck": null,
+      "pull_policy": "missing",
+      "init": null,
+      "user": null,
+      "working_directory": null,
+      "tty": false,
+      "open_stdin": false,
+      "privileged": false,
+      "pid_mode": null,
+      "log_driver": {
+        "name": "local",
+        "options": {}
+      },
+      "resources": {
+        "cpu_nanos": null,
+        "memory_bytes": null,
+        "memory_reservation_bytes": null,
+        "shared_memory_bytes": null,
+        "devices": [],
+        "device_reservations": [],
+        "ulimits": {}
+      },
+      "stop_timeout_secs": null,
+      "sysctls": {},
+      "restart": {
+        "name": "unless-stopped"
+      },
+      "config_mounts": []
+    },
+    "placement": {
+      "machines": []
+    },
+    "ports": [
+      {
+        "mode": "host",
+        "bind": {
+          "kind": "all"
+        },
+        "published_port": 8080,
+        "container_port": 8080,
+        "transport_protocol": "tcp"
+      }
+    ],
+    "volumes": [],
+    "mounts": [],
+    "configs": [],
+    "pre_deploy": null,
+    "ingress_proxy_fragment": "app.example { reverse_proxy :80 }",
+    "update": {
+      "order": null,
+      "monitor_millis": null
+    }
+  },
+  "db": {
+    "name": "db",
+    "mode": {
+      "mode": "replicated",
+      "replicas": 1
+    },
+    "container": {
+      "image": "postgres:17",
+      "command": [],
+      "entrypoint": [],
+      "environment": {},
+      "labels": {},
+      "hostname": null,
+      "extra_hosts": [],
+      "cap_add": [],
+      "cap_drop": [],
+      "healthcheck": null,
+      "pull_policy": "missing",
+      "init": null,
+      "user": null,
+      "working_directory": null,
+      "tty": false,
+      "open_stdin": false,
+      "privileged": false,
+      "pid_mode": null,
+      "log_driver": {
+        "name": "local",
+        "options": {}
+      },
+      "resources": {
+        "cpu_nanos": null,
+        "memory_bytes": null,
+        "memory_reservation_bytes": null,
+        "shared_memory_bytes": null,
+        "devices": [],
+        "device_reservations": [],
+        "ulimits": {}
+      },
+      "stop_timeout_secs": null,
+      "sysctls": {},
+      "restart": {
+        "name": "unless-stopped"
+      },
+      "config_mounts": []
+    },
+    "placement": {
+      "machines": []
+    },
+    "ports": [],
+    "volumes": [],
+    "mounts": [],
+    "configs": [],
+    "pre_deploy": null,
+    "ingress_proxy_fragment": null,
+    "update": {
+      "order": null,
+      "monitor_millis": null
+    }
+  }
+}

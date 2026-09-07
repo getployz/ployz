@@ -53,11 +53,6 @@ impl ProvisionedVolumeSize {
     }
 
     #[must_use]
-    pub(crate) fn bytes(&self) -> NonZeroU64 {
-        NonZeroU64::new(self.bytes).expect("ProvisionedVolumeSize is positive")
-    }
-
-    #[must_use]
     pub(crate) fn matches(&self, volume: &DockerVolume) -> bool {
         matches!(
             volume.storage,

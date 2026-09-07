@@ -20,4 +20,6 @@ Release process: [docs/RELEASE.md](docs/RELEASE.md).
 - `ployzd`: Linux-only daemon
 - `ployz-testkit`: unpublished support crate used only by tests
 
+Building `ployz` also requires Go 1.24 or newer. Cargo builds and embeds the Compose helper; installed users need neither Go nor the Docker Compose plugin to load projects. Docker Compose remains required for builds.
+
 Run the fast local gate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.

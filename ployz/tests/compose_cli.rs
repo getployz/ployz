@@ -5,185 +5,46 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz::compose::{ComposeError, LoadOptions, load_project};
+use ployz::compose::{LoadOptions, load_project};
 use ployz_core::IngressProxyFragment;
 
 #[test]
-fn compose_failures_probe_the_plugin_once_and_preserve_project_diagnostics() {
-    let root = test_dir("failures");
+fn compose_loading_does_not_invoke_docker() {
+    let root = test_dir("no-docker");
     let calls = root.join("calls");
     let docker = executable(
         &root,
         "docker",
-        &format!(
-            r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
-if [ "$*" = "compose version" ]; then
-  exit 0
-fi
-printf 'compose diagnostic\n' >&2
-exit 1
-"#,
-            calls.display()
-        ),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", calls.display()),
     );
+    fs::write(
+        root.join("compose.yaml"),
+        "services: {app: {image: alpine}}\n",
+    )
+    .unwrap();
     let options = LoadOptions {
-        command: "deploy".into(),
-        docker: Some(docker),
         working_dir: Some(root.clone()),
+        docker: Some(docker),
         ..Default::default()
     };
-
-    let error = load_project(&options).unwrap_err();
-    assert_eq!(error, ComposeError::Compose("compose diagnostic\n".into()));
-    assert_eq!(
-        fs::read_to_string(&calls)
-            .unwrap()
-            .lines()
-            .collect::<Vec<_>>(),
-        [
-            "compose --all-resources config --no-consistency --no-normalize --no-path-resolution --format yaml",
-            "compose version"
-        ]
-    );
-
-    fs::remove_file(&calls).unwrap();
-    let failing_docker = executable(
-        &root,
-        "docker-without-compose",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$*\" = \"compose version\" ]; then exit 1; fi\nprintf 'compose diagnostic\\n' >&2\nexit 1\n",
-            calls.display()
-        ),
-    );
-    let error = load_project(&LoadOptions {
-        docker: Some(failing_docker),
-        ..options.clone()
-    })
-    .unwrap_err();
-    assert!(matches!(error, ComposeError::Prerequisite(message) if
-        message.contains("ployz deploy")
-            && message.contains("Docker Compose plugin")
-            && message.contains("https://docs.docker.com/compose/install/")));
-    assert_eq!(
-        fs::read_to_string(&calls)
-            .unwrap()
-            .lines()
-            .collect::<Vec<_>>(),
-        [
-            "compose --all-resources config --no-consistency --no-normalize --no-path-resolution --format yaml",
-            "compose version"
-        ]
-    );
-
-    let missing = LoadOptions {
-        docker: Some(root.join("missing-docker")),
-        ..options
-    };
+    assert!(load_project(&options).unwrap().services.contains_key("app"));
+    fs::write(
+        root.join("compose.yaml"),
+        "services: {app: {image: alpine, depends_on: [missing]}}\n",
+    )
+    .unwrap();
     assert!(
-        matches!(load_project(&missing), Err(ComposeError::Prerequisite(message)) if
-        message.contains("Docker CLI") && message.contains("ployz deploy"))
+        load_project(&options)
+            .unwrap_err()
+            .to_string()
+            .contains("missing")
     );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn only_compose_commands_load_a_project() {
-    let root = test_dir("scope");
-    let calls = root.join("calls");
-    let compose = root.join("compose.yaml");
-    fs::write(&compose, "services: {api: {image: api}}\n").unwrap();
-    let alternate = root.join("alternate.yaml");
-    fs::write(&alternate, "services: {api: {image: alternate}}\n").unwrap();
-    executable(
-        &root,
-        "docker",
-        r#"#!/bin/sh
-printf '%s\n' "$*" >> "$PLOYZ_DOCKER_CALLS"
-case "$*" in
-  *"config --environment") exit 0 ;;
-  *"config --no-consistency --no-normalize --no-path-resolution --format yaml")
-    printf 'name: demo\nservices:\n  api:\n    image: api\n'
-    exit 0
-    ;;
-  *"config --format yaml")
-    printf 'name: demo\nservices:\n  api:\n    image: api\n'
-    exit 0
-    ;;
-  "compose version") exit 0 ;;
-esac
-exit 1
-"#,
-    );
-    let path = format!("{}:/usr/bin:/bin", root.display());
-    for args in [
-        vec!["deploy", "--file", compose.to_str().unwrap()],
-        vec!["build", "--file", compose.to_str().unwrap()],
-        vec!["logs", "--file", compose.to_str().unwrap()],
-        vec!["logs", "api", "--file", compose.to_str().unwrap()],
-        vec!["version"],
-    ] {
-        let _ = ployz(&root)
-            .args(args)
-            .env("PATH", &path)
-            .env("PLOYZ_DOCKER_CALLS", &calls)
-            .output()
-            .unwrap();
-    }
-    let _ = ployz(&root)
-        .arg("deploy")
-        .current_dir(&root)
-        .env("PATH", &path)
-        .env("PLOYZ_DOCKER_CALLS", &calls)
-        .env("COMPOSE_FILE", &alternate)
-        .output()
-        .unwrap();
-    let calls = fs::read_to_string(calls).unwrap();
-    assert_eq!(
-        calls
-            .lines()
-            .filter(|line| {
-                line.ends_with("config --format yaml") && !line.contains("--no-normalize")
-            })
-            .count(),
-        4
-    );
-    assert_eq!(
-        calls
-            .lines()
-            .filter(|line| line.ends_with("config --environment"))
-            .count(),
-        4
-    );
-    assert_eq!(
-        calls
-            .lines()
-            .filter(|line| {
-                line.contains("--profile * config --format yaml")
-                    && !line.contains("--no-normalize")
-            })
-            .count(),
-        3,
-        "deploy and bare logs must request disabled-profile services"
-    );
-    assert!(
-        calls
-            .lines()
-            .filter(|line| {
-                line.ends_with("config --format yaml") && !line.contains("--no-normalize")
-            })
-            .all(|line| !line.contains("alternate.yaml")),
-        "COMPOSE_FILE selection is delegated to the plugin"
-    );
+    assert!(!calls.exists());
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn real_compose_normalizes_without_a_daemon_and_project_inputs_stay_relative() {
-    if !Path::new("/usr/bin/docker").is_file() {
-        eprintln!("skipping: /usr/bin/docker is unavailable");
-        return;
-    }
     let root = test_dir("real");
     fs::write(
         root.join(".env"),
@@ -229,11 +90,7 @@ secrets:
 "#,
     )
     .unwrap();
-    let docker = executable(
-        &root,
-        "real-docker",
-        "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
-    );
+    let docker = executable(&root, "real-docker", "#!/bin/sh\nexit 99\n");
     let mut project = load_project(&LoadOptions {
         command: "deploy".into(),
         files: vec![compose],
@@ -331,9 +188,7 @@ secrets:
 
 #[test]
 fn real_compose_loads_mount_declared_only_by_x_volumes() {
-    let Some((root, docker)) = real_docker_fixture("provisioned-volume") else {
-        return;
-    };
+    let (root, docker) = docker_fixture("provisioned-volume");
     let compose = root.join("compose.yaml");
     fs::write(
         &compose,
@@ -377,9 +232,7 @@ x-volumes:
 
 #[test]
 fn real_compose_x_volumes_preserve_other_consistency_checks() {
-    let Some((root, docker)) = real_docker_fixture("provisioned-volume-consistency") else {
-        return;
-    };
+    let (root, docker) = docker_fixture("provisioned-volume-consistency");
     let compose = root.join("compose.yaml");
     fs::write(
         &compose,
@@ -404,15 +257,13 @@ x-volumes:
         Ok(_) => panic!("accepted a Service mount of an undeclared secret"),
     };
 
-    assert!(matches!(error, ComposeError::Compose(_)));
+    assert!(error.to_string().contains("undefined"), "{error}");
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn real_compose_still_rejects_undeclared_volume_mounts() {
-    let Some((root, docker)) = real_docker_fixture("undeclared-volume") else {
-        return;
-    };
+    let (root, docker) = docker_fixture("undeclared-volume");
     let compose = root.join("compose.yaml");
     fs::write(
         &compose,
@@ -430,16 +281,12 @@ fn real_compose_still_rejects_undeclared_volume_mounts() {
         Ok(_) => panic!("accepted an undeclared Volume reference"),
     };
 
-    assert!(matches!(error, ComposeError::Compose(_)));
+    assert!(error.to_string().contains("undefined"), "{error}");
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn real_compose_recovers_command_secrets_selected_by_compose_file() {
-    if !Path::new("/usr/bin/docker").is_file() {
-        eprintln!("skipping: /usr/bin/docker is unavailable");
-        return;
-    }
     let root = test_dir("compose-file-command");
     let project = root.join("project");
     let caller = root.join("caller");
@@ -464,11 +311,7 @@ secrets:
 "#,
     )
     .unwrap();
-    executable(
-        &root,
-        "docker",
-        "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
-    );
+    executable(&root, "docker", "#!/bin/sh\nexit 99\n");
     let output = ployz(&root)
         .arg("deploy")
         .current_dir(caller)
@@ -487,10 +330,6 @@ secrets:
 
 #[test]
 fn real_compose_unescapes_literal_dollars_into_the_requested_spec() {
-    if !Path::new("/usr/bin/docker").is_file() {
-        eprintln!("skipping: /usr/bin/docker is unavailable");
-        return;
-    }
     let root = test_dir("literal-dollars");
     let compose = root.join("compose.yaml");
     fs::write(
@@ -515,11 +354,7 @@ volumes:
 "#,
     )
     .unwrap();
-    let docker = executable(
-        &root,
-        "real-docker",
-        "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
-    );
+    let docker = executable(&root, "real-docker", "#!/bin/sh\nexit 99\n");
     let project = load_project(&LoadOptions {
         command: "deploy".into(),
         files: vec![compose],
@@ -566,18 +401,10 @@ fn ployz(root: &Path) -> Command {
     command
 }
 
-fn real_docker_fixture(label: &str) -> Option<(PathBuf, PathBuf)> {
-    if !Path::new("/usr/bin/docker").is_file() {
-        eprintln!("skipping: /usr/bin/docker is unavailable");
-        return None;
-    }
+fn docker_fixture(label: &str) -> (PathBuf, PathBuf) {
     let root = test_dir(label);
-    let docker = executable(
-        &root,
-        "real-docker",
-        "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
-    );
-    Some((root, docker))
+    let docker = executable(&root, "real-docker", "#!/bin/sh\nexit 99\n");
+    (root, docker)
 }
 
 fn executable(root: &Path, name: &str, content: &str) -> PathBuf {
@@ -586,4 +413,32 @@ fn executable(root: &Path, name: &str, content: &str) -> PathBuf {
     fs::write(&path, content).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+#[test]
+fn config_mounts_default_the_target_after_compose_normalization() {
+    let root = test_dir("config-target");
+    for config in ["{source: settings}", "settings"] {
+        fs::write(root.join("compose.yaml"), format!("services: {{app: {{image: alpine, configs: [{config}]}}}}\nconfigs: {{settings: {{content: value}}}}\n")).unwrap();
+        let project = load_project(&LoadOptions {
+            working_dir: Some(root.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            project
+                .services
+                .get("app")
+                .unwrap()
+                .config_mounts()
+                .first()
+                .unwrap()
+                .target
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "/settings"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
 }

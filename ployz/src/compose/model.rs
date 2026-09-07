@@ -6,37 +6,37 @@ use serde_norway::Value;
 use thiserror::Error;
 
 /// A Compose build held as the raw spec. Additional contexts are read from `raw`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct BuildSpec {
     pub raw: Value,
 }
 
 /// A project secret after validate: one source, or the resolved value.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Deserialize, PartialEq)]
 pub(crate) enum ProjectSecret {
     Unresolved(SecretSource),
     Resolved(String),
 }
 
 /// How an unresolved project secret is obtained.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Deserialize, PartialEq)]
 pub(crate) enum SecretSource {
     File(String),
     Environment(String),
     Command(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct ComposeProject {
     pub name: String,
     pub working_dir: PathBuf,
     pub context: Option<String>,
+    #[serde(deserialize_with = "deserialize_services")]
     pub services: BTreeMap<String, RequestedServiceSpec>,
     pub builds: BTreeMap<String, BuildSpec>,
     pub dependencies: BTreeMap<String, Vec<ServiceDependency>>,
     pub warnings: Vec<String>,
     pub service_profiles: BTreeMap<String, Vec<String>>,
-    pub(super) volumes: BTreeMap<String, RawVolume>,
     pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
 }
@@ -134,310 +134,15 @@ pub enum ComposeError {
     Io(String),
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawProject {
-    pub name: Option<String>,
-    #[serde(rename = "x-context")]
-    pub context: Option<String>,
-    #[serde(default)]
-    pub services: BTreeMap<String, RawService>,
-    #[serde(default)]
-    pub volumes: BTreeMap<String, RawVolume>,
-    #[serde(default, rename = "x-volumes")]
-    pub provisioned_volumes: BTreeMap<String, RawProvisionedVolume>,
-    #[serde(default)]
-    pub configs: BTreeMap<String, RawConfig>,
-    #[serde(default)]
-    pub secrets: BTreeMap<String, RawSecret>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields, untagged)]
-pub(super) enum RawProvisionedVolume {
-    Scalar(String),
-    Object { size: String },
-}
-
-impl RawProvisionedVolume {
-    pub(super) fn size(&self) -> &str {
-        match self {
-            Self::Scalar(size) => size,
-            Self::Object { size } => size,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawService {
-    pub image: Option<String>,
-    pub build: Option<Value>,
-    pub command: Option<Value>,
-    pub entrypoint: Option<Value>,
-    #[serde(default)]
-    pub environment: Value,
-    #[serde(default)]
-    pub labels: Value,
-    pub hostname: Option<String>,
-    #[serde(default)]
-    pub extra_hosts: Value,
-    #[serde(default)]
-    pub cap_add: Vec<String>,
-    #[serde(default)]
-    pub cap_drop: Vec<String>,
-    pub healthcheck: Option<RawHealthcheck>,
-    pub pull_policy: Option<String>,
-    pub init: Option<bool>,
-    pub user: Option<String>,
-    pub working_dir: Option<String>,
-    #[serde(default)]
-    pub tty: bool,
-    #[serde(default)]
-    pub stdin_open: bool,
-    #[serde(default)]
-    pub privileged: bool,
-    pub pid: Option<String>,
-    pub restart: Option<String>,
-    pub logging: Option<RawLogging>,
-    pub stop_grace_period: Option<String>,
-    #[serde(default)]
-    pub sysctls: BTreeMap<String, String>,
-    #[serde(default)]
-    pub volumes: Vec<RawServiceVolume>,
-    #[serde(default)]
-    pub configs: Vec<RawServiceConfig>,
-    #[serde(default)]
-    pub ports: Vec<RawPort>,
-    pub deploy: Option<RawDeploy>,
-    pub scale: Option<u32>,
-    #[serde(default)]
-    pub depends_on: Value,
-    #[serde(default)]
-    pub secrets: Vec<Value>,
-    pub cpus: Option<Value>,
-    pub mem_limit: Option<Value>,
-    pub mem_reservation: Option<Value>,
-    pub shm_size: Option<Value>,
-    #[serde(default)]
-    pub devices: Vec<RawDevice>,
-    #[serde(default)]
-    pub gpus: Vec<RawDeviceRequest>,
-    #[serde(default)]
-    pub ulimits: BTreeMap<String, Value>,
-    #[serde(default)]
-    pub profiles: Vec<String>,
-    #[serde(rename = "x-machines")]
-    pub machines: Option<RawStringList>,
-    #[serde(rename = "x-ports")]
-    pub extension_ports: Option<RawStringList>,
-    #[serde(rename = "x-caddy")]
-    pub caddy: Option<RawCaddy>,
-    #[serde(rename = "x-pre_deploy")]
-    pub pre_deploy: Option<RawPreDeploy>,
-    #[serde(flatten)]
-    pub other: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub(super) enum RawStringList {
-    String(String),
-    List(Vec<String>),
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub(super) enum RawCaddy {
-    String(String),
-    Object {
-        #[serde(default)]
-        config: String,
-        #[serde(flatten)]
-        other: BTreeMap<String, Value>,
-    },
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawPreDeploy {
-    pub command: Option<Value>,
-    pub environment: Option<Value>,
-    pub privileged: Option<bool>,
-    pub timeout: Option<String>,
-    #[serde(flatten)]
-    pub other: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawLogging {
-    pub driver: Option<String>,
-    #[serde(default)]
-    pub options: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawHealthcheck {
-    #[serde(default)]
-    pub test: Value,
-    pub interval: Option<String>,
-    pub timeout: Option<String>,
-    pub start_period: Option<String>,
-    pub start_interval: Option<String>,
-    pub retries: Option<u32>,
-    #[serde(default)]
-    pub disable: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawDeploy {
-    pub mode: Option<String>,
-    pub replicas: Option<u32>,
-    pub update_config: Option<RawUpdate>,
-    pub resources: Option<RawDeployResources>,
-    #[serde(flatten)]
-    pub other: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawUpdate {
-    pub order: Option<String>,
-    pub monitor: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawDeployResources {
-    pub limits: Option<RawResourceValues>,
-    pub reservations: Option<RawResourceValues>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawResourceValues {
-    pub cpus: Option<Value>,
-    pub memory: Option<Value>,
-    #[serde(default)]
-    pub devices: Vec<RawDeviceRequest>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawVolume {
-    pub name: Option<String>,
-    pub driver: Option<String>,
-    #[serde(default)]
-    pub driver_opts: BTreeMap<String, String>,
-    #[serde(default)]
-    pub labels: BTreeMap<String, String>,
-    #[serde(default)]
-    pub external: Value,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawConfig {
-    pub file: Option<String>,
-    pub content: Option<String>,
-    pub environment: Option<String>,
-    #[serde(default)]
-    pub external: Value,
-    #[serde(default)]
-    pub labels: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawSecret {
-    pub file: Option<String>,
-    pub environment: Option<String>,
-    pub driver: Option<String>,
-    #[serde(default)]
-    pub driver_opts: BTreeMap<String, String>,
-    #[serde(rename = "x-command")]
-    pub command: Option<String>,
-    #[serde(default)]
-    pub external: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub(super) enum RawServiceVolume {
-    Short(String),
-    Long(Box<RawServiceVolumeLong>),
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub(super) struct RawServiceVolumeLong {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub source: Option<String>,
-    pub target: String,
-    #[serde(default)]
-    pub read_only: bool,
-    pub bind: Option<RawBind>,
-    pub volume: Option<RawVolumeMount>,
-    pub tmpfs: Option<RawTmpfs>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawBind {
-    #[serde(default)]
-    pub create_host_path: bool,
-    pub propagation: Option<String>,
-    pub recursive: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawVolumeMount {
-    #[serde(default)]
-    pub nocopy: bool,
-    pub subpath: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawTmpfs {
-    pub size: Option<Value>,
-    pub mode: Option<Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub(super) enum RawServiceConfig {
-    Short(String),
-    Long {
-        source: String,
-        target: Option<String>,
-        uid: Option<String>,
-        gid: Option<String>,
-        mode: Option<Value>,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub(super) enum RawPort {
-    Short(String),
-    Long {
-        target: u16,
-        published: Option<Value>,
-        host_ip: Option<String>,
-        protocol: Option<String>,
-        mode: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub(super) enum RawDevice {
-    Short(String),
-    Long {
-        source: String,
-        target: String,
-        permissions: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct RawDeviceRequest {
-    pub driver: Option<String>,
-    pub count: Option<Value>,
-    #[serde(default, alias = "ids")]
-    pub device_ids: Vec<String>,
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-    #[serde(default)]
-    pub options: BTreeMap<String, String>,
+fn deserialize_services<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, RequestedServiceSpec>, D::Error> {
+    BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(name, value)| {
+            serde_json::from_value(value)
+                .map_err(|error| serde::de::Error::custom(format!("service '{name}': {error}")))
+                .map(|spec| (name, spec))
+        })
+        .collect()
 }

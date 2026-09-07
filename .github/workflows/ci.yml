@@ -23,6 +23,10 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ployz/compose-helper/go.mod
+          cache-dependency-path: ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
@@ -31,6 +35,12 @@ jobs:
           shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      - name: Check Compose helper
+        working-directory: ployz/compose-helper
+        run: |
+          test -z "$(gofmt -l *.go)"
+          go vet ./...
+          go test ./...
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-layer3-runner.sh
       - run: bash scripts/check-product-paths.sh
@@ -69,6 +79,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ployz/compose-helper/go.mod
+          cache-dependency-path: ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
       - run: cargo check --package ployz --all-targets --locked
 
@@ -110,6 +124,10 @@ jobs:
       PLOYZ_TESTKIT_IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ployz/compose-helper/go.mod
+          cache-dependency-path: ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:

@@ -29,6 +29,13 @@ verify_locator() {
             grep -Eq "^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+${test_name}[[:space:]]*\(" "$ROOT/$path" \
                 || fail "$key references missing $locator"
             ;;
+        *.go::*)
+            path=${locator%%::*}
+            test_name=${locator#*::}
+            [ -f "$ROOT/$path" ] || fail "$key references missing $path"
+            grep -Eq "^func ${test_name}\\(" "$ROOT/$path" \
+                || fail "$key references missing $locator"
+            ;;
         *)
             fail "$key has an unknown locator $locator"
             ;;

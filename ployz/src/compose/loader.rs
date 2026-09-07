@@ -1,27 +1,18 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
     fs, io,
     os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use super::{
-    configs::short_config,
-    convert::convert_raw_project,
-    model::{ComposeError, ComposeProject, RawProject, RawProvisionedVolume},
-    mounts::relative_bind_source,
-};
+use super::model::{ComposeError, ComposeProject};
 
-const COMPOSE_INSTALL_URL: &str = "https://docs.docker.com/compose/install/";
-const SECRET_SOURCE_DIAGNOSTIC: &str = ": one of file|environment must be set";
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct LoadOptions {
     pub command: String,
     pub files: Vec<PathBuf>,
@@ -45,193 +36,105 @@ impl Default for LoadOptions {
 }
 
 pub fn load_project(options: &LoadOptions) -> Result<ComposeProject, ComposeError> {
-    let docker = options
-        .docker
-        .as_deref()
-        .unwrap_or_else(|| Path::new("docker"));
-    let normalized = normalized_project(docker, options)?;
-    convert_raw_project(
-        normalized.project,
-        project_working_dir(options)?,
-        normalized.environment,
-        &normalized.recovered_secrets,
-    )
+    let request = serde_json::json!({
+        "version": 1, "files": options.files, "profiles": options.profiles,
+        "all_profiles": options.all_profiles, "working_dir": options.working_dir,
+    });
+    helper(&request)
 }
 
-struct NormalizedCompose {
-    project: RawProject,
-    environment: BTreeMap<String, String>,
-    recovered_secrets: BTreeSet<String>,
+/// Convert normalized Compose YAML into validated requested service specifications.
+///
+/// # Errors
+/// Returns an error if the helper fails or the project contains invalid or unsupported input.
+pub fn parse_normalized(
+    yaml: &str,
+    working_dir: impl Into<PathBuf>,
+) -> Result<ComposeProject, ComposeError> {
+    helper(&serde_json::json!({"version": 1, "yaml": yaml, "working_dir": working_dir.into()}))
 }
 
-fn normalized_project(
-    docker: &Path,
-    options: &LoadOptions,
-) -> Result<NormalizedCompose, ComposeError> {
-    let mut recovered = BTreeSet::new();
-    loop {
-        let secret_override = (!recovered.is_empty())
-            .then(|| TemporaryComposeFile::new(&secret_overrides(&recovered)))
-            .transpose()?;
-        let classifier = config_output(
-            docker,
-            options,
-            secret_override.as_ref(),
-            &[
-                "--no-consistency",
-                "--no-normalize",
-                "--no-path-resolution",
-                "--format",
-                "yaml",
-            ],
-        )?;
-        if !classifier.status.success() {
-            let diagnostic = String::from_utf8_lossy(&classifier.stderr).into_owned();
-            if let Some(name) = missing_source_secret(&diagnostic)
-                && recovered.insert(name)
-            {
-                continue;
-            }
-            return Err(classify_config_failure(docker, options, diagnostic));
-        }
-        let source = parse_project(&classifier)?;
-        validate_source_forms(&source)?;
-        let override_file = (!recovered.is_empty() || !source.provisioned_volumes.is_empty())
-            .then(|| {
-                TemporaryComposeFile::new(&compose_overrides(
-                    &recovered,
-                    &source.provisioned_volumes,
-                ))
-            })
-            .transpose()?;
-        let output = checked_config(
-            docker,
-            options,
-            override_file.as_ref(),
-            &["--format", "yaml"],
-        )?;
-        let mut raw = parse_project(&output)?;
-        raw.volumes
-            .retain(|name, _| source.volumes.contains_key(name));
-        let environment = parse_environment(
-            &checked_config(docker, options, override_file.as_ref(), &["--environment"])?.stdout,
-        );
-        return Ok(NormalizedCompose {
-            project: raw,
-            environment,
-            recovered_secrets: recovered,
-        });
-    }
-}
-
-fn checked_config(
-    docker: &Path,
-    options: &LoadOptions,
-    override_file: Option<&TemporaryComposeFile>,
-    args: &[&str],
-) -> Result<Output, ComposeError> {
-    let output = config_output(docker, options, override_file, args)?;
-    if output.status.success() {
-        Ok(output)
-    } else {
-        Err(classify_config_failure(
-            docker,
-            options,
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ))
-    }
-}
-
-fn config_output(
-    docker: &Path,
-    options: &LoadOptions,
-    override_file: Option<&TemporaryComposeFile>,
-    args: &[&str],
-) -> Result<Output, ComposeError> {
-    let mut command = compose_command(docker, options, override_file)?;
-    command.arg("config").args(args);
-    retry_executable_busy(|| command.output())
-        .map_err(|error| classify_spawn_failure(docker, options, error))
-}
-
-fn parse_project(output: &Output) -> Result<RawProject, ComposeError> {
-    // Compose `config` re-escapes every `$` as `$$` so the YAML can be fed back
-    // into Compose. Undo that before the values become a Requested Service Spec.
-    serde_norway::from_str(&String::from_utf8_lossy(&output.stdout).replace("$$", "$"))
-        .map_err(|error| ComposeError::Invalid(error.to_string()))
-}
-
-fn validate_source_forms(project: &RawProject) -> Result<(), ComposeError> {
-    for (service, raw) in &project.services {
-        if let Some(config) = short_config(raw) {
-            return Err(ComposeError::Invalid(format!(
-                "service '{service}': short-syntax config '{config}' is not supported"
-            )));
-        }
-        if let Some(source) = relative_bind_source(raw) {
-            return Err(ComposeError::Invalid(format!(
-                "service '{service}': bind mount source '{source}' is relative"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn missing_source_secret(diagnostic: &str) -> Option<String> {
-    diagnostic.lines().find_map(|line| {
-        line.strip_prefix("secrets.")?
-            .strip_suffix(SECRET_SOURCE_DIAGNOSTIC)
-            .map(|name| name.trim_matches('"').to_owned())
+pub(super) fn helper<T: serde::de::DeserializeOwned>(
+    request: &serde_json::Value,
+) -> Result<T, ComposeError> {
+    use std::io::Write as _;
+    let content = include_bytes!(concat!(env!("OUT_DIR"), "/ployz-compose"));
+    // Linux temporary mounts may be noexec. Keep the executable in anonymous
+    // memory, sealed against modification, until the child has finished.
+    #[cfg(target_os = "linux")]
+    let executable = {
+        use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
+        let fd = memfd_create(
+            "ployz-compose",
+            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+        )
+        .map_err(|error| ComposeError::Io(format!("create Compose helper: {error}")))?;
+        let mut file = fs::File::from(fd);
+        file.write_all(content)
+            .map_err(|error| ComposeError::Io(format!("write Compose helper: {error}")))?;
+        fcntl_add_seals(
+            &file,
+            SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL,
+        )
+        .map_err(|error| ComposeError::Io(format!("seal Compose helper: {error}")))?;
+        file
+    };
+    #[cfg(target_os = "linux")]
+    let path = {
+        use std::os::fd::AsRawFd as _;
+        PathBuf::from(format!("/proc/self/fd/{}", executable.as_raw_fd()))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let executable = TemporaryComposeFile::create(content, 0o700)?;
+    #[cfg(not(target_os = "linux"))]
+    let path = &executable.path;
+    let mut child = retry_executable_busy(|| {
+        Command::new(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
     })
-}
-
-fn secret_overrides(names: &BTreeSet<String>) -> String {
-    let entries = names
-        .iter()
-        .map(|name| format!("  {name:?}:\n    external: true\n"))
-        .collect::<String>();
-    format!("secrets:\n{entries}")
-}
-
-fn compose_overrides(
-    secrets: &BTreeSet<String>,
-    volumes: &BTreeMap<String, RawProvisionedVolume>,
-) -> String {
-    let mut overrides = if secrets.is_empty() {
-        String::new()
-    } else {
-        secret_overrides(secrets)
-    };
-    if !volumes.is_empty() {
-        overrides.push_str("volumes:\n");
-        for name in volumes.keys() {
-            overrides.push_str(&format!("  {name:?}: {{}}\n"));
-        }
+    .map_err(|error| ComposeError::Io(format!("start Compose helper: {error}")))?;
+    let input =
+        serde_json::to_vec(request).map_err(|error| ComposeError::Invalid(error.to_string()))?;
+    let write = child.stdin.take().expect("piped stdin").write_all(&input);
+    let output = child
+        .wait_with_output()
+        .map_err(|error| ComposeError::Io(format!("wait for Compose helper: {error}")))?;
+    write.map_err(|error| ComposeError::Io(format!("write Compose helper input: {error}")))?;
+    if !output.status.success() {
+        return Err(ComposeError::Io(format!(
+            "Compose helper exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
     }
-    overrides
-}
-
-fn project_working_dir(options: &LoadOptions) -> Result<PathBuf, ComposeError> {
-    let file = options
-        .files
-        .first()
-        .cloned()
-        .or_else(first_compose_file_from_environment);
-    let file = match file {
-        Some(file) if file.is_absolute() => file,
-        Some(file) => options
-            .working_dir
-            .as_deref()
-            .unwrap_or_else(|| Path::new("."))
-            .join(file),
-        None => discover_default_compose_file(options)?,
-    };
-    Ok(file
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .or_else(|| options.working_dir.clone())
-        .unwrap_or_else(|| PathBuf::from(".")))
+    #[derive(Deserialize)]
+    struct Response {
+        version: u32,
+        #[serde(flatten)]
+        outcome: Outcome,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Outcome {
+        Result(serde_json::Value),
+        Error(String),
+    }
+    let response: Response = serde_json::from_slice(&output.stdout)
+        .map_err(|error| ComposeError::Invalid(format!("Compose helper output: {error}")))?;
+    if response.version != 1 {
+        return Err(ComposeError::Invalid(
+            "Compose helper protocol mismatch".into(),
+        ));
+    }
+    match response.outcome {
+        Outcome::Result(value) => {
+            serde_json::from_value(value).map_err(|error| ComposeError::Invalid(error.to_string()))
+        }
+        Outcome::Error(error) => Err(ComposeError::Invalid(error)),
+    }
 }
 
 pub(super) fn compose_command(
@@ -412,34 +315,6 @@ fn compose_path_separator() -> std::ffi::OsString {
         })
 }
 
-fn classify_config_failure(
-    docker: &Path,
-    options: &LoadOptions,
-    diagnostic: String,
-) -> ComposeError {
-    match compose_version(docker, options) {
-        Ok(status) if status.success() => ComposeError::Compose(diagnostic),
-        _ => plugin_prerequisite(options),
-    }
-}
-
-fn compose_version(
-    docker: &Path,
-    options: &LoadOptions,
-) -> std::io::Result<std::process::ExitStatus> {
-    retry_executable_busy(|| {
-        let mut command = Command::new(docker);
-        command
-            .args(["compose", "version"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(directory) = &options.working_dir {
-            command.current_dir(directory);
-        }
-        command.status()
-    })
-}
-
 fn retry_executable_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     for attempt in 0..4 {
         match op() {
@@ -452,39 +327,16 @@ fn retry_executable_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result
     op()
 }
 
-fn classify_spawn_failure(
-    docker: &Path,
-    options: &LoadOptions,
-    error: std::io::Error,
-) -> ComposeError {
-    let _ = compose_version(docker, options);
-    ComposeError::Prerequisite(format!(
-        "ployz {} requires the Docker CLI and Docker Compose plugin on the client ({error}); install Compose: {COMPOSE_INSTALL_URL}",
-        options.command
-    ))
-}
-
-fn plugin_prerequisite(options: &LoadOptions) -> ComposeError {
-    ComposeError::Prerequisite(format!(
-        "ployz {} requires the Docker Compose plugin on the client; install Compose: {COMPOSE_INSTALL_URL}",
-        options.command
-    ))
-}
-
-fn parse_environment(bytes: &[u8]) -> BTreeMap<String, String> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .map(|(key, value)| (key.to_owned(), value.to_owned()))
-        .collect()
-}
-
 pub(super) struct TemporaryComposeFile {
     pub(super) path: PathBuf,
 }
 
 impl TemporaryComposeFile {
     pub(super) fn new(content: &str) -> Result<Self, ComposeError> {
+        Self::create(content.as_bytes(), 0o600)
+    }
+
+    fn create(content: &[u8], mode: u32) -> Result<Self, ComposeError> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         for _ in 0..100 {
             let path = std::env::temp_dir().join(format!(
@@ -495,12 +347,12 @@ impl TemporaryComposeFile {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .mode(0o600)
+                .mode(mode)
                 .open(&path)
             {
                 Ok(mut file) => {
                     use std::io::Write as _;
-                    file.write_all(content.as_bytes()).map_err(|error| {
+                    file.write_all(content).map_err(|error| {
                         ComposeError::Io(format!("write Compose override: {error}"))
                     })?;
                     return Ok(Self { path });
@@ -534,6 +386,35 @@ mod tests {
     };
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_helper_does_not_use_tmpdir() {
+        const CHILD: &str = "PLOYZ_TEST_HELPER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            helper::<ployz_core::PortPublication>(
+                &serde_json::json!({"version": 1, "port": "80/http"}),
+            )
+            .unwrap();
+            return;
+        }
+        // A non-directory makes any attempt to extract into TMPDIR fail without
+        // needing privileged mounts or changing the parent test process's environment.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "compose::loader::tests::linux_helper_does_not_use_tmpdir",
+            ])
+            .env(CHILD, "1")
+            .env("TMPDIR", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     #[test]
     fn temporary_compose_files_are_private() {

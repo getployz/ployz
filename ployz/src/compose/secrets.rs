@@ -14,8 +14,8 @@ use std::os::unix::process::CommandExt as _;
 use thiserror::Error;
 
 use super::{
-    convert::{invalid, is_external},
-    model::{ComposeError, ComposeProject, ProjectSecret, RawSecret, SecretSource},
+    convert::invalid,
+    model::{ComposeError, ComposeProject, ProjectSecret, SecretSource},
 };
 
 const SECRET_PREFIX: &str = "secret://";
@@ -64,72 +64,6 @@ impl ComposeProject {
                 .clone_from(resolved);
         }
         Ok(())
-    }
-}
-
-pub(super) fn convert_secrets(
-    secrets: BTreeMap<String, RawSecret>,
-) -> Result<BTreeMap<String, ProjectSecret>, ComposeError> {
-    secrets
-        .into_iter()
-        .map(|(name, secret)| {
-            secret_source(&name, &secret).map(|source| (name, ProjectSecret::Unresolved(source)))
-        })
-        .collect()
-}
-
-fn secret_source(name: &str, secret: &RawSecret) -> Result<SecretSource, ComposeError> {
-    if is_external(&secret.external) {
-        return Err(invalid(format!(
-            "secret '{name}': external secrets are not supported"
-        )));
-    }
-    if let Some(command) = &secret.command {
-        if command.is_empty() {
-            return Err(invalid(format!(
-                "secret '{name}': x-command must be a non-empty string"
-            )));
-        }
-        if secret.driver.is_some() || !secret.driver_opts.is_empty() {
-            return Err(invalid(format!(
-                "secret '{name}': x-command cannot be combined with driver or driver_opts"
-            )));
-        }
-        if secret.file.is_some() || secret.environment.is_some() {
-            return Err(invalid(format!(
-                "secret '{name}': x-command cannot be combined with file or environment"
-            )));
-        }
-        return Ok(SecretSource::Command(command.clone()));
-    }
-    if let Some(driver) = &secret.driver {
-        if driver != "exec" {
-            return Err(invalid(format!(
-                "secret '{name}': unsupported driver '{driver}'"
-            )));
-        }
-        let command = secret
-            .driver_opts
-            .get("command")
-            .filter(|command| !command.is_empty());
-        let Some(command) = command else {
-            return Err(invalid(format!(
-                "secret '{name}': exec driver requires driver_opts.command"
-            )));
-        };
-        if secret.file.is_some() || secret.environment.is_some() {
-            return Err(invalid(format!(
-                "secret '{name}': a secret using a driver cannot also define file or environment"
-            )));
-        }
-        return Ok(SecretSource::Command(command.clone()));
-    }
-    match (&secret.file, &secret.environment) {
-        (Some(file), None) => Ok(SecretSource::File(file.clone())),
-        (None, Some(variable)) => Ok(SecretSource::Environment(variable.clone())),
-        (Some(_), Some(_)) | (None, None) => Err(invalid(format!(
-            "secret '{name}' must define exactly one of file or environment"
-        ))),
     }
 }
 

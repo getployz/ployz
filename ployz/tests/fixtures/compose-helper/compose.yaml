@@ -1,0 +1,71 @@
+
+name: demo
+x-context: production
+services:
+  db:
+    image: postgres:17
+    networks: {default: null}
+  api:
+    image: registry.example/api:v1
+    build: {context: ./api, dockerfile: Dockerfile.release}
+    command: [serve, --port, "8080"]
+    entrypoint: [/entrypoint]
+    environment: {BOOL: "true", EMPTY: "", OMITTED: null}
+    cap_add: [NET_ADMIN]
+    cap_drop: [ALL]
+    cpus: 0.5
+    mem_limit: "104857600"
+    mem_reservation: "52428800"
+    shm_size: "268435456"
+    devices:
+      - {source: /dev/sda, target: /dev/xvda, permissions: rw}
+      - vendor.example/device=one
+      - vendor.example/device=two
+    gpus: [{count: -1}]
+    ulimits:
+      nofile: {soft: 20000, hard: 40000}
+      nproc: 65535
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost]
+      interval: 1m30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+      start_interval: 2s
+    init: true
+    user: "1000:1000"
+    working_dir: /app
+    tty: true
+    stdin_open: true
+    privileged: true
+    pid: host
+    restart: on-failure:5
+    stop_grace_period: 30s
+    sysctls: {net.ipv4.ip_forward: "1"}
+    deploy:
+      replicas: 3
+      update_config: {order: stop-first, monitor: 45s}
+    depends_on: {db: {condition: service_started}}
+    x-machines: "machine-1, machine-2"
+    x-ports: [api.example.com:8443:8080/https, 5000:3000/tcp@host]
+    x-pre_deploy:
+      command: [sh, -c, migrate]
+      environment: {DB_HOST: db}
+      privileged: true
+      timeout: 2m30s
+    volumes:
+      - {type: bind, source: /srv/api, target: /host, bind: {create_host_path: true, propagation: rprivate, recursive: disabled}}
+      - {type: volume, source: data, target: /data, volume: {nocopy: true, subpath: current}}
+      - {type: tmpfs, target: /tmp, tmpfs: {size: "10485760", mode: 1770}}
+    configs:
+      - {source: inline, target: /etc/inline, uid: "1000", gid: "1001", mode: "0640"}
+      - {source: file, target: /etc/file}
+  caddy:
+    image: caddy:2
+    x-caddy: Caddyfile
+    x-ports: [8080:8080/tcp@host]
+volumes:
+  data: {name: demo_data, driver: local, driver_opts: {type: tmpfs}, labels: {tier: app}}
+configs:
+  inline: {content: "hello"}
+  file: {file: app.conf}

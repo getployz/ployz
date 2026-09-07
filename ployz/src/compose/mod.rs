@@ -1,17 +1,13 @@
 mod build;
-mod configs;
 mod convert;
-mod extensions;
-mod image;
 mod loader;
 mod model;
-mod mounts;
 mod ports;
 mod secrets;
 
 pub use build::{BuildOptions, BuildService, execute_build, plan_build};
 pub(crate) use convert::duration_millis;
-pub use convert::parse_normalized;
+pub use loader::parse_normalized;
 pub use loader::{LoadOptions, load_project};
 pub(crate) use loader::{compose_identity, has_explicit_nondefault_compose_file};
 pub use model::{BuildSpec, ComposeError, ComposeProject};
