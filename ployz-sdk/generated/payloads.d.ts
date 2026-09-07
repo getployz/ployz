@@ -582,19 +582,12 @@ export type RttStatistics = {
   population_stddev_ns: number;
 };
 
-export type GlobalReconcileFailureObservation = {
-  service: QualifiedService;
-  last_error: string;
-  observed_at: string;
-};
-
 export type MachineObservation = {
   machine: Machine;
   membership: MembershipObservation;
   storage?: MachineStorageObservation;
   selected_endpoint: SelectedEndpoint | null;
   rtt?: RttStatistics;
-  global_reconcile_failures?: GlobalReconcileFailureObservation[];
 };
 
 export type ContainerObservation = {

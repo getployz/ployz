@@ -22,8 +22,7 @@ use tonic::{
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
-    global_reconcile::GlobalReconcileObservations,
-    machine::{LocalMachine, LocalMachineError, LocalMachineStore},
+    machine::{LocalMachineError, LocalMachineStore},
 };
 
 pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route};
@@ -35,7 +34,6 @@ pub(crate) use local::{MachineService, REGISTER_FORWARDED_METADATA};
 #[derive(Clone)]
 pub struct MachineApi {
     proxy: MachineProxy,
-    local: LocalMachine,
     machine_id: MachineId,
 }
 
@@ -60,15 +58,6 @@ impl MachineApi {
     #[must_use]
     pub fn machine_id(&self) -> MachineId {
         self.machine_id
-    }
-
-    /// Local Machine operations for daemon-owned maintenance loops.
-    ///
-    /// [`LocalMachine`] does not implement [`ployz_core::MachineRpc`], so this
-    /// value cannot be mounted on a listener.
-    #[must_use]
-    pub(crate) fn local(&self) -> LocalMachine {
-        self.local.clone()
     }
 
     #[cfg(test)]
@@ -118,17 +107,6 @@ impl MachineApiBuilder {
         self
     }
 
-    #[must_use]
-    pub(crate) fn with_global_reconcile_observations(
-        mut self,
-        observations: GlobalReconcileObservations,
-    ) -> Self {
-        self.service = self
-            .service
-            .with_global_reconcile_observations(observations);
-        self
-    }
-
     /// Apply routing and return a servable Machine API.
     ///
     /// # Errors
@@ -159,11 +137,7 @@ fn wrap(service: local::MachineService) -> Result<MachineApi, LocalMachineError>
         port,
         replicated,
     );
-    Ok(MachineApi {
-        proxy,
-        local,
-        machine_id,
-    })
+    Ok(MachineApi { proxy, machine_id })
 }
 
 impl Service<http::Request<Body>> for MachineApi {

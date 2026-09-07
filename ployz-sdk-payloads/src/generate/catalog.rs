@@ -1560,17 +1560,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
-        "GlobalReconcileFailureObservation",
-        Shape::Object {
-            params: "",
-            fields: &[
-                ("service", "QualifiedService"),
-                ("last_error", "string"),
-                ("observed_at", "string"),
-            ],
-        },
-    ),
-    (
         "MachineObservation",
         Shape::Object {
             params: "",
@@ -1580,10 +1569,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("storage", "MachineStorageObservation?"),
                 ("selected_endpoint", "SelectedEndpoint | null"),
                 ("rtt", "RttStatistics?"),
-                (
-                    "global_reconcile_failures",
-                    "GlobalReconcileFailureObservation[]?",
-                ),
             ],
         },
     ),

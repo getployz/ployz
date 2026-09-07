@@ -19,7 +19,6 @@ pub mod diag;
 pub mod dns;
 pub mod docker;
 pub(crate) mod filesystem;
-mod global_reconcile;
 mod host_capacity;
 mod hosted_dns;
 pub(crate) mod ingress;

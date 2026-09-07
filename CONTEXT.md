@@ -131,12 +131,12 @@ A bounded command attempt that calculates and executes work against an observer-
 _Avoid_: Deployment resource, reconciliation loop
 
 **Global catch-up**:
-A bounded membership-command operation that establishes this Machine's running Service Container for every observed eligible Global before the command completes. It is distinct from ongoing Global slot convergence and is not a Cluster-wide Deploy.
+A bounded membership-command operation that establishes this Machine's running Service Container for every observed eligible Global before the command completes. Unknown eligibility or incomplete placement is a reported outcome; it is not a Cluster-wide Deploy and has no background retry.
 _Avoid_: scheduler, Cluster-wide Deploy
 
 **Global slot convergence**:
-Machine-local maintenance that converges this participating Machine to one slot for every observed eligible Global. It creates missing eligible slots, retires definitely ineligible slots, and leaves unknown eligibility unchanged.
-_Avoid_: Cluster-wide reconciler, scheduler, stale-slot pruning
+One bounded, target-local decision for a dispatched Global slot: ensure it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown.
+_Avoid_: Background maintenance, Cluster-wide reconciler, scheduler
 
 **Observed Global Slot Spec**:
 The Resolved Service Spec carried by the newest observer-visible Service Container and used for Global catch-up or slot convergence. It retains that Container's provenance and is not canonical Service intent.
