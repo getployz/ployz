@@ -23,6 +23,7 @@ mod pipeline;
 mod planning;
 mod progress;
 mod render;
+mod report;
 
 pub(crate) use apply::{
     ApplyError, ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec,

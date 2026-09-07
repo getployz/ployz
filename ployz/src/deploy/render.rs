@@ -6,26 +6,24 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use ployz_core::{
-    DeployEvent, DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
-    HttpProtocol, OperationPhase, OperationRow, OperationStatus, PortPublication,
-    ReplacementOperation, UpdateOrder,
+    DeployOperation, DeployOutcome, DeployPreview, ExecutionError, HttpProtocol, OperationPhase,
+    OperationRow, OperationStatus, PortPublication, ReplacementOperation, UpdateOrder,
 };
 
-/// How the live task list is titled.
+#[cfg(test)]
+use ployz_core::DeployEvent;
+
+use super::report::{self, Ink};
+
 #[must_use]
+#[cfg(test)]
 pub fn progress_text(event: &DeployEvent, title: &str) -> String {
     match event {
         DeployEvent::Progress {
             completed,
             total,
             rows,
-        } => {
-            let mut out = format!("[+] {title} {completed}/{total}\n");
-            for row in rows {
-                out.push_str(&row_line(row));
-            }
-            out
-        }
+        } => report::paint_live(title, *completed, *total, rows, &Ink::plain()),
         DeployEvent::Outcome { outcome } => outcome_text(outcome),
     }
 }
@@ -147,22 +145,23 @@ pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) 
     format!("Proceed with removal of Project {project} from {context}? [y/N] ")
 }
 
-/// Endpoints on success; one named failure line on stderr-bound outcomes.
+/// Endpoints on success; synthesized live list plus footer when no printer ran.
 #[must_use]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
         DeployOutcome::Success { completed } => endpoints_footer(completed).unwrap_or_default(),
-        DeployOutcome::Failed {
-            completed, failed, ..
-        } => {
-            let mut out = String::new();
-            if !completed.is_empty() {
-                let _ = writeln!(out, "Completed {} operation(s).", completed.len());
-            }
-            let _ = writeln!(out, "Failed: {}", failed_summary(failed));
-            out
-        }
+        DeployOutcome::Failed { .. } => report::paint_closing(outcome, &[], false, &Ink::plain()),
     }
+}
+
+/// Footer using Machine Names already present on live rows.
+#[must_use]
+#[cfg(test)]
+pub fn outcome_text_after(
+    outcome: &DeployOutcome<ExecutionError>,
+    rows: &[OperationRow],
+) -> String {
+    report::paint_closing(outcome, rows, true, &Ink::plain())
 }
 
 fn service_trees(preview: &DeployPreview) -> String {
@@ -238,40 +237,31 @@ fn spec_image(operation: &DeployOperation) -> Option<&str> {
 
 fn child_line(row: &OperationRow) -> String {
     let machine = machine_label(row);
+    let name = report::visible_row_name(row);
     match &row.operation {
         DeployOperation::WaitHealthy {
             dependent,
             dependency,
             ..
         } => format!("~ wait for {dependency} to be healthy before {dependent}"),
-        DeployOperation::RunContainer { spec, .. } => {
-            format!(
-                "+ create container {} on {machine}",
-                row.display_name.as_deref().unwrap_or(spec.name.as_str())
-            )
+        DeployOperation::RunContainer { .. } => {
+            format!("+ create container {name} on {machine}")
         }
-        DeployOperation::ReplaceContainer(replacement) => format!(
-            "+/- replace container {} on {machine}",
-            row.display_name
-                .as_deref()
-                .unwrap_or_else(|| replacement.old_container_id.as_str())
-        ),
-        DeployOperation::RemoveContainer { container_id, .. } => format!(
-            "- remove container {} on {machine}",
-            row.display_name.as_deref().unwrap_or(container_id.as_str())
-        ),
-        DeployOperation::StopContainer { container_id, .. } => format!(
-            "- stop container {} on {machine}",
-            row.display_name.as_deref().unwrap_or(container_id.as_str())
-        ),
-        DeployOperation::StopHook { container_id, .. } => {
-            format!("- stop hook {container_id} on {machine}")
+        DeployOperation::ReplaceContainer(_) => {
+            format!("+/- replace container {name} on {machine}")
         }
-        DeployOperation::RunHook { spec, .. } => {
-            format!("+ run pre-deploy hook for {} on {machine}", spec.name)
+        DeployOperation::RemoveContainer { .. } => {
+            format!("- remove container {name} on {machine}")
         }
-        DeployOperation::RemoveVolume { id } => {
-            format!("- remove volume {} on {machine}", id.name)
+        DeployOperation::StopContainer { .. } => {
+            format!("- stop container {name} on {machine}")
+        }
+        DeployOperation::StopHook { .. } => format!("- stop hook {name} on {machine}"),
+        DeployOperation::RunHook { .. } => {
+            format!("+ run pre-deploy hook for {name} on {machine}")
+        }
+        DeployOperation::RemoveVolume { .. } => {
+            format!("- remove volume {name} on {machine}")
         }
     }
 }
@@ -325,40 +315,6 @@ fn plan_footer(preview: &DeployPreview) -> String {
     format!("{} · across {machine_count} {machine}\n", parts.join(" · "))
 }
 
-fn row_line(row: &OperationRow) -> String {
-    let (mark, status, elapsed) = status_columns(row);
-    let mut line = if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
-        format!(" {mark} Dependency {dependency}  {status}{elapsed}\n")
-    } else {
-        format!(
-            " {mark} Container {} on {}  {status}{elapsed}\n",
-            container_label(row),
-            machine_label(row)
-        )
-    };
-    if let OperationStatus::Failed { error } = &row.status {
-        let _ = writeln!(line, "   {error}");
-    }
-    line
-}
-
-fn container_label(row: &OperationRow) -> String {
-    if let Some(name) = &row.display_name {
-        return name.clone();
-    }
-    match &row.operation {
-        DeployOperation::WaitHealthy { dependency, .. } => dependency.to_string(),
-        DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
-            spec.name.to_string()
-        }
-        DeployOperation::ReplaceContainer(replacement) => replacement.spec.name.to_string(),
-        DeployOperation::StopContainer { container_id, .. }
-        | DeployOperation::RemoveContainer { container_id, .. }
-        | DeployOperation::StopHook { container_id, .. } => container_id.to_string(),
-        DeployOperation::RemoveVolume { id } => id.name.to_string(),
-    }
-}
-
 fn machine_label(row: &OperationRow) -> String {
     row.machine_name
         .as_ref()
@@ -383,47 +339,6 @@ pub(super) fn status_kind(status: &OperationStatus) -> &'static str {
         OperationStatus::Failed { .. } => "failed",
         OperationStatus::Unexecuted => "unexecuted",
     }
-}
-
-fn status_columns(row: &OperationRow) -> (&'static str, &'static str, String) {
-    match &row.status {
-        OperationStatus::Pending => ("•", "Pending", String::new()),
-        OperationStatus::Running { phase } => match phase {
-            OperationPhase::WaitingForHealth { elapsed_ms, .. } => {
-                ("…", "Healthy", elapsed(*elapsed_ms))
-            }
-            OperationPhase::WaitingForHook { elapsed_ms, .. } => {
-                ("…", "Hook", elapsed(*elapsed_ms))
-            }
-            OperationPhase::StoppingContainer
-            | OperationPhase::RemovingContainer
-            | OperationPhase::RemovingVolume => ("…", "Removed", String::new()),
-            OperationPhase::Compensating => ("…", "Compensating", String::new()),
-            OperationPhase::Starting
-            | OperationPhase::CreatingContainer
-            | OperationPhase::StartingContainer => ("…", "Running", String::new()),
-        },
-        OperationStatus::Completed => ("✔", completed_label(&row.operation), String::new()),
-        OperationStatus::Failed { .. } => ("✖", "Failed", String::new()),
-        OperationStatus::Unexecuted => ("•", "Unexecuted", String::new()),
-    }
-}
-
-fn completed_label(operation: &DeployOperation) -> &'static str {
-    match operation {
-        DeployOperation::RemoveContainer { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RemoveVolume { .. } => "Removed",
-        DeployOperation::WaitHealthy { .. }
-        | DeployOperation::RunContainer { .. }
-        | DeployOperation::ReplaceContainer(_)
-        | DeployOperation::RunHook { .. } => "Healthy",
-    }
-}
-
-fn elapsed(elapsed_ms: u64) -> String {
-    format!("  {:.1}s", elapsed_ms as f64 / 1000.0)
 }
 
 fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
@@ -473,38 +388,6 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
         }
     }
     Some(out)
-}
-
-fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
-    match failed {
-        FailedOperation::Operation { operation, error } => {
-            format!("{}: {error}", operation_label(operation))
-        }
-        FailedOperation::ReplacementHealth {
-            operation, error, ..
-        } => format!("replace {}: {error}", operation.spec.name),
-    }
-}
-
-fn operation_label(operation: &DeployOperation) -> String {
-    match operation {
-        DeployOperation::WaitHealthy {
-            dependent,
-            dependency,
-            ..
-        } => format!("wait for {dependency} to be healthy before {dependent}"),
-        DeployOperation::RunContainer { spec, .. } => format!("run {}", spec.name),
-        DeployOperation::StopContainer { .. } => "stop container".into(),
-        DeployOperation::RemoveContainer { .. } => "remove container".into(),
-        DeployOperation::ReplaceContainer(operation) => {
-            format!("replace {}", operation.spec.name)
-        }
-        DeployOperation::StopHook { .. } => "stop hook".into(),
-        DeployOperation::RunHook { spec, .. } => {
-            format!("run pre-deploy hook for {}", spec.name)
-        }
-        DeployOperation::RemoveVolume { id } => format!("remove volume {}", id.name),
-    }
 }
 
 #[cfg(test)]

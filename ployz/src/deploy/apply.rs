@@ -4,7 +4,7 @@ use std::{
 };
 
 use ployz_core::{
-    DataLossConfirmation, DeployEvent, DeployIntent, PlanOptions, ProjectName,
+    DataLossConfirmation, DeployEvent, DeployIntent, OperationRow, PlanOptions, ProjectName,
     RequestedServiceSpec, ServiceSelector,
 };
 use tokio_util::sync::CancellationToken;
@@ -23,6 +23,7 @@ use super::{
         push_project_images,
     },
     render,
+    report::{self, Ink},
 };
 
 pub(crate) async fn deploy_spec(
@@ -77,6 +78,7 @@ async fn apply_spec(
             client,
             &preview,
             format!("Running service {}", requested.name),
+            Ink::detect(io::stdout()),
         )
         .await,
     )
@@ -102,14 +104,18 @@ pub(crate) async fn apply_requested(
 #[derive(Debug)]
 pub(crate) enum ApplyError {
     Prepare(DeployError),
-    Execute(Box<DeployOutcome<ExecutionError>>),
+    Execute {
+        outcome: Box<DeployOutcome<ExecutionError>>,
+        rows: Vec<OperationRow>,
+        live_shown: bool,
+    },
 }
 
 impl ApplyError {
     pub(crate) fn is_retryable_transport(&self) -> bool {
         match self {
             Self::Prepare(DeployError::Connect(error)) => error.is_retryable(),
-            Self::Execute(outcome) => matches!(
+            Self::Execute { outcome, .. } => matches!(
                 outcome.as_ref(),
                 DeployOutcome::Failed { failed, .. } if matches!(
                 failed_error(failed),
@@ -136,8 +142,14 @@ impl From<ApplyError> for Failure {
     fn from(error: ApplyError) -> Self {
         match error {
             ApplyError::Prepare(error) => error.into(),
-            ApplyError::Execute(outcome) => {
-                Failure::usage(render::outcome_text(&outcome).trim().to_owned())
+            ApplyError::Execute {
+                outcome,
+                rows,
+                live_shown,
+            } => {
+                let text =
+                    report::paint_closing(&outcome, &rows, live_shown, &Ink::detect(io::stderr()));
+                Failure::usage(text.trim().to_owned())
             }
         }
     }
@@ -227,8 +239,16 @@ async fn confirm_and_execute(
         println!("No changes were made.");
         return Ok(());
     }
-    finish(stream_confirm(client, preview, format!("Deploying to {}", gate.context)).await)
-        .map_err(Into::into)
+    finish(
+        stream_confirm(
+            client,
+            preview,
+            format!("Deploying to {}", gate.context),
+            Ink::detect(io::stdout()),
+        )
+        .await,
+    )
+    .map_err(Into::into)
 }
 
 pub(crate) async fn remove_project(
@@ -257,6 +277,7 @@ pub(crate) async fn remove_project(
             client,
             &preview,
             format!("Removing Project {name} from {context}"),
+            Ink::detect(io::stdout()),
         )
         .await,
     )
@@ -267,7 +288,8 @@ async fn stream_confirm(
     client: &Client,
     preview: &DeployPlan,
     title: String,
-) -> DeployOutcome<ExecutionError> {
+    ink: Ink,
+) -> (DeployOutcome<ExecutionError>, ProgressPrinter) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let abort = cancel.clone();
@@ -277,7 +299,7 @@ async fn stream_confirm(
     });
     let execute = client.confirm(preview, &cancel, Some(tx));
     tokio::pin!(execute);
-    let mut printer = ProgressPrinter::new(title);
+    let mut printer = ProgressPrinter::new(title, ink);
     let outcome = loop {
         tokio::select! {
             event = rx.recv() => {
@@ -294,26 +316,37 @@ async fn stream_confirm(
         }
     };
     ctrl_c.abort();
-    outcome
+    (outcome, printer)
 }
 
 struct ProgressPrinter {
     title: String,
+    last_rows: Vec<OperationRow>,
+    live_shown: bool,
+    ink: Ink,
     last_lines: usize,
     last_signature: Option<String>,
 }
 
 impl ProgressPrinter {
-    fn new(title: String) -> Self {
+    fn new(title: String, ink: Ink) -> Self {
         Self {
             title,
+            last_rows: Vec::new(),
+            live_shown: false,
+            ink,
             last_lines: 0,
             last_signature: None,
         }
     }
 
     fn print(&mut self, event: &DeployEvent) {
-        let DeployEvent::Progress { .. } = event else {
+        let DeployEvent::Progress {
+            rows,
+            completed,
+            total,
+        } = event
+        else {
             return;
         };
         let signature = progress_signature(event);
@@ -321,7 +354,8 @@ impl ProgressPrinter {
         if !tty && self.last_signature.as_ref() == Some(&signature) {
             return;
         }
-        let text = render::progress_text(event, &self.title);
+        self.last_rows = rows.clone();
+        let text = report::paint_live(&self.title, *completed, *total, rows, &self.ink);
         if tty && self.last_lines > 0 {
             print!("\x1b[{}F\x1b[J", self.last_lines);
         }
@@ -329,6 +363,7 @@ impl ProgressPrinter {
         let _ = io::stdout().flush();
         self.last_lines = text.lines().count();
         self.last_signature = Some(signature);
+        self.live_shown = true;
     }
 }
 
@@ -372,7 +407,9 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), ApplyError> {
+fn finish(
+    (outcome, printer): (DeployOutcome<ExecutionError>, ProgressPrinter),
+) -> Result<(), ApplyError> {
     match outcome {
         success @ DeployOutcome::Success { .. } => {
             let text = render::outcome_text(&success);
@@ -381,7 +418,11 @@ fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), ApplyError> {
             }
             Ok(())
         }
-        failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute(Box::new(failed))),
+        failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute {
+            outcome: Box::new(failed),
+            rows: printer.last_rows,
+            live_shown: printer.live_shown,
+        }),
     }
 }
 
@@ -398,7 +439,10 @@ mod tests {
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;
-    use ployz_core::{PruneRefusal, RequestedServiceSpec};
+    use ployz_core::{
+        DeployOperation, FailedOperation, MachineAction, MachineId, PruneRefusal,
+        RequestedServiceSpec, RpcError, RpcErrorCode,
+    };
 
     #[test]
     fn deploy_prints_ingress_misses_as_warning_lines_without_failing() {
@@ -465,5 +509,43 @@ mod tests {
         assert!(project_not_found(&preview));
         preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
         assert!(!project_not_found(&preview));
+    }
+
+    #[test]
+    fn execute_retryable_transport_matches_outcome_after_stderr() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: DeployOperation::RunContainer {
+                    machine_id,
+                    spec: serde_json::from_value(serde_json::json!({
+                        "service_id": "a".repeat(32),
+                        "name": "web",
+                        "mode": { "mode": "replicated", "replicas": 1 },
+                        "container": { "image": "nginx", "pull_policy": "missing" }
+                    }))
+                    .unwrap(),
+                    skip_health_monitor: true,
+                },
+                error: ExecutionError::Machine {
+                    action: MachineAction::CreateContainer,
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "target Machine RPC timed out".into(),
+                        details: serde_json::Value::Null,
+                    },
+                },
+            },
+            unexecuted: Vec::new(),
+        };
+        let error = ApplyError::Execute {
+            outcome: Box::new(outcome),
+            rows: Vec::new(),
+            live_shown: false,
+        };
+        assert!(error.is_retryable_transport());
+        let failure = Failure::from(error);
+        assert!(format!("{failure}").contains("create failed"));
     }
 }
