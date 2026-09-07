@@ -68,7 +68,7 @@ Global Services are placed by Deploy and by bounded catch-up when a Machine join
 Catch-up reads fresh target storage evidence, reports unknown eligibility or
 incomplete placement, and stops; it does not leave work for a background loop.
 Deleted slots, later eligibility changes, and transient failures require an
-explicit redeploy. See [ADR 0004](docs/adr/0004-bounded-global-placement.md).
+explicit redeploy.
 
 **Why.** Imperative errors surface predictably at the caller that can act on them.
 Declarative reconciliation decouples components but multiplies edge cases and
