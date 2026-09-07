@@ -150,7 +150,7 @@ fn prepare_deploy(
     if matches.get_flag("no-build") {
         builds.clear();
     } else {
-        execute_build(&builds, &build_options, load)?;
+        execute_build(&builds, &build_options, load, &project)?;
     }
     let selected = selected_attempts(&project, &selected)?;
     Ok((project, builds, selected))

@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz::compose::{LoadOptions, load_project};
+use ployz::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
 use ployz_core::IngressProxyFragment;
 
 #[test]
@@ -227,6 +227,50 @@ x-volumes:
             && maximum_bytes.get() == 10 * 1024_u64.pow(3)
             && labels.is_empty()
     ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compose_build_accepts_volumes_declared_only_in_x_volumes() {
+    let root = test_dir("provisioned-volume-build");
+    let image = format!("example.test/ployz-xvol-{}:check", std::process::id());
+    fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        format!(
+            r#"services:
+  api:
+    image: {image}
+    build: .
+    depends_on: [db]
+  db:
+    image: postgres
+    volumes: [data:/var/lib/postgresql/data]
+x-volumes:
+  data: 10G
+"#
+        ),
+    )
+    .unwrap();
+    let docker = executable(&root, "docker", "#!/bin/sh\nexec /usr/bin/docker \"$@\"\n");
+    let load = LoadOptions {
+        command: "build".into(),
+        working_dir: Some(root.clone()),
+        docker: Some(docker),
+        ..Default::default()
+    };
+    let project = load_project(&load).unwrap();
+    let options = BuildOptions {
+        check: true,
+        services: vec!["api".into()],
+        ..Default::default()
+    };
+    let plan = plan_build(&project, &options).unwrap();
+    let result = execute_build(&plan, &options, &load, &project);
+    let _ = Command::new("/usr/bin/docker")
+        .args(["image", "rm", "-f", &image])
+        .status();
+    result.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 

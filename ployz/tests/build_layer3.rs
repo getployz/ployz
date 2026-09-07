@@ -81,7 +81,7 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
     );
     cleanup.images = plan.iter().map(|service| service.image.clone()).collect();
 
-    execute_build(&plan, &options, &load).unwrap();
+    execute_build(&plan, &options, &load, &project).unwrap();
     for image in &cleanup.images {
         command(["image", "rm", image]);
         command(["pull", image]);

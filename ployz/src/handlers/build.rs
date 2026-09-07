@@ -33,7 +33,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         println!("No buildable services selected.");
         return Ok(());
     }
-    execute_build(&plan, &options, &load)?;
+    execute_build(&plan, &options, &load, &project)?;
     if options.check || !leaf.get_flag("push") {
         return Ok(());
     }

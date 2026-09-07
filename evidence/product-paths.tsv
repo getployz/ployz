@@ -34,5 +34,5 @@ global-catch-up	ployz/src/global_catch_up_tests.rs::provisioned_globals_use_targ
 global-catch-up-partial-observation	ployz/src/global_catch_up_tests.rs::partial_observations_reject_catch_up_before_any_placement	-	-	-	-
 volume-plugin-command	ployzd/src/volume_plugin/tests/remove_tests.rs::busy_executable_retries_are_bounded_and_do_not_repeat_commands	-	-	-	-
 compose-secret-source	ployz/compose-helper/main_test.go::TestCommandSecretRejectsDriverOptions	ployz/tests/compose.rs::classifier_keeps_the_warning_error_split_and_incomplete_boundary	-	-	-
-compose-x-volume-bound	ployz/compose-helper/main_test.go::TestProvisionedVolumeMaximumBytesIsAJsonNumber	ployz/tests/compose.rs::mounted_x_volume_resolves_to_a_provisioned_source	-	-	-
+compose-x-volume-bound	ployz/compose-helper/main_test.go::TestProvisionedVolumeMaximumBytesIsAJsonNumber	ployz/tests/compose.rs::mounted_x_volume_resolves_to_a_provisioned_source	ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	-	-
 compose-helper-execution	ployz/src/compose/loader.rs::linux_helper_does_not_use_tmpdir	-	ployz/tests/compose_cli.rs::compose_loading_does_not_invoke_docker	-	-

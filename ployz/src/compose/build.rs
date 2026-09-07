@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::MachineTarget;
 use serde::Serialize;
@@ -67,6 +67,7 @@ pub fn execute_build(
     plan: &[BuildService],
     options: &BuildOptions,
     load: &LoadOptions,
+    project: &ComposeProject,
 ) -> Result<(), ComposeError> {
     if plan.is_empty() {
         return Ok(());
@@ -75,7 +76,7 @@ pub fn execute_build(
     if load.files.is_empty() && first_compose_file_from_environment().is_none() {
         load.files.push(discover_default_compose_file(&load)?);
     }
-    let override_file = TemporaryComposeFile::new(&build_override(plan)?)?;
+    let override_file = TemporaryComposeFile::new(&build_override(plan, project)?)?;
     let docker = load
         .docker
         .as_deref()
@@ -115,11 +116,30 @@ struct BuildServiceOverride<'a> {
 }
 
 #[derive(Serialize)]
+struct EmptyVolume {}
+
+#[derive(Serialize)]
 struct BuildOverride<'a> {
-    services: std::collections::BTreeMap<&'a str, BuildServiceOverride<'a>>,
+    services: BTreeMap<&'a str, BuildServiceOverride<'a>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    volumes: BTreeMap<&'a str, EmptyVolume>,
 }
 
-fn build_override(plan: &[BuildService]) -> Result<String, ComposeError> {
+fn provisioned_volume_names(project: &ComposeProject) -> BTreeMap<&str, EmptyVolume> {
+    project
+        .services
+        .values()
+        .flat_map(|spec| spec.volumes())
+        .filter_map(|volume| {
+            let ployz_core::RawVolumeSource::Provisioned { name, .. } = volume.source.kind() else {
+                return None;
+            };
+            Some((name.as_str(), EmptyVolume {}))
+        })
+        .collect()
+}
+
+fn build_override(plan: &[BuildService], project: &ComposeProject) -> Result<String, ComposeError> {
     let services = plan
         .iter()
         .map(|service| {
@@ -132,8 +152,11 @@ fn build_override(plan: &[BuildService]) -> Result<String, ComposeError> {
             )
         })
         .collect();
-    serde_norway::to_string(&BuildOverride { services })
-        .map_err(|error| ComposeError::Io(format!("encode Compose build override: {error}")))
+    serde_norway::to_string(&BuildOverride {
+        services,
+        volumes: provisioned_volume_names(project),
+    })
+    .map_err(|error| ComposeError::Io(format!("encode Compose build override: {error}")))
 }
 
 fn include_service<'a>(

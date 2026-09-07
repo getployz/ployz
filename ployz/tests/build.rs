@@ -175,6 +175,7 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
             docker: Some(docker),
             ..Default::default()
         },
+        &project,
     )
     .unwrap();
     let call = fs::read_to_string(calls).unwrap();
