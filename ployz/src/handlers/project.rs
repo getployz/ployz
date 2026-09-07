@@ -6,7 +6,7 @@ use crate::{
     project::refuse_reserved,
 };
 
-use super::{Error, data_loss, leaf_matches, required, string_values, with_client};
+use super::{Error, data_loss, leaf_matches, required, with_client};
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let json = leaf_matches(root)
@@ -55,19 +55,33 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     } else {
         VolumeFate::Preserve
     };
-    let yes = matches.get_flag("yes");
-    let named = string_values(matches, "data-loss");
-    let context = matches
-        .get_one::<String>("context")
-        .cloned()
-        .unwrap_or_else(|| "default".into());
+    let command = root.clone();
     with_client(root, move |client| {
         Box::pin(async move {
             let observed = client
                 .data_loss_if_project_destroyed(&name, volumes)
                 .await?;
-            let confirmation = data_loss::collect_data_loss_confirmation(&observed, &named)?;
-            remove_project(client, &name, volumes, yes, &context, &confirmation).await
+            let Some(confirmation) = data_loss::confirm_removal(
+                &command,
+                client,
+                &observed,
+                "Remove Project",
+                &[name.to_string()],
+                if volumes == VolumeFate::Destroy {
+                    data_loss::VolumeEffect::Delete
+                } else {
+                    data_loss::VolumeEffect::Preserve
+                },
+            )?
+            else {
+                return Ok(());
+            };
+            let context = match client.connection_source() {
+                crate::context::ConnectionSource::Context(name) => name.clone(),
+                crate::context::ConnectionSource::Direct => "direct connection".into(),
+                crate::context::ConnectionSource::LocalSocket => "local socket".into(),
+            };
+            remove_project(client, &name, volumes, &context, &confirmation).await
         })
     })
 }

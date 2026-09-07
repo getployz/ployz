@@ -40,3 +40,4 @@ compose-secret-source	ployz/compose-helper/main_test.go::TestCommandSecretReject
 compose-x-volume-bound	ployz/compose-helper/main_test.go::TestProvisionedVolumeMaximumBytesIsAJsonNumber	ployz/tests/compose.rs::mounted_x_volume_resolves_to_a_provisioned_source	ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	-	-
 compose-helper-execution	ployz/src/compose/loader.rs::linux_helper_does_not_use_tmpdir	-	ployz/tests/compose_cli.rs::compose_loading_does_not_invoke_docker	-	-
 local-context	ployz/src/context.rs::removing_the_current_context_unsets_current_and_drops_that_entry	-	ployz/tests/context_cli.rs::ctx_rm_of_the_current_context_unsets_current	-	-
+destructive-confirmation	ployz/src/handlers/data_loss.rs::non_tty_requires_all_names_even_with_yes_and_never_reads_piped_input	ployz/tests/deploy_client/removal.rs::removal_tty_retry_enter_eof_and_ctrl_c_precede_mutation	-	-	-

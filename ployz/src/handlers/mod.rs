@@ -1,9 +1,4 @@
-use std::{
-    future::Future,
-    io::{self, IsTerminal, Write},
-    path::Path,
-    pin::Pin,
-};
+use std::{future::Future, path::Path, pin::Pin};
 
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
@@ -109,19 +104,6 @@ fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
         .get_one::<String>(name)
         .cloned()
         .ok_or_else(|| Error::usage(format!("{name} is required")))
-}
-
-fn confirm() -> Result<bool, Error> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(Error::usage(
-            "confirmation requires a terminal; pass --yes to continue",
-        ));
-    }
-    print!("Continue? [y/N] ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 fn cancellation_on_ctrl_c() -> CancellationToken {

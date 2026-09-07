@@ -867,12 +867,9 @@ async fn data_loss_on_machine(
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
-        .map_err(|failure| {
-            if failure.error.code == RpcErrorCode::Unavailable {
-                machine_did_not_respond(selected)
-            } else {
-                failure.error
-            }
+        .map_err(|failure| RpcError {
+            message: format!("Machine {selected}: {}", failure.error.message),
+            ..failure.error
         })?;
     Ok(ObservedDataLoss {
         data_loss: volumes

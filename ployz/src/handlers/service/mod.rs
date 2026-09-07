@@ -10,9 +10,7 @@ use ployz_core::{
 
 use crate::cluster::ContainerObservationCondition;
 
-use super::{
-    Error, cancellation_on_ctrl_c, confirm, data_loss, leaf_matches, string_values, with_client,
-};
+use super::{Error, cancellation_on_ctrl_c, data_loss, leaf_matches, with_client};
 
 /// List the observed Services.
 ///
@@ -283,41 +281,48 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
 ///
 /// Returns a connection, RPC, usage, or confirmation error.
 pub fn remove(root: &ArgMatches) -> Result<(), Error> {
-    if !leaf_matches(root).get_flag("volumes") {
-        return change(root, ContainerAction::Remove);
-    }
-    remove_with_volumes(root)
-}
-
-fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let selectors = change_selectors(leaf)?;
-    let yes = leaf.get_flag("yes");
-    let named = string_values(leaf, "data-loss");
+    let destroy_volumes = leaf.get_flag("volumes");
+    let command = root.clone();
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services().await?;
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
-            let volumes = service_volume_teardown(&services, &observed)?;
+            let volumes = if destroy_volumes {
+                // Selected volumes come from successful Machine-local container observations.
+                // Unrelated failures cannot conceal another mount on these owners.
+                service_volume_teardown(&services, &observed)?
+            } else {
+                Vec::new()
+            };
             let data_loss_observed = ObservedDataLoss {
                 data_loss: volumes
                     .iter()
                     .map(|id| DataLoss::DockerVolume { id: id.clone() })
                     .collect(),
             };
-            data_loss::collect_data_loss_confirmation(&data_loss_observed, &named)?;
-            if !volumes.is_empty() {
-                println!("The following Docker Volumes will be removed:");
-                for id in &volumes {
-                    println!("  {}/{}", id.machine_id, id.name);
-                }
-                if !yes && !confirm()? {
-                    println!("Cancelled. No Services or volumes were removed.");
-                    return Ok(());
-                }
-            }
+            let targets = services
+                .iter()
+                .map(|service| service.identity.to_string())
+                .collect::<Vec<_>>();
+            let Some(_confirmation) = data_loss::confirm_removal(
+                &command,
+                client,
+                &data_loss_observed,
+                "Remove Services",
+                &targets,
+                if destroy_volumes {
+                    data_loss::VolumeEffect::Delete
+                } else {
+                    data_loss::VolumeEffect::Preserve
+                },
+            )?
+            else {
+                return Ok(());
+            };
             let outcome = apply_service_action(
                 client,
                 &live,
@@ -494,7 +499,10 @@ async fn apply_service_action(
             .change_observed_service(service, action, signal.clone(), timeout)
             .await;
         for success in outcomes.successes {
-            println!("{:?}\t{}\t{}", action, success.machine_id, success.value);
+            println!(
+                "{:?}\t{}\t{}\t{}",
+                action, service.identity, success.machine_id, success.value
+            );
             if service_container_ids.contains(&success.value) {
                 changed.push(success.value);
             }

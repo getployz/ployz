@@ -102,6 +102,7 @@ impl Client {
         volumes: super::VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
         let preview = self.preview_project_removal(project, volumes).await?;
+        require_project_present(&preview)?;
         observed_destroy_loss(&preview, volumes)
     }
 
@@ -144,19 +145,22 @@ impl Client {
         volumes: super::VolumeFate,
     ) -> Result<DeployPlan, RpcError> {
         let preview = self.preview_project_removal(project, volumes).await?;
+        require_project_present(&preview)?;
         observed_destroy_loss(&preview, volumes)?
             .require(confirm_data_loss)
             .map_err(UnconfirmedDataLoss::into_rpc_error)?;
         if let Some(reason) = preview.prune_refusal {
-            return Err(invalid_argument(reason.to_string()));
+            return Err(invalid_argument(format!(
+                "{reason}: {}",
+                preview
+                    .warnings
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
         }
-        if project_not_found(&preview) {
-            return Err(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!("Project '{project}' was not found"),
-                details: serde_json::Value::Null,
-            });
-        }
+
         Ok(preview)
     }
 
@@ -198,9 +202,31 @@ fn observed_destroy_loss(
     if volumes == super::VolumeFate::Destroy
         && let Some(reason) = preview.prune_refusal
     {
-        return Err(invalid_argument(reason.to_string()));
+        return Err(invalid_argument(format!(
+            "{reason}: {}",
+            preview
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
     }
     Ok(planning::data_loss_from_plan(preview))
+}
+
+fn require_project_present(preview: &DeployPreview) -> Result<(), RpcError> {
+    if project_not_found(preview) {
+        return Err(RpcError {
+            code: RpcErrorCode::NotFound,
+            message: format!(
+                "Project '{}' was not found in this Cluster observation. No changes made.",
+                preview.project_name
+            ),
+            details: serde_json::Value::Null,
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn project_not_found(preview: &DeployPreview) -> bool {

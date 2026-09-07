@@ -4,17 +4,15 @@ use ployz_core::{
     NameMatches, QualifiedService, RpcError, RpcErrorCode, ServiceMode, op,
 };
 
-use super::super::{connect_client, runtime, string_values};
-use super::{ConnectionOptions, helpers, target};
-use crate::handlers::{Error, leaf_matches};
+use super::super::{connect_client, runtime};
+use super::{ConnectionOptions, target};
+use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
     let matches = leaf_matches(root);
     let selector = target(matches, "machine")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
-    let yes = matches.get_flag("yes");
-    let named = string_values(matches, "data-loss");
     runtime()?.block_on(async {
         let mut client = connect_client(matches, options.context()).await?;
         let machines = client.machines().await?;
@@ -29,42 +27,49 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 "the current entry Machine cannot be removed while another Machine is visible",
             ));
         }
-        let confirmation = if no_reset {
-            None
+        let observed = if no_reset {
+            ployz_core::ObservedDataLoss { data_loss: Vec::new() }
         } else {
-            let observed = client
-                .data_loss_if_machine_removed(&selected_target)
-                .await
-                .map_err(machine_removal_refusal)?;
-            Some(super::super::data_loss::collect_data_loss_confirmation(
-                &observed, &named,
-            )?)
+            client.data_loss_if_machine_removed(&selected_target).await
+                .map_err(machine_removal_refusal)?
         };
         let live = client.live_services_from(&machines).await?;
+        if !no_reset {
+            if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
+                return Err(Error::usage(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
+            }
+            if live.containers.omissions.contains(&selected.id) {
+                return Err(Error::usage(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
+            }
+        }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
         for line in service_warnings(&selected.name, &services) {
             eprintln!("{line}");
         }
-        helpers::confirm(
-            yes,
-            &format!("Remove Machine {} ({})?", selected.name, selected.id),
-        )?;
+        let Some(confirmation) = super::super::data_loss::confirm_removal(
+            root, &client, &observed, &format!("Remove Machine ({})", selected.id),
+            &[selected.name.to_string()], if no_reset { VolumeEffect::Preserve } else { VolumeEffect::LoseAccess },
+        )? else { return Ok(()); };
+        let mut reset_failure = None;
 
         // TODO: do not reroute away from the current entry before removal.
         // TODO: there is no drain or unschedulable phase before cleanup.
-        match confirmation {
-            None => {
-                client.remove_machine_membership(&selected_target).await?;
-            }
-            Some(confirmation) => {
-                let removed = client
+        if no_reset {
+            client.remove_machine_membership(&selected_target).await?;
+        } else {
+            let removed = client
                     .remove_machine(&selected_target, &confirmation)
                     .await
                     .map_err(crate::failure::refusal_from_rpc)?;
-                if let Some(warning) = removed.reset_warning {
-                    eprintln!("WARNING: target cleanup/reset failed: {warning}");
-                }
+            reset_failure = removed.reset_warning;
+        }
+        println!("Removed Machine {} ({}) membership", selected.name, selected.id);
+        if let Some(reason) = &reset_failure {
+            eprintln!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
+        } else {
+            for loss in &observed.data_loss {
+                println!("Volume data was not erased by reset: {loss}");
             }
         }
         if !replicated_services.is_empty() {
@@ -81,12 +86,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         // Drop the local connection before DNS refresh. A refresh failure
         // must not leave the removed Machine named in the context (#249)
         // and must not fail the command (#449).
-        let mut config = options.load_or_empty_config()?;
+        let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
         {
             context.drop_machine(&selected.id);
-            config.save()?;
+            config.save().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         }
         if let Err(error) =
             crate::dns::update_records_after_removal(&mut client, machines, &selected.id, &live)
@@ -100,7 +105,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 )
             );
         }
-        println!("Removed Machine {} ({})", selected.name, selected.id);
+        if reset_failure.is_some() {
+            return Err(Error::exit(1));
+        }
         Ok::<_, Error>(())
     })
 }

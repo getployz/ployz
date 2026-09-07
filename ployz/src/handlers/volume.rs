@@ -16,7 +16,7 @@ use crate::{
     volume::{MachineVolume, filter_volumes, machine_volumes, parse_assignments},
 };
 
-use super::{Error, confirm, leaf_matches, required, string_values, with_client};
+use super::{Error, data_loss, leaf_matches, required, string_values, with_client};
 
 pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -205,7 +205,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         .collect::<Result<Vec<_>, _>>()?;
     let selectors = string_values(matches, "machine");
     let force = matches.get_flag("force");
-    let yes = matches.get_flag("yes");
+    let command = root.clone();
     with_client(root, |client| {
         Box::pin(async move {
             let (volumes, result) = discover(client, &selectors).await?;
@@ -241,13 +241,18 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             if volumes.is_empty() {
                 return Err(Error::usage(volume_failure_summary(&result)));
             }
-            println!("The following Docker Volumes will be removed:");
+            println!(
+                "Remove Docker Volumes\nContext: {:?}\nLive Observation from one observer; not a globally complete Cluster view.\nPermanently delete {} volumes:",
+                client.connection_source(),
+                volumes.len()
+            );
             for volume in &volumes {
-                println!("  {}/{}", volume.machine_name, volume.volume.id.name);
+                println!(
+                    "  {} on {} ({})",
+                    volume.volume.id.name, volume.machine_name, volume.volume.id.machine_id
+                );
             }
-            let confirmed = yes || confirm()?;
-            if !confirmed {
-                println!("Cancelled. No volumes were removed.");
+            if !data_loss::confirm_ordinary(&command, client)? {
                 return Ok(());
             }
             let removal = client
@@ -426,6 +431,14 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
 }
 
 pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), Error> {
+    for removal in &removals {
+        if matches!(removal.outcome, VolumeRemovalOutcome::Removed) {
+            println!(
+                "Deleted volume {} on {}",
+                removal.id.name, removal.id.machine_id
+            );
+        }
+    }
     if removals
         .iter()
         .all(|removal| matches!(removal.outcome, VolumeRemovalOutcome::Removed))

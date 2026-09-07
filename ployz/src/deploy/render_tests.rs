@@ -21,10 +21,6 @@ fn empty_preview_prints_no_changes_without_a_prompt_body() {
         confirm_prompt("default"),
         "Proceed with deployment to default? [y/N] "
     );
-    assert_eq!(
-        confirm_removal_prompt(&ProjectName::parse("shop").unwrap(), "prod"),
-        "Proceed with removal of Project shop from prod? [y/N] "
-    );
 }
 
 #[test]

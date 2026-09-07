@@ -85,15 +85,13 @@ pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) ->
 }
 
 pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
-    let mut names = Vec::new();
-    for loss in missing {
-        if !names.contains(&loss.name()) {
-            names.push(loss.name());
-        }
-    }
     format!(
-        "Data Loss is not covered by the confirmation; pass the names as arguments: {}",
-        names.join(" ")
+        "Additional volume loss is not covered by the confirmation: {}. Rerun to review the updated volume list.",
+        missing
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 

@@ -331,10 +331,7 @@ fn machine() -> Command {
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
                 .arg(positional("machine", true))
                 .arg(
-                    Arg::new("data-loss")
-                        .help("Data Loss names to confirm")
-                        .num_args(0..)
-                        .action(ArgAction::Append),
+                    volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host; --yes cannot bypass this"),
                 ),
         )
         .subcommand(base("rtt", "Show round-trip times"))
@@ -411,10 +408,7 @@ fn project() -> Command {
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
                 .arg(positional("project", true))
                 .arg(
-                    Arg::new("data-loss")
-                        .help("Data Loss names to confirm when --volumes is set")
-                        .num_args(0..)
-                        .action(ArgAction::Append),
+                    volume_acceptance().requires("volumes"),
                 ),
         )
 }
@@ -439,6 +433,13 @@ fn service_ls(name: &'static str) -> Command {
     base(name, "List services").arg(json_output())
 }
 
+fn volume_acceptance() -> Arg {
+    repeated("accept-volume-loss")
+        .num_args(1)
+        .value_name("name")
+        .help("Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this")
+}
+
 fn service_rm(name: &'static str) -> Command {
     base(name, "Remove services")
         .arg(project_name(Some('p')))
@@ -446,15 +447,7 @@ fn service_rm(name: &'static str) -> Command {
             "Also remove this Service's named Docker Volumes after the containers are removed",
         ))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-        .arg(
-            Arg::new("data-loss")
-                .long("data-loss")
-                .help("Data Loss names to confirm when --volumes is set")
-                .action(ArgAction::Append)
-                .num_args(1)
-                .value_delimiter(',')
-                .requires("volumes"),
-        )
+        .arg(volume_acceptance().requires("volumes"))
         .arg(
             Arg::new("service")
                 .required(true)
@@ -697,9 +690,77 @@ mod tests {
     }
 
     #[test]
+    fn removal_acceptance_requires_explicit_repeatable_volume_flags() {
+        for args in [
+            vec![
+                "ployz",
+                "project",
+                "rm",
+                "app",
+                "--volumes",
+                "--accept-volume-loss",
+                "data",
+                "--accept-volume-loss",
+                "logs",
+            ],
+            vec![
+                "ployz",
+                "machine",
+                "rm",
+                "worker",
+                "--accept-volume-loss",
+                "data",
+            ],
+            vec![
+                "ployz",
+                "rm",
+                "app/db",
+                "--volumes",
+                "--accept-volume-loss",
+                "data",
+            ],
+        ] {
+            assert!(super::command().try_get_matches_from(args).is_ok());
+        }
+        for args in [
+            vec![
+                "ployz",
+                "project",
+                "rm",
+                "app",
+                "--accept-volume-loss",
+                "data",
+            ],
+            vec![
+                "ployz",
+                "machine",
+                "rm",
+                "worker",
+                "--no-reset",
+                "--accept-volume-loss",
+                "data",
+            ],
+            vec!["ployz", "project", "rm", "app", "--volumes", "data"],
+            vec!["ployz", "volume", "rm", "--force", "--yes"],
+        ] {
+            assert!(super::command().try_get_matches_from(args).is_err());
+        }
+    }
+
+    #[test]
     fn machine_rm_takes_data_loss_names_as_arguments_and_yes_still_parses() {
         let matches = super::command()
-            .try_get_matches_from(["ployz", "machine", "rm", "worker", "data", "logs", "--yes"])
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "rm",
+                "worker",
+                "--accept-volume-loss",
+                "data",
+                "--accept-volume-loss",
+                "logs",
+                "--yes",
+            ])
             .unwrap();
         let rm = matches
             .subcommand_matches("machine")
@@ -708,7 +769,7 @@ mod tests {
             .unwrap();
         assert!(rm.get_flag("yes"));
         assert_eq!(
-            rm.get_many::<String>("data-loss")
+            rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
@@ -723,7 +784,7 @@ mod tests {
             .subcommand_matches("rm")
             .unwrap();
         assert!(rm.get_flag("yes"));
-        assert!(rm.get_many::<String>("data-loss").is_none());
+        assert!(rm.get_many::<String>("accept-volume-loss").is_none());
     }
 
     #[test]
@@ -759,7 +820,9 @@ mod tests {
                 "rm",
                 "shop",
                 "--volumes",
+                "--accept-volume-loss",
                 "shop_data",
+                "--accept-volume-loss",
                 "shop_logs",
                 "--yes",
             ])
@@ -770,7 +833,7 @@ mod tests {
             .subcommand_matches("rm")
             .unwrap();
         assert_eq!(
-            rm.get_many::<String>("data-loss")
+            rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
@@ -792,7 +855,7 @@ mod tests {
                 "db",
                 "--volumes",
                 "--yes",
-                "--data-loss",
+                "--accept-volume-loss",
                 "app_data",
             ],
             vec![
@@ -802,7 +865,7 @@ mod tests {
                 "db",
                 "--volumes",
                 "--yes",
-                "--data-loss",
+                "--accept-volume-loss",
                 "app_data",
             ],
         ] {
@@ -819,7 +882,7 @@ mod tests {
             assert!(leaf.get_flag("volumes"), "{args:?}");
             assert!(leaf.get_flag("yes"), "{args:?}");
             assert_eq!(
-                leaf.get_many::<String>("data-loss")
+                leaf.get_many::<String>("accept-volume-loss")
                     .unwrap()
                     .map(String::as_str)
                     .collect::<Vec<_>>(),
@@ -834,23 +897,23 @@ mod tests {
                 "rm",
                 "db",
                 "--volumes",
-                "--data-loss",
+                "--accept-volume-loss",
                 "app_data,app_logs",
                 "--yes",
             ])
             .unwrap();
         let rm = comma.subcommand_matches("rm").unwrap();
         assert_eq!(
-            rm.get_many::<String>("data-loss")
+            rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["app_data", "app_logs"]
+            ["app_data,app_logs"]
         );
 
         assert!(
             super::command()
-                .try_get_matches_from(["ployz", "rm", "db", "--data-loss", "app_data"])
+                .try_get_matches_from(["ployz", "rm", "db", "--accept-volume-loss", "app_data"])
                 .is_err()
         );
         assert!(
@@ -870,16 +933,16 @@ mod tests {
                 "rm",
                 "db",
                 "--volumes",
-                "--data-loss",
+                "--accept-volume-loss",
                 "app_data",
-                "--data-loss",
+                "--accept-volume-loss",
                 "app_logs",
                 "--yes",
             ])
             .unwrap();
         let rm = repeated.subcommand_matches("rm").unwrap();
         assert_eq!(
-            rm.get_many::<String>("data-loss")
+            rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
@@ -892,7 +955,7 @@ mod tests {
                 "rm",
                 "db",
                 "--volumes",
-                "--data-loss",
+                "--accept-volume-loss",
                 "app_data",
                 "api",
                 "--yes",
@@ -907,7 +970,7 @@ mod tests {
             ["db", "api"]
         );
         assert_eq!(
-            rm.get_many::<String>("data-loss")
+            rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),

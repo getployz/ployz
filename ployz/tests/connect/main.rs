@@ -32,6 +32,7 @@ use tonic::{
 
 mod machine_storage;
 mod relay;
+mod removal_cli;
 mod sdk;
 mod sdk_data_loss;
 mod sdk_destroy_cluster;
@@ -753,6 +754,10 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
     assert!(exact.status.success(), "{exact:?}");
     assert!(exact.stderr.is_empty(), "{exact:?}");
     assert_eq!(removed_volumes.lock().unwrap().len(), 1);
+    assert!(
+        String::from_utf8_lossy(&exact.stdout)
+            .contains(&format!("Deleted volume data on {}", machine_id('a')))
+    );
 
     removed_volumes.lock().unwrap().clear();
     listed_volumes.lock().unwrap().insert(

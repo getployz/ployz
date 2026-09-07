@@ -354,7 +354,7 @@ fn timestamp(entry: &LogEntry, utc: bool) -> String {
     }
 }
 
-struct RawTerminal;
+pub(super) struct RawTerminal;
 
 fn write_stdout_frame(output: &mut dyn Write, bytes: &[u8]) -> std::io::Result<()> {
     output.write_all(bytes)?;
@@ -362,7 +362,7 @@ fn write_stdout_frame(output: &mut dyn Write, bytes: &[u8]) -> std::io::Result<(
 }
 
 impl RawTerminal {
-    fn enable() -> Result<Self, Error> {
+    pub(super) fn enable() -> Result<Self, Error> {
         terminal::enable_raw_mode()?;
         Ok(Self)
     }

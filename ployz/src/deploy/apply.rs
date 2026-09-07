@@ -255,7 +255,6 @@ pub(crate) async fn remove_project(
     client: &mut Client,
     name: &ProjectName,
     volumes: VolumeFate,
-    auto_confirm: bool,
     context: &str,
     confirm_data_loss: &DataLossConfirmation,
 ) -> Result<(), Failure> {
@@ -266,10 +265,6 @@ pub(crate) async fn remove_project(
     print_warnings(&preview);
     print!("{}", render::removal_plan_text(&preview, context));
     if preview.noop() {
-        return Ok(());
-    }
-    if !auto_confirm && !confirm(&render::confirm_removal_prompt(name, context))? {
-        println!("No changes were made.");
         return Ok(());
     }
     finish(

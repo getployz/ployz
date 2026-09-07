@@ -100,7 +100,7 @@ async fn failed_volume_listing_is_not_empty_data_loss() {
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(
         error.message,
-        format!("Machine {machine_id} did not respond")
+        format!("Machine {machine_id}: target unavailable")
     );
 }
 

@@ -139,12 +139,6 @@ pub fn confirm_prompt(context: &str) -> String {
     format!("Proceed with deployment to {context}? [y/N] ")
 }
 
-/// Confirm prompt for removing one observer-derived Project.
-#[must_use]
-pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) -> String {
-    format!("Proceed with removal of Project {project} from {context}? [y/N] ")
-}
-
 /// Endpoints on success; synthesized live list plus footer when no printer ran.
 #[must_use]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
