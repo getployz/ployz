@@ -373,13 +373,15 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
 }
 
 fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), ApplyError> {
-    let text = render::outcome_text(&outcome);
-    if !text.is_empty() {
-        print!("{text}");
-    }
     match outcome {
-        DeployOutcome::Success { .. } => Ok(()),
-        outcome @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute(Box::new(outcome))),
+        success @ DeployOutcome::Success { .. } => {
+            let text = render::outcome_text(&success);
+            if !text.is_empty() {
+                print!("{text}");
+            }
+            Ok(())
+        }
+        failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute(Box::new(failed))),
     }
 }
 
