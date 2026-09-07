@@ -77,7 +77,63 @@ impl From<ClientError> for ConnectError {
         match error.status() {
             Some(StatusCode::UNAUTHORIZED) => Self::InvalidDialCredential,
             Some(StatusCode::NOT_FOUND) => Self::UnknownMachine,
-            _ => Self::Attempt(error.to_string().into()),
+            _ => Self::Relay(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn relay_rejections_preserve_status_and_retry_only_temporary_failures() {
+        for (status, retry) in [
+            (400, false),
+            (401, false),
+            (403, false),
+            (404, false),
+            (408, true),
+            (429, true),
+            (500, true),
+            (501, false),
+            (502, true),
+            (503, true),
+            (504, true),
+            (505, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                socket.write_all(format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 8\r\nConnection: close\r\n\r\nrejected").as_bytes()).await.unwrap();
+            });
+            let error = list_held(
+                &url,
+                &DialCredential::parse("dial-secret").unwrap(),
+                &PairingCredential::parse("pairing-secret").unwrap(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.is_setup_retryable(),
+                retry,
+                "status {status}: {error}"
+            );
+            assert_eq!(error.is_unreachable(), retry, "status {status}: {error}");
+            if status != 401 && status != 404 {
+                let ConnectError::Relay(error) = error else {
+                    panic!("Relay status must stay typed")
+                };
+                assert_eq!(error.status().unwrap().as_u16(), status);
+            }
+            server.await.unwrap();
+        }
+        let error = ConnectError::from(ClientError::Transport("connection reset".into()));
+        assert!(error.is_setup_retryable());
+        assert!(error.is_unreachable());
     }
 }

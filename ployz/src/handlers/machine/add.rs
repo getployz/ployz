@@ -32,11 +32,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
 
     let assigned = runtime()?.block_on(async {
-        let mut entry = if matches.get_flag("no-install") {
-            connect_client(matches, options.context()).await?
-        } else {
-            super::super::reconnect_client(matches, options.context()).await?
-        };
+        let mut entry = connect_client(matches, options.context()).await?;
         let visible = entry.machines().await?;
         let mut target_client = if matches.get_flag("no-install") {
             helpers::connect_direct(&connection).await?

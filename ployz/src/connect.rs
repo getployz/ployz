@@ -331,6 +331,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         error @ (ConnectError::Attempt(_)
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
+        | ConnectError::Relay(_)
         | ConnectError::MissingMachineDetails
         | ConnectError::SshClientMissing(_)
         | ConnectError::SshProbe { .. }
@@ -564,6 +565,8 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
+    #[error(transparent)]
+    Relay(ployz_relay::ClientError),
     #[error("Machine RPC failed: {0}")]
     Rpc(TransportError),
     #[error("Machine RPC payload failed: {0}")]
@@ -598,6 +601,9 @@ impl ConnectError {
             | Self::Dial(_)
             | Self::SshProbe { .. }
             | Self::Join(_) => true,
+            Self::Relay(error) => error
+                .status()
+                .is_none_or(|status| matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)),
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
             | Self::InvalidDialCredential
@@ -663,6 +669,7 @@ impl ConnectError {
             self,
             Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
+            || matches!(self, Self::Relay(_) if self.is_retryable())
     }
 }
 
