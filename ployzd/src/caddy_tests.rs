@@ -129,8 +129,8 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     let health = automatic_site_block(&caddyfile, "http://");
     let handler = automatic_site_block(&health, INGRESS_VERIFY_PATH);
     assert!(handler.contains(&format!("respond \"{local}\" 200")));
-    assert!(caddyfile.contains("http://example.com"));
-    assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80 10.210.2.2:80"));
+    let site = automatic_site_block(&caddyfile, "http://example.com");
+    assert!(site.contains("reverse_proxy 10.210.1.2:80 10.210.2.2:80 { import common_proxy }"));
 }
 #[test]
 fn shared_renderer_projection_drives_caddy() {
@@ -931,7 +931,19 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
     assert!(caddyfile.contains("api.example { reverse_proxy 10.210.2.2 }"));
     assert!(!caddyfile.contains("old.example"));
     assert!(caddyfile.contains("gateway.example { reverse_proxy 10.210.2.2:9000 }"));
-    assert!(caddyfile.contains("Service 'app/invalid': validation failed"));
+    for diagnostic in [
+        "Service 'app/invalid': validation failed",
+        "injected.example { respond owned }",
+        "second.example { respond also-owned }",
+    ] {
+        assert!(caddyfile.contains(diagnostic));
+        assert!(
+            caddyfile
+                .lines()
+                .filter(|line| line.contains(diagnostic))
+                .all(|line| line.trim_start().starts_with('#'))
+        );
+    }
     assert!(caddyfile.contains("web.example { reverse_proxy 10.210.1.6:8080 }"));
     assert!(caddyfile.contains("external.example { respond external }"));
 }
@@ -1249,7 +1261,7 @@ impl CaddyAdmin for FakeAdmin {
     async fn adapt(&self, caddyfile: &str) -> Result<String, Error> {
         self.adapted.lock().unwrap().push(caddyfile.into());
         if caddyfile.contains("# invalid") {
-            Err(Error::Admin("invalid config detected".into()))
+            Err(Error::Admin("invalid config detected\ninjected.example { respond owned }\nsecond.example { respond also-owned }".into()))
         } else {
             Ok("{}".into())
         }
