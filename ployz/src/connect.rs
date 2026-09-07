@@ -392,7 +392,9 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
 ///
 /// # Errors
 ///
-/// Returns [`ConnectError::AllFailed`] after every connection is tried.
+/// Returns [`ConnectError::SshClientMissing`] when the local ssh client cannot
+/// be spawned; further connections cannot succeed. Returns
+/// [`ConnectError::AllFailed`] after every connection is tried.
 pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
@@ -401,6 +403,9 @@ pub async fn connect_selected_with(
     for connection in &selected.connections {
         match connect_one(connection, &selected.source, &connector).await {
             Ok(client) => return Ok(client),
+            Err(error) if matches!(error, ConnectError::SshClientMissing(_)) => {
+                return Err(error);
+            }
             Err(error) => last_error = Some(error),
         }
     }
@@ -893,5 +898,33 @@ mod tests {
             "local ssh client not found; install an ssh client"
         );
         assert!(!message.to_string().contains("os error"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn missing_ssh_client_survives_connection_selection() {
+        let error = match connect_selected_with(
+            SelectedConnections {
+                source: ConnectionSource::Direct,
+                connections: vec![Connection::ssh(
+                    SshDestination::parse("user@example.com").unwrap(),
+                )],
+            },
+            Arc::new(SystemConnector::new("/ployz-missing-ssh-client")),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("missing ssh program must fail"),
+        };
+        assert!(
+            matches!(error, ConnectError::SshClientMissing(_)),
+            "{error:?}"
+        );
+        let failure = crate::failure::Failure::from(error);
+        assert_eq!(
+            failure.to_string(),
+            "local ssh client not found; install an ssh client"
+        );
+        assert!(!failure.to_string().contains("os error"), "{failure}");
     }
 }
