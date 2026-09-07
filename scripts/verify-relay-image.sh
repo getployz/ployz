@@ -9,7 +9,7 @@ IMAGE=${PLOYZ_RELAY_IMAGE:-ghcr.io/getployz/ployz-relay:verify}
 
 fail() { echo "relay image verification failed: $1" >&2; exit 1; }
 
-dockerfile=$ROOT/ployz-relay/Dockerfile
+dockerfile=$ROOT/crates/ployz-relay/Dockerfile
 grep -Fxq 'FROM scratch' "$dockerfile" || fail "Dockerfile is not FROM scratch"
 if grep -Eq '^RUN |^ADD ' "$dockerfile"; then
     fail "Dockerfile must COPY the binary only"

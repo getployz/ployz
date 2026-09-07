@@ -1,0 +1,23 @@
+minimumReleaseAge: 2880
+minimumReleaseAgeExclude:
+  - "@ployz/*"
+  - "@tanstack/*"
+blockExoticSubdeps: false
+
+allowBuilds:
+  esbuild: true
+  inngest-cli: true
+  lightningcss: true
+  msgpackr-extract: false
+  msw: false
+  protobufjs: false
+
+onlyBuiltDependencies:
+  - esbuild
+  - lightningcss
+ignoredBuiltDependencies:
+  - msw
+  - protobufjs
+
+overrides:
+  nf3: 0.3.17

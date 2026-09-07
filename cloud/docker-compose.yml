@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ployz-cloud-postgres
+    command:
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+    ports:
+      - '8394:5432'
+    environment:
+      POSTGRES_DB: ployz_cloud
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ 'CMD-SHELL', 'pg_isready -U postgres -d ployz_cloud' ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  electric:
+    image: electricsql/electric:latest
+    container_name: ployz-cloud-electric
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ployz_cloud?sslmode=disable
+      # Local development only. Browser requests are authenticated by the
+      # application's Shape proxy, not by this directly exposed service.
+      ELECTRIC_INSECURE: 'true'
+    ports:
+      - '30000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  inngest:
+    image: inngest/inngest
+    container_name: ployz-cloud-inngest
+    network_mode: host
+    command:
+      - inngest
+      - dev
+      - -u
+      - https://ployz-cloud.localhost/api/inngest
+
+  relay:
+    image: ghcr.io/getployz/ployz-relay:v0.1.2-beta.17
+    container_name: ployz-cloud-relay
+    ports:
+      - '50051:50051'
+    environment:
+      PLOYZ_RELAY_LISTEN: 0.0.0.0:50051
+      PLOYZ_RELAY_DIAL_CREDENTIAL: ${PLOYZ_RELAY_DIAL_CREDENTIAL:-pdial_local-dev}
+
+volumes:
+  postgres-data:

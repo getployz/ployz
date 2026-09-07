@@ -555,7 +555,7 @@ assert_eq "$(release_artifacts_needed pull_request scripts/pack-release.sh)" tru
 assert_eq "$(release_artifacts_needed pull_request scripts/homebrew-formula.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/release-tag.sh)" false
 assert_eq "$(release_artifacts_needed pull_request .github/workflows/release-contracts.yml)" true
-assert_eq "$(release_artifacts_needed pull_request ployz-relay/Dockerfile)" true
+assert_eq "$(release_artifacts_needed pull_request crates/ployz-relay/Dockerfile)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/build-relay-image.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/verify-relay-image.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/publish-relay-image.sh)" true

@@ -1,0 +1,49 @@
+name: Cloud
+
+on:
+  pull_request:
+    paths:
+      - "cloud/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cloud.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cloud/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cloud.yml"
+
+defaults:
+  run:
+    working-directory: cloud
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: cloud/package.json
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: cloud/pnpm-lock.yaml
+
+      - name: Install actionlint
+        run: |
+          scripts/install-actionlint.sh "$RUNNER_TEMP/ployz-tools"
+          echo "$RUNNER_TEMP/ployz-tools" >> "$GITHUB_PATH"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm pr:check
+        env:
+          PLOYZ_TEST_ENV_FILE: .env.test

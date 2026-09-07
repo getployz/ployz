@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Viewport</title>
+    <style>
+      * { box-sizing: border-box; }
+      :root { color-scheme: dark; }
+      html, body { margin: 0; min-height: 100%; background: Canvas; }
+      button {
+        min-height: 2.75rem;
+        padding-inline: 0.75rem;
+        border: 1px solid ButtonBorder;
+        border-radius: 0.5rem;
+        color: ButtonText;
+        background: ButtonFace;
+        font: inherit;
+        white-space: nowrap;
+      }
+      button[aria-pressed="true"] { color: HighlightText; background: Highlight; }
+      #dock { position: fixed; z-index: 1; left: 1rem; top: 1rem; }
+      #launcher {
+        width: 3rem;
+        min-height: 3rem;
+        padding: 0;
+        border-radius: 999px;
+        touch-action: none;
+      }
+      #controls {
+        position: absolute;
+        top: 3.5rem;
+        left: 0;
+        display: none;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.5rem;
+        border: 1px solid ButtonBorder;
+        border-radius: 0.75rem;
+        background: Canvas;
+        box-shadow: 0 0.5rem 2rem color-mix(in srgb, CanvasText 20%, transparent);
+      }
+      #dock[data-open="true"] #controls { display: flex; }
+      #dock[data-horizontal="right"] #controls { right: 0; left: auto; }
+      #dock[data-vertical="bottom"] #controls { top: auto; bottom: 3.5rem; }
+      main { transform-origin: top left; }
+      iframe { display: block; border: 0; background: Canvas; }
+    </style>
+  </head>
+  <body>
+    <aside id="dock">
+      <button id="launcher" type="button" aria-label="Viewport controls" aria-expanded="false">☰</button>
+      <div id="controls" aria-label="Viewport controls">
+        <button type="button" data-view="native">Native</button>
+        <button type="button" data-view="mobile">Mobile</button>
+        <button type="button" data-view="desktop">Desktop</button>
+        <button type="button" data-action="rotate">Rotate</button>
+      </div>
+    </aside>
+    <main>
+      <iframe title="App preview"></iframe>
+    </main>
+    <script>
+      const query = new URLSearchParams(location.search)
+      const frame = document.querySelector('iframe')
+      const canvas = document.querySelector('main')
+      const dock = document.querySelector('#dock')
+      const launcher = document.querySelector('#launcher')
+      const presets = { mobile: [390, 844], desktop: [1440, 900] }
+      let view = ['native', 'mobile', 'desktop'].includes(query.get('view'))
+        ? query.get('view')
+        : 'native'
+      let rotated = query.get('rotated') === 'true'
+
+      frame.src = query.get('path') || '/'
+
+      function render() {
+        let [width, height] = view === 'native'
+          ? [innerWidth, innerHeight]
+          : presets[view]
+        if (rotated) [width, height] = [height, width]
+        const scale = Math.min(1, innerWidth / width)
+
+        frame.style.width = `${width}px`
+        frame.style.height = `${height}px`
+        canvas.style.width = `${width * scale}px`
+        canvas.style.height = `${height * scale}px`
+        canvas.style.transform = `scale(${scale})`
+        document.querySelectorAll('[data-view]').forEach((button) => {
+          button.setAttribute('aria-pressed', String(button.dataset.view === view))
+        })
+        query.set('view', view)
+        query.set('rotated', rotated)
+        history.replaceState(null, '', `?${query}`)
+      }
+
+      document.querySelectorAll('[data-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+          view = button.dataset.view
+          rotated = false
+          dock.dataset.open = 'false'
+          launcher.setAttribute('aria-expanded', 'false')
+          render()
+        })
+      })
+      document.querySelector('[data-action="rotate"]').addEventListener('click', () => {
+        rotated = !rotated
+        render()
+      })
+
+      let startX
+      let startY
+      let originX
+      let originY
+      let dragged = false
+
+      launcher.addEventListener('pointerdown', (event) => {
+        startX = event.clientX
+        startY = event.clientY
+        originX = dock.offsetLeft
+        originY = dock.offsetTop
+        dragged = false
+        launcher.setPointerCapture(event.pointerId)
+      })
+      launcher.addEventListener('pointermove', (event) => {
+        if (!launcher.hasPointerCapture(event.pointerId)) return
+        const deltaX = event.clientX - startX
+        const deltaY = event.clientY - startY
+        if (Math.abs(deltaX) + Math.abs(deltaY) > 6) dragged = true
+        dock.style.left = `${Math.max(0, Math.min(innerWidth - launcher.offsetWidth, originX + deltaX))}px`
+        dock.style.top = `${Math.max(0, Math.min(innerHeight - launcher.offsetHeight, originY + deltaY))}px`
+      })
+      launcher.addEventListener('click', () => {
+        if (dragged) return
+        const open = dock.dataset.open !== 'true'
+        dock.dataset.open = String(open)
+        launcher.setAttribute('aria-expanded', String(open))
+        dock.dataset.horizontal = dock.offsetLeft > innerWidth / 2 ? 'right' : 'left'
+        dock.dataset.vertical = dock.offsetTop > innerHeight / 2 ? 'bottom' : 'top'
+      })
+      addEventListener('resize', render)
+
+      render()
+    </script>
+  </body>
+</html>

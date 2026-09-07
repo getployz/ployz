@@ -1,0 +1,272 @@
+import { assert, it } from "@effect/vitest";
+import { sql } from "drizzle-orm";
+import { ConfigProvider, Effect, Layer } from "effect";
+import { environment, member, organization, project, user } from "#/db/schema";
+import { AppConfig } from "#/server/config.server";
+import { Database, DatabaseLive } from "#/server/database.server";
+import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import {
+  migrateTestDatabase,
+  postgresTestContainer,
+} from "#/test/postgres";
+import {
+  attachServiceVolume,
+  updateServiceVolumeMountPath,
+} from "./mount-operations.server";
+import {
+  createVariableGroupResource,
+  createVolumeResource,
+  deleteVolumeResource,
+  updateEnvironmentResourceCanvasPosition,
+  updateVariableGroupResource,
+} from "./resource-operations.server";
+import { createService } from "./service-operations.server";
+import { createImageServiceSource } from "./services";
+
+it.live(
+  "keeps resource lifecycle and service-owned mounts authorized and receipt-aligned",
+  () =>
+    Effect.gen(function* () {
+      const container = yield* postgresTestContainer;
+      yield* migrateTestDatabase(container.url);
+      const config = AppConfig.layer.pipe(
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                DATABASE_URL: container.url.href,
+                ELECTRIC_URL: "http://localhost:30000",
+                APP_URL: "http://localhost:3000",
+                BETTER_AUTH_SECRET: "better-auth-secret",
+                GITHUB_CLIENT_ID: "github-client-id",
+                GITHUB_CLIENT_SECRET: "github-client-secret",
+                PLOYZ_RELAY_URL: "https://relay.example.test",
+                APP_ENCRYPTION_SECRET:
+                  "app-encryption-secret-at-least-32-characters",
+              },
+            }),
+          ),
+        ),
+      );
+      const layer = Layer.merge(
+        DatabaseLive.pipe(Layer.provide(config)),
+        SecretEncryptionLive.pipe(Layer.provide(config)),
+      );
+
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const users = yield* database.drizzle
+          .insert(user)
+          .values([
+            { email: "resources@example.test", emailVerified: true, name: "Resources" },
+            { email: "outsider@example.test", emailVerified: true, name: "Outsider" },
+          ])
+          .returning({ id: user.id });
+        const author = users[0];
+        const outsider = users[1];
+        if (author === undefined || outsider === undefined) {
+          return yield* Effect.die("PostgreSQL did not return the test users.");
+        }
+        const organizations = yield* database.drizzle
+          .insert(organization)
+          .values({ name: "Acme", slug: "acme" })
+          .returning({ id: organization.id });
+        const organizationRecord = organizations[0];
+        if (organizationRecord === undefined) {
+          return yield* Effect.die("PostgreSQL did not return the organization.");
+        }
+        yield* database.drizzle.insert(member).values({
+          userId: author.id,
+          organizationId: organizationRecord.id,
+          role: "owner",
+        });
+        const projects = yield* database.drizzle
+          .insert(project)
+          .values({ organizationId: organizationRecord.id, name: "API", slug: "api" })
+          .returning({ id: project.id });
+        const projectRecord = projects[0];
+        if (projectRecord === undefined) {
+          return yield* Effect.die("PostgreSQL did not return the project.");
+        }
+        const environments = yield* database.drizzle
+          .insert(environment)
+          .values({
+            organizationId: organizationRecord.id,
+            projectId: projectRecord.id,
+            name: "Production",
+            namespace: "api-production",
+          })
+          .returning({ id: environment.id });
+        const environmentRecord = environments[0];
+        if (environmentRecord === undefined) {
+          return yield* Effect.die("PostgreSQL did not return the environment.");
+        }
+        const actor = { userId: author.id };
+        const service = yield* createService(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          name: "API",
+          source: createImageServiceSource({ image: "acme/api:latest" }),
+          x: 0,
+          y: 0,
+          preDeployCommand: null,
+          startCommand: null,
+          healthcheck: { type: "none" },
+          restartPolicy: "unless-stopped",
+        });
+
+        const group = yield* createVariableGroupResource(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          name: "Shared config",
+          x: 10.4,
+          y: 20.6,
+        });
+        const groupRows = yield* database.drizzle.execute<{ txid: string }>(
+          sql`
+            select xmin::text as txid from environment_resource
+            where id = ${group.data.resource.id}
+            union all
+            select xmin::text as txid from resource_lineage
+            where id = ${group.data.resource.lineageId}
+            union all
+            select xmin::text as txid from environment_variable_group
+            where id = ${group.data.variableGroup.id}
+            union all
+            select xmin::text as txid from variable_group_lineage
+            where id = ${group.data.variableGroup.lineageId}
+            union all
+            select xmin::text as txid from environment_canvas_node_position
+            where resource_id = ${group.data.resource.id}
+          `,
+          "objects",
+        );
+        assert.deepStrictEqual(
+          groupRows.map((row) => Number(row.txid)),
+          [group.txid, group.txid, group.txid, group.txid, group.txid],
+        );
+
+        const volume = yield* createVolumeResource(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          name: "Data",
+          x: 30.4,
+          y: 40.6,
+        });
+        const volumeRows = yield* database.drizzle.execute<{ txid: string }>(
+          sql`
+            select xmin::text as txid from environment_resource
+            where id = ${volume.data.resource.id}
+            union all
+            select xmin::text as txid from resource_lineage
+            where id = ${volume.data.resource.lineageId}
+            union all
+            select xmin::text as txid from environment_canvas_node_position
+            where resource_id = ${volume.data.resource.id}
+          `,
+          "objects",
+        );
+        assert.deepStrictEqual(
+          volumeRows.map((row) => Number(row.txid)),
+          [volume.txid, volume.txid, volume.txid],
+        );
+
+        const renamed = yield* updateVariableGroupResource(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          resourceId: group.data.resource.id,
+          name: "Runtime config",
+        });
+        const renamedRows = yield* database.drizzle.execute<{ txid: string }>(
+          sql`
+            select xmin::text as txid from environment_resource
+            where id = ${group.data.resource.id}
+            union all
+            select xmin::text as txid from environment_variable_group
+            where id = ${group.data.variableGroup.id}
+          `,
+          "objects",
+        );
+        assert.deepStrictEqual(
+          renamedRows.map((row) => Number(row.txid)),
+          [renamed.txid, renamed.txid],
+        );
+
+        const mounted = yield* attachServiceVolume(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          serviceId: service.data.service.id,
+          volumeResourceId: volume.data.resource.id,
+          mountPath: "/data",
+        });
+        const mountRows = yield* database.drizzle.execute<{ txid: string }>(
+          sql`select xmin::text as txid from service_volume_attachment
+              where service_id = ${service.data.service.id}
+                and volume_resource_id = ${volume.data.resource.id}`,
+          "objects",
+        );
+        assert.deepStrictEqual(
+          mountRows.map((row) => Number(row.txid)),
+          [mounted.txid],
+        );
+        const updatedMount = yield* updateServiceVolumeMountPath(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          serviceId: service.data.service.id,
+          volumeResourceId: volume.data.resource.id,
+          mountPath: "/var/data",
+        });
+        assert.strictEqual(updatedMount.data.mountPath, "/var/data");
+
+        const moved = yield* updateEnvironmentResourceCanvasPosition(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          resourceId: volume.data.resource.id,
+          x: 55.5,
+          y: 66.6,
+        });
+        const movedRows = yield* database.drizzle.execute<{
+          txid: string;
+          resourceType: string;
+        }>(
+          sql`select xmin::text as txid, resource_type as "resourceType"
+              from environment_canvas_node_position
+              where resource_id = ${volume.data.resource.id}`,
+          "objects",
+        );
+        assert.deepStrictEqual(movedRows, [
+          { txid: String(moved.txid), resourceType: "volume" },
+        ]);
+
+        const invalidTarget = yield* Effect.flip(
+          attachServiceVolume(actor, {
+            organizationSlug: "acme",
+            environmentId: environmentRecord.id,
+            serviceId: service.data.service.id,
+            volumeResourceId: group.data.resource.id,
+            mountPath: "/config",
+          }),
+        );
+        assert.strictEqual(invalidTarget._tag, "Validation");
+
+        const deleted = yield* deleteVolumeResource(actor, {
+          organizationSlug: "acme",
+          environmentId: environmentRecord.id,
+          resourceId: volume.data.resource.id,
+        });
+        const deletedRows = yield* database.drizzle.execute<{
+          txid: string;
+          deleted: boolean;
+        }>(
+          sql`select xmin::text as txid, deleted_at is not null as deleted
+              from environment_resource where id = ${volume.data.resource.id}`,
+          "objects",
+        );
+        assert.deepStrictEqual(deletedRows, [
+          { txid: String(deleted.txid), deleted: true },
+        ]);
+
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);

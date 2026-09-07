@@ -17,7 +17,7 @@ required_file=$(mktemp)
 trap 'rm -f "$required_file"' EXIT
 
 while IFS= read -r file; do
-    rel=${file#"$ROOT"/}
+    rel=${file#"$ROOT"/crates/}
     case "$rel" in
         */src/*)
             python3 - "$file" "$RUNNER" "${rel%%/*}" <<'PYLIB' || fail "$rel has an unregistered informing library test"
@@ -53,7 +53,7 @@ PYLIB
             fail "cannot map $rel to a cargo test binary"
             ;;
     esac
-done < <(grep -rl --include='*.rs' 'ignore = "informing' "$ROOT/ployz" "$ROOT/ployz-testkit" "$ROOT/ployzd") |
+done < <(grep -rl --include='*.rs' 'ignore = "informing' "$ROOT/crates/ployz" "$ROOT/crates/ployz-testkit" "$ROOT/crates/ployzd") |
     sort -u > "$required_file"
 
 required=$(cat "$required_file")

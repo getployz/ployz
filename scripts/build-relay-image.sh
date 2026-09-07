@@ -21,4 +21,4 @@ platform=${3:-linux/amd64}
 context=$(mktemp -d)
 trap 'rm -rf "$context"' EXIT
 install -m 0755 "$binary" "$context/ployz-relay"
-docker build --platform "$platform" -f "$ROOT/ployz-relay/Dockerfile" -t "$tag" "$context"
+docker build --platform "$platform" -f "$ROOT/crates/ployz-relay/Dockerfile" -t "$tag" "$context"

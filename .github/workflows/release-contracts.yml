@@ -36,7 +36,7 @@ on:
       - scripts/test-release-contracts.sh
       - scripts/test-cli-installer.sh
       - scripts/test-daemon-lifecycle.sh
-      - ployz-relay/Dockerfile
+      - crates/ployz-relay/Dockerfile
       - scripts/build-relay-image.sh
       - scripts/verify-relay-image.sh
       - scripts/publish-relay-image.sh
@@ -112,8 +112,8 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ployz/compose-helper/go.mod
-          cache-dependency-path: ployz/compose-helper/go.sum
+          go-version-file: crates/ployz/compose-helper/go.mod
+          cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -154,8 +154,8 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ployz/compose-helper/go.mod
-          cache-dependency-path: ployz/compose-helper/go.sum
+          go-version-file: crates/ployz/compose-helper/go.mod
+          cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}

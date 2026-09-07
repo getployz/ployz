@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-PACKAGE_ROOT=${PLOYZ_SDK_PACKAGE_ROOT:-"$ROOT/ployz-sdk"}
+PACKAGE_ROOT=${PLOYZ_SDK_PACKAGE_ROOT:-"$ROOT/crates/ployz-sdk"}
 
 fail() { echo "sdk pack failed: $1" >&2; exit 1; }
 

@@ -1,0 +1,6 @@
+export { InputGroup } from "#/components/ui/input-group-root.tsx"
+export { InputGroupAddon } from "#/components/ui/input-group-addon.tsx"
+export { InputGroupButton } from "#/components/ui/input-group-button.tsx"
+export { InputGroupText } from "#/components/ui/input-group-text.tsx"
+export { InputGroupInput } from "#/components/ui/input-group-input.tsx"
+export { InputGroupTextarea } from "#/components/ui/input-group-textarea.tsx"

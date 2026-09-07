@@ -19,7 +19,7 @@ verify_locator() {
     locator=$2
     case "$locator" in
         - | gap) return 0 ;;
-        scripts/*)
+        scripts/* | cloud/scripts/* | cloud/src/*.test.ts)
             [ -f "$ROOT/$locator" ] || fail "$key references missing $locator"
             ;;
         *.rs::*)

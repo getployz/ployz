@@ -1,0 +1,93 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "categories": {},
+  "ignorePatterns": [
+    "**/.output/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/routeTree.gen.ts",
+    "drizzle/**",
+    "scripts/**",
+    "src/tailwind-typography.js",
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".impeccable/**",
+    ".junie/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    "tools/oxlint/anti-slop/**"
+  ],
+  "jsPlugins": [
+    {
+      "name": "anti-slop",
+      "specifier": "./tools/oxlint/anti-slop/index.ts"
+    }
+  ],
+  "rules": {
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-conditional-empty-object-spread": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": ["error", { "allowInTypeGuards": true }],
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/consistent-type-assertions": "error",
+    "typescript/ban-ts-comment": "error",
+    "typescript/no-unused-vars": "off",
+    "typescript/no-empty-object-type": "off",
+    "typescript/await-thenable": "off",
+    "typescript/no-base-to-string": "off",
+    "typescript/no-floating-promises": "off",
+    "typescript/no-misused-spread": "off",
+    "typescript/no-redundant-type-constituents": "off",
+    "typescript/no-useless-default-assignment": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/unbound-method": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/components/ui/**"],
+      "rules": {
+        "typescript/consistent-type-assertions": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off"
+      }
+    },
+    {
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/*test-fixture.ts",
+        "**/test-double.ts",
+        "**/inngest-test-handler.ts"
+      ],
+      "rules": {
+        "typescript/consistent-type-assertions": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off"
+      }
+    }
+  ],
+  "env": {
+    "builtin": true,
+    "browser": true,
+    "node": true
+  }
+}

@@ -1,0 +1,45 @@
+:root {
+  --color-paper: oklch(97% 0.012 338);
+  --color-paper-raised: oklch(99% 0.006 338);
+  --color-paper-soft: oklch(94% 0.016 338);
+  --color-paper-strong: oklch(90% 0.022 338);
+  --color-ink: oklch(19% 0.025 326);
+  --color-ink-soft: oklch(36% 0.022 326);
+  --color-muted: oklch(47% 0.018 326);
+  --color-rule: oklch(76% 0.022 338);
+  --color-rule-soft: oklch(86% 0.018 338);
+  --color-accent: oklch(52% 0.2 338);
+  --color-accent-hover: oklch(47% 0.19 338);
+  --color-accent-ink: oklch(98% 0.008 338);
+  --color-focus: oklch(34% 0.14 338);
+  --color-focus-on-dark: oklch(88% 0.018 338);
+
+  --font-display: "Geist Variable", ui-sans-serif, sans-serif;
+  --font-body: "Geist Variable", ui-sans-serif, sans-serif;
+  --font-code: "Geist Mono Variable", ui-monospace, monospace;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+  --space-28: 7rem;
+
+  --measure-copy: 39rem;
+  --measure-page: 74rem;
+  --radius-control: 0.65rem;
+  --radius-panel: 1rem;
+  --control-height: 2.75rem;
+  --banner-height: 72px;
+  --z-sticky-nav: 300;
+  --duration-fast: 160ms;
+  --duration-enter: 520ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}

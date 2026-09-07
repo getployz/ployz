@@ -25,8 +25,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ployz/compose-helper/go.mod
-          cache-dependency-path: ployz/compose-helper/go.sum
+          go-version-file: crates/ployz/compose-helper/go.mod
+          cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
@@ -36,14 +36,16 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Check Compose helper
-        working-directory: ployz/compose-helper
+        working-directory: crates/ployz/compose-helper
         run: |
-          test -z "$(gofmt -l *.go)"
+          test -z "$(gofmt -l ./*.go)"
           go vet ./...
           go test ./...
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-layer3-runner.sh
       - run: bash scripts/check-product-paths.sh
+      - run: python3 scripts/test-cloud-sdk-version.py
+      - run: python3 scripts/check-cloud-sdk-version.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo build -p ployz-sdk --locked
       - name: Test with a hostile ambient Ployz context
@@ -81,8 +83,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ployz/compose-helper/go.mod
-          cache-dependency-path: ployz/compose-helper/go.sum
+          go-version-file: crates/ployz/compose-helper/go.mod
+          cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
       - run: cargo check --package ployz --all-targets --locked
 
@@ -126,8 +128,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ployz/compose-helper/go.mod
-          cache-dependency-path: ployz/compose-helper/go.sum
+          go-version-file: crates/ployz/compose-helper/go.mod
+          cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:

@@ -8,4 +8,4 @@ node_modules/
 /.claude/*
 !/.claude/skills/
 /.scratch/
-ployz-testkit/prebuilt/
+crates/ployz-testkit/prebuilt/

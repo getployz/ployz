@@ -15,7 +15,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=scripts/release-tag.sh
 source "$root/scripts/release-tag.sh"
 manifest=${manifest:-"$root/Cargo.toml"}
-sdk_package=${sdk_package:-"$root/ployz-sdk/package.json"}
+sdk_package=${sdk_package:-"$root/crates/ployz-sdk/package.json"}
 
 if ! stable_release_tag "$tag" && ! beta_release_tag "$tag"; then
     echo "tag '$tag' is not vX.Y.Z or vX.Y.Z-beta.N" >&2
