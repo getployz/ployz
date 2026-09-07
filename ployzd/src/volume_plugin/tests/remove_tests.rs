@@ -219,3 +219,46 @@ async fn get_rejects_a_volume_with_a_descendant_dataset() {
     assert!(message.contains("descendant"));
     server.abort();
 }
+
+#[tokio::test]
+async fn busy_executable_retries_are_bounded_and_do_not_repeat_commands() {
+    let test = TestDir::new();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    let writer = fs::OpenOptions::new().write(true).open(&zpool).unwrap();
+    let mut command = std::pin::pin!(checked_command(&zpool, &["list"]));
+    let first = futures_util::poll!(command.as_mut());
+    assert!(
+        first.is_pending(),
+        "busy executable should wait for retry: {first:?}"
+    );
+    drop(writer);
+    assert_eq!(command.await.unwrap(), "");
+    assert_eq!(
+        fs::read_to_string(test.0.join("commands")).unwrap(),
+        "zpool list\n"
+    );
+
+    let writer = fs::OpenOptions::new().write(true).open(&zpool).unwrap();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        checked_command(&zpool, &["list"]),
+    )
+    .await
+    .expect("busy retries must be bounded")
+    .unwrap_err();
+    assert!(error.to_string().contains("Text file busy"));
+    assert_eq!(
+        fs::read_to_string(test.0.join("commands")).unwrap(),
+        "zpool list\n"
+    );
+    drop(writer);
+    let error = checked_command(&zfs, &["invalid"]).await.unwrap_err();
+    assert!(
+        error.to_string().contains("unexpected fake zfs command"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(test.0.join("commands")).unwrap(),
+        "zpool list\nzfs invalid\n"
+    );
+}

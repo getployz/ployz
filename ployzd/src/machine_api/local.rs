@@ -22,7 +22,6 @@ use tonic::{Request, Response, Status};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
-    global_reconcile::{GlobalReconcileObservations, global_reconcile_observation_channel},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
@@ -44,7 +43,6 @@ pub struct MachineService {
     #[cfg(test)]
     allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
-    global_reconcile: GlobalReconcileObservations,
     runtime_watch: Arc<RuntimeWatch>,
 }
 
@@ -64,7 +62,6 @@ impl MachineService {
             #[cfg(test)]
             allocator_endpoint: None,
             cloud_pairing: None,
-            global_reconcile: global_reconcile_observation_channel().1,
             runtime_watch: Arc::default(),
         }
     }
@@ -110,17 +107,7 @@ impl MachineService {
         self
     }
 
-    /// Install the receiver for Machine-local Global reconcile observations.
-    #[must_use]
-    pub(crate) fn with_global_reconcile_observations(
-        mut self,
-        observations: GlobalReconcileObservations,
-    ) -> Self {
-        self.global_reconcile = observations;
-        self
-    }
-
-    /// Local Machine operations shared with daemon-owned maintenance loops.
+    /// Local Machine used to construct routing from this Machine's record and store.
     #[must_use]
     pub(crate) fn local(&self) -> LocalMachine {
         self.local.clone()
@@ -659,12 +646,7 @@ impl MachineRpc for MachineService {
         let entry_id = self.local_record()?.id();
         let stream = self
             .runtime_watch
-            .subscribe(
-                store,
-                self.local.clone(),
-                entry_id,
-                self.global_reconcile.clone(),
-            )
+            .subscribe(store, self.local.clone(), entry_id)
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
         Ok(Response::new(stream))

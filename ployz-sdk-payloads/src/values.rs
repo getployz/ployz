@@ -14,21 +14,20 @@ use ployz_core::{
     DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DataLossConfirmation, DeployEvent, DeployIntent,
     DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation,
     DockerVolume, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ExecutionError,
-    FailedOperation, GlobalReconcileFailureObservation, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, HostBind, HttpProtocol, IngressHost, IngressHostname, IngressProxyConfig,
-    IngressProxyFragment, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
-    MachineStorageObservation, MachineSuccess, MembershipObservation, ObservationKind,
-    ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
-    Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RegisterRequest, Registered,
-    RemoveVolumesRequest, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
-    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph, ServiceId,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
-    UpdateConfig, VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeRemoval,
-    VolumeRemovalOutcome, VolumeSource, VolumeToCreate, WireGuardPublicKey,
+    FailedOperation, HealthObservation, HealthcheckCommand, HealthcheckSpec, HostBind,
+    HttpProtocol, IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment,
+    LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure, MachineId, MachineName,
+    MachineObservation, MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess,
+    MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
+    OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
+    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, QualifiedService,
+    RegisterRequest, Registered, RemoveVolumesRequest, ReplacementOperation, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RttStatistics,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
+    ServiceConfigGraph, ServiceId, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit,
+    UnconfirmedDataLoss, UpdateConfig, VolumeDriver, VolumeInventory, VolumeObservationFailure,
+    VolumeRemoval, VolumeRemovalOutcome, VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -396,15 +395,6 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         ("RegisterRequest", to_value(&register_request())),
         ("Registered", to_value(&registered())),
         ("RttStatistics", to_value(rtt)),
-        (
-            "GlobalReconcileFailureObservation",
-            to_value(
-                machine_observation
-                    .global_reconcile_failures
-                    .first()
-                    .expect("Machine fixture includes a Global reconcile failure"),
-            ),
-        ),
         ("MachineObservation", to_value(machine_observation)),
         ("ContainerObservation", to_value(container)),
         ("ServiceObservation", to_value(service)),
@@ -916,11 +906,6 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 median_ns: 1_500_000,
                 population_stddev_ns: 250_000,
             }),
-            global_reconcile_failures: vec![GlobalReconcileFailureObservation {
-                service: QualifiedService::system_ingress(),
-                last_error: "image pull failed".into(),
-                observed_at: "2024-01-01T00:00:00Z".into(),
-            }],
         }],
         containers: vec![container],
         volumes: vec![docker_volume()],

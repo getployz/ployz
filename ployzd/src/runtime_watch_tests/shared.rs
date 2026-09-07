@@ -25,7 +25,6 @@ async fn last_disconnect_cancels_an_initial_read_that_never_completes() {
                 },
                 ReceiverStream::new(changes),
                 futures_util::stream::pending(),
-                global_reconcile_observation_channel().1,
             ))
         })
         .await

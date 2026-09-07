@@ -974,7 +974,7 @@ async fn join_places_observed_ingress_on_this_machine() {
 }
 
 #[tokio::test]
-async fn partial_peer_observation_is_silent_after_verified_ingress_catch_up() {
+async fn partial_peer_observation_reports_incomplete_catch_up_before_placement() {
     let founder = founder_machine();
     let mut unreachable = founder.clone();
     unreachable.id = ployz_core::MachineId::parse("d".repeat(32)).unwrap();
@@ -1012,20 +1012,13 @@ async fn partial_peer_observation_is_silent_after_verified_ingress_catch_up() {
         .output()
         .await
         .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        !String::from_utf8_lossy(&output.stderr)
-            .contains("Global catch-up used partial Service observations")
-    );
-    assert_eq!(
-        ensure_names(&daemon.ensure_requests()),
-        [("ployz-system", "ingress")]
-    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("partial Service observations"), "{stderr}");
+    assert!(stderr.contains("it remains a Cluster member"), "{stderr}");
+    assert!(stderr.contains(unreachable.id.as_str()), "{stderr}");
+    assert!(daemon.ensure_requests().is_empty());
+    daemon.join_request();
 }
 
 #[tokio::test]
