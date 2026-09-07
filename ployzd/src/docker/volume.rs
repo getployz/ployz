@@ -1,20 +1,20 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bollard::{
     Docker,
     models::{Volume, VolumeCreateRequest},
-    query_parameters::RemoveVolumeOptionsBuilder,
+    query_parameters::{ListContainersOptionsBuilder, RemoveVolumeOptionsBuilder},
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::{
     CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineId, ResolvedServiceSpec, VolumeInventory,
-    VolumeObservationFailure, VolumeSource,
+    DockerVolumeStorageObservation, MachineId, ProjectName, QualifiedService, ResolvedServiceSpec,
+    ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
 };
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{ContainerRuntime, Error, some_map};
+use super::{ContainerRuntime, Error, LABEL_PROJECT_NAME, LABEL_SERVICE_NAME, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
@@ -180,15 +180,95 @@ impl ContainerRuntime {
         docker_volume(machine_id, volume)
     }
 
+    /// Remove a named Docker Volume.
+    ///
+    /// `force` is Docker's force flag: it does not evict holders. An in-use
+    /// volume still fails, and the error names labeled Services when they can
+    /// be observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker rejects the deletion, including when containers
+    /// still mount the volume.
     pub async fn remove_volume(&self, name: &DockerVolumeName, force: bool) -> Result<(), Error> {
-        self.docker
+        match self
+            .docker
             .client
             .remove_volume(
                 name.as_str(),
                 Some(RemoveVolumeOptionsBuilder::default().force(force).build()),
             )
             .await
-            .map_err(Into::into)
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let mapped = Error::from(error);
+                if !volume_conflict(&mapped) {
+                    return Err(mapped);
+                }
+                match self.volume_holders(name).await {
+                    Ok(holders) if !holders.is_empty() => Err(volume_in_use(holders)),
+                    _ => Err(mapped),
+                }
+            }
+        }
+    }
+
+    async fn volume_holders(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<Vec<Option<QualifiedService>>, Error> {
+        let filters = HashMap::from([("volume", vec![name.as_str()])]);
+        let holders = self
+            .docker
+            .client
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default()
+                    .all(true)
+                    .filters(&filters)
+                    .build(),
+            ))
+            .await?
+            .into_iter()
+            .map(|container| holder_service(container.labels.as_ref()))
+            .collect();
+        Ok(holders)
+    }
+}
+
+fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedService> {
+    let labels = labels?;
+    let project = ProjectName::parse(labels.get(LABEL_PROJECT_NAME)?).ok()?;
+    let name = ServiceName::parse(labels.get(LABEL_SERVICE_NAME)?).ok()?;
+    Some(QualifiedService::new(project, name))
+}
+
+fn volume_in_use(holders: Vec<Option<QualifiedService>>) -> Error {
+    let count = holders.len();
+    let named = holders
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let containers = if count == 1 {
+        "1 container".to_owned()
+    } else {
+        format!("{count} containers")
+    };
+    let names = named
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = if named.is_empty() {
+        format!("volume is in use ({containers})")
+    } else {
+        format!("volume is in use by {names} ({containers})")
+    };
+    Error::VolumeInUse {
+        message,
+        services: named,
     }
 }
 

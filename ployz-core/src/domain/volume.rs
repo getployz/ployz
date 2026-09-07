@@ -154,6 +154,19 @@ impl VolumeSource {
         }
     }
 
+    /// Physical name of an ordinary or provisioned Docker Volume Ployz may create or destroy.
+    #[must_use]
+    pub fn managed_docker_volume_name(&self) -> Option<&DockerVolumeName> {
+        match self.kind() {
+            RawVolumeSource::Ordinary { name, .. } | RawVolumeSource::Provisioned { name, .. } => {
+                Some(name)
+            }
+            RawVolumeSource::External { .. }
+            | RawVolumeSource::Bind { .. }
+            | RawVolumeSource::Tmpfs { .. } => None,
+        }
+    }
+
     /// Scope admitted declarations once; preserve imported observations' exact identity.
     pub fn scope_to_project(&mut self, project: &ProjectName) {
         if self.scope.is_some() {

@@ -747,13 +747,7 @@ fn volume_anchor(
 }
 
 fn managed_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
-    match volume.source.kind() {
-        ployz_core::RawVolumeSource::Ordinary { name, .. }
-        | ployz_core::RawVolumeSource::Provisioned { name, .. } => Some(name),
-        ployz_core::RawVolumeSource::External { .. }
-        | ployz_core::RawVolumeSource::Bind { .. }
-        | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
-    }
+    volume.source.managed_docker_volume_name()
 }
 
 fn mounted_managed_volumes(graph: &ServiceVolumeGraph) -> Vec<&ServiceVolume> {

@@ -29,6 +29,7 @@ pub(crate) struct FakeDocker {
     pub(crate) fail_after_create: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) fail_inspect_once: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
+    pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) reject_list: Arc<AtomicBool>,
@@ -71,15 +72,26 @@ async fn fake_docker(
             serde_json::json!({"IPAM":{"Config":[{"Subnet":"10.210.0.0/24","Gateway":"10.210.0.1"}]}}),
         )
     } else if method == Method::GET && path.ends_with("/containers/json") {
-        let listed = fake
-                .existing_container
+        let listed = uri.query().and_then(|query| {
+            fake.volume_users
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|(volume, holders)| {
+                    (query.contains("volume") && query.contains(volume))
+                        .then(|| serde_json::Value::Array(holders.clone()))
+                })
+        });
+        let listed = listed.unwrap_or_else(|| {
+            fake.existing_container
                 .lock()
                 .unwrap()
                 .as_ref()
                 .map(|container| {
                     serde_json::json!([{"Id":container.get("Id").expect("fixture has ID")}])
                 })
-                .unwrap_or_else(|| serde_json::json!([]));
+                .unwrap_or_else(|| serde_json::json!([]))
+        });
         (StatusCode::OK, listed)
     } else if method == Method::GET && path.contains("/containers/") && path.ends_with("/json") {
         fake.existing_container.lock().unwrap().clone().map_or_else(
@@ -227,6 +239,32 @@ async fn fake_docker(
         }
     } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
         (StatusCode::NO_CONTENT, serde_json::Value::Null)
+    } else if method == Method::DELETE && path.contains("/volumes/") {
+        let name = path.rsplit('/').next().unwrap();
+        let holders = fake
+            .volume_users
+            .lock()
+            .unwrap()
+            .get(name)
+            .filter(|holders| !holders.is_empty())
+            .cloned();
+        if let Some(holders) = holders {
+            let ids: Vec<String> = holders
+                .iter()
+                .filter_map(|holder| holder.get("Id").and_then(serde_json::Value::as_str))
+                .map(str::to_owned)
+                .collect();
+            (
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "message": format!("remove {name}: volume is in use - {ids:?}")
+                }),
+            )
+        } else {
+            fake.volume_users.lock().unwrap().remove(name);
+            fake.volumes.lock().unwrap().remove(name);
+            (StatusCode::NO_CONTENT, serde_json::Value::Null)
+        }
     } else if method == Method::DELETE && path.contains("/containers/") {
         fake.existing_container.lock().unwrap().take();
         (StatusCode::NO_CONTENT, serde_json::Value::Null)

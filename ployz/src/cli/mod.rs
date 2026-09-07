@@ -442,6 +442,19 @@ fn service_ls(name: &'static str) -> Command {
 fn service_rm(name: &'static str) -> Command {
     base(name, "Remove services")
         .arg(project_name(Some('p')))
+        .arg(switch("volumes", None).help(
+            "Also remove this Service's named Docker Volumes after the containers are removed",
+        ))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+        .arg(
+            Arg::new("data-loss")
+                .long("data-loss")
+                .help("Data Loss names to confirm when --volumes is set")
+                .action(ArgAction::Append)
+                .num_args(1)
+                .value_delimiter(',')
+                .requires("volumes"),
+        )
         .arg(
             Arg::new("service")
                 .required(true)
@@ -767,6 +780,138 @@ mod tests {
             super::command()
                 .try_get_matches_from(["ployz", "project", "rm", "shop", "-v"])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn service_rm_volumes_takes_long_data_loss_and_yes() {
+        for args in [
+            vec![
+                "ployz",
+                "rm",
+                "db",
+                "--volumes",
+                "--yes",
+                "--data-loss",
+                "app_data",
+            ],
+            vec![
+                "ployz",
+                "service",
+                "rm",
+                "db",
+                "--volumes",
+                "--yes",
+                "--data-loss",
+                "app_data",
+            ],
+        ] {
+            let matches = super::command().try_get_matches_from(args.clone()).unwrap();
+            let mut leaf = &matches;
+            while let Some((_, child)) = leaf.subcommand() {
+                leaf = child;
+            }
+            assert_eq!(
+                leaf.get_one::<String>("service").map(String::as_str),
+                Some("db"),
+                "{args:?}"
+            );
+            assert!(leaf.get_flag("volumes"), "{args:?}");
+            assert!(leaf.get_flag("yes"), "{args:?}");
+            assert_eq!(
+                leaf.get_many::<String>("data-loss")
+                    .unwrap()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["app_data"],
+                "{args:?}"
+            );
+        }
+
+        let comma = super::command()
+            .try_get_matches_from([
+                "ployz",
+                "rm",
+                "db",
+                "--volumes",
+                "--data-loss",
+                "app_data,app_logs",
+                "--yes",
+            ])
+            .unwrap();
+        let rm = comma.subcommand_matches("rm").unwrap();
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app_data", "app_logs"]
+        );
+
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "rm", "db", "--data-loss", "app_data"])
+                .is_err()
+        );
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "start", "db", "--volumes"])
+                .is_err()
+        );
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "rm", "db", "--volumes", "-v"])
+                .is_err()
+        );
+
+        let repeated = super::command()
+            .try_get_matches_from([
+                "ployz",
+                "rm",
+                "db",
+                "--volumes",
+                "--data-loss",
+                "app_data",
+                "--data-loss",
+                "app_logs",
+                "--yes",
+            ])
+            .unwrap();
+        let rm = repeated.subcommand_matches("rm").unwrap();
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app_data", "app_logs"]
+        );
+
+        let trailing = super::command()
+            .try_get_matches_from([
+                "ployz",
+                "rm",
+                "db",
+                "--volumes",
+                "--data-loss",
+                "app_data",
+                "api",
+                "--yes",
+            ])
+            .unwrap();
+        let rm = trailing.subcommand_matches("rm").unwrap();
+        assert_eq!(
+            rm.get_many::<String>("service")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["db", "api"]
+        );
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app_data"]
         );
     }
 

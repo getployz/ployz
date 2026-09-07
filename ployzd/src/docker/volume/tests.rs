@@ -645,6 +645,80 @@ async fn create_returns_docker_rejection_as_an_error() {
     assert!(error.to_string().contains("create rejected"));
 }
 
+#[tokio::test]
+async fn in_use_volume_names_the_service_that_mounts_it() {
+    let name = "busy";
+    let fake = FakeDocker::default();
+    fake.volumes.lock().unwrap().insert(
+        name.into(),
+        serde_json::json!({"Name":name,"Driver":"local","Mountpoint":"/volumes/busy"}),
+    );
+    fake.volume_users.lock().unwrap().insert(
+        name.into(),
+        vec![
+            serde_json::json!({
+                "Id": "a".repeat(64),
+                "Labels": {
+                    "ployz.project.name": "cashdash",
+                    "ployz.service.name": "cashdash-singlestore"
+                }
+            }),
+            serde_json::json!({
+                "Id": "b".repeat(64),
+                "Labels": {
+                    "ployz.project.name": "cashdash",
+                    "ployz.service.name": "cashdash-singlestore"
+                }
+            }),
+        ],
+    );
+    let (runtime, _) = fake_runtime_with(fake).await;
+    let volume = DockerVolumeName::parse(name).unwrap();
+
+    let error = runtime.remove_volume(&volume, false).await.unwrap_err();
+    let rpc = ployz_core::RpcError::from(&error);
+
+    assert!(matches!(error, Error::VolumeInUse { .. }), "{error}");
+    assert_eq!(rpc.code, ployz_core::RpcErrorCode::Conflict);
+    assert!(
+        error
+            .to_string()
+            .contains("volume is in use by cashdash/cashdash-singlestore (2 containers)"),
+        "{error}"
+    );
+    assert_eq!(
+        rpc.details.get("in_use_by"),
+        Some(&serde_json::json!(["cashdash/cashdash-singlestore"]))
+    );
+
+    let forced = runtime.remove_volume(&volume, true).await.unwrap_err();
+    assert!(matches!(forced, Error::VolumeInUse { .. }), "{forced}");
+    assert!(
+        forced
+            .to_string()
+            .contains("volume is in use by cashdash/cashdash-singlestore"),
+        "Docker --force must still name the Service: {forced}"
+    );
+
+    let unlabeled = FakeDocker::default();
+    unlabeled.volumes.lock().unwrap().insert(
+        name.into(),
+        serde_json::json!({"Name":name,"Driver":"local","Mountpoint":"/volumes/busy"}),
+    );
+    unlabeled
+        .volume_users
+        .lock()
+        .unwrap()
+        .insert(name.into(), vec![serde_json::json!({"Id": "c".repeat(64)})]);
+    let (runtime, _) = fake_runtime_with(unlabeled).await;
+    let error = runtime.remove_volume(&volume, true).await.unwrap_err();
+    assert!(error.to_string().contains("volume is in use"), "{error}");
+    assert!(
+        !error.to_string().contains("cashdash/"),
+        "Docker --force must not invent a Service teardown: {error}"
+    );
+}
+
 #[test]
 fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
     let contents = serde_json::json!({"Volumes":[{
