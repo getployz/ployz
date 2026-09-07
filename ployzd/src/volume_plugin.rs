@@ -366,11 +366,20 @@ fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
 }
 
 async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .await
-        .map_err(|error| format!("could not run {}: {error}", program.display()))?;
+    let mut attempt = 0;
+    let output = loop {
+        match Command::new(program).args(args).output().await {
+            // ETXTBSY means exec never started; only that launch error is safe to retry.
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                attempt += 1;
+            }
+            output => {
+                break output
+                    .map_err(|error| format!("could not run {}: {error}", program.display()))?;
+            }
+        }
+    };
     if !output.status.success() {
         return Err(format!(
             "{} {} failed: {}",

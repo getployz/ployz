@@ -72,12 +72,16 @@ async fn machine_add_retries_catch_up_and_reports_exhaustion() {
 }
 
 #[tokio::test]
-async fn machine_add_verifies_target_while_membership_is_not_up() {
+async fn machine_add_reports_omitted_targets_before_catch_up() {
     for membership in [MembershipObservation::Down, MembershipObservation::Unknown] {
         let (output, entry, target) = machine_add_with_membership(0, 0, membership).await;
-        assert!(output.status.success(), "stderr: {:?}", output.stderr);
-        assert_eq!(entry.target_inspect_attempts(), 1);
-        assert_eq!(entry.ensure_attempts(), 2);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("partial Service observations"), "{stderr}");
+        assert!(stderr.contains("no terminal response"), "{stderr}");
+        assert!(stderr.contains("remains a Cluster member"), "{stderr}");
+        assert_eq!(entry.target_inspect_attempts(), 0);
+        assert_eq!(entry.ensure_attempts(), 0);
         target.join_request();
     }
 }

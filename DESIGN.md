@@ -65,7 +65,8 @@ consistency into mesh behavior.
 **The bet.** A Deploy is a bounded attempt: calculate against an observer-relative
 snapshot, execute, report, stop. No Service placement process runs forever.
 Global Services are placed by Deploy and by bounded catch-up when a Machine joins.
-Catch-up reads fresh target storage evidence, reports unknown eligibility or
+Catch-up rejects partial Live Observations before planning, reads fresh target
+storage evidence, reports unknown eligibility or
 incomplete placement, and stops; it does not leave work for a background loop.
 Deleted slots, later eligibility changes, and transient failures require an
 explicit redeploy.

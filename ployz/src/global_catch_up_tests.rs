@@ -18,6 +18,45 @@ use ployz_core::{
 use super::*;
 
 #[tokio::test]
+async fn partial_observations_reject_catch_up_before_any_placement() {
+    let joiner = machine('1', "joiner");
+    let peer = machine('f', "peer");
+    for failed in [true, false] {
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: Vec::new(),
+            target_services: None,
+            capacity: None,
+            storage: Ok(None),
+            ensure_calls: Cell::new(0),
+            failures: if failed {
+                vec![ployz_core::MachineFailure {
+                    machine_id: peer.id,
+                    error: RpcError {
+                        code: ployz_core::RpcErrorCode::Unavailable,
+                        message: "peer unavailable".into(),
+                        details: serde_json::Value::Null,
+                    },
+                }]
+            } else {
+                Vec::new()
+            },
+            omissions: if failed { Vec::new() } else { vec![peer.id] },
+        };
+        let error = catch_up_globals(&mut client, &joiner, false)
+            .await
+            .unwrap_err();
+        let message = joined_catch_up_error(error);
+        assert!(
+            message.contains("partial Service observations"),
+            "{message}"
+        );
+        assert!(message.contains(peer.id.as_str()), "{message}");
+        assert_eq!(client.ensure_calls.get(), 0);
+    }
+}
+
+#[tokio::test]
 async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -40,6 +79,8 @@ async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
         target_services: None,
         capacity: None,
         ensure_calls: Cell::new(0),
+        failures: Vec::new(),
+        omissions: Vec::new(),
         storage: Ok(None),
     };
 
@@ -62,6 +103,8 @@ async fn successful_ensure_is_reobserved_before_success() {
         target_services: None,
         capacity: None,
         ensure_calls: Cell::new(0),
+        failures: Vec::new(),
+        omissions: Vec::new(),
         storage: Ok(None),
     };
 
@@ -88,6 +131,8 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         target_services: Some(Vec::new()),
         capacity: None,
         ensure_calls: Cell::new(0),
+        failures: Vec::new(),
+        omissions: Vec::new(),
         storage: Ok(None),
     };
 
@@ -127,6 +172,8 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         target_services: Some(vec![hook_only]),
         capacity: None,
         ensure_calls: Cell::new(0),
+        failures: Vec::new(),
+        omissions: Vec::new(),
         storage: Ok(None),
     };
 
@@ -159,6 +206,8 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         target_services: Some(vec![stale]),
         capacity: Some(BridgeEndpointCapacity::new(10, 0)),
         ensure_calls: Cell::new(0),
+        failures: Vec::new(),
+        omissions: Vec::new(),
         storage: Ok(None),
     };
 
@@ -191,6 +240,8 @@ async fn another_projects_matching_shape_does_not_satisfy_catch_up() {
         target_services: Some(vec![shop]),
         capacity: Some(BridgeEndpointCapacity::new(10, 0)),
         ensure_calls: Cell::new(0),
+        failures: Vec::new(),
+        omissions: Vec::new(),
         storage: Ok(None),
     };
 
@@ -208,6 +259,8 @@ struct FakeCatchUpClient {
     capacity: Option<BridgeEndpointCapacity>,
     storage: Result<Option<MachineStorageObservation>, &'static str>,
     ensure_calls: Cell<usize>,
+    failures: Vec<ployz_core::MachineFailure<RpcError>>,
+    omissions: Vec<MachineId>,
 }
 
 impl CatchUpClient for FakeCatchUpClient {
@@ -223,8 +276,8 @@ impl CatchUpClient for FakeCatchUpClient {
                         .map(|container| container.as_observation().clone())
                         .collect(),
                 }],
-                failures: Vec::new(),
-                omissions: Vec::new(),
+                failures: self.failures.clone(),
+                omissions: self.omissions.clone(),
             },
         })
     }
@@ -548,6 +601,8 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
             capacity: Some(BridgeEndpointCapacity::new(10, 0)),
             storage,
             ensure_calls: Cell::new(0),
+            failures: Vec::new(),
+            omissions: Vec::new(),
         };
         let result = catch_up_globals(&mut client, &joiner, false).await;
         assert_eq!(client.ensure_calls.get(), expected_calls + 1);

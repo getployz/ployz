@@ -30,3 +30,5 @@ ingress-caddy-only	ployz-core/src/domain/ingress.rs::validators_reject_noncanoni
 host-socket-placement	-	ployz/tests/deploy_plan/placement.rs::host_socket_placement_rejects_one_machine_and_uses_an_alternative	-	-	-
 runtime-watch-sharing	ployzd/src/runtime_watch_tests/shared.rs::clients_share_acquisition_without_backpressure_or_shared_cancellation	-	-	-	-
 global-catch-up	ployz/src/global_catch_up_tests.rs::provisioned_globals_use_target_storage_and_report_unknown	-	-	-	-
+global-catch-up-partial-observation	ployz/src/global_catch_up_tests.rs::partial_observations_reject_catch_up_before_any_placement	-	-	-	-
+volume-plugin-command	ployzd/src/volume_plugin/tests/remove_tests.rs::busy_executable_retries_are_bounded_and_do_not_repeat_commands	-	-	-	-
