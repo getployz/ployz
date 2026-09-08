@@ -181,7 +181,7 @@ fn directory() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, os::unix::fs::PermissionsExt as _};
+    use std::collections::BTreeMap;
 
     use super::*;
 
@@ -191,15 +191,13 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let program = directory.join("docker");
-        fs::write(
+        crate::tests::executable(
             &program,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/calls'\nexit 0\n",
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\nprintf '%s\\n' \"$*\" >> '{}/calls'\nexit 0\n",
                 directory.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let environment = BTreeMap::new();
         let docker = Docker {
             program: &program,
