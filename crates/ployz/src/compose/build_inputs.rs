@@ -260,10 +260,11 @@ impl BuildInputs {
     }
 
     /// Snapshot explicitly supplied registry auth and proxies. Never consult the host's
-    /// default Docker login, credential helpers, contexts, or plugin settings.
+    /// default Docker login or credential helpers. Keep CLI plugin discovery
+    /// pointed at the caller's tool installation, just like PATH.
     ///
     /// # Errors
-    /// Rejects unreadable/invalid configuration and host-specific helpers, or
+    /// Rejects unreadable/invalid configuration and host-specific helpers/contexts, or
     /// fails when private configuration cannot be staged.
     pub(super) fn docker_config(
         &mut self,
@@ -271,6 +272,7 @@ impl BuildInputs {
         directory: &Path,
     ) -> Result<(), ComposeError> {
         let mut config = serde_json::Map::new();
+        let mut plugin_dirs = Vec::<PathBuf>::new();
         if let Some(path) = environment
             .get("DOCKER_CONFIG")
             .filter(|path| !path.is_empty())
@@ -281,6 +283,19 @@ impl BuildInputs {
                 &fs::read(captured).map_err(input_error)?,
             )
             .map_err(|_| ComposeError::Invalid("DOCKER_CONFIG/config.json is invalid".into()))?;
+            if supplied
+                .get("currentContext")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|context| !matches!(context, "" | "default"))
+                && !environment
+                    .get("DOCKER_HOST")
+                    .is_some_and(|host| !host.is_empty())
+            {
+                return Err(ComposeError::Invalid(
+                    "DOCKER_CONFIG currentContext is host-specific; supply DOCKER_HOST explicitly"
+                        .into(),
+                ));
+            }
             if supplied
                 .get("credsStore")
                 .and_then(serde_json::Value::as_str)
@@ -297,7 +312,28 @@ impl BuildInputs {
                     config.insert(key.into(), value.clone());
                 }
             }
+            if let Some(dirs) = supplied.get("cliPluginsExtraDirs") {
+                let dirs: Vec<PathBuf> = serde_json::from_value(dirs.clone()).map_err(|_| {
+                    ComposeError::Invalid(
+                        "DOCKER_CONFIG cliPluginsExtraDirs must be an array of paths".into(),
+                    )
+                })?;
+                plugin_dirs.extend(dirs.into_iter().map(|path| directory.join(path)));
+            }
         }
+        let original_config = environment
+            .get("DOCKER_CONFIG")
+            .filter(|path| !path.is_empty())
+            .map(|path| directory.join(path))
+            .or_else(|| {
+                environment
+                    .get("HOME")
+                    .map(|home| directory.join(home).join(".docker"))
+            });
+        if let Some(original_config) = original_config {
+            plugin_dirs.push(original_config.join("cli-plugins"));
+        }
+        config.insert("cliPluginsExtraDirs".into(), serde_json::json!(plugin_dirs));
         let directory = self.root.join("private/docker");
         fs::DirBuilder::new()
             .mode(0o700)
@@ -547,6 +583,75 @@ fn validate_link(path: &Path, root: &Path, selection: Option<&Selection>) -> io:
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn selected_docker_context_is_not_silently_discarded() {
+        let fixture = BuildInputs::new().unwrap();
+        let config = fixture.root.join("config.json");
+        for (context, host, accepted) in [
+            ("remote", "", false),
+            ("remote", "ssh://builder@host", true),
+            ("default", "", true),
+            ("", "", true),
+        ] {
+            fs::write(
+                &config,
+                serde_json::json!({"currentContext": context}).to_string(),
+            )
+            .unwrap();
+            let environment = BTreeMap::from([
+                (
+                    "DOCKER_CONFIG".into(),
+                    fixture.root.to_string_lossy().into_owned(),
+                ),
+                ("DOCKER_HOST".into(), host.into()),
+            ]);
+            let mut inputs = BuildInputs::new().unwrap();
+            let result = inputs.docker_config(&environment, &fixture.root);
+            assert_eq!(result.is_ok(), accepted, "{context}, {host}");
+            if let Err(error) = result {
+                assert!(error.to_string().contains("currentContext"));
+            }
+        }
+    }
+
+    #[test]
+    fn docker_plugin_search_paths_survive_private_config_staging() {
+        let fixture = BuildInputs::new().unwrap();
+        fs::write(
+            fixture.root.join("config.json"),
+            r#"{"cliPluginsExtraDirs":["extra-plugins"]}"#,
+        )
+        .unwrap();
+        for explicit in [false, true] {
+            let mut environment =
+                BTreeMap::from([("HOME".into(), fixture.root.to_string_lossy().into_owned())]);
+            if explicit {
+                environment.insert(
+                    "DOCKER_CONFIG".into(),
+                    fixture.root.to_string_lossy().into_owned(),
+                );
+            }
+            let mut inputs = BuildInputs::new().unwrap();
+            inputs.docker_config(&environment, &fixture.root).unwrap();
+            let config: serde_json::Value = serde_json::from_slice(
+                &fs::read(inputs.root.join("private/docker/config.json")).unwrap(),
+            )
+            .unwrap();
+            let expected = if explicit {
+                vec![
+                    fixture.root.join("extra-plugins"),
+                    fixture.root.join("cli-plugins"),
+                ]
+            } else {
+                vec![fixture.root.join(".docker/cli-plugins")]
+            };
+            assert_eq!(
+                config.get("cliPluginsExtraDirs"),
+                Some(&serde_json::json!(expected))
+            );
+        }
+    }
 
     #[test]
     fn ignored_special_files_do_not_enter_capture() {

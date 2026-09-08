@@ -192,10 +192,10 @@ fn builds_use_captured_explicit_registry_credentials_and_proxies() {
     let captured: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join("docker-config.json")).unwrap())
             .unwrap();
-    assert_eq!(
-        captured,
-        serde_json::from_str::<serde_json::Value>(credentials).unwrap()
-    );
+    let expected: serde_json::Value = serde_json::from_str(credentials).unwrap();
+    for key in ["auths", "proxies"] {
+        assert_eq!(captured.get(key), expected.get(key));
+    }
     let environment = fs::read_to_string(root.join("docker-environment")).unwrap();
     assert!(!environment.contains(root.join("auth").to_str().unwrap()));
     assert!(
