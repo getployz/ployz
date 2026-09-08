@@ -62,7 +62,7 @@ dispatch_ployz_sh_site() {
 push_homebrew_tap() {
     local tag=$1 checksums=$2
     local token=${HOMEBREW_TAP_TOKEN:-}
-    local version=${tag#v} work formula
+    local version=${tag#v} work
     [ -n "$token" ] || {
         echo "HOMEBREW_TAP_TOKEN is required to update getployz/homebrew-ployz" >&2
         return 1
@@ -70,12 +70,9 @@ push_homebrew_tap() {
     work=$(mktemp -d)
     git clone --depth 1 "https://x-access-token:${token}@github.com/getployz/homebrew-ployz.git" "$work"
     git_identity "$work"
-    formula=$(mktemp)
-    write_homebrew_formula_from_checksums "$checksums" "$formula" "$version" "$tag" "${GITHUB_REPOSITORY:-getployz/ployz2}"
-    bash "$ROOT/scripts/repoint-homebrew-tap.sh" "$work" "$formula"
+    write_homebrew_formula_from_checksums "$checksums" "$work/Formula/ployz.rb" "$version" "$tag" "${GITHUB_REPOSITORY:-getployz/ployz2}"
     commit_if_changed "$work" "ployz $version"
     git -C "$work" push origin HEAD
-    rm -f "$formula"
     rm -rf "$work"
 }
 
@@ -92,11 +89,9 @@ promote_published_release() {
     rm -rf "$checksums_dir"
 }
 
-if [ "${PLOYZ_PROMOTE_TEST_ONLY:-false}" != true ]; then
-    tag=${1:-}
-    [ -n "$tag" ] || {
-        echo "usage: $0 <tag>" >&2
-        exit 1
-    }
-    promote_published_release "$tag"
-fi
+tag=${1:-}
+[ -n "$tag" ] || {
+    echo "usage: $0 <tag>" >&2
+    exit 1
+}
+promote_published_release "$tag"

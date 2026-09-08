@@ -93,6 +93,4 @@ install_cli() {
     echo "Installed ployz to $INSTALL_BIN_DIR/ployz"
 }
 
-if [ "${PLOYZ_CLI_INSTALL_TEST_ONLY:-false}" != true ]; then
-    install_cli
-fi
+install_cli

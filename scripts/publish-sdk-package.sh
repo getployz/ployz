@@ -46,9 +46,7 @@ publish_sdk_package() {
     publish_npm_package "$dest" @ployz/sdk "$version"
 }
 
-if [ "${PLOYZ_SDK_PUBLISH_TEST_ONLY:-false}" != true ]; then
-    tag=${1:-}
-    [ -n "$tag" ] || fail "usage: $0 <tag> <binding>..."
-    shift
-    publish_sdk_package "$tag" "$@"
-fi
+tag=${1:-}
+[ -n "$tag" ] || fail "usage: $0 <tag> <binding>..."
+shift
+publish_sdk_package "$tag" "$@"

@@ -12,13 +12,6 @@ PLOYZ_RUN_DIR=${PLOYZ_RUN_DIR:-/run/ployz}
 log() { echo "$1"; }
 error() { echo "ERROR: $1" >&2; exit 1; }
 
-uninstall_disposition() {
-    case "$1" in
-        docker|docker-images|docker-volumes|docker-configuration) echo retain ;;
-        *) echo remove ;;
-    esac
-}
-
 confirm() {
     [ "$PLOYZ_AUTO_CONFIRM" = true ] && return
     read -r -p "$1 [y/N] " response
@@ -74,6 +67,4 @@ main() {
     log "Ployz uninstalled; Docker, images, named volumes, and Docker configuration retained"
 }
 
-if [ "${PLOYZ_UNINSTALL_TEST_ONLY:-false}" != true ]; then
-    main "$@"
-fi
+main "$@"

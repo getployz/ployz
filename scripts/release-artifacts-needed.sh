@@ -21,12 +21,10 @@ release_artifacts_needed() {
     echo false
 }
 
-if [ "${PLOYZ_RELEASE_ARTIFACTS_TEST_ONLY:-false}" != true ]; then
-    event=${1:-}
-    [ -n "$event" ] || {
-        echo "usage: $0 <event> [file...]" >&2
-        exit 1
-    }
-    shift
-    release_artifacts_needed "$event" "$@"
-fi
+event=${1:-}
+[ -n "$event" ] || {
+    echo "usage: $0 <event> [file...]" >&2
+    exit 1
+}
+shift
+release_artifacts_needed "$event" "$@"

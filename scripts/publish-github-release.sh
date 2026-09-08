@@ -69,11 +69,9 @@ generated_changelog() {
     gh api "repos/${repo}/releases/generate-notes" -f tag_name="$tag" --jq .body
 }
 
-if [ "${PLOYZ_RELEASE_TEST_ONLY:-false}" != true ]; then
-    tag=${1:-}
-    [ -n "$tag" ] || { echo "usage: $0 <tag>" >&2; exit 1; }
-    dist=${DIST:-"$ROOT/dist"}
-    mapfile -t assets < <(release_assets "$dist")
-    mapfile -t flags < <(release_create_flags "$tag")
-    gh release create "$tag" "${flags[@]}" --title "$tag" --notes "$(release_notes "$tag" "$(generated_changelog "$tag")")" "${assets[@]}"
-fi
+tag=${1:-}
+[ -n "$tag" ] || { echo "usage: $0 <tag>" >&2; exit 1; }
+dist=${DIST:-"$ROOT/dist"}
+mapfile -t assets < <(release_assets "$dist")
+mapfile -t flags < <(release_create_flags "$tag")
+gh release create "$tag" "${flags[@]}" --title "$tag" --notes "$(release_notes "$tag" "$(generated_changelog "$tag")")" "${assets[@]}"
