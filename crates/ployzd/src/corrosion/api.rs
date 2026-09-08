@@ -321,7 +321,7 @@ impl QueryResult {
                 "unexpected columns: {}",
                 self.columns
                     .iter()
-                    .map(|column| column.escape_debug().to_string())
+                    .map(|column| format!("\"{}\"", column.escape_debug()))
                     .collect::<Vec<_>>()
                     .join(", ")
             )));
@@ -358,13 +358,13 @@ mod tests {
     #[test]
     fn unexpected_columns_escape_remote_values() {
         let error = super::QueryResult {
-            columns: vec!["name\n\u{1b}[2J".into(), "id".into()],
+            columns: vec!["name, id\n\u{1b}[2J".into(), "id".into()],
             rows: Vec::new(),
         }
         .rows(["expected"])
         .unwrap_err()
         .to_string();
-        assert!(error.contains(r"name\n\u{1b}[2J, id"), "{error}");
+        assert!(error.contains(r#""name, id\n\u{1b}[2J", "id""#), "{error}");
         assert!(!error.chars().any(char::is_control), "{error}");
     }
 

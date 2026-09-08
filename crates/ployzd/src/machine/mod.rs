@@ -825,6 +825,15 @@ fn write_record(path: &Path, record: &LocalMachineRecord) -> Result<(), StoreErr
     Ok(())
 }
 
+fn display_data_directory(path: &Path) -> String {
+    let mut text = String::new();
+    for chunk in path.as_os_str().as_encoded_bytes().utf8_chunks() {
+        text.extend(chunk.valid().escape_debug());
+        text.extend(chunk.invalid().escape_ascii().map(char::from));
+    }
+    text
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("local Machine record I/O failed: {0}")]
@@ -851,15 +860,15 @@ pub enum StoreError {
     InvalidNetwork(String),
     #[error(transparent)]
     MachineUpdate(#[from] MachineUpdateError),
-    #[error("another daemon already owns data directory {}", .0.as_os_str().as_encoded_bytes().escape_ascii())]
+    #[error("another daemon already owns data directory {}", display_data_directory(.0))]
     AlreadyRunning(PathBuf),
-    #[error("refusing to clear broad data directory {}", .0.as_os_str().as_encoded_bytes().escape_ascii())]
+    #[error("refusing to clear broad data directory {}", display_data_directory(.0))]
     UnsafeDataDirectory(PathBuf),
-    #[error("refusing to claim nonempty data directory {}", .0.as_os_str().as_encoded_bytes().escape_ascii())]
+    #[error("refusing to claim nonempty data directory {}", display_data_directory(.0))]
     UnownedDataDirectory(PathBuf),
-    #[error("local Machine record changed before clearing data directory {}", .0.as_os_str().as_encoded_bytes().escape_ascii())]
+    #[error("local Machine record changed before clearing data directory {}", display_data_directory(.0))]
     OwnershipLost(PathBuf),
-    #[error("local Machine record changed before prepared reset was committed in {}", .0.as_os_str().as_encoded_bytes().escape_ascii())]
+    #[error("local Machine record changed before prepared reset was committed in {}", display_data_directory(.0))]
     ResetPreparationLost(PathBuf),
 }
 

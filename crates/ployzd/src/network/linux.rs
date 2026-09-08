@@ -483,42 +483,45 @@ fn docker_network_conflict(
     required_options: &HashMap<String, String>,
     reason: impl Into<String>,
 ) -> NetworkError {
+    let quoted = |value: Option<&str>| {
+        value.map_or_else(
+            || "unknown".to_owned(),
+            |value| format!("\"{}\"", value.escape_debug()),
+        )
+    };
     let options = |values: &HashMap<String, String>| {
         let mut pairs = values
             .iter()
-            .map(|(key, value)| format!("{}={}", key.escape_debug(), value.escape_debug()))
+            .map(|(key, value)| format!("{}={}", quoted(Some(key)), quoted(Some(value))))
             .collect::<Vec<_>>();
         pairs.sort();
-        pairs.join(", ")
+        format!("{{{}}}", pairs.join(", "))
     };
     let ipam = network
         .ipam
         .as_ref()
         .and_then(|ipam| ipam.config.as_ref())
         .map(|configs| {
-            configs
+            let configs = configs
                 .iter()
                 .map(|config| {
                     format!(
-                        "subnet={}, gateway={}",
-                        config.subnet.as_deref().unwrap_or("unknown").escape_debug(),
-                        config
-                            .gateway
-                            .as_deref()
-                            .unwrap_or("unknown")
-                            .escape_debug()
+                        "{{subnet={}, gateway={}}}",
+                        quoted(config.subnet.as_deref()),
+                        quoted(config.gateway.as_deref())
                     )
                 })
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", ");
+            format!("({configs})")
         });
     let containers = network.containers.as_ref().map(|containers| {
         let mut ids = containers
             .keys()
-            .map(|id| id.escape_debug().to_string())
+            .map(|id| quoted(Some(id)))
             .collect::<Vec<_>>();
         ids.sort_unstable();
-        ids.join(", ")
+        format!("({})", ids.join(", "))
     });
     NetworkError::DockerNetworkConflict {
         reason: reason.into(),
@@ -528,14 +531,10 @@ fn docker_network_conflict(
         ),
         observed: format!(
             "id={}, name={}, driver={}, scope={}, labels={}, IPAM={}, options={}, containers={}",
-            network.id.as_deref().unwrap_or("unknown").escape_debug(),
-            network.name.as_deref().unwrap_or("unknown").escape_debug(),
-            network
-                .driver
-                .as_deref()
-                .unwrap_or("unknown")
-                .escape_debug(),
-            network.scope.as_deref().unwrap_or("unknown").escape_debug(),
+            quoted(network.id.as_deref()),
+            quoted(network.name.as_deref()),
+            quoted(network.driver.as_deref()),
+            quoted(network.scope.as_deref()),
             network
                 .labels
                 .as_ref()
@@ -651,11 +650,11 @@ mod tests {
             "name=ployz",
             "id=unknown",
             "7074faa8a368",
-            "mtu=1400",
-            "mtu=1420",
-            r"key\n=value\u{1b}[2J",
-            r"option\n=setting\u{1b}[2J",
-            r"driver=bridge\u{1b}[2J",
+            r#"mtu"="1400""#,
+            r#"mtu"="1420""#,
+            r#""key\n"="value\u{1b}[2J""#,
+            r#""option\n"="setting\u{1b}[2J""#,
+            r#"driver="bridge\u{1b}[2J""#,
         ] {
             assert!(message.contains(detail), "{message}");
         }
@@ -676,6 +675,49 @@ mod tests {
                 .then(|| HashMap::from([("7074faa8a368".into(), Default::default())])),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn network_diagnostics_preserve_field_and_collection_boundaries() {
+        let describe = |network: &NetworkInspect| {
+            docker_network_conflict(
+                network,
+                "10.0.0.0/24",
+                "10.0.0.1",
+                &HashMap::new(),
+                "conflict",
+            )
+            .to_string()
+        };
+        let mut one = stale_network("ployz", None, false);
+        let mut two = one.clone();
+        one.labels = Some(HashMap::from([("a".into(), "b, c=d".into())]));
+        two.labels = Some(HashMap::from([
+            ("a".into(), "b".into()),
+            ("c".into(), "d".into()),
+        ]));
+        assert_ne!(describe(&one), describe(&two));
+        one.options = one.labels.take();
+        two.options = two.labels.take();
+        assert_ne!(describe(&one), describe(&two));
+        one.options = None;
+        two.options = None;
+        one.containers = Some(HashMap::from([("a, b".into(), Default::default())]));
+        two.containers = Some(HashMap::from([
+            ("a".into(), Default::default()),
+            ("b".into(), Default::default()),
+        ]));
+        assert_ne!(describe(&one), describe(&two));
+        one.name = Some("ployz, driver=bridge".into());
+        assert!(describe(&one).contains(r#"name="ployz, driver=bridge""#));
+        one.ipam = Some(Ipam {
+            config: Some(vec![IpamConfig {
+                subnet: Some("net, gateway=elsewhere".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        assert!(describe(&one).contains(r#"subnet="net, gateway=elsewhere""#));
     }
 
     #[test]
@@ -734,7 +776,7 @@ mod tests {
 
         assert!(error.contains("expected: name=ployz"));
         assert!(error.contains("subnet=10.210.1.0/24"));
-        assert!(error.contains("observed: id=unknown, name=ployz"));
+        assert!(error.contains(r#"observed: id=unknown, name="ployz""#));
         assert!(error.contains("7074faa8a368"));
         assert!(error.contains("systemctl stop ployz"));
         assert!(error.contains("docker network inspect ployz"));

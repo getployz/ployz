@@ -838,7 +838,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
 
 #[test]
 fn data_directory_errors_render_paths_without_debug_quotes() {
-    let path = std::path::PathBuf::from("/var/lib/ployz data\n\u{1b}[2J");
+    let path = std::path::PathBuf::from("/var/lib/café data\n\u{1b}[2J");
     for error in [
         StoreError::AlreadyRunning(path.clone()),
         StoreError::UnsafeDataDirectory(path.clone()),
@@ -848,7 +848,7 @@ fn data_directory_errors_render_paths_without_debug_quotes() {
     ] {
         let message = error.to_string();
         assert!(
-            message.ends_with(r"/var/lib/ployz data\n\x1b[2J"),
+            message.ends_with(r"/var/lib/café data\n\u{1b}[2J"),
             "{message}"
         );
         assert!(!message.contains('"'), "{message}");
@@ -859,12 +859,12 @@ fn data_directory_errors_render_paths_without_debug_quotes() {
 fn data_directory_errors_preserve_non_utf8_bytes() {
     use std::os::unix::ffi::OsStringExt;
     for byte in [0xfe, 0xff] {
-        let mut bytes = b"/var/lib/ployz-".to_vec();
+        let mut bytes = "/var/lib/café-".as_bytes().to_vec();
         bytes.push(byte);
         let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes));
         let error = StoreError::UnownedDataDirectory(path).to_string();
         assert!(
-            error.ends_with(&format!(r"/var/lib/ployz-\x{byte:02x}")),
+            error.ends_with(&format!(r"/var/lib/café-\x{byte:02x}")),
             "{error}"
         );
         assert!(!error.contains('\u{fffd}'), "{error}");
