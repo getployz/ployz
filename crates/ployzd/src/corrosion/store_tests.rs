@@ -413,6 +413,30 @@ fn sql_param(value: &serde_json::Value) -> rusqlite::types::Value {
 }
 
 #[tokio::test]
+async fn catch_up_rejects_invalid_targets_without_retrying() {
+    use super::wait_for_catch_up;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let store = ReplicatedStore::new(
+        ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
+    );
+    for (actor, version) in [
+        ("a".repeat(32), -1),
+        ("invalid".into(), 0),
+        ("ab".into(), 1),
+    ] {
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            wait_for_catch_up(&store, &BTreeMap::from([(actor, version)])),
+        )
+        .await
+        .expect("invalid targets must fail without retrying")
+        .expect_err("invalid targets must not complete catch-up");
+    }
+}
+
+#[tokio::test]
 async fn catch_up_waits_for_pending_target_transactions() {
     use super::{Statement, wait_for_catch_up};
     use std::time::Duration;

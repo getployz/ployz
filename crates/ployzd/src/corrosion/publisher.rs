@@ -12,6 +12,10 @@ use tokio_util::sync::CancellationToken;
 use super::{Error, ReplicatedStore};
 use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
 
+/// Waits for replication through the target, retrying store failures.
+///
+/// # Errors
+/// Returns immediately if the target contains an invalid actor ID or negative version.
 pub async fn wait_for_catch_up(
     store: &ReplicatedStore,
     target: &BTreeMap<String, i64>,
@@ -22,6 +26,7 @@ pub async fn wait_for_catch_up(
         let status = match store.has_reached_version(target).await {
             Ok(true) => return Ok(()),
             Ok(false) => "target replication is incomplete".to_owned(),
+            Err(error @ Error::InvalidCatchUpTarget(_)) => return Err(error),
             Err(error) => error.to_string(),
         };
         tokio::select! {

@@ -814,9 +814,11 @@ impl ReplicatedStore {
         let mut params = Vec::with_capacity(target.len() * 2);
         for (actor, version) in target {
             let bytes = hex::decode(actor.replace('-', ""))
-                .map_err(|_| Error::Protocol("invalid target actor ID".into()))?;
+                .map_err(|_| Error::InvalidCatchUpTarget("invalid actor ID"))?;
             if bytes.len() != 16 || *version < 0 {
-                return Err(Error::Protocol("invalid target store version".into()));
+                return Err(Error::InvalidCatchUpTarget(
+                    "actor must be 16 bytes and version must be nonnegative",
+                ));
             }
             if *version == 0 {
                 continue;
