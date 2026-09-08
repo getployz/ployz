@@ -22,6 +22,7 @@ acme-certs	crates/ployzd/src/certificates_tests.rs::unparseable_stored_material_
 exec-logs	-	-	-	crates/ployz/tests/operator_cluster.rs::exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster	gap
 installer	scripts/test-cli-installer.sh	-	-	-	-
 daemon-install	scripts/test-daemon-lifecycle.sh	-	-	-	-
+sdk-test-temp-cleanup	-	crates/ployz/tests/connect/relay.rs::sdk_script_temporary_files_are_removed_after_exit_and_timeout	-	-	-
 sdk-payloads	scripts/check-sdk-types.sh	crates/ployz/tests/sdk_payloads.rs::generated_declarations_match_checked_in_file	-	-	-
 sdk-rpc-errors	crates/ployzd/src/machine_api/local_tests.rs::hosted_dns_codes_follow_who_caused_the_failure	-	-	-	-
 sdk-runtime-watch	crates/ployz-core/tests/runtime_watch.rs::runtime_watch_services_follow_container_mutations	crates/ployz/tests/connect/sdk_watch.rs::lost_relay_tunnel_asks_the_caller_to_reconnect	-	-	-

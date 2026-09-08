@@ -3,7 +3,7 @@ use std::{
     net::Ipv4Addr,
     path::PathBuf,
     pin::Pin,
-    process::Command,
+    process::{Command, Output, Stdio},
     task::{Context, Poll},
     time::Duration,
 };
@@ -14,7 +14,7 @@ use ployz_relay::{
     ClientError, Open, PairingCredential, RegisterRequest, Relay, RelayClient, RelayWs, TunnelIo,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
     time::timeout,
 };
 use tonic::{codec::CompressionEncoding, transport::server::Connected};
@@ -104,6 +104,97 @@ async fn unknown_machine_id_fails_closed() {
     assert!(matches!(error, ConnectError::UnknownMachine), "{error:?}");
 }
 
+#[tokio::test]
+async fn sdk_script_temporary_files_are_removed_after_exit_and_timeout() {
+    for mode in ["success", "failure", "timeout"] {
+        let report = std::env::temp_dir().join(format!("sdk-temp-report-{}", uuid::Uuid::new_v4()));
+        let mut command = tokio::process::Command::new("node");
+        command
+            .args([
+                "-e",
+                r#"
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'ployz-sdk-check-'));
+            fs.writeFileSync(path.join(dir, 'ployz-sdk.node'), 'test addon');
+            fs.writeFileSync(process.argv[1], dir);
+            fs.writeSync(1, 'o'.repeat(128 * 1024));
+            fs.writeSync(2, 'e'.repeat(128 * 1024));
+            if (process.argv[2] === 'timeout') setInterval(() => {}, 1000);
+            else process.exit(process.argv[2] === 'failure' ? 1 : 0);
+        "#,
+            ])
+            .arg(&report)
+            .arg(mode);
+        let result = sdk_script_output(&mut command, Duration::from_secs(2)).await;
+        let dir = std::fs::read_to_string(&report).expect("Node created the SDK fixture");
+        std::fs::remove_file(report).unwrap();
+        let leaked = std::path::Path::new(&dir).exists();
+        if leaked {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        assert!(!leaked, "{mode} left SDK files in {dir}");
+        match mode {
+            "timeout" => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut),
+            _ => {
+                let output = result.unwrap();
+                assert_eq!(output.status.success(), mode == "success");
+                assert_eq!(output.stdout, vec![b'o'; 128 * 1024]);
+                assert_eq!(output.stderr, vec![b'e'; 128 * 1024]);
+            }
+        }
+    }
+}
+
+async fn sdk_script_output(
+    command: &mut tokio::process::Command,
+    deadline: Duration,
+) -> io::Result<Output> {
+    let temp = std::env::temp_dir().join(format!("ployz-sdk-run-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&temp)?;
+    let result = async {
+        let mut child = command
+            .env("TMPDIR", &temp)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let (status, read_out, read_err) = tokio::join!(
+            async {
+                match timeout(deadline, child.wait()).await {
+                    Ok(status) => status,
+                    Err(_) => {
+                        // Reap Node before removing files it could still be creating.
+                        child.kill().await?;
+                        Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "SDK script timed out",
+                        ))
+                    }
+                }
+            },
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err),
+        );
+        read_out?;
+        read_err?;
+        Ok(Output {
+            status: status?,
+            stdout: out,
+            stderr: err,
+        })
+    }
+    .await;
+    // Cleanup precedes error propagation, including spawn failures and timeouts.
+    std::fs::remove_dir_all(temp)?;
+    result
+}
+
 pub(super) struct RelaySession {
     pub(super) url: String,
     _server: tokio::task::JoinHandle<io::Result<()>>,
@@ -117,8 +208,7 @@ impl RelaySession {
         environment: &[(&str, &str)],
     ) {
         let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ployz-sdk");
-        let output = timeout(
-            Duration::from_secs(20),
+        let output = sdk_script_output(
             tokio::process::Command::new("node")
                 .arg(package.join("tests").join(script))
                 .env("PLOYZ_SDK_ADDON", native_addon())
@@ -127,13 +217,11 @@ impl RelaySession {
                 .env("PLOYZ_BEARER", DIAL)
                 .env("PLOYZ_PAIRING", PAIRING)
                 .env("PLOYZ_MACHINE_ID", machine_id.as_str())
-                .envs(environment.iter().copied())
-                .kill_on_drop(true)
-                .output(),
+                .envs(environment.iter().copied()),
+            Duration::from_secs(20),
         )
         .await
-        .unwrap_or_else(|_| panic!("{script} exceeded 20 seconds"))
-        .unwrap_or_else(|error| panic!("{script} could not start: {error}"));
+        .unwrap_or_else(|error| panic!("{script} could not complete: {error}"));
         assert!(
             output.status.success(),
             "{script} failed\nstdout:\n{}\nstderr:\n{}",
