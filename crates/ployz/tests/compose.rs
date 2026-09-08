@@ -424,9 +424,10 @@ fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
         ".",
     )
     .unwrap_err();
-    assert_eq!(
-        label_error.to_string(),
-        "invalid normalized Compose project: service 'app': invalid container label key \"ployz.future\": outside the reserved 'ployz.*' management namespace"
+    assert!(
+        label_error.to_string().contains(
+        "invalid normalized Compose project: service 'app': invalid container label key \"ployz.future\": outside the reserved 'ployz.*' management namespace"),
+        "{label_error}"
     );
 
     for hostname in ["bad_name", "-leading", "trailing-", "two..dots"] {
@@ -435,11 +436,11 @@ fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
             ".",
         )
         .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "invalid normalized Compose project: service 'app': invalid container hostname {hostname:?}: a 1-64 character RFC 1123 hostname"
-            )
+        assert!(
+            error.to_string().contains(&format!(
+                "service 'app': invalid container hostname {hostname:?}: a 1-64 character RFC 1123 hostname"
+            )),
+            "{error}"
         );
     }
 
@@ -449,11 +450,11 @@ fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
         ".",
     )
     .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!(
-            "invalid normalized Compose project: service 'app': invalid container hostname {too_long:?}: a 1-64 character RFC 1123 hostname"
-        )
+    assert!(
+        error.to_string().contains(&format!(
+            "service 'app': invalid container hostname {too_long:?}: a 1-64 character RFC 1123 hostname"
+        )),
+        "{error}"
     );
 
     for entry in ["api:not-an-address", "=192.0.2.1"] {

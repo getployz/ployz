@@ -18,7 +18,9 @@ pub(crate) struct ProvisionedVolumeSize {
 pub(crate) enum ProvisionedVolumeSizeError {
     #[error("invalid Volume size {0:?}; use a positive integer followed by k, m, g, or t")]
     Invalid(String),
-    #[error("Volume size {0:?} overflows bytes")]
+    #[error(
+        "Volume size {0:?} exceeds 18446744073709551615 bytes; use a smaller positive integer followed by k, m, g, or t (for example, 1g)"
+    )]
     Overflow(String),
 }
 
@@ -130,4 +132,27 @@ pub fn parse_assignments<'a>(
             Ok((key.into(), value.into()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overflowing_volume_size_names_the_value_and_a_supported_bound() {
+        let error = ProvisionedVolumeSize::parse("16777216t").unwrap_err();
+        assert!(matches!(error, ProvisionedVolumeSizeError::Overflow(_)));
+        let message = error.to_string();
+        for hint in [
+            "16777216t",
+            "18446744073709551615 bytes",
+            "smaller positive integer",
+            "k, m, g, or t",
+            "1g",
+        ] {
+            assert!(message.contains(hint), "{message}");
+        }
+        ProvisionedVolumeSize::parse("16777215t").unwrap();
+        ProvisionedVolumeSize::parse("1g").unwrap();
+    }
 }

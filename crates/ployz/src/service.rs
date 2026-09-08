@@ -10,11 +10,9 @@ pub(crate) fn verified_created_volume(
     report: CreateVolumeReport,
 ) -> Result<DockerVolume, RpcError> {
     report.into_observation().map_err(|failure| {
+        let message = format!("Docker Volume was created but could not be verified: {failure}");
         let mut error = failure.error;
-        error.message = format!(
-            "Docker Volume {} was created on {} but could not be verified: {}",
-            failure.id.name, failure.id.machine_id, error.message
-        );
+        error.message = message;
         error
     })
 }

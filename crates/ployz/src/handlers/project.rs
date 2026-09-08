@@ -146,14 +146,37 @@ mod tests {
             .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         };
+        let warnings = observer_listing_warnings(&snapshot);
         assert_eq!(
-            observer_listing_warnings(&snapshot),
-            [
+            warnings.get(..3).unwrap(),
+            &[
                 "WARNING: Live Observation is observer-relative and not globally complete".into(),
                 format!("WARNING: Machine {machine} failed: down"),
                 format!("WARNING: Machine {omitted} was omitted listing volumes"),
-                format!("WARNING: Machine {machine} Docker Volume data: inspect failed"),
             ]
         );
+        let listing = warnings.last().unwrap();
+        let (_, planning) = snapshot.volume_snapshot.named_gap(|_| true).unwrap();
+        let deploy = snapshot
+            .volume_snapshot
+            .deploy_warnings()
+            .find_map(|warning| {
+                if let crate::deploy::DeployWarning::ObservationFailed { message, .. } = warning {
+                    Some(message)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        for message in [listing, &planning, &deploy] {
+            for hint in [
+                "data",
+                &machine.to_string(),
+                "inspect failed",
+                "inspect the Volume again",
+            ] {
+                assert!(message.contains(hint), "{message}");
+            }
+        }
     }
 }

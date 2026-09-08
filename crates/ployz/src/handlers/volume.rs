@@ -212,12 +212,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             let volumes = filter_volumes(&volumes, &names);
             let unavailable = volume_failures(&result)
                 .filter(|failure| names.is_empty() || names.contains(&failure.id.name))
-                .map(|failure| {
-                    format!(
-                        "{}/{}: {}",
-                        failure.id.machine_id, failure.id.name, failure.error.message
-                    )
-                })
+                .map(ToString::to_string)
                 .reduce(|mut summary, failure| {
                     summary.push_str("; ");
                     summary.push_str(&failure);
@@ -393,10 +388,7 @@ fn inventories_complete(result: &PartialResult<VolumeInventory, RpcError>) -> bo
 
 fn report_inventory_failures(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in volume_failures(result) {
-        eprintln!(
-            "{}/{}: {}",
-            failure.id.machine_id, failure.id.name, failure.error.message
-        );
+        eprintln!("{failure}");
     }
 }
 
@@ -413,10 +405,7 @@ fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcE
         );
     }
     for failure in volume_failures(result) {
-        eprintln!(
-            "WARNING: Docker Volume {}/{} could not be checked and will not be removed: {}",
-            failure.id.machine_id, failure.id.name, failure.error.message
-        );
+        eprintln!("WARNING: {failure}; this Volume will not be removed");
     }
 }
 
@@ -426,10 +415,7 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
         if !failures.is_empty() {
             failures.push_str("; ");
         }
-        failures.push_str(&format!(
-            "{}/{}: {}",
-            failure.id.machine_id, failure.id.name, failure.error.message
-        ));
+        failures.push_str(&failure.to_string());
     }
     format!("one or more Docker Volume observations failed: {failures}")
 }

@@ -344,6 +344,21 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn helper_contract_failures_do_not_suggest_editing_compose_settings() {
+        let protocol = helper::<serde_json::Value>(&serde_json::json!({"version": 2})).unwrap_err();
+        let output = helper::<bool>(&serde_json::json!({"version": 1, "port": "80"})).unwrap_err();
+        assert!(protocol.to_string().contains("protocol"), "{protocol}");
+        for error in [protocol, output] {
+            let message = error.to_string();
+            assert!(!message.contains("correct the reported value"), "{message}");
+            assert!(
+                !message.contains("remove the unsupported setting"),
+                "{message}"
+            );
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_helper_does_not_use_tmpdir() {

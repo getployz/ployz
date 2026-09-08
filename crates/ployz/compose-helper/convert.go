@@ -300,10 +300,10 @@ func classify(name string, raw, extensions object) ([]string, error) {
 		return nil, fmt.Errorf("service '%s': x-volumes is only supported at Compose top level", name)
 	}
 	if raw["read_only"] == true {
-		return nil, fmt.Errorf("service '%s': unsupported feature 'read_only'", name)
+		return nil, fmt.Errorf("service '%s': unsupported feature 'read_only'; remove the unsupported setting or set read_only to false", name)
 	}
 	if raw["security_opt"] != nil {
-		return nil, fmt.Errorf("service '%s': unsupported feature 'security_opt'", name)
+		return nil, fmt.Errorf("service '%s': unsupported feature 'security_opt'; remove the unsupported setting", name)
 	}
 	if mapping(raw["deploy"])["placement"] != nil {
 		return nil, fmt.Errorf("service '%s': unsupported feature 'deploy.placement'; use x-machines", name)

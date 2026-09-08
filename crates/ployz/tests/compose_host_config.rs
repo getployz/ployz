@@ -10,10 +10,9 @@ fn compose_refuses_read_only_true_and_ignores_read_only_false() {
     let error = parse_normalized("services: {app: {image: app, read_only: true}}", ".")
         .unwrap_err()
         .to_string();
-    assert_eq!(
-        error,
-        "invalid normalized Compose project: service 'app': unsupported feature 'read_only'"
-    );
+    assert!(error.contains("service 'app'"), "{error}");
+    assert!(error.contains("unsupported feature 'read_only'"), "{error}");
+    assert!(error.contains("remove the unsupported setting"), "{error}");
 
     let project = parse_normalized("services: {app: {image: app, read_only: false}}", ".").unwrap();
     assert!(project.warnings.is_empty());
@@ -27,10 +26,12 @@ fn compose_refuses_security_opt() {
     )
     .unwrap_err()
     .to_string();
-    assert_eq!(
-        error,
-        "invalid normalized Compose project: service 'app': unsupported feature 'security_opt'"
+    assert!(error.contains("service 'app'"), "{error}");
+    assert!(
+        error.contains("unsupported feature 'security_opt'"),
+        "{error}"
     );
+    assert!(error.contains("remove the unsupported setting"), "{error}");
 }
 
 #[test]
@@ -41,10 +42,12 @@ fn compose_refuses_deploy_placement_and_points_at_x_machines() {
     )
     .unwrap_err()
     .to_string();
-    assert_eq!(
-        error,
-        "invalid normalized Compose project: service 'app': unsupported feature 'deploy.placement'; use x-machines"
+    assert!(error.contains("service 'app'"), "{error}");
+    assert!(
+        error.contains("unsupported feature 'deploy.placement'"),
+        "{error}"
     );
+    assert!(error.contains("use x-machines"), "{error}");
 }
 
 #[test]

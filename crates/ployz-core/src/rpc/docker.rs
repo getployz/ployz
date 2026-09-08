@@ -73,7 +73,7 @@ pub struct RemoveVolumeRequest {
 
 /// One Docker Volume whose name is present but whose current detail is unavailable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]
-#[error("Docker Volume observation failed: {error}")]
+#[error("Docker Volume {} on Machine {} could not be inspected: {error}; resolve the reported Docker or storage error on that Machine, then inspect the Volume again", id.name, id.machine_id)]
 pub struct VolumeObservationFailure {
     pub id: DockerVolumeId,
     pub error: RpcError,
@@ -134,14 +134,28 @@ mod tests {
             details: Value::Null,
         };
 
+        let failure = CreateVolumeReport::Unverified {
+            id: id.clone(),
+            error: error.clone(),
+        }
+        .into_observation()
+        .unwrap_err();
+        let message = failure.to_string();
+        for hint in [
+            "data",
+            &id.machine_id.to_string(),
+            "inspect failed",
+            "resolve the reported Docker or storage error",
+            "inspect the Volume again",
+        ] {
+            assert!(message.contains(hint), "{message}");
+        }
+        let encoded = serde_json::to_value(&failure).unwrap();
         assert_eq!(
-            CreateVolumeReport::Unverified {
-                id: id.clone(),
-                error: error.clone(),
-            }
-            .into_observation(),
-            Err(VolumeObservationFailure { id, error })
+            serde_json::from_value::<VolumeObservationFailure>(encoded).unwrap(),
+            failure
         );
+        assert_eq!(failure, VolumeObservationFailure { id, error });
     }
 }
 

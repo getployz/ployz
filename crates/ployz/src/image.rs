@@ -43,9 +43,13 @@ pub enum PushError {
     InvalidReference { reference: String, message: String },
     #[error("direct image push requires a tagged local reference")]
     DigestReference,
-    #[error("direct image push cannot preserve registry-with-port reference '{0}'")]
+    #[error(
+        "direct image push cannot preserve registry-with-port reference '{0}'; retag the image without a registry port (for example, api:v1), then push that tag"
+    )]
     RegistryPortReference(String),
-    #[error("unsupported platform '{0}'")]
+    #[error(
+        "unsupported platform '{0}'; use os/arch[/variant] with lowercase components, for example linux/amd64 or linux/arm/v7"
+    )]
     UnsupportedPlatform(String),
     #[error("image push cancelled")]
     Cancelled,
@@ -75,7 +79,9 @@ pub enum PushError {
         action: &'static str,
         diagnostic: String,
     },
-    #[error("Docker is not using the required containerd image store")]
+    #[error(
+        "Docker on the target Machine is not using the required containerd image store; enable Docker's containerd image store on that Machine before retrying image push"
+    )]
     UnsupportedImageStore,
     #[error("image-push cleanup failed: {0}")]
     Cleanup(String),
@@ -657,6 +663,31 @@ mod tests {
     }
 
     #[test]
+    fn registry_port_refusal_names_the_reference_and_retagging_alternative() {
+        let image = "localhost:5000/team/api:v1";
+        let error = validate_push_reference(image).unwrap_err().to_string();
+        assert!(error.contains(image), "{error}");
+        assert!(error.contains("retag"), "{error}");
+        assert!(error.contains("for example, api:v1"), "{error}");
+        assert!(error.contains("without a registry port"), "{error}");
+        validate_push_reference("api:v1").unwrap();
+    }
+
+    #[test]
+    fn invalid_platform_names_the_value_and_accepted_form() {
+        for platform in ["linux", "linux//v7", "Linux/amd64", "linux/arm/v7/extra"] {
+            let error = validated_platform(platform).unwrap_err().to_string();
+            assert!(error.contains(platform), "{error}");
+            assert!(error.contains("os/arch[/variant]"), "{error}");
+            assert!(error.contains("lowercase"), "{error}");
+            assert!(error.contains("linux/amd64"), "{error}");
+            assert!(error.contains("linux/arm/v7"), "{error}");
+        }
+        validated_platform("linux/amd64").unwrap();
+        validated_platform("linux/arm/v7").unwrap();
+    }
+
+    #[test]
     fn untagged_image_gains_latest_tag() {
         assert_eq!(with_default_tag("alpine"), "alpine:latest");
     }
@@ -763,10 +794,15 @@ mod tests {
     fn ingest_errors_keep_unsupported_store_distinct() {
         let unsupported = ImageIngestReason::UnsupportedContainerdStore
             .rpc_error("Docker is not using the containerd image store");
-        assert!(matches!(
-            ingest_error(unsupported),
-            PushError::UnsupportedImageStore
-        ));
+        let error = ingest_error(unsupported);
+        assert!(matches!(error, PushError::UnsupportedImageStore));
+        let message = error.to_string();
+        assert!(message.contains("target Machine"), "{message}");
+        assert!(
+            message.contains("enable Docker's containerd image store"),
+            "{message}"
+        );
+        assert!(message.contains("on that Machine"), "{message}");
         for reason in [
             ImageIngestReason::NotParticipating,
             ImageIngestReason::DockerUnavailable,

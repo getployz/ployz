@@ -8,9 +8,15 @@ use thiserror::Error;
 /// Failure while discovering the current Caddy image for ingress deployment.
 #[derive(Debug, Error)]
 pub enum IngressImageError {
-    /// The configured image reference could not be parsed.
-    #[error("parse Caddy image reference: {0}")]
-    Reference(#[from] ParseError),
+    /// The built-in image reference used for discovery could not be parsed.
+    #[error(
+        "invalid built-in Caddy image reference {reference:?}: {source}; expected registry/repository:tag, for example docker.io/library/caddy:latest. Report this Ployz bug at https://github.com/getployz/ployz2/issues; supply an explicit Caddy image to bypass discovery."
+    )]
+    Reference {
+        reference: String,
+        #[source]
+        source: ParseError,
+    },
     /// Docker Hub tags could not be listed.
     #[error("list Docker Hub Caddy tags: {}", crate::setup_retry::detail(.0))]
     ListTags(#[from] OciDistributionError),
@@ -25,13 +31,22 @@ pub enum IngressImageError {
 /// Returns [`IngressImageError`] when the image reference is invalid or Docker
 /// Hub cannot list its tags.
 pub async fn latest_image() -> Result<String, IngressImageError> {
-    let reference = "docker.io/library/caddy:latest".parse::<Reference>()?;
+    let reference = parse_reference("docker.io/library/caddy:latest")?;
     let mut client = Client::new(ClientConfig {
         connect_timeout: Some(std::time::Duration::from_secs(5)),
         read_timeout: Some(std::time::Duration::from_secs(5)),
         ..ClientConfig::default()
     });
     discover_image(&mut client, &reference).await
+}
+
+fn parse_reference(reference: &str) -> Result<Reference, IngressImageError> {
+    reference
+        .parse()
+        .map_err(|source| IngressImageError::Reference {
+            reference: reference.to_owned(),
+            source,
+        })
 }
 
 async fn discover_image(
@@ -81,6 +96,23 @@ fn select_image(tags: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_caddy_reference_names_the_value_and_discovery_alternative() {
+        let error = parse_reference("caddy:bad tag").unwrap_err();
+        let message = error.to_string();
+        for hint in [
+            "caddy:bad tag",
+            "registry/repository:tag",
+            "docker.io/library/caddy:latest",
+            "Ployz bug",
+            "explicit Caddy image",
+        ] {
+            assert!(message.contains(hint), "{message}");
+        }
+        assert!(std::error::Error::source(&error).is_some());
+        parse_reference("docker.io/library/caddy:latest").unwrap();
+    }
 
     #[tokio::test]
     async fn discovery_retries_a_held_request_and_stops_on_registry_rejection() {

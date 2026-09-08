@@ -215,7 +215,7 @@ impl VolumeSnapshot {
         self.named_failures
             .iter()
             .find(|failure| relevant(&failure.id))
-            .map(|failure| (failure.id.clone(), failure.error.message.clone()))
+            .map(|failure| (failure.id.clone(), failure.to_string()))
     }
 
     pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
@@ -240,10 +240,7 @@ impl VolumeSnapshot {
                     .map(|failure| DeployWarning::ObservationFailed {
                         kind: ObservationKind::Volume,
                         machine_id: failure.id.machine_id,
-                        message: format!(
-                            "Docker Volume {}: {}",
-                            failure.id.name, failure.error.message
-                        ),
+                        message: failure.to_string(),
                     }),
             )
     }
@@ -260,12 +257,11 @@ impl VolumeSnapshot {
             .chain(self.omissions.iter().map(|machine_id| {
                 format!("WARNING: Machine {machine_id} was omitted listing volumes")
             }))
-            .chain(self.named_failures.iter().map(|failure| {
-                format!(
-                    "WARNING: Machine {} Docker Volume {}: {}",
-                    failure.id.machine_id, failure.id.name, failure.error.message
-                )
-            }))
+            .chain(
+                self.named_failures
+                    .iter()
+                    .map(|failure| format!("WARNING: {failure}")),
+            )
     }
 }
 

@@ -66,7 +66,9 @@ pub enum ProjectError {
     InvalidName(#[from] ValueError),
     #[error("Project '{name}' is reserved for Ployz infrastructure")]
     Reserved { name: ProjectName },
-    #[error("no Project name source was provided")]
+    #[error(
+        "no Project name source was provided; pass --project-name shop, set COMPOSE_PROJECT_NAME=shop, or add a top-level name: shop to the Compose file"
+    )]
     NoSource,
 }
 
@@ -240,6 +242,31 @@ mod tests {
             name: ProjectName::parse(name).unwrap(),
             source,
         }
+    }
+
+    #[test]
+    fn missing_project_source_explains_how_to_supply_a_name() {
+        let error = resolve_project_name(&ProjectNameInput::default()).unwrap_err();
+        assert_eq!(error, ProjectError::NoSource);
+        let message = error.to_string();
+        for hint in [
+            "no Project name source",
+            "--project-name shop",
+            "COMPOSE_PROJECT_NAME=shop",
+            "name: shop",
+        ] {
+            assert!(message.contains(hint), "{message}");
+        }
+        assert_eq!(
+            resolve_project_name(&ProjectNameInput {
+                command_line: Some("shop"),
+                ..ProjectNameInput::default()
+            })
+            .unwrap()
+            .name
+            .as_str(),
+            "shop"
+        );
     }
 
     #[test]
@@ -421,10 +448,8 @@ mod tests {
             resolved("shop", ProjectNameSource::CurrentDirectory)
         );
         assert_eq!(
-            resolve_project_name(&ProjectNameInput::default())
-                .unwrap_err()
-                .to_string(),
-            "no Project name source was provided"
+            resolve_project_name(&ProjectNameInput::default()).unwrap_err(),
+            ProjectError::NoSource
         );
     }
 

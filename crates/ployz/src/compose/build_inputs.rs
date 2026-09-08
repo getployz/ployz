@@ -354,7 +354,10 @@ mod tests {
         fs::write(source.join("ignored/new"), "ignored edit").unwrap();
         inputs.verify().unwrap();
         fs::write(source.join("included"), "changed").unwrap();
-        assert!(inputs.verify().is_err());
+        let error = inputs.verify().unwrap_err().to_string();
+        assert!(error.contains("retry when the source is stable"), "{error}");
+        assert!(!error.contains("correct the reported value"), "{error}");
+        assert!(!error.contains("remove the unsupported setting"), "{error}");
         fs::set_permissions(
             source.join("ignored/locked"),
             fs::Permissions::from_mode(0o700),
