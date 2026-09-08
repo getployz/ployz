@@ -215,18 +215,37 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let program = root.join("ssh");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    fs::write(&program, "#!/bin/sh\necho $$ > \"$0.pid\"\nexec sleep 30\n").unwrap();
+    // Startup deliberately exceeds the old 50 ms cancellation deadline.
+    fs::write(
+        &program,
+        "#!/bin/sh\nsleep 0.1\necho $$ > \"$0.pid\"\nexec sleep 30\n",
+    )
+    .unwrap();
     fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
     let connector = SystemConnector::new(&program);
     let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
 
-    let result =
-        tokio::time::timeout(Duration::from_millis(50), connector.connect(&connection)).await;
-    assert!(result.is_err(), "{result:?}");
-    let pid = fs::read_to_string(program.with_extension("pid")).unwrap();
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        // Finishing the readiness branch drops the pending connection and its SSH child.
+        tokio::select! {
+            result = connector.connect(&connection) => panic!("SSH finished before cancellation: {result:?}"),
+            pid = async {
+                loop {
+                    if let Ok(contents) = fs::read_to_string(program.with_extension("pid"))
+                        && let Ok(pid) = contents.trim().parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => pid,
+        }
+    })
+    .await
+    .expect("fake SSH did not publish its PID");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     while StdCommand::new("kill")
-        .args(["-0", pid.trim()])
+        .args(["-0", &pid.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

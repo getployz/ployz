@@ -88,6 +88,7 @@ cloud-node-introduction-history	cloud/src/modules/environment-design/working-doc
 cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
 cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-
 compose-ignored-tree-pruning	crates/ployz/compose-helper/build_context_test.go::TestExceptionCanMatchDescendant	-	-	-	-
+ssh-establishment-cancellation	crates/ployz/src/connect/tests.rs::cancelling_ssh_establishment_returns_without_waiting_for_ssh	-	-	-	-
 image-push-registry-port	crates/ployz/src/image.rs::registry_port_refusal_names_the_reference_and_retagging_alternative	-	-	-	-
 image-push-platform	crates/ployz/src/image.rs::invalid_platform_names_the_value_and_accepted_form	-	-	-	-
 image-push-store-refusal	crates/ployz/src/image.rs::ingest_errors_keep_unsupported_store_distinct	-	-	-	-
