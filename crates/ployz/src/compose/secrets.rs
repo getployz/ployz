@@ -119,7 +119,7 @@ fn resolve_command_secret(
     if !output.status.success() {
         return Err(invalid(format!(
             "run secret '{name}' command: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            output.status
         )));
     }
     let mut value = String::from_utf8_lossy(&output.stdout).into_owned();

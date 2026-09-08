@@ -1,6 +1,9 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
-use ployz::compose::{BuildOptions, BuiltService, capture_build, parse_normalized, plan_build};
+use ployz::compose::{
+    BuildOptions, BuiltService, LoadOptions, capture_build, load_project, parse_normalized,
+    plan_build,
+};
 use ployz_build::Output;
 
 /// Digests the Docker stand-in reports for one attempt's completed image.
@@ -155,21 +158,24 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     fs::create_dir(root.join("api")).unwrap();
     fs::create_dir(root.join("shared")).unwrap();
     fs::write(root.join("api/source"), "original source").unwrap();
+    fs::create_dir(root.join("api/readonly")).unwrap();
+    fs::write(root.join("api/readonly/data"), "read-only source").unwrap();
+    fs::set_permissions(root.join("api/readonly"), fs::Permissions::from_mode(0o555)).unwrap();
     fs::write(root.join("shared/data"), "original shared").unwrap();
     fs::write(root.join("Dockerfile"), "FROM scratch\nCOPY . /app\n").unwrap();
-    fs::write(root.join("Dockerfile.dockerignore"), "hidden\n").unwrap();
+    fs::write(root.join("Dockerfile.dockerignore"), "hidden\nkey\n").unwrap();
     fs::write(root.join("api/.dockerignore"), "source\n").unwrap();
     fs::create_dir(root.join("api/hidden")).unwrap();
     let _socket = std::os::unix::net::UnixListener::bind(root.join("api/hidden/socket")).unwrap();
     fs::write(root.join("shared/.dockerignore"), "socket\n").unwrap();
     let _shared_socket =
         std::os::unix::net::UnixListener::bind(root.join("shared/socket")).unwrap();
-    fs::write(root.join("key"), "private-key").unwrap();
+    fs::write(root.join("api/key"), "private-key").unwrap();
     write_docker(&docker, &root);
     fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
     fs::write(root.join("image"), "example.test/api:version2").unwrap();
     let mut project = parse_normalized(
-        "name: demo\nservices:\n  api:\n    image: example.test/api:version2\n    build: {context: ./api, dockerfile: ../Dockerfile, additional_contexts: {shared: ./shared}, ssh: [deploy=./key], args: {VALUE: '$CAPTURED'}}\n  runtime:\n    image: alpine\n",
+        "name: demo\nservices:\n  api:\n    image: example.test/api:version2\n    build: {context: ./api, dockerfile: ../Dockerfile, additional_contexts: {shared: ./shared}, ssh: [deploy=./api/key], args: {VALUE: '$CAPTURED'}}\n  runtime:\n    image: alpine\n",
         &root,
     )
     .unwrap();
@@ -184,11 +190,11 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
     fs::write(&compose, "invalid: [edited after capture").unwrap();
+    fs::set_permissions(root.join("api/readonly"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::remove_dir_all(root.join("api")).unwrap();
     fs::remove_dir_all(root.join("shared")).unwrap();
     fs::remove_file(root.join("Dockerfile")).unwrap();
     fs::remove_file(root.join("Dockerfile.dockerignore")).unwrap();
-    fs::remove_file(root.join("key")).unwrap();
     project.builds.clear();
     let outcome = build.execute(Some(&docker)).unwrap();
     let calls = fs::read_to_string(calls).unwrap();
@@ -203,7 +209,10 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     assert!(!bake.contains("--push"), "{bake}");
     assert!(bake.contains("--no-cache"), "{bake}");
     assert!(bake.contains("--pull"), "{bake}");
-    assert!(bake.contains("--set *.args.MODE=release"), "{bake}");
+    assert!(
+        !bake.contains("MODE=release"),
+        "private arguments reached argv: {bake}"
+    );
     // No platform is configured, so the builder uses its own, as Docker did.
     assert!(!bake.contains(".platform="), "{bake}");
     assert!(bake.ends_with(" api"), "{bake}");
@@ -235,28 +244,38 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     assert!(override_yaml.contains("example.test/api:version2"));
     let config: serde_norway::Value = serde_norway::from_str(&override_yaml).unwrap();
     let captured_build = &config["services"]["api"]["build"];
-    let context = std::path::Path::new(captured_build["context"].as_str().unwrap());
+    let staged = root.join("relocated");
+    assert!(
+        !override_yaml.contains("/ployz-build-"),
+        "capture paths must be relocatable"
+    );
+    let context = staged.join(captured_build["context"].as_str().unwrap());
+    assert!(
+        !context.join("key").exists(),
+        "SSH material entered reusable source"
+    );
     assert!(!context.join("hidden").exists());
     assert_eq!(
         fs::read_to_string(context.join("source")).unwrap(),
         "original source"
     );
     assert_eq!(
-        fs::read_to_string(captured_build["dockerfile"].as_str().unwrap()).unwrap(),
+        fs::read_to_string(context.join(captured_build["dockerfile"].as_str().unwrap())).unwrap(),
         "FROM scratch\nCOPY . /app\n"
     );
-    let dockerfile = captured_build["dockerfile"].as_str().unwrap();
+    let dockerfile = context.join(captured_build["dockerfile"].as_str().unwrap());
+    let dockerfile = dockerfile.display();
     assert_eq!(
         fs::read_to_string(format!("{dockerfile}.dockerignore")).unwrap(),
-        "hidden\n"
+        "hidden\nkey\n"
     );
     let ssh = captured_build["ssh"][0]
         .as_str()
         .unwrap()
         .strip_prefix("deploy=")
         .unwrap();
-    assert_eq!(fs::read_to_string(ssh).unwrap(), "private-key");
-    let shared = std::path::Path::new(
+    assert_eq!(fs::read_to_string(staged.join(ssh)).unwrap(), "private-key");
+    let shared = staged.join(
         captured_build["additional_contexts"]["shared"]
             .as_str()
             .unwrap(),
@@ -267,10 +286,12 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
         "original shared"
     );
     assert_eq!(captured_build["args"]["VALUE"].as_str(), Some("$$CAPTURED"));
-    let context = context.to_owned();
+    assert_eq!(captured_build["args"]["MODE"].as_str(), Some("release"));
+    let original = fs::read_to_string(root.join("capture-root")).unwrap();
     drop(build);
-    assert!(!context.exists());
+    assert!(!Path::new(original.trim()).exists());
     assert!(!override_yaml.contains("runtime"));
+    fs::set_permissions(context.join("readonly"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -457,13 +478,13 @@ fn content_holding_several_platforms_is_refused_however_it_was_requested() {
 }
 
 #[test]
-fn a_registry_cache_still_reaches_buildkit() {
+fn registry_and_inline_caches_still_reach_buildkit() {
     let root = std::env::temp_dir().join(format!("ployz-build-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
     let mut project = parse_normalized(
-        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache']}}}\n",
+        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache'], cache_to: ['type=inline']}}}\n",
         &root,
     )
     .unwrap();
@@ -481,6 +502,9 @@ fn settings_upstream_would_drop_are_named_before_execution() {
         ("entitlements", "[network.host]"),
         ("cache_from", "['type=local\\,src=./cache']"),
         ("cache_to", "['type=local\\,dest=./cache']"),
+        ("network", "host"),
+        ("x-bake", "{output: ['type=local,dest=./out']}"),
+        ("cache_to", "['type=gha']"),
     ] {
         let mut project = parse_normalized(
             &format!(
@@ -529,6 +553,11 @@ case "$1 $2" in
     printf '{{"Os":"linux","Architecture":"amd64","Variant":null,"Descriptor":{{"mediaType":"%s","digest":"%s"}}}}' "$media" "$identity"
     exit 0 ;;
   'buildx bake')
+    pwd > "$root/capture-root"
+    printf '%s\n' "$HOME" "$DOCKER_CONFIG" "$SSH_AUTH_SOCK" > "$root/docker-environment"
+    if [ -f "$DOCKER_CONFIG/config.json" ]; then cp "$DOCKER_CONFIG/config.json" "$root/docker-config.json"; fi
+    rm -rf "$root/relocated"
+    cp -a "$PWD" "$root/relocated"
     previous=
     for argument in "$@"; do
       if [ "$previous" = --file ]; then cp "$argument" "$root/override.yaml"; fi
@@ -582,20 +611,48 @@ name: demo
 services:
   api:
     image: api:1
-    build: {context: ./src, secrets: [token]}
-    environment: {TOKEN: 'secret://token'}
+    build: {context: ./src, secrets: [token], args: {MODE: compose}}
+    environment: {TOKEN: 'secret://token', MODE: runtime, DEFAULT: service}
 secrets:
-  token: {x-command: "sh -c 'echo once >> calls; printf private-token'"}
+  token: {x-command: "sh -c 'echo once >> provider-calls; printf private-token'"}
 "#,
         &root,
     )
     .unwrap();
-    let options = BuildOptions::default();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    let options = BuildOptions {
+        output: Output::Validate,
+        build_args: vec!["MODE=cli".into()],
+        ..Default::default()
+    };
     let plan = plan_build(&project, &options).unwrap();
     let build = capture_build(&plan, &options, &mut project).unwrap();
+    build.execute(Some(&docker)).unwrap();
+    let config: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["TOKEN"].as_str(),
+        Some("private-token")
+    );
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["DEFAULT"].as_str(),
+        Some("service")
+    );
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["MODE"].as_str(),
+        Some("cli")
+    );
+    assert_eq!(
+        project.services["api"].container.environment["MODE"],
+        "runtime"
+    );
     project.resolve_secrets().unwrap();
     project.resolve_secrets().unwrap();
-    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "once\n");
+    assert_eq!(
+        fs::read_to_string(root.join("provider-calls")).unwrap(),
+        "once\n"
+    );
     assert_eq!(
         project.services["api"].container.environment["TOKEN"],
         "private-token"
@@ -623,3 +680,6 @@ fn mutable_remote_build_context_is_rejected_before_execution() {
             .contains("immutable Git commit or image digest")
     );
 }
+
+#[path = "build/capture.rs"]
+mod capture;

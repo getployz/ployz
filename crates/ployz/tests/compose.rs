@@ -1150,7 +1150,8 @@ secrets:
 "#;
     let mut project = parse_normalized(failing, &directory.path).unwrap();
     let error = project.resolve_secrets().unwrap_err().to_string();
-    assert!(error.contains("diagnostic"));
+    assert!(error.contains("exit status: 1"));
+    assert!(!error.contains("diagnostic"));
     assert!(!error.contains("supersecret"));
 
     let oversized = r#"

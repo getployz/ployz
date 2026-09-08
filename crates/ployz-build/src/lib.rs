@@ -47,7 +47,6 @@ pub fn builder_name() -> String {
 ///
 /// Paths point into the caller's private capture; nothing here is read from
 /// the original sources again.
-#[derive(Debug)]
 pub struct Request<'a> {
     /// Captured Compose file describing every target of this Build.
     pub compose_file: &'a Path,

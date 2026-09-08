@@ -238,3 +238,110 @@ impl Drop for LocalBuild {
             .status();
     }
 }
+
+#[test]
+#[ignore = "informing: requires Docker with the containerd image store"]
+fn captured_variables_and_secret_mounts_are_consumed_by_dockerfile() {
+    let root = std::env::temp_dir().join(format!("ployz-l3-800-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir(root.join("shared")).unwrap();
+    let image = format!("ployz-private-build-{}:check", std::process::id());
+    let cleanup = LocalBuild {
+        images: vec![image.clone()],
+    };
+    fs::write(
+        root.join("compose.yaml"),
+        format!(
+            r#"
+services:
+  app:
+    image: {image}
+    environment:
+      MODE: runtime
+      DEFAULT: service
+      TOKEN: secret://token
+      LITERAL: '$$LATER'
+    build:
+      context: ./src
+      dockerfile: ../Dockerfile
+      args: {{MODE: compose}}
+      secrets: [token]
+      additional_contexts: {{shared: ./shared}}
+secrets:
+  token: {{file: ./src/token}}
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("src/token"), "private-$VALUE").unwrap();
+    fs::write(root.join("src/included"), "captured source").unwrap();
+    fs::write(root.join("src/ignored"), "excluded source").unwrap();
+    fs::write(root.join("src/.dockerignore"), "ignored\ntoken\n").unwrap();
+    fs::write(root.join("shared/data"), "named context").unwrap();
+    fs::write(root.join("Dockerfile"), r#"FROM busybox:1.37.0
+ARG MODE
+ARG DEFAULT
+ARG TOKEN
+ARG LITERAL
+COPY . /source
+COPY --from=shared /data /named
+RUN --mount=type=secret,id=token test ! -e /source/token && test ! -e /source/ignored && printf '%s\n' "$MODE" "$DEFAULT" "$TOKEN" "$LITERAL" "$(cat /run/secrets/token)" > /values
+"#).unwrap();
+    let load = LoadOptions {
+        command: "build".into(),
+        working_dir: Some(root.clone()),
+        ..Default::default()
+    };
+    let mut project = load_project(&load).unwrap();
+    let options = BuildOptions {
+        build_args: vec!["MODE=cli".into()],
+        ..Default::default()
+    };
+    let plan = plan_build(&project, &options).unwrap();
+    let captured = ployz::compose::capture_build(&plan, &options, &mut project).unwrap();
+    project.resolve_secrets().unwrap();
+    assert_eq!(
+        project
+            .services
+            .get("app")
+            .unwrap()
+            .container
+            .environment
+            .get("MODE")
+            .unwrap(),
+        "runtime"
+    );
+    fs::remove_dir_all(&root).unwrap();
+    let built = one_built(captured.execute(None).unwrap());
+    assert_eq!(
+        output(["run", "--rm", &built.built.reference, "cat", "/values"]),
+        "cli\nservice\nprivate-$VALUE\n$LATER\nprivate-$VALUE\n"
+    );
+    assert_eq!(
+        output([
+            "run",
+            "--rm",
+            &built.built.reference,
+            "cat",
+            "/source/included"
+        ]),
+        "captured source"
+    );
+    assert_eq!(
+        output(["run", "--rm", &built.built.reference, "cat", "/named"]),
+        "named context"
+    );
+    // Mount confidentiality is separate from ordinary arguments: this recipe
+    // deliberately persisted argument values, but the mount itself is gone.
+    command([
+        "run",
+        "--rm",
+        &built.built.reference,
+        "test",
+        "!",
+        "-e",
+        "/run/secrets/token",
+    ]);
+    drop(cleanup);
+}
