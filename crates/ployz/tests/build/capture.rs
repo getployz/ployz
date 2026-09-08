@@ -31,6 +31,10 @@ fn capture_rejects_links_outside_the_captured_source() {
         );
         fs::remove_file(link).unwrap();
     }
+    // Docker retains contained links even when their targets are excluded.
+    fs::write(root.join("src/ignored-file"), "excluded bytes").unwrap();
+    fs::write(root.join("src/.dockerignore"), "ignored-file\n").unwrap();
+    std::os::unix::fs::symlink("ignored-file", root.join("src/dangling")).unwrap();
     // A safe source link still works after capture and execution.
     fs::write(root.join("src/value"), "included").unwrap();
     std::os::unix::fs::symlink("value", root.join("src/link")).unwrap();
@@ -58,6 +62,9 @@ fn capture_rejects_links_outside_the_captured_source() {
         fs::read_to_string(root.join("relocated").join(context).join("link")).unwrap(),
         "included"
     );
+    let dangling = root.join("relocated").join(context).join("dangling");
+    assert_eq!(fs::read_link(&dangling).unwrap(), Path::new("ignored-file"));
+    assert!(!dangling.exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -410,5 +417,53 @@ secrets:
         error.contains("build inputs changed during capture"),
         "{error}"
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[expect(clippy::indexing_slicing, reason = "Fixed capture fixture")]
+fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
+    let root = std::env::temp_dir().join(format!("ployz-build-platform-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
+    fs::write(root.join("image"), "example.test/api:latest").unwrap();
+    for declared in ["", ", platforms: [linux/amd64]"] {
+        fs::write(root.join(".env"), "DOCKER_DEFAULT_PLATFORM=linux/arm64\n").unwrap();
+        fs::write(root.join("compose.yaml"), format!("services:\n  api:\n    image: example.test/api:latest\n    build: {{context: ./src{declared}}}\n")).unwrap();
+        let mut project = load_project(&LoadOptions {
+            working_dir: Some(root.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let options = BuildOptions::default();
+        let plan = plan_build(&project, &options).unwrap();
+        let build = capture_build(&plan, &options, &mut project).unwrap();
+        fs::write(root.join(".env"), "DOCKER_DEFAULT_PLATFORM=linux/amd64\n").unwrap();
+        // The recording executor reports AMD64: an ARM64 request must reject it.
+        let result = build.execute(Some(&docker));
+        let expected = if declared.is_empty() {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not the requested linux/arm64")
+            );
+            "linux/arm64"
+        } else {
+            assert_eq!(one_built(result.unwrap()).built.platform, "linux/amd64");
+            "linux/amd64"
+        };
+        let config: serde_norway::Value =
+            serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            config["services"]["api"]["build"]["platforms"][0].as_str(),
+            Some(expected)
+        );
+    }
     fs::remove_dir_all(root).unwrap();
 }

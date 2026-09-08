@@ -517,7 +517,9 @@ fn validate_link(path: &Path, root: &Path, selection: Option<&Selection>) -> io:
                 }
             }
             if selection.is_some_and(|selection| !selection.paths.contains(&resolved)) {
-                return Err(link_error());
+                // This target is absent after filtering. Preserve the dangling
+                // link, but still check its remaining components for escapes.
+                continue;
             }
             let candidate = root.join(&resolved);
             if fs::symlink_metadata(&candidate)

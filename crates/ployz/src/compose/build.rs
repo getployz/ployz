@@ -145,7 +145,19 @@ pub fn capture_build(
             .as_mapping_mut()
             .ok_or_else(|| invalid_build("expected a build mapping"))?;
         refuse_unpassable_settings(&name, build)?;
-        let platform = requested_platform(&name, build)?;
+        let platform = requested_platform(&name, build)?.or_else(|| {
+            project
+                .environment
+                .get("DOCKER_DEFAULT_PLATFORM")
+                .filter(|platform| !platform.is_empty())
+                .cloned()
+        });
+        if let Some(platform) = &platform {
+            build.insert(
+                Value::String("platforms".into()),
+                Value::Sequence(vec![Value::String(platform.clone())]),
+            );
+        }
         targets.push(ployz_build::Target { name, platform });
         retain_service_image_tag(&service.name, image, build)?;
         let args = effective_build_args(&service.name, build, &options.build_args, project)?;
