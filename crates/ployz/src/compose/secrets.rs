@@ -43,7 +43,10 @@ impl ComposeProject {
             self.resolve_secret(name)?;
         }
         for (service, key, name) in references {
-            let Some(ProjectSecret::Resolved(resolved)) = self.secrets.get(&name) else {
+            let Some(ProjectSecret::Resolved {
+                value: resolved, ..
+            }) = self.secrets.get(&name)
+            else {
                 return Err(invalid(format!("secret '{name}' was not resolved")));
             };
             self.services
@@ -65,14 +68,13 @@ impl ComposeProject {
             .get_mut(name)
             .ok_or_else(|| invalid(format!("secret '{name}' is not defined")))?;
         if let ProjectSecret::Unresolved(source) = secret {
-            *secret = ProjectSecret::Resolved(resolve_secret(
-                name,
-                source,
-                &self.working_dir,
-                &self.environment,
-            )?);
+            let value = resolve_secret(name, source, &self.working_dir, &self.environment)?;
+            *secret = ProjectSecret::Resolved {
+                source: source.clone(),
+                value,
+            };
         }
-        let ProjectSecret::Resolved(value) = secret else {
+        let ProjectSecret::Resolved { value, .. } = secret else {
             unreachable!("resolved above")
         };
         Ok(value)
@@ -119,7 +121,7 @@ fn resolve_command_secret(
     if !output.status.success() {
         return Err(invalid(format!(
             "run secret '{name}' command: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            output.status
         )));
     }
     let mut value = String::from_utf8_lossy(&output.stdout).into_owned();

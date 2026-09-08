@@ -57,6 +57,14 @@ func main() {
 func run(ctx context.Context, req request) (object, error) {
 	var model object
 	var env types.Mapping
+	environmentFiles := []string{}
+	loadEnvironment := func(options *cli.ProjectOptions) error {
+		if err := cli.WithDotEnv(options); err != nil {
+			return err
+		}
+		environmentFiles = append(environmentFiles, options.EnvFiles...)
+		return nil
+	}
 	var err error
 	directory, err := filepath.Abs(req.WorkingDir)
 	if err != nil {
@@ -84,8 +92,8 @@ func run(ctx context.Context, req request) (object, error) {
 			return nil, err
 		}
 		options, e := cli.NewProjectOptions(req.Files,
-			cli.WithOsEnv, cli.WithEnvFiles(), cli.WithDotEnv,
-			cli.WithConfigFileEnv, cli.WithDefaultConfigPath, cli.WithEnvFiles(), cli.WithDotEnv,
+			cli.WithOsEnv, cli.WithEnvFiles(), loadEnvironment,
+			cli.WithConfigFileEnv, cli.WithDefaultConfigPath, cli.WithEnvFiles(), loadEnvironment,
 			cli.WithResolvedPaths(false), cli.WithLoadOptions(loader.WithSkipValidation))
 		if e != nil {
 			return nil, e
@@ -180,7 +188,17 @@ func run(ctx context.Context, req request) (object, error) {
 	if err != nil {
 		return nil, err
 	}
-	return convert(project, model, provisioned, secrets)
+	result, err := convert(project, model, provisioned, secrets)
+	if err != nil {
+		return nil, err
+	}
+	for _, service := range project.Services {
+		for _, file := range service.EnvFiles {
+			environmentFiles = append(environmentFiles, file.Path)
+		}
+	}
+	result["environment_files"] = environmentFiles
+	return result, nil
 }
 
 func mapping(v any) object { m, _ := v.(map[string]any); return m }

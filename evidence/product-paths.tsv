@@ -1,5 +1,5 @@
 path	rung1	rung2	rung3	rung4	rung5
-compose-captured-build	crates/ployz/src/compose/build_inputs.rs::ignored_special_files_do_not_enter_capture	crates/ployz/tests/build.rs::captured_build_preserves_sources_configuration_and_builder_flags	crates/ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	-	-
+compose-captured-build	crates/ployz/src/compose/build_inputs.rs::ignored_special_files_do_not_enter_capture	crates/ployz/tests/build.rs::captured_build_preserves_sources_configuration_and_builder_flags	crates/ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	crates/ployz/tests/build_layer3.rs::captured_variables_and_secret_mounts_are_consumed_by_dockerfile	-
 compose-edit-during-deploy	-	crates/ployz/tests/deploy_client.rs::captured_a_deploys_while_edited_b_is_reviewed_and_cancellation_retains_unattempted_work	crates/ployz/tests/changes_cli.rs::changes_cli_selects_compose_and_reports_human_and_json_without_side_effects	-	-
 cloud-authored-environment	crates/ployz-core/tests/environment_intent.rs::compilation_preserves_owner_references_precedence_and_encrypted_values	-	-	-	-
 cloud-change-set	crates/ployz-core/tests/environment_changes.rs::presence_and_setting_ownership_preserve_each_comparison_role	-	-	-	-
@@ -7,7 +7,7 @@ cloud-publication-review	crates/ployz-core/tests/publication.rs::publication_rev
 cloud-runtime-lowering	crates/ployz-core/tests/config_lowering.rs::lowering_retains_commands_limits_restart_and_network_ownership	-	-	-	-
 http-health-probe	crates/ployzd/src/docker/http_health.rs::http_probe_checks_status_without_following_redirects	crates/ployz/src/deploy/exec_tests/health.rs::http_health_monitor_waits_for_a_successful_machine_probe	-	-	-
 cloud-service-settings	crates/ployz-core/tests/service_settings.rs::service_comparison_and_restore_preserve_authored_source_identity	-	-	-	-
-variable-resolution	crates/ployz-core/tests/variable_resolution.rs::resolves_literals_references_secrets_missing_and_diamonds	-	-	-	-
+variable-resolution	crates/ployz-core/tests/variable_resolution.rs::resolves_literals_references_secrets_missing_and_diamonds	crates/ployz/tests/build.rs::build_and_runtime_share_one_captured_secret_resolution	-	crates/ployz/tests/build_layer3.rs::captured_variables_and_secret_mounts_are_consumed_by_dockerfile	-
 live-environment-review	crates/ployz-core/tests/variable_resolution.rs::environment_review_never_treats_metadata_or_an_unresolved_provider_as_live_evidence	crates/ployz/tests/deploy_client.rs::changes_review_uses_the_capture_and_fresh_mixed_evidence_without_mutations	crates/ployz/tests/changes_cli.rs::changes_cli_selects_compose_and_reports_human_and_json_without_side_effects	-	-
 compose-changes	crates/ployz-core/src/domain/spec/comparison.rs::command_review_and_planning_share_the_field_change	crates/ployz/tests/deploy_client.rs::changes_review_uses_the_capture_and_fresh_mixed_evidence_without_mutations	crates/ployz/tests/changes_cli.rs::changes_cli_selects_compose_and_reports_human_and_json_without_side_effects	-	-
 compose-capture	-	crates/ployz/tests/compose.rs::captured_compose_keeps_the_complete_unresolved_candidate	-	-	-

@@ -20,11 +20,13 @@ use super::ComposeError;
 pub(super) struct BuildInputs {
     root: PathBuf,
     captures: BTreeMap<Input, CapturedInput>,
+    excluded: BTreeSet<PathBuf>,
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd)]
 enum Input {
     File(PathBuf),
+    PrivateFile(PathBuf),
     Context {
         path: PathBuf,
         dockerfile: Option<PathBuf>,
@@ -44,11 +46,11 @@ struct Selection {
 impl Input {
     fn path(&self) -> &Path {
         match self {
-            Self::File(path) | Self::Context { path, .. } => path,
+            Self::File(path) | Self::PrivateFile(path) | Self::Context { path, .. } => path,
         }
     }
 
-    fn selection(&self) -> Result<Option<Selection>, ComposeError> {
+    fn selection(&self, excluded: &BTreeSet<PathBuf>) -> Result<Option<Selection>, ComposeError> {
         let Self::Context { path, dockerfile } = self else {
             return Ok(None);
         };
@@ -60,7 +62,7 @@ impl Input {
         let response: Response = super::loader::helper(&serde_json::json!({
             "version": 1, "build_context": { "path": path, "dockerfile": dockerfile }
         }))?;
-        let paths = response
+        let mut paths: BTreeSet<PathBuf> = response
             .paths
             .into_iter()
             .map(|path| {
@@ -70,14 +72,27 @@ impl Input {
                     .map_err(|error| ComposeError::Io(format!("decode context path: {error}")))
             })
             .collect::<Result<_, _>>()?;
+        if paths.iter().any(|path| {
+            path.components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        }) {
+            return Err(ComposeError::Invalid(
+                "build context path escapes staging".into(),
+            ));
+        }
+        paths.retain(|entry| !excluded.contains(&path.join(entry)));
         Ok(Some(Selection {
             paths,
             ignore: response.ignore,
         }))
     }
 
-    fn fingerprint(&self) -> Result<Vec<u8>, ComposeError> {
-        fingerprint(self.path(), self.selection()?.as_ref()).map_err(input_error)
+    fn fingerprint(&self, excluded: &BTreeSet<PathBuf>) -> Result<Vec<u8>, ComposeError> {
+        fingerprint(self.path(), self.selection(excluded)?.as_ref()).map_err(input_error)
     }
 }
 
@@ -92,9 +107,16 @@ impl BuildInputs {
             .mode(0o700)
             .create(&root)
             .map_err(input_error)?;
+        for directory in ["source", "private"] {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(root.join(directory))
+                .map_err(input_error)?;
+        }
         Ok(Self {
             root,
             captures: BTreeMap::new(),
+            excluded: BTreeSet::new(),
         })
     }
 
@@ -121,6 +143,33 @@ impl BuildInputs {
         })
     }
 
+    /// Keep declared credentials out of every reusable context, even when not ignored.
+    pub(super) fn exclude(&mut self, path: &Path) -> Result<(), ComposeError> {
+        match path.canonicalize() {
+            Ok(canonical) => {
+                self.excluded.insert(canonical);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(input_error(error)),
+        }
+        // Preserve the lexical spelling too for a credential reached through a link.
+        self.excluded.insert(path.to_owned());
+        Ok(())
+    }
+
+    pub(super) fn private_file(&mut self, path: &Path) -> Result<PathBuf, ComposeError> {
+        self.capture_input(Input::PrivateFile(
+            path.canonicalize().map_err(input_error)?,
+        ))
+    }
+
+    /// Paths in the capture describe its layout, never its temporary location.
+    pub(super) fn relative(&self, path: &Path) -> PathBuf {
+        path.strip_prefix(&self.root)
+            .expect("owned capture path")
+            .to_owned()
+    }
+
     fn capture_input(&mut self, input: Input) -> Result<PathBuf, ComposeError> {
         if let Some(captured) = self.captures.get(&input) {
             return Ok(captured.path.clone());
@@ -131,16 +180,28 @@ impl BuildInputs {
                 "build context contains its capture directory".into(),
             ));
         }
-        let target = self.root.join(self.captures.len().to_string());
-        let selection = input.selection()?;
+        let private = matches!(input, Input::PrivateFile(_));
+        let target = self
+            .root
+            .join(if private { "private" } else { "source" })
+            .join(self.captures.len().to_string());
+        if !matches!(input, Input::Context { .. })
+            && !fs::metadata(source).map_err(input_error)?.is_file()
+        {
+            return Err(ComposeError::Invalid("build credential or Dockerfile must be a regular file; SSH agent sockets are unsupported".into()));
+        }
+        let selection = input.selection(&self.excluded)?;
         let before = fingerprint(source, selection.as_ref()).map_err(input_error)?;
         copy(source, &target, source, selection.as_ref()).map_err(input_error)?;
-        if before != input.fingerprint()?
+        if before != input.fingerprint(&self.excluded)?
             || before != fingerprint(&target, selection.as_ref()).map_err(input_error)?
         {
             return Err(ComposeError::Invalid(
                 "build inputs changed during capture; retry when the source is stable".into(),
             ));
+        }
+        if private {
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(input_error)?;
         }
         self.captures.insert(
             input,
@@ -163,7 +224,7 @@ impl BuildInputs {
     /// Fails if a source changed or can no longer be fingerprinted.
     pub(super) fn verify(&self) -> Result<(), ComposeError> {
         for (input, captured) in &self.captures {
-            if input.fingerprint()? != captured.fingerprint {
+            if input.fingerprint(&self.excluded)? != captured.fingerprint {
                 return Err(ComposeError::Invalid(
                     "build inputs changed during capture; retry when the source is stable".into(),
                 ));
@@ -206,9 +267,55 @@ impl BuildInputs {
     /// # Errors
     /// Fails if the index is already used or the private file cannot be written.
     pub(super) fn secret(&self, index: usize, value: &str) -> Result<PathBuf, ComposeError> {
-        let path = self.root.join(format!("secret-{index}"));
+        let path = self.root.join("private").join(format!("secret-{index}"));
         self.private(&path, value.as_bytes())?;
         Ok(path)
+    }
+
+    /// Snapshot only explicitly supplied registry auth. Never consult the host's
+    /// default Docker login, credential helpers, contexts, or plugin settings.
+    pub(super) fn docker_config(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+        directory: &Path,
+    ) -> Result<(), ComposeError> {
+        let mut config = serde_json::json!({});
+        if let Some(path) = environment
+            .get("DOCKER_CONFIG")
+            .filter(|path| !path.is_empty())
+        {
+            let path = directory.join(path).join("config.json");
+            self.exclude(&path)?;
+            let captured = self.private_file(&path)?;
+            let supplied: serde_json::Value = serde_json::from_slice(
+                &fs::read(captured).map_err(input_error)?,
+            )
+            .map_err(|_| ComposeError::Invalid("DOCKER_CONFIG/config.json is invalid".into()))?;
+            if supplied
+                .get("credsStore")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+                || supplied
+                    .get("credHelpers")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|value| !value.is_empty())
+            {
+                return Err(ComposeError::Invalid("DOCKER_CONFIG credential helpers are host-specific; supply explicit registry auths".into()));
+            }
+            if let Some(auths) = supplied.get("auths") {
+                config = serde_json::json!({"auths": auths});
+            }
+        }
+        let directory = self.root.join("private/docker");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .map_err(input_error)?;
+        self.private(
+            &directory.join("config.json"),
+            &serde_json::to_vec(&config)
+                .map_err(|_| ComposeError::Invalid("invalid registry auths".into()))?,
+        )
     }
 
     fn private(&self, path: &Path, content: &[u8]) -> Result<(), ComposeError> {
@@ -226,8 +333,25 @@ impl BuildInputs {
 
 impl Drop for BuildInputs {
     fn drop(&mut self) {
+        // Source directory modes belong to the payload, but read-only source
+        // must not prevent removal of this attempt's private material.
+        let _ = make_removable(&self.root);
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn make_removable(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(metadata.permissions().mode() | 0o700),
+        )?;
+        for entry in fs::read_dir(path)? {
+            make_removable(&entry?.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn input_error(error: io::Error) -> ComposeError {
@@ -275,7 +399,7 @@ fn fingerprint(path: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>
         } else if metadata.is_file() {
             digest.update(b"file");
             digest.update(metadata.len().to_le_bytes());
-            let mut file = fs::File::open(path)?;
+            let mut file = source_file(path, root)?;
             let mut buffer = [0_u8; 64 * 1024];
             loop {
                 let read = file.read(&mut buffer)?;
@@ -309,6 +433,7 @@ fn copy(
 ) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.is_symlink() {
+        validate_link(source, root, selection)?;
         symlink(fs::read_link(source)?, target)
     } else if metadata.is_dir() {
         fs::create_dir(target)?;
@@ -322,13 +447,104 @@ fn copy(
         }
         fs::set_permissions(target, metadata.permissions())
     } else if metadata.is_file() {
-        fs::copy(source, target).map(|_| ())
+        let mut input = source_file(source, root)?;
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)?;
+        io::copy(&mut input, &mut output)?;
+        fs::set_permissions(target, metadata.permissions())
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "build inputs contain a socket or special file",
         ))
     }
+}
+
+// Open every component without following links, so a source edit cannot turn a
+// file or its parent into a route to uncaptured host bytes during copy/hash.
+fn source_file(path: &Path, root: &Path) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let root = if path == root {
+        root.parent().expect("file has parent")
+    } else {
+        root
+    };
+    let mut fd = open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    let relative = path.strip_prefix(root).map_err(|_| link_error())?;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(link_error());
+        };
+        fd = openat(
+            &fd,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )?;
+    }
+    let file = fs::File::from(fd);
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "build source is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn link_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "build symlink escapes or refers to uncaptured source",
+    )
+}
+
+// Resolve one hop at a time inside the selected context. Checking only a final
+// canonical path would admit links that leave the context and come back in.
+fn validate_link(path: &Path, root: &Path, selection: Option<&Selection>) -> io::Result<()> {
+    use std::{collections::VecDeque, path::Component};
+    let mut pending = VecDeque::from([path
+        .strip_prefix(root)
+        .map_err(|_| link_error())?
+        .to_owned()]);
+    let mut resolved = PathBuf::new();
+    let mut links = 0;
+    while let Some(next) = pending.pop_front() {
+        let mut components = next.components();
+        while let Some(component) = components.next() {
+            match component {
+                Component::CurDir => continue,
+                Component::ParentDir if resolved.pop() => continue,
+                Component::Normal(name) => resolved.push(name),
+                _ => return Err(link_error()),
+            }
+            if selection.is_some_and(|selection| !selection.paths.contains(&resolved)) {
+                return Err(link_error());
+            }
+            let candidate = root.join(&resolved);
+            if fs::symlink_metadata(&candidate)
+                .map_err(|_| link_error())?
+                .is_symlink()
+            {
+                links += 1;
+                if links > 40 {
+                    return Err(link_error());
+                }
+                let target = fs::read_link(candidate)?;
+                resolved.pop();
+                pending.push_front(components.as_path().to_owned());
+                pending.push_front(target);
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

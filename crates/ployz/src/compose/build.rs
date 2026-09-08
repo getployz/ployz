@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use ployz_build::{BuiltImage, Output};
@@ -67,7 +67,6 @@ pub struct CapturedBuild {
     targets: Vec<ployz_build::Target>,
     options: BuildOptions,
     environment: BTreeMap<String, String>,
-    compose: PathBuf,
     inputs: BuildInputs,
 }
 
@@ -103,6 +102,11 @@ const LOCAL_CACHE: &[&str] = &["cache_from", "cache_to"];
 
 /// Freeze build sources, options, and provider values before invoking Docker.
 ///
+/// Service environment values default declared Dockerfile arguments; Compose
+/// arguments override them, and CLI arguments override Compose. Ordinary build
+/// arguments may be exposed in build output/history; use explicit secret mounts
+/// when the recipe needs BuildKit's mount confidentiality.
+///
 /// # Errors
 /// Rejects invalid build inputs, provider failures, and unreadable or unstable source files.
 pub fn capture_build(
@@ -111,6 +115,45 @@ pub fn capture_build(
     project: &mut ComposeProject,
 ) -> Result<CapturedBuild, ComposeError> {
     let mut inputs = BuildInputs::new()?;
+    for setting in [
+        "DOCKER_CONTEXT",
+        "DOCKER_CERT_PATH",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+    ] {
+        if project
+            .environment
+            .get(setting)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(invalid_build(&format!(
+                "{setting} is host-specific and cannot be preserved by a captured Build"
+            )));
+        }
+    }
+    inputs.docker_config(&project.environment, &project.working_dir)?;
+    // Identify private files before staging any context, including sibling Builds.
+    for path in &project.environment_files {
+        inputs.exclude(&project.working_dir.join(path))?;
+    }
+    for secret in project.secrets.values() {
+        let source = match secret {
+            super::model::ProjectSecret::Unresolved(source)
+            | super::model::ProjectSecret::Resolved { source, .. } => source,
+        };
+        if let super::model::SecretSource::File(path) = source {
+            inputs.exclude(&project.working_dir.join(path))?;
+        }
+    }
+    for service in plan {
+        if let Some(ssh) = service.build.get("ssh").and_then(Value::as_sequence) {
+            for key in ssh {
+                for path in ssh_paths(key)?.1.split(',') {
+                    inputs.exclude(&project.working_dir.join(path))?;
+                }
+            }
+        }
+    }
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
     let mut targets = Vec::new();
@@ -125,40 +168,75 @@ pub fn capture_build(
         let platform = requested_platform(&name, build)?;
         targets.push(ployz_build::Target { name, platform });
         retain_service_image_tag(&service.name, image, build)?;
-        if let Some(args) = build
-            .get_mut(Value::String("args".into()))
-            .and_then(Value::as_mapping_mut)
-        {
-            args.retain(|key, value| {
-                if value.is_null() {
-                    let Some(captured) = key.as_str().and_then(|key| project.environment.get(key))
-                    else {
-                        return false;
-                    };
-                    *value = Value::String(captured.clone());
-                }
-                true
-            });
+        // All values are fixed now; Compose/Buildx must never fill null arguments
+        // from the execution host's shell. Build overrides affect only this copy.
+        let runtime = project
+            .services
+            .get(&service.name)
+            .ok_or_else(|| invalid_build("build Service is missing"))?
+            .container
+            .environment
+            .clone();
+        let mut args = serde_norway::Mapping::new();
+        for (key, value) in runtime {
+            let value = if let Some(secret) = value.strip_prefix("secret://") {
+                project.resolve_secret(secret)?.to_owned()
+            } else {
+                value
+            };
+            args.insert(Value::String(key), Value::String(value));
         }
+        if let Some(declared) = build
+            .get(Value::String("args".into()))
+            .and_then(Value::as_mapping)
+        {
+            for (key, value) in declared {
+                let value = if value.is_null() {
+                    key.as_str()
+                        .and_then(|key| project.environment.get(key))
+                        .map(|value| Value::String(value.clone()))
+                } else {
+                    Some(value.clone())
+                };
+                match value {
+                    Some(value) => {
+                        args.insert(key.clone(), value);
+                    }
+                    None => {
+                        args.remove(key);
+                    }
+                }
+            }
+        }
+        for argument in &options.build_args {
+            let (key, value) = match argument.split_once('=') {
+                Some(pair) => pair,
+                None => (
+                    argument.as_str(),
+                    project
+                        .environment
+                        .get(argument)
+                        .ok_or_else(|| {
+                            invalid_build("a build argument has no captured environment value")
+                        })?
+                        .as_str(),
+                ),
+            };
+            args.insert(Value::String(key.into()), Value::String(value.into()));
+        }
+        build.insert(Value::String("args".into()), Value::Mapping(args));
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
             .and_then(Value::as_sequence_mut)
         {
             for key in ssh {
-                let (id, path) = key
-                    .as_str()
-                    .and_then(|key| key.split_once(": ").or_else(|| key.split_once('=')))
-                    .ok_or_else(|| {
-                        invalid_build(
-                            "SSH agent sockets cannot be frozen; use an explicit key file",
-                        )
-                    })?;
+                let (id, path) = ssh_paths(key)?;
                 let paths = path
                     .split(',')
                     .map(|path| {
                         inputs
-                            .capture(&project.working_dir.join(path))
-                            .map(|path| path.to_string_lossy().into_owned())
+                            .private_file(&project.working_dir.join(path))
+                            .map(|path| inputs.relative(&path).to_string_lossy().into_owned())
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 *key = Value::String(format!("{id}={}", paths.join(",")));
@@ -189,7 +267,14 @@ pub fn capture_build(
         if let Some(source) = dockerfile {
             build.insert(
                 Value::String("dockerfile".into()),
-                Value::String(inputs.dockerfile(&source)?.to_string_lossy().into_owned()),
+                Value::String({
+                    let file = inputs.dockerfile(&source)?;
+                    // Both context and recipe live directly beneath source/.
+                    Path::new("..")
+                        .join(file.file_name().expect("captured recipe"))
+                        .to_string_lossy()
+                        .into_owned()
+                }),
             );
         }
         if let Some(contexts) = build.get_mut(Value::String("additional_contexts".into())) {
@@ -251,19 +336,13 @@ pub fn capture_build(
         secrets.insert(
             name,
             BuildSecret {
-                file: file.to_string_lossy().into_owned(),
+                file: inputs.relative(&file).to_string_lossy().into_owned(),
             },
         );
     }
     let mut options = options.clone();
-    for argument in &mut options.build_args {
-        if !argument.contains('=') {
-            let value = project.environment.get(argument).ok_or_else(|| {
-                invalid_build("a build argument has no captured environment value")
-            })?;
-            *argument = format!("{argument}={value}");
-        }
-    }
+    // Effective arguments live only in the private Compose input, never argv.
+    options.build_args.clear();
     let services = plan
         .iter()
         .map(|service| {
@@ -281,13 +360,31 @@ pub fn capture_build(
     let yaml = serde_norway::to_string(&BuildOverride { services, secrets })
         .map_err(|error| ComposeError::Io(format!("encode captured build: {error}")))?
         .replace('$', "$$");
-    let compose = inputs.compose(&yaml)?;
+    inputs.compose(&yaml)?;
     Ok(CapturedBuild {
         plan,
         targets,
         options,
-        environment: project.environment.clone(),
-        compose,
+        environment: project
+            .environment
+            .iter()
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "PATH"
+                        | "DOCKER_HOST"
+                        | "HTTP_PROXY"
+                        | "HTTPS_PROXY"
+                        | "NO_PROXY"
+                        | "http_proxy"
+                        | "https_proxy"
+                        | "no_proxy"
+                        | "TERM"
+                        | "NO_COLOR"
+                )
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
         inputs,
     })
 }
@@ -300,10 +397,27 @@ impl CapturedBuild {
     /// Fails if the runner cannot execute the build or the result cannot be
     /// bound to the content it produced.
     pub fn execute(&self, docker: Option<&Path>) -> Result<Vec<BuiltService>, ComposeError> {
+        let mut environment = self.environment.clone();
+        environment.insert(
+            "HOME".into(),
+            self.inputs
+                .root()
+                .join("private")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        environment.insert(
+            "DOCKER_CONFIG".into(),
+            self.inputs
+                .root()
+                .join("private/docker")
+                .to_string_lossy()
+                .into_owned(),
+        );
         let images = ployz_build::execute(&ployz_build::Request {
-            compose_file: &self.compose,
+            compose_file: Path::new("compose.yaml"),
             working_dir: self.inputs.root(),
-            environment: &self.environment,
+            environment: &environment,
             docker,
             targets: &self.targets,
             build_args: &self.options.build_args,
@@ -360,17 +474,55 @@ fn refuse_unpassable_settings(
             )));
         }
     }
+    if build
+        .get("network")
+        .and_then(Value::as_str)
+        .is_some_and(|network| !matches!(network, "default" | "none"))
+    {
+        return Err(invalid_build(&format!(
+            "service '{service}' sets host-specific build.network"
+        )));
+    }
+    if let Some(extension) = build.get("x-bake").and_then(Value::as_mapping) {
+        for key in extension.keys() {
+            if key.as_str() != Some("no-cache-filter") {
+                return Err(invalid_build(&format!(
+                    "service '{service}' sets build.x-bake.{}, which a captured Build cannot preserve",
+                    key.as_str().unwrap_or("unknown")
+                )));
+            }
+        }
+    }
+    if build.get("extra_hosts").is_some_and(|hosts| {
+        hosts.as_sequence().is_some_and(|hosts| {
+            hosts.iter().any(|host| {
+                host.as_str()
+                    .is_some_and(|host| host.contains("host-gateway"))
+            })
+        }) || hosts.as_mapping().is_some_and(|hosts| {
+            hosts
+                .values()
+                .any(|host| host.as_str() == Some("host-gateway"))
+        })
+    }) {
+        return Err(invalid_build(&format!(
+            "service '{service}' sets host-specific build.extra_hosts"
+        )));
+    }
     for setting in LOCAL_CACHE {
         let entries = build
             .get(Value::String((*setting).into()))
             .and_then(Value::as_sequence);
-        for entry in entries.into_iter().flatten() {
-            if entry
-                .as_str()
-                .is_some_and(|entry| entry.contains("type=local"))
+        for entry in entries.into_iter().flatten().filter_map(Value::as_str) {
+            let kind = entry
+                .split(',')
+                .find_map(|field| field.trim().strip_prefix("type="))
+                .map(|kind| kind.trim_end_matches('\\'));
+            if kind.is_some_and(|kind| kind != "registry")
+                || (kind.is_none() && entry.contains('='))
             {
                 return Err(invalid_build(&format!(
-                    "service '{service}' sets a local path in build.{setting}, which a captured Build cannot preserve; use a registry cache"
+                    "service '{service}' sets host-specific build.{setting}; use an explicit registry cache"
                 )));
             }
         }
@@ -438,27 +590,76 @@ fn capture_context(
     if source.starts_with("service:") {
         return Ok(source.into());
     }
-    if source.starts_with("docker-image://") && source.contains("@sha256:") {
+    if is_remote_context(source) {
+        validate_remote_context(source)?;
         return Ok(source.into());
     }
-    if is_remote_context(source) {
-        // BuildKit fetches commit-pinned Git contexts without consulting a moving ref.
-        let revision = source
-            .split_once('#')
-            .map(|(_, reference)| reference.split(':').next().unwrap_or(""));
-        if revision.is_some_and(|revision| {
-            revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
-        }) {
-            return Ok(source.into());
-        }
-        return Err(invalid_build(
-            "remote build context must use an immutable Git commit or image digest",
-        ));
+    let captured = inputs.context(&directory.join(source), dockerfile)?;
+    Ok(inputs.relative(&captured).to_string_lossy().into_owned())
+}
+
+fn validate_remote_context(source: &str) -> Result<(), ComposeError> {
+    let refusal = || {
+        invalid_build(
+            "remote build context must use an immutable Git commit or image digest; use a Git URL without embedded credentials and a contained subdirectory",
+        )
+    };
+    if let Some(image) = source.strip_prefix("docker-image://") {
+        let reference: oci_client::Reference = image.parse().map_err(|_| refusal())?;
+        return if reference
+            .digest()
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+            .is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }) {
+            Ok(())
+        } else {
+            Err(refusal())
+        };
     }
-    Ok(inputs
-        .context(&directory.join(source), dockerfile)?
-        .to_string_lossy()
-        .into_owned())
+    // Normalize Git's scp spelling for URL validation, preserving the original
+    // spelling handed to upstream fetching.
+    let scp = source
+        .strip_prefix("git@")
+        .filter(|_| !source.contains("://"))
+        .and_then(|source| source.split_once(':'))
+        .map(|(host, path)| format!("ssh://git@{host}/{path}"));
+    let url = reqwest::Url::parse(scp.as_deref().unwrap_or(source)).map_err(|_| refusal())?;
+    if !matches!(url.scheme(), "http" | "https" | "ssh" | "git")
+        || url.host_str().is_none()
+        || url.password().is_some()
+        || (!url.username().is_empty() && url.scheme() != "ssh")
+        || !url.path().ends_with(".git")
+        || url.query().is_some()
+    {
+        return Err(refusal());
+    }
+    let (commit, directory) = url
+        .fragment()
+        .ok_or_else(refusal)?
+        .split_once(':')
+        .map_or((url.fragment().unwrap_or(""), ""), |pair| pair);
+    if commit.len() != 40
+        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || Path::new(directory).components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(refusal());
+    }
+    Ok(())
+}
+
+fn ssh_paths(key: &Value) -> Result<(&str, &str), ComposeError> {
+    key.as_str()
+        .and_then(|key| key.split_once(": ").or_else(|| key.split_once('=')))
+        .filter(|(id, paths)| !id.is_empty() && paths.split(',').all(|path| !path.is_empty()))
+        .ok_or_else(|| {
+            invalid_build("SSH agent sockets cannot be frozen; use an explicit key file")
+        })
 }
 
 fn is_remote_context(source: &str) -> bool {
