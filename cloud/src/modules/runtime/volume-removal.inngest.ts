@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Option, Schema } from "effect";
 import {
   inngestEventEnvelopeFields,
   inngestFunctionCancelledEnvelopeSchema,
@@ -14,12 +14,10 @@ import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { PROCESS_VOLUME_REMOVE_FUNCTION_ID } from "#/modules/inngest/row-backed-workflow-ids";
 import {
   cancelVolumeRemoveAttemptActivity,
-  completeVolumeRemoveAttemptActivity,
+  executeVolumeRemoveAttemptOnceActivity,
   failOwnedVolumeRemoveAttemptActivity,
   prepareVolumeRemoveAttemptActivity,
   reconcileVolumeRemoveTombstoneActivity,
-  removeVolumesActivity,
-  volumeRemoveCompletion,
 } from "#/modules/runtime/volume-removal.server";
 import { runInngestEffect } from "#/server/run.server";
 import { reviveDurableAttemptDates } from "#/modules/runtime/durable-attempt-dates";
@@ -103,28 +101,33 @@ export async function executeProcessVolumeRemove({
       skipped: true,
     };
   }
+  if (prepared.kind === "awaiting") {
+    return {
+      attemptId: prepared.attempt.id,
+      status: prepared.attempt.status,
+      skipped: true,
+    };
+  }
 
   const attempt = prepared.attempt;
-  const outcome = await step.run("remove-volumes", () =>
-    runInngestEffect(Effect.scoped(removeVolumesActivity(attempt))),
-  );
-  const completion = volumeRemoveCompletion(attempt, outcome);
-  const completed = await step.run("persist-volume-remove-outcome", () =>
+  const completed = await step.run("remove-volumes-once", () =>
     runInngestEffect(
-      completeVolumeRemoveAttemptActivity({
+      executeVolumeRemoveAttemptOnceActivity({
         attemptId: attempt.id,
         inngestRunId: runId,
-        ...completion,
         now: new Date(),
       }),
     ),
   );
-  if (completion.status === "completed") {
+  if (completed.kind === "unknown") {
+    return { attemptId, status: "unknown" };
+  }
+  if (completed.attempt.status === "completed") {
     await step.run("reconcile-volume-remove-tombstone", () =>
-      runInngestEffect(reconcileVolumeRemoveTombstoneActivity(completed)),
+      runInngestEffect(reconcileVolumeRemoveTombstoneActivity(attempt)),
     );
   }
-  return { attemptId, status: completion.status };
+  return { attemptId, status: completed.attempt.status };
 }
 
 export async function executeProcessVolumeRemoveOnFailure({
@@ -172,7 +175,7 @@ export const createProcessVolumeRemove = (inngest: PloyzInngest) =>
   inngest.createFunction(
   {
     id: PROCESS_VOLUME_REMOVE_FUNCTION_ID,
-    retries: 5,
+    retries: 0,
     triggers: [{ event: volumeRemoveRequestedEventType }],
     concurrency: [{ key: "event.data.attemptId", limit: 1 }],
     onFailure: async ({ event }) =>

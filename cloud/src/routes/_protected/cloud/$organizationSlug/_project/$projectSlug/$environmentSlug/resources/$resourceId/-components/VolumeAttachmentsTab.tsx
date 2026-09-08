@@ -111,7 +111,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
     return document.revision;
   }
   const volumeResourceId = state.resource.resource.id;
-  const isDeleted = state.resource.resource.deletedAt != null;
+  const isRemoved = !state.resource.isAuthored;
   const serviceNameById = new Map(
     state.services.map((service) => [service.id, service.name]),
   );
@@ -282,7 +282,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
     }
   }
 
-  if (isDeleted) {
+  if (isRemoved) {
     return (
       <Empty>
         <EmptyHeader>

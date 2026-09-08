@@ -1,125 +1,158 @@
 import { describe, expect, it } from "vitest";
-import type { RuntimeWatchView } from "@ployz/sdk";
-import { Result } from "effect";
-import { RUNTIME_PUBLIC_URL_NONE } from "#/modules/runtime/runtime.collection";
-import { runtimeSnapshotLensFromWatchFrame } from "#/modules/runtime/runtime-watch-frame";
+import { Option, Schema } from "effect";
 import {
+  runtimeSnapshotFromWatchFrame,
+  runtimeWatchFrameForTransport,
+  runtimeWatchFrameSchema,
+} from "#/modules/runtime/runtime-watch-frame";
+import {
+  runtimeWatchCertificateFixture,
   runtimeWatchContainerFixture,
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
+  runtimeWatchVolumeFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
 const OBSERVED_AT = "2026-08-18T00:00:00.000Z";
 
-function project(input: RuntimeWatchView) {
-  const projected = runtimeSnapshotLensFromWatchFrame(input);
-  if (Result.isFailure(projected)) throw projected.failure;
-  return projected.success;
-}
-
-describe("runtimeSnapshotLensFromWatchFrame", () => {
-  it("projects an empty watch frame as live-empty with no stored services", () => {
-    expect(project(runtimeWatchFrameFixture({ observed_at: OBSERVED_AT }))).toEqual({
-      status: "live_empty",
-      error: null,
-      publicUrl: RUNTIME_PUBLIC_URL_NONE,
-      machines: [],
-      services: [],
-      updatedAt: OBSERVED_AT,
+describe("runtimeSnapshotFromWatchFrame", () => {
+  it("retains direct Engine observations without inferring a runtime verdict", () => {
+    const api = runtimeWatchContainerFixture("machine-a", "ctr-api");
+    const hook = runtimeWatchContainerFixture("machine-b", "ctr-hook");
+    const volume = runtimeWatchVolumeFixture("machine-a", "data");
+    const certificate = runtimeWatchCertificateFixture("api.example.test", {
+      status: "pending",
+      last_error: "waiting for DNS",
+      backoff: {
+        failure_kind: "does_not_resolve",
+        next_attempt_at: "2026-08-18T00:02:00.000Z",
+        failures: 2,
+      },
     });
-  });
 
-  it("projects membership, endpoints, and per-machine container counts", () => {
-    const lens = project(
-      runtimeWatchFrameFixture({
-        observed_at: OBSERVED_AT,
-        machines: [
-          runtimeWatchMachineObservationFixture({
-            machine: runtimeWatchMachineFixture("machine-a", "edge-a", {
-              public_ip: "203.0.113.10",
-            }),
-            membership: "up",
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      observed_at: OBSERVED_AT,
+      hosted_dns_hostname: "brisk-river.up.ployz.app",
+      machines: [
+        runtimeWatchMachineObservationFixture({
+          machine: runtimeWatchMachineFixture("machine-a", "edge-a", {
+            public_ip: "203.0.113.10",
           }),
-          runtimeWatchMachineObservationFixture({
-            machine: runtimeWatchMachineFixture("machine-b", "edge-b"),
-            membership: "down",
-          }),
-        ],
-        containers: [
-          runtimeWatchContainerFixture("machine-a", "ctr-1"),
-          runtimeWatchContainerFixture("machine-a", "ctr-2"),
-          runtimeWatchContainerFixture("machine-b", "ctr-3"),
-        ],
-      }),
-    );
-
-    expect(lens.status).toBe("live_rows");
-    expect(lens.services).toEqual([]);
-    expect(lens.machines).toEqual([
-      {
-        id: "machine-a",
-        name: "edge-a",
-        publicIp: "203.0.113.10",
-        gateway: { status: "not_installed" },
-        observedContainerCount: 2,
-        region: null,
-        availabilityZone: null,
-        overlayIp: null,
-        endpoints: ["udp://203.0.113.10:51820"],
-        testimonyStatus: "answered",
-        lastObservedAt: OBSERVED_AT,
-        updatedAt: OBSERVED_AT,
-      },
-      {
-        id: "machine-b",
-        name: "edge-b",
-        publicIp: null,
-        gateway: { status: "not_installed" },
-        observedContainerCount: 1,
-        region: null,
-        availabilityZone: null,
-        overlayIp: null,
-        endpoints: ["udp://203.0.113.10:51820"],
-        testimonyStatus: "no_answer",
-        lastObservedAt: null,
-        updatedAt: OBSERVED_AT,
-      },
-    ]);
-  });
-
-  it("treats hosted DNS as an allocated Ployz public URL", () => {
-    expect(
-      project(
-        runtimeWatchFrameFixture({
-          observed_at: OBSERVED_AT,
-          hosted_dns_hostname: "brisk-river.up.ployz.app",
+          membership: "suspect",
         }),
-      ).publicUrl,
-    ).toEqual({
-      mode: "ployz",
-      domain: "brisk-river.up.ployz.app",
-      leaseApex: "brisk-river.up.ployz.app",
-      dnsTarget: {
-        intent: "enabled",
-        allocation: "allocated",
-        publication: "applied",
+      ],
+      containers: [api, hook],
+      services: [
+        {
+          identity: "production/api",
+          service_id: api.resolved_spec.service_id,
+          containers: [api],
+          hook_containers: [hook],
+        },
+      ],
+      volumes: [volume],
+      certificates: [certificate],
+      incomplete_ids: {
+        machines: ["machine-b" as typeof api.machine_id],
+        containers: ["ctr-missing" as typeof api.container_id],
+        volumes: [volume.id],
+        certificates: [certificate.hostname],
       },
+    }));
+    const snapshot = runtimeSnapshotFromWatchFrame(frame);
+
+    expect(frame).not.toHaveProperty("volumes");
+    expect(frame.incomplete_ids.volumes).toEqual([
+      { machine_id: "machine-a", name: "data" },
+    ]);
+    expect(snapshot).toEqual({
+      status: "observed",
+      error: null,
+      hostedDnsHostname: "brisk-river.up.ployz.app",
+      machines: [
+        {
+          id: "machine-a",
+          name: "edge-a",
+          publicIp: "203.0.113.10",
+          endpoints: ["udp://203.0.113.10:51820"],
+          membership: "suspect",
+          observedContainerCount: 1,
+          observedAt: OBSERVED_AT,
+        },
+      ],
+      services: [
+        {
+          id: "production/api",
+          identity: "production/api",
+          serviceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          containers: [
+            {
+              id: "ctr-api",
+              displayName: "ctr-api",
+              machineId: "machine-a",
+              projectName: "production",
+              kind: "service_container",
+            },
+          ],
+          hookContainers: [
+            {
+              id: "ctr-hook",
+              displayName: "ctr-hook",
+              machineId: "machine-b",
+              projectName: "production",
+              kind: "service_container",
+            },
+          ],
+          observedAt: OBSERVED_AT,
+        },
+      ],
+      certificates: [
+        {
+          hostname: "api.example.test",
+          status: "pending",
+          lastError: "waiting for DNS",
+          backoff: {
+            failureKind: "does_not_resolve",
+            nextAttemptAt: "2026-08-18T00:02:00.000Z",
+            failures: 2,
+          },
+        },
+      ],
+      incompleteIds: {
+        machines: ["machine-b"],
+        containers: ["ctr-missing"],
+        volumes: [{ machineId: "machine-a", name: "data" }],
+        certificates: ["api.example.test"],
+      },
+      observedAt: OBSERVED_AT,
     });
   });
 
-  it("rejects a frame that cannot project into the live lens", () => {
-    const projected = runtimeSnapshotLensFromWatchFrame(
-      runtimeWatchFrameFixture({
-        observed_at: OBSERVED_AT,
-        machines: [
-          runtimeWatchMachineObservationFixture({
-            machine: runtimeWatchMachineFixture("", "edge-a"),
-          }),
-        ],
-      }),
-    );
+  it("accepts additive SDK fields while requiring the retained evidence", () => {
+    const frame = runtimeWatchFrameFixture({ observed_at: OBSERVED_AT });
 
-    expect(Result.isFailure(projected)).toBe(true);
+    const additive = Schema.decodeUnknownOption(runtimeWatchFrameSchema)({
+      ...runtimeWatchFrameForTransport(frame),
+      future_runtime_field: { safe_to_ignore: true },
+    });
+    expect(Option.isSome(additive)).toBe(true);
+    if (Option.isNone(additive)) throw new Error("Expected Runtime Watch frame.");
+    expect(runtimeSnapshotFromWatchFrame(additive.value)).toMatchObject({
+      status: "observed",
+      observedAt: OBSERVED_AT,
+    });
+
+    expect(
+      Option.isNone(
+        Schema.decodeUnknownOption(runtimeWatchFrameSchema)({
+          ...runtimeWatchFrameForTransport(frame),
+          incomplete_ids: {
+            ...frame.incomplete_ids,
+            containers: "not-an-array",
+          },
+        }),
+      ),
+    ).toBe(true);
   });
 });

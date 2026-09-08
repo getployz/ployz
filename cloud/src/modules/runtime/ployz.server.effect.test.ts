@@ -2,6 +2,7 @@ import type { Client, ConnectOptions } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { asTestDouble } from "#/lib/test-double";
+import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import {
   makePloyzLayer,
   Ployz,
@@ -61,5 +62,109 @@ it.effect("classifies provider connection failures", () =>
     assert.instanceOf(error, PloyzProviderError);
     assert.strictEqual(error.operation, "connect");
     assert.instanceOf(error.cause, Error);
+  }),
+);
+
+it.effect("passes shipped project and cluster teardown methods through", () =>
+  Effect.gen(function* () {
+    const projectDataLoss = { data_loss: [] };
+    const projectOutcome = { type: "success" as const, completed: [] };
+    const clusterDataLoss = { data_loss: [] };
+    const clusterOutcome = {
+      destroyed_projects: [],
+      machines: { successes: [], failures: [], omissions: [] },
+      pairing_revoked: true,
+    };
+    const calls: unknown[] = [];
+    const client = asTestDouble<Client>()({
+      dataLossIfProjectDestroyed: async (
+        ...args: Parameters<Client["dataLossIfProjectDestroyed"]>
+      ) => {
+        calls.push(["project data loss", args]);
+        return projectDataLoss;
+      },
+      destroyProject: async (...args: Parameters<Client["destroyProject"]>) => {
+        calls.push(["destroy project", args]);
+        return projectOutcome;
+      },
+      dataLossIfClusterDestroyed: async () => {
+        calls.push(["cluster data loss"]);
+        return clusterDataLoss;
+      },
+      destroyCluster: async (...args: Parameters<Client["destroyCluster"]>) => {
+        calls.push(["destroy cluster", args]);
+        return clusterOutcome;
+      },
+      close: async () => undefined,
+    });
+    const layer = makePloyzLayer({
+      connect: async () => client,
+    });
+    const confirmation = { confirmed: [] };
+
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* (yield* Ployz).connect(options);
+        assert.deepStrictEqual(
+          yield* session.dataLossIfProjectDestroyed("app", true),
+          projectDataLoss,
+        );
+        assert.deepStrictEqual(
+          yield* session.destroyProject("app", confirmation, true),
+          projectOutcome,
+        );
+        assert.deepStrictEqual(
+          yield* session.dataLossIfClusterDestroyed(),
+          clusterDataLoss,
+        );
+        assert.deepStrictEqual(
+          yield* session.destroyCluster(confirmation),
+          clusterOutcome,
+        );
+      }),
+    ).pipe(Effect.provide(layer));
+
+    assert.deepStrictEqual(calls, [
+      ["project data loss", ["app", true]],
+      ["destroy project", ["app", confirmation, true]],
+      ["cluster data loss"],
+      ["destroy cluster", [confirmation]],
+    ]);
+  }),
+);
+
+it.effect("preserves exact execute-time Data Loss refusals", () =>
+  Effect.gen(function* () {
+    const missing = [
+      {
+        kind: "docker_volume" as const,
+        id: {
+          machine_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          name: "new-data",
+        },
+      },
+    ];
+    const client = asTestDouble<Client>()({
+      destroyCluster: async () => {
+        throw Object.assign(new Error("confirmation is stale"), {
+          code: "invalid_argument",
+          details: { missing },
+        });
+      },
+      close: async () => undefined,
+    });
+    const layer = makePloyzLayer({
+      connect: async () => client,
+    });
+
+    const error = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* (yield* Ployz).connect(options);
+        return yield* session.destroyCluster({ confirmed: [] });
+      }),
+    ).pipe(Effect.provide(layer), Effect.flip);
+
+    assert.instanceOf(error, MissingDataLossIdentities);
+    assert.deepStrictEqual(error.identities, missing);
   }),
 );

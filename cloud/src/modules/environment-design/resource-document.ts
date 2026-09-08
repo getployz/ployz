@@ -48,5 +48,5 @@ export function volumeDocumentRecord(row: ResourceDocumentView, history: VolumeH
     if (!volumeIsVisible(row, history)) return null;
     const name = node?.name ?? (history.snapshot ? parseResourceConfig("volume", history.snapshot.config).name : row.lineage.canonicalName);
     const attachments = document.intent.services.flatMap((service) => service.volumeAttachments.filter((mount) => mount.volumeResourceId === resourceId).map((mount) => ({ serviceId: service.id, mountPath: mount.mountPath })));
-    return decodeStrict(volumeResourceRecordSchema, { ...view, resource: { ...view.resource, name, slug: slugifySegment(name) || "volume", deletedAt: node ? null : row.document.updatedAt }, attachments, consumerCount: attachments.length, runtimeStatus: null });
+    return decodeStrict(volumeResourceRecordSchema, { ...view, resource: { ...view.resource, name, slug: slugifySegment(name) || "volume", deletedAt: node ? null : row.document.updatedAt }, attachments, consumerCount: attachments.length, isAuthored: node !== undefined, runtimeStatus: null });
 }

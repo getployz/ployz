@@ -1,6 +1,5 @@
 import {
   buildCanvasEnvironmentChangeState,
-  buildCanvasRuntimeObservations,
   type CanvasEnvironmentChangeGroup,
 } from "#/modules/environment-design/canvas-environment-change-state";
 import type {
@@ -22,10 +21,6 @@ import type {
 } from "#/modules/deployments/deployment-contract";
 import { projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import type {
-  RuntimeServiceRecord,
-  RuntimeStatus,
-} from "#/modules/runtime/runtime";
 import { projectDestructiveEnvironmentSave } from "#/modules/environment-design/working-state-review";
 import type { CanvasResourceNode } from "./types";
 
@@ -36,10 +31,6 @@ type UseCanvasFlowStateInput = {
   volumeResources: VolumeResourceRecord[];
   environmentChangeState: EnvironmentChangeStateProjection | null;
   nodeIntroductions: EnvironmentNodeIntroduction[];
-  runtimeServices: RuntimeServiceRecord[];
-  runtimeStatus: RuntimeStatus;
-  runtimeIsLoading: boolean;
-  autoDomain: string | null;
   canvasNodes: CanvasResourceNode[];
   selectedNodeId: string | null;
 };
@@ -73,10 +64,6 @@ export function useCanvasFlowState({
   volumeResources,
   environmentChangeState,
   nodeIntroductions,
-  runtimeServices,
-  runtimeStatus,
-  runtimeIsLoading,
-  autoDomain,
   canvasNodes,
   selectedNodeId,
 }: UseCanvasFlowStateInput) {
@@ -106,7 +93,7 @@ export function useCanvasFlowState({
         ({
           node: { type: "volume", id: resource.resource.id },
           config:
-            resource.resource.deletedAt === null
+            resource.isAuthored
               ? namedVolumeConfig(resource.resource.name)
               : null,
         }) satisfies EnvironmentNodeProjection,
@@ -169,21 +156,6 @@ export function useCanvasFlowState({
         }) as EnvironmentNodeIntroductionProjection,
     ),
   };
-  const runtimeIsAvailable = runtimeStatus === "live" && !runtimeIsLoading;
-  const runtimeObservations = runtimeIsAvailable
-    ? buildCanvasRuntimeObservations({
-        environmentNamespace,
-        applied,
-        runtimeServices,
-        autoDomain,
-        appliedRevisionByNodeId: new Map(
-          environmentChangeState?.applied.nodes.map((node) => [
-            node.nodeId,
-            node.revisionId,
-          ]) ?? [],
-        ),
-      })
-    : undefined;
   const deploymentEvidence = environmentChangeState?.deploymentEvidence
     ? {
         id: environmentChangeState.deploymentEvidence.id,
@@ -201,10 +173,7 @@ export function useCanvasFlowState({
     saved,
     applied,
     nodeIntroductions: introductions,
-    runtimeObserved: runtimeIsAvailable
-      ? { token: runtimeObservations?.token ?? "runtime:empty", nodes: applied.nodes }
-      : null,
-    runtimeObservations,
+    runtimeObserved: null,
     deploymentEvidence,
     nodes: [
       ...servicesWithBoundEnv.map(({ service }) => ({

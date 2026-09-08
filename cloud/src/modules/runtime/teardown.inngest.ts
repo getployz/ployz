@@ -12,15 +12,20 @@ import type {
 } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { PROCESS_TEARDOWN_FUNCTION_ID } from "#/modules/inngest/row-backed-workflow-ids";
-import { identitiesForMachine, teardownOutcome } from "#/modules/runtime/teardown";
+import {
+  incompleteTeardownOutcome,
+  teardownOutcome,
+  type TeardownOutcome,
+} from "#/modules/runtime/teardown";
 import {
   cancelTeardownAttemptActivity,
   completeTeardownAttemptActivity,
+  destroyClusterActivity,
   destroyEnvironmentActivity,
   dropTeardownCloudRowsActivity,
   failOwnedTeardownAttemptActivity,
   prepareTeardownAttemptActivity,
-  removeTeardownMachineActivity,
+  recordTeardownRuntimeEvidenceActivity,
   revokeTeardownPairingActivity,
 } from "#/modules/runtime/teardown-activities.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -93,51 +98,141 @@ export async function executeProcessTeardown({
 
   const attempt = prepared.attempt;
   const membership = attempt.targets.runtimeMembership;
-  for (const target of attempt.targets.environments) {
-    await step.run(`destroy-environment-${target.environmentId}`, () =>
+  let outcome: TeardownOutcome;
+  let finalRuntimeEvidenceRecorded = false;
+  if (attempt.scope === "organization" && membership === "verified") {
+    const clusterTeardown = await step.run("destroy-cluster", () =>
       runInngestEffect(
         Effect.scoped(
-          destroyEnvironmentActivity({
+          destroyClusterActivity({
             organizationId: attempt.organizationId,
-            target,
+            confirmDataLoss: attempt.confirmDataLoss,
           }),
         ),
       ),
     );
-  }
-
-  if (membership !== "unknown") {
-    for (const machineId of attempt.targets.machines) {
-      await step.run(`remove-machine-${machineId}`, () =>
-        runInngestEffect(
-          Effect.scoped(
-            removeTeardownMachineActivity({
-              organizationId: attempt.organizationId,
-              machineId,
-              identities: identitiesForMachine(
-                attempt.confirmDataLoss,
-                machineId,
-              ),
-            }),
-          ),
-        ),
-      );
-    }
-  }
-
-  let rustMustRevokePairing = false;
-  if (attempt.targets.revokePairing) {
-    const revoked = await step.run("revoke-pairing", () =>
+    const machineTeardownIncomplete =
+      clusterTeardown.machines.failures.length > 0 ||
+      clusterTeardown.machines.omissions.length > 0;
+    const clusterOutcome =
+      machineTeardownIncomplete || !clusterTeardown.pairing_revoked
+        ? clusterTeardown.pairing_revoked
+          ? incompleteTeardownOutcome("verified", { clusterTeardown })
+          : teardownOutcome("unknown", true, { clusterTeardown })
+        : teardownOutcome("verified", false, { clusterTeardown });
+    await step.run("record-cluster-teardown", () =>
       runInngestEffect(
-        revokeTeardownPairingActivity({
-          organizationId: attempt.organizationId,
-          requireComplete: membership === "verified",
+        recordTeardownRuntimeEvidenceActivity({
+          attemptId: attempt.id,
+          inngestRunId: runId,
+          outcome: clusterOutcome,
+          now: new Date(),
         }),
       ),
     );
-    rustMustRevokePairing = revoked.rustMustRevokePairing;
+    finalRuntimeEvidenceRecorded = true;
+    if (machineTeardownIncomplete || !clusterTeardown.pairing_revoked) {
+      const partial = await step.run("persist-partial-teardown-outcome", () =>
+        runInngestEffect(
+          completeTeardownAttemptActivity({
+            attemptId: attempt.id,
+            inngestRunId: runId,
+            status: "partial",
+            outcome: clusterOutcome,
+            now: new Date(),
+          }),
+        ),
+      );
+      return { attemptId: partial.id, status: partial.status };
+    }
+    outcome = clusterOutcome;
+  } else {
+    const projectTeardowns: NonNullable<
+      TeardownOutcome["projectTeardowns"]
+    > = [];
+    if (attempt.targets.destroyRuntimeProjects) {
+      for (const target of attempt.targets.environments) {
+        const projectTeardown = await step.run(
+          `destroy-environment-${target.environmentId}`,
+          () =>
+            runInngestEffect(
+              Effect.scoped(
+                destroyEnvironmentActivity({
+                  organizationId: attempt.organizationId,
+                  target,
+                  confirmDataLoss: attempt.confirmDataLoss,
+                }),
+              ),
+            ),
+        );
+        projectTeardowns.push({
+          projectName: target.projectName,
+          outcome: projectTeardown,
+        });
+        const projectOutcome = teardownOutcome(membership, false, {
+          projectTeardowns: [...projectTeardowns],
+        });
+        await step.run(
+          `record-project-teardown-${target.environmentId}`,
+          () =>
+            runInngestEffect(
+              recordTeardownRuntimeEvidenceActivity({
+                attemptId: attempt.id,
+                inngestRunId: runId,
+                outcome: projectOutcome,
+                now: new Date(),
+              }),
+            ),
+        );
+        if (projectTeardown.type === "failed") {
+          const partial = await step.run(
+            "persist-partial-teardown-outcome",
+            () =>
+              runInngestEffect(
+                completeTeardownAttemptActivity({
+                  attemptId: attempt.id,
+                  inngestRunId: runId,
+                  status: "partial",
+                  outcome: incompleteTeardownOutcome(membership, {
+                    projectTeardowns: [...projectTeardowns],
+                  }),
+                  now: new Date(),
+                }),
+              ),
+          );
+          return { attemptId: partial.id, status: partial.status };
+        }
+      }
+    }
+
+    let rustMustRevokePairing = false;
+    if (attempt.targets.revokePairing) {
+      const revoked = await step.run("revoke-pairing", () =>
+        runInngestEffect(
+          revokeTeardownPairingActivity({
+            organizationId: attempt.organizationId,
+          }),
+        ),
+      );
+      rustMustRevokePairing = revoked.rustMustRevokePairing;
+    }
+    outcome = teardownOutcome(membership, rustMustRevokePairing, {
+      projectTeardowns: [...projectTeardowns],
+    });
   }
 
+  if (!finalRuntimeEvidenceRecorded) {
+    await step.run("record-runtime-evidence", () =>
+      runInngestEffect(
+        recordTeardownRuntimeEvidenceActivity({
+          attemptId: attempt.id,
+          inngestRunId: runId,
+          outcome,
+          now: new Date(),
+        }),
+      ),
+    );
+  }
   await step.run("drop-cloud-rows", () =>
     runInngestEffect(dropTeardownCloudRowsActivity(attempt)),
   );
@@ -147,7 +242,7 @@ export async function executeProcessTeardown({
         attemptId: attempt.id,
         inngestRunId: runId,
         status: "completed",
-        outcome: teardownOutcome(membership, rustMustRevokePairing),
+        outcome,
         now: new Date(),
       }),
     ),
@@ -200,7 +295,7 @@ export const createProcessTeardown = (inngest: PloyzInngest) =>
   inngest.createFunction(
   {
     id: PROCESS_TEARDOWN_FUNCTION_ID,
-    retries: 5,
+    retries: 0,
     triggers: [{ event: teardownRequestedEventType }],
     concurrency: [{ key: "event.data.attemptId", limit: 1 }],
     onFailure: async ({ event }) =>

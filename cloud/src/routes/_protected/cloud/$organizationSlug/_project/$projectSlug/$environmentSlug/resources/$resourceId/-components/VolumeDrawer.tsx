@@ -71,7 +71,7 @@ export function VolumeDrawer({
     return document.revision;
   }
   const resourceId = state.resource.resource.id;
-  const isDeleted = state.resource.resource.deletedAt != null;
+  const isRemoved = !state.resource.isAuthored;
   const mountedCount = state.attachments.filter(
     (attachment) => attachment.volumeResourceId === resourceId,
   ).length;
@@ -148,7 +148,7 @@ export function VolumeDrawer({
             <VolumeAttachmentsTab state={state} />
           </div>
         </section>
-        {isDeleted ? (
+        {isRemoved ? (
           <VolumeRemoveDanger state={state} />
         ) : (
           <>
@@ -341,6 +341,12 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
 
 function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary) {
   switch (attempt.status) {
+    case "awaiting_deployment":
+      return {
+        title: "Waiting for deployment",
+        description:
+          "Volume data removal begins after the deployment removes its service references.",
+      };
     case "pending":
     case "running":
       return {
@@ -351,6 +357,13 @@ function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary) {
       return {
         title: "Some machines failed",
         description: "Retry remaining volumes to finish.",
+      };
+    case "unknown":
+      return {
+        title: "Volume remove outcome unknown",
+        description:
+          attempt.failureMessage ??
+          "Cloud could not determine whether Ployz removed the volume. Review it before retrying.",
       };
     case "cancelled":
       return {

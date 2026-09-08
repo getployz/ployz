@@ -17,10 +17,3 @@ export function runtimeVolumeSnapshotFromWatch(
     labels: { ...volume.labels },
   };
 }
-
-/** Rust DockerVolume has no namespace field. Cloud reads it from labels when present. */
-export function runtimeVolumeNamespace(
-  volume: RuntimeVolumeSnapshot,
-): string | undefined {
-  return volume.labels["namespace"] ?? volume.labels["namespace_id"];
-}

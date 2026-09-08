@@ -8,9 +8,6 @@ import {
   service as schemaService,
 } from "#/modules/environment-design/tables";
 import { machineEnrollmentToken as schemaMachineEnrollmentToken } from "#/modules/machines/tables";
-import {
-  destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
-} from "#/modules/operations/tables";
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import {
   environment as schemaEnvironment,
@@ -22,14 +19,10 @@ import { tryRevokeOrganizationRelayPairing } from "#/modules/machines/enrollment
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   PloyzProviderError,
-  type PloyzSdkError,
-  type PloyzSession,
 } from "#/modules/runtime/ployz.server";
 import {
-  confirmedVolumesForTeardown,
-  leftoverVolumeMessage,
+  incompleteTeardownOutcome,
   teardownIsTerminal,
-  TeardownIncompleteError,
   type TeardownEnvironmentTarget,
 } from "#/modules/runtime/teardown";
 import {
@@ -37,48 +30,10 @@ import {
   completeTeardownAttempt,
   loadTeardownAttempt,
   loadTeardownAttemptByRun,
+  recordTeardownRuntimeEvidence,
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
-import { parseVolumeRemoveOutcome } from "#/modules/runtime/volume-removal-outcome";
-import type {
-  VolumeRemoveOutcome,
-} from "#/modules/runtime/volume-removal";
 import { Database } from "#/server/database.server";
-
-export function composeEnvironmentDestroy(
-  session: PloyzSession,
-  input: {
-    namespace: string;
-    identities: readonly DataLossIdentity[];
-  },
-): Effect.Effect<
-  VolumeRemoveOutcome | null,
-  PloyzSdkError | TeardownIncompleteError
-> {
-  return Effect.gen(function* () {
-    const destroyed = yield* session
-      .destroyProject(
-        input.namespace,
-        { confirmed: [...input.identities] },
-        true,
-      )
-      .pipe(
-        Effect.as(true),
-        Effect.catchTag("SdkSurfaceNotShipped", () => Effect.succeed(false)),
-      );
-    if (destroyed) return null;
-    const volumes = confirmedVolumesForTeardown(input.identities);
-    if (volumes.length === 0) return null;
-    const outcome = yield* session.removeVolumes({ volumes: [...volumes], force: false }).pipe(
-      Effect.map((raw) => parseVolumeRemoveOutcome(raw, volumes)),
-    );
-    const leftover = leftoverVolumeMessage(volumes, outcome);
-    if (leftover !== null) {
-      return yield* Effect.fail(new TeardownIncompleteError(leftover));
-    }
-    return outcome;
-  });
-}
 
 export const loadTeardownAttemptActivity = Effect.fn("Teardown.loadAttempt")(
   loadTeardownAttempt,
@@ -92,6 +47,13 @@ export const claimTeardownAttemptActivity = Effect.fn("Teardown.claim")(
 export const completeTeardownAttemptActivity = Effect.fn("Teardown.complete")(
   (input: Parameters<typeof completeTeardownAttempt>[0]) =>
     completeTeardownAttempt(input),
+);
+
+export const recordTeardownRuntimeEvidenceActivity = Effect.fn(
+  "Teardown.recordRuntimeEvidence",
+)(
+  (input: Parameters<typeof recordTeardownRuntimeEvidence>[0]) =>
+    recordTeardownRuntimeEvidence(input),
 );
 
 export const prepareTeardownAttemptActivity = Effect.fn("Teardown.prepare")(
@@ -115,6 +77,7 @@ export const destroyEnvironmentActivity = Effect.fn(
 )(function* (input: {
   readonly organizationId: string;
   readonly target: TeardownEnvironmentTarget;
+  readonly confirmDataLoss: readonly DataLossIdentity[];
 }) {
   const runtime = yield* OrganizationRuntime;
   const session = yield* runtime.open(input.organizationId);
@@ -124,49 +87,40 @@ export const destroyEnvironmentActivity = Effect.fn(
       cause: session,
     });
   }
-  return yield* composeEnvironmentDestroy(session.connected, {
-    namespace: input.target.namespace,
-    identities: input.target.identities,
-  });
+  return yield* session.connected.destroyProject(
+    input.target.projectName,
+    { confirmed: [...input.confirmDataLoss] },
+    true,
+  );
 });
 
-export const removeTeardownMachineActivity = Effect.fn(
-  "Teardown.removeMachine",
-)(function* (input: {
-  readonly organizationId: string;
-  readonly machineId: string;
-  readonly identities: readonly DataLossIdentity[];
-}) {
-  const runtime = yield* OrganizationRuntime;
-  const session = yield* runtime.open(input.organizationId);
-  if (session.status !== "connected") {
-    return yield* new PloyzProviderError({
-      operation: "open organization runtime",
-      cause: session,
+export const destroyClusterActivity = Effect.fn("Teardown.destroyCluster")(
+  function* (input: {
+    readonly organizationId: string;
+    readonly confirmDataLoss: readonly DataLossIdentity[];
+  }) {
+    const runtime = yield* OrganizationRuntime;
+    const session = yield* runtime.open(input.organizationId);
+    if (session.status !== "connected") {
+      return yield* new PloyzProviderError({
+        operation: "open organization runtime",
+        cause: session,
+      });
+    }
+    return yield* session.connected.destroyCluster({
+      confirmed: [...input.confirmDataLoss],
     });
-  }
-  yield* session.connected.removeMachine(input.machineId, {
-    confirmed: [...input.identities],
-  });
-});
+  },
+);
 
 export const revokeTeardownPairingActivity = Effect.fn(
   "Teardown.revokePairing",
 )(function* (input: {
   readonly organizationId: string;
-  readonly requireComplete: boolean;
 }) {
   const revoked = yield* tryRevokeOrganizationRelayPairing(
     input.organizationId,
   );
-  if (!revoked && input.requireComplete) {
-    return yield* new PloyzProviderError({
-      operation: "revoke Relay pairing",
-      cause: new TeardownIncompleteError(
-        "Relay pairing revocation did not complete.",
-      ),
-    });
-  }
   if (!revoked) return { rustMustRevokePairing: true as const };
   const database = yield* Database;
   yield* Effect.all([
@@ -203,21 +157,6 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
     Effect.gen(function* () {
       const transaction = yield* Database;
       if (environmentIds.length > 0) {
-        const deployments = yield* transaction.drizzle
-          .select({ id: schemaEnvironmentDeployment.id })
-          .from(schemaEnvironmentDeployment)
-          .where(inArray(schemaEnvironmentDeployment.environmentId, environmentIds));
-        const deploymentIds = deployments.map((row) => row.id);
-        if (deploymentIds.length > 0) {
-          yield* transaction.drizzle
-            .delete(schemaDestructiveVolumeAttempt)
-            .where(
-              inArray(
-                schemaDestructiveVolumeAttempt.environmentDeploymentId,
-                deploymentIds,
-              ),
-            );
-        }
         yield* transaction.drizzle
           .update(schemaEnvironmentDeployment)
           .set({ retryOfDeploymentId: null })
@@ -274,11 +213,14 @@ export const failOwnedTeardownAttemptActivity = Effect.fn(
   yield* completeTeardownAttemptActivity({
     attemptId: attempt.id,
     inngestRunId: input.inngestRunId,
-    status: "failed",
-    failureMessage: input.failureMessage,
+    status: "partial",
+    outcome:
+      attempt.outcome ??
+      incompleteTeardownOutcome(attempt.targets.runtimeMembership),
+    failureMessage: `Runtime teardown outcome is unknown: ${input.failureMessage}`,
     now: input.now,
   });
-  return { state: "failed" as const };
+  return { state: "partial" as const };
 });
 
 export const cancelTeardownAttemptActivity = Effect.fn(

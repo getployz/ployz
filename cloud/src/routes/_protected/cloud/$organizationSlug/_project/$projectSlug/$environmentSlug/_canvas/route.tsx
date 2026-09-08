@@ -6,8 +6,9 @@ import {
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   getCanvasPositionsCollection,
-  getDestructiveVolumeAttemptsCollection,
-  getEnvironmentNodeIntroductionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemovalResultsCollection,
+  getEnvironmentNodeConfigSnapshotsCollection,
+  getEnvironmentNodeIntroductionsCollection,
+  getVolumeRemoveAttemptsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
   getRawEnvironmentResourcesCollection,
@@ -29,7 +30,7 @@ export const Route = createFileRoute(
     const canvasReady = Promise.all([
       getProjectsCollection(organizationSlug, baseUrl).preload(),
       getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
-      getVolumeRemovalResultsCollection(organizationSlug, baseUrl).preload(),
+      getVolumeRemoveAttemptsCollection(organizationSlug, baseUrl).preload(),
       getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
       getRawServicesCollection(organizationSlug, baseUrl).preload(),
       getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
@@ -39,10 +40,6 @@ export const Route = createFileRoute(
       ).preload(),
       getResourceLineagesCollection(organizationSlug, baseUrl).preload(),
       getEnvironmentNodeIntroductionsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
-      getDestructiveVolumeAttemptsCollection(
         organizationSlug,
         baseUrl,
       ).preload(),

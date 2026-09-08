@@ -305,72 +305,6 @@ CREATE TABLE "core_operation_watch" (
 	CONSTRAINT "core_operation_watch_observation_state_check" CHECK ("observation_state" in ('active','core_terminal','cloud_timeout','cloud_cancelled'))
 );
 --> statement-breakpoint
-CREATE TABLE "destructive_volume_attempt" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"organization_id" uuid NOT NULL,
-	"environment_deployment_id" uuid NOT NULL,
-	"environment_resource_id" uuid NOT NULL,
-	"retry_of_attempt_id" uuid,
-	"target" jsonb NOT NULL,
-	"evidence" jsonb NOT NULL,
-	"evidence_fingerprint" text NOT NULL,
-	"disposition" text DEFAULT 'active' NOT NULL,
-	"operation_id" text,
-	"start_sequence" text,
-	"inngest_run_id" text,
-	"request_published_at" timestamp with time zone,
-	"accepted_at" timestamp with time zone,
-	"terminal_event" jsonb,
-	"failure" jsonb,
-	"deadline_at" timestamp with time zone,
-	"terminal_at" timestamp with time zone,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "destructive_volume_attempt_disposition_check" CHECK ("disposition" in ('active', 'accepted', 'completed', 'partial', 'core_terminal', 'cloud_timeout', 'cloud_cancelled', 'failed')),
-	CONSTRAINT "destructive_volume_attempt_identity_check" CHECK ("target"->>'resourceId' = "environment_resource_id"::text
-        and "evidence"->>'fingerprint' = "evidence_fingerprint"),
-	CONSTRAINT "destructive_volume_attempt_evidence_check" CHECK ((
-        "disposition" = 'active'
-        and "operation_id" is null
-        and "start_sequence" is null
-        and "accepted_at" is null
-        and "terminal_at" is null
-      ) or (
-        "disposition" = 'accepted'
-        and "operation_id" is not null
-        and "start_sequence" is not null
-        and "accepted_at" is not null
-        and "terminal_at" is null
-      ) or (
-        "disposition" in ('completed', 'partial', 'core_terminal', 'cloud_timeout')
-        and "operation_id" is not null
-        and "start_sequence" is not null
-        and "accepted_at" is not null
-        and "terminal_at" is not null
-      ) or (
-        "disposition" = 'cloud_cancelled'
-        and (
-          ("operation_id" is null and "start_sequence" is null and "accepted_at" is null)
-          or ("operation_id" is not null and "start_sequence" is not null and "accepted_at" is not null)
-        )
-        and "terminal_at" is not null
-      ) or (
-        "disposition" = 'failed'
-        and "operation_id" is null
-        and "start_sequence" is null
-        and "accepted_at" is null
-        and "terminal_at" is not null
-      )),
-	CONSTRAINT "destructive_volume_attempt_terminal_payload_check" CHECK ((
-        "disposition" in ('active', 'accepted', 'completed')
-        and "failure" is null
-      ) or (
-        "disposition" in ('partial', 'failed')
-        and "failure" is not null
-      ) or "disposition" in ('core_terminal', 'cloud_timeout', 'cloud_cancelled')),
-	CONSTRAINT "destructive_volume_attempt_workflow_check" CHECK (("inngest_run_id" is null) = ("deadline_at" is null))
-);
---> statement-breakpoint
 CREATE TABLE "environment_node_config_snapshot" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"organization_id" uuid NOT NULL,
@@ -434,7 +368,6 @@ CREATE TABLE "teardown_attempt" (
 	"requested_by_user_id" uuid NOT NULL,
 	"project_id" uuid,
 	"environment_id" uuid,
-	"retry_of_attempt_id" uuid,
 	"scope" text NOT NULL,
 	"confirm_data_loss" jsonb NOT NULL,
 	"targets" jsonb NOT NULL,
@@ -465,7 +398,7 @@ CREATE TABLE "teardown_attempt" (
         or ("status" = 'running' and "inngest_run_id" is not null
           and length("inngest_run_id") between 1 and 255
           and "started_at" is not null and "terminal_at" is null
-          and "outcome" is null and "failure_message" is null)
+          and "failure_message" is null)
         or ("status" = 'completed' and "inngest_run_id" is not null
           and "started_at" is not null and "terminal_at" is not null
           and "outcome" is not null and "failure_message" is null)
@@ -485,6 +418,7 @@ CREATE TABLE "volume_remove_attempt" (
 	"organization_id" uuid NOT NULL,
 	"requested_by_user_id" uuid NOT NULL,
 	"environment_id" uuid NOT NULL,
+	"environment_deployment_id" uuid,
 	"environment_resource_id" uuid,
 	"retry_of_attempt_id" uuid,
 	"volumes" jsonb NOT NULL,
@@ -496,17 +430,27 @@ CREATE TABLE "volume_remove_attempt" (
 	"terminal_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "volume_remove_attempt_status_check" CHECK ("status" in ('pending','running','completed','partial','failed','cancelled')),
+	CONSTRAINT "volume_remove_attempt_status_check" CHECK ("status" in ('awaiting_deployment','pending','running','unknown','completed','partial','failed','cancelled')),
 	CONSTRAINT "volume_remove_attempt_volumes_check" CHECK (jsonb_typeof("volumes") = 'array'
         and jsonb_array_length("volumes") >= 1),
 	CONSTRAINT "volume_remove_attempt_status_shape_check" CHECK ((
-        ("status" = 'pending' and "inngest_run_id" is null
+        ("status" = 'awaiting_deployment'
+          and "environment_deployment_id" is not null
+          and "inngest_run_id" is null
+          and "started_at" is null and "terminal_at" is null
+          and "outcome" is null and "failure_message" is null)
+        or ("status" = 'pending' and "inngest_run_id" is null
           and "started_at" is null and "terminal_at" is null
           and "outcome" is null and "failure_message" is null)
         or ("status" = 'running' and "inngest_run_id" is not null
           and length("inngest_run_id") between 1 and 255
-          and "started_at" is not null and "terminal_at" is null
+          and "terminal_at" is null
           and "outcome" is null and "failure_message" is null)
+        or ("status" = 'unknown' and "inngest_run_id" is not null
+          and length("inngest_run_id") between 1 and 255
+          and "started_at" is not null and "terminal_at" is not null
+          and "outcome" is null and "failure_message" is not null
+          and length("failure_message") between 1 and 2000)
         or ("status" = 'completed' and "inngest_run_id" is not null
           and "started_at" is not null and "terminal_at" is not null
           and "outcome" is not null and "failure_message" is null)
@@ -514,10 +458,15 @@ CREATE TABLE "volume_remove_attempt" (
           and "started_at" is not null and "terminal_at" is not null
           and "outcome" is not null)
         or ("status" in ('failed', 'cancelled')
-          and "inngest_run_id" is not null
-          and "started_at" is not null and "terminal_at" is not null
-          and "failure_message" is not null
-          and length("failure_message") between 1 and 2000)
+          and "started_at" is null and "terminal_at" is not null
+          and "outcome" is null and "failure_message" is not null
+          and length("failure_message") between 1 and 2000
+          and (
+            ("inngest_run_id" is not null
+              and length("inngest_run_id") between 1 and 255)
+            or ("inngest_run_id" is null
+              and "environment_deployment_id" is not null)
+          ))
       ))
 );
 --> statement-breakpoint
@@ -860,14 +809,6 @@ CREATE INDEX "environment_deployment_inngest_run_id_idx" ON "environment_deploym
 CREATE INDEX "environment_deployment_retry_of_idx" ON "environment_deployment" ("retry_of_deployment_id");--> statement-breakpoint
 CREATE INDEX "environment_saved_state_snapshot_organization_id_idx" ON "environment_saved_state_snapshot" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_saved_state_snapshot_environment_created_at_idx" ON "environment_saved_state_snapshot" ("environment_id","created_at");--> statement-breakpoint
-CREATE INDEX "destructive_volume_attempt_organization_id_idx" ON "destructive_volume_attempt" ("organization_id");--> statement-breakpoint
-CREATE INDEX "destructive_volume_attempt_deployment_idx" ON "destructive_volume_attempt" ("environment_deployment_id","created_at");--> statement-breakpoint
-CREATE INDEX "destructive_volume_attempt_resource_idx" ON "destructive_volume_attempt" ("environment_resource_id","created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "destructive_volume_attempt_retry_of_idx" ON "destructive_volume_attempt" ("retry_of_attempt_id") WHERE "retry_of_attempt_id" is not null;--> statement-breakpoint
-CREATE UNIQUE INDEX "destructive_volume_attempt_one_active_target_idx" ON "destructive_volume_attempt" ("environment_resource_id") WHERE "disposition" in ('active', 'accepted');--> statement-breakpoint
-CREATE INDEX "destructive_volume_attempt_operation_id_idx" ON "destructive_volume_attempt" ("operation_id") WHERE "operation_id" is not null;--> statement-breakpoint
-CREATE UNIQUE INDEX "destructive_volume_attempt_inngest_run_id_idx" ON "destructive_volume_attempt" ("inngest_run_id") WHERE "inngest_run_id" is not null;--> statement-breakpoint
-CREATE INDEX "destructive_volume_attempt_unpublished_request_idx" ON "destructive_volume_attempt" ("created_at","id") WHERE "request_published_at" is null;--> statement-breakpoint
 CREATE INDEX "environment_node_config_snapshot_organization_id_idx" ON "environment_node_config_snapshot" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_node_config_snapshot_environment_id_idx" ON "environment_node_config_snapshot" ("environment_id");--> statement-breakpoint
 CREATE INDEX "environment_node_config_snapshot_lineage_idx" ON "environment_node_config_snapshot" ("node_type","node_lineage_id");--> statement-breakpoint
@@ -877,7 +818,6 @@ CREATE INDEX "environment_node_introduction_organization_idx" ON "environment_no
 CREATE INDEX "teardown_attempt_organization_id_idx" ON "teardown_attempt" ("organization_id");--> statement-breakpoint
 CREATE INDEX "teardown_attempt_project_id_idx" ON "teardown_attempt" ("project_id");--> statement-breakpoint
 CREATE INDEX "teardown_attempt_environment_id_idx" ON "teardown_attempt" ("environment_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "teardown_attempt_retry_of_idx" ON "teardown_attempt" ("retry_of_attempt_id") WHERE "retry_of_attempt_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "teardown_attempt_one_active_environment_idx" ON "teardown_attempt" ("environment_id") WHERE "status" in ('pending', 'running')
           and "scope" = 'environment'
           and "environment_id" is not null;--> statement-breakpoint
@@ -889,9 +829,10 @@ CREATE UNIQUE INDEX "teardown_attempt_one_active_organization_idx" ON "teardown_
 CREATE UNIQUE INDEX "teardown_attempt_inngest_run_uidx" ON "teardown_attempt" ("inngest_run_id") WHERE "inngest_run_id" is not null;--> statement-breakpoint
 CREATE INDEX "volume_remove_attempt_organization_id_idx" ON "volume_remove_attempt" ("organization_id");--> statement-breakpoint
 CREATE INDEX "volume_remove_attempt_environment_id_idx" ON "volume_remove_attempt" ("environment_id");--> statement-breakpoint
+CREATE INDEX "volume_remove_attempt_deployment_idx" ON "volume_remove_attempt" ("environment_deployment_id","created_at");--> statement-breakpoint
 CREATE INDEX "volume_remove_attempt_resource_idx" ON "volume_remove_attempt" ("environment_resource_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "volume_remove_attempt_retry_of_idx" ON "volume_remove_attempt" ("retry_of_attempt_id") WHERE "retry_of_attempt_id" is not null;--> statement-breakpoint
-CREATE UNIQUE INDEX "volume_remove_attempt_one_active_resource_idx" ON "volume_remove_attempt" ("environment_resource_id") WHERE "status" in ('pending', 'running')
+CREATE UNIQUE INDEX "volume_remove_attempt_one_active_resource_idx" ON "volume_remove_attempt" ("environment_resource_id") WHERE "status" in ('awaiting_deployment', 'pending', 'running')
           and "environment_resource_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "volume_remove_attempt_inngest_run_uidx" ON "volume_remove_attempt" ("inngest_run_id") WHERE "inngest_run_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "machine_enrollment_token_hash_idx" ON "machine_enrollment_token" ("token_hash");--> statement-breakpoint
@@ -971,9 +912,6 @@ ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved
 ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved_state_snapshot_actor_id_user_id_fkey" FOREIGN KEY ("actor_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "core_operation_event" ADD CONSTRAINT "core_operation_event_watch_id_core_operation_watch_id_fkey" FOREIGN KEY ("watch_id") REFERENCES "core_operation_watch"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "core_operation_watch" ADD CONSTRAINT "core_operation_watch_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "destructive_volume_attempt" ADD CONSTRAINT "destructive_volume_attempt_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "destructive_volume_attempt" ADD CONSTRAINT "destructive_volume_attempt_cVJ73enJtw9z_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "destructive_volume_attempt" ADD CONSTRAINT "destructive_volume_attempt_ep248mgRYD0C_fkey" FOREIGN KEY ("retry_of_attempt_id") REFERENCES "destructive_volume_attempt"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot" ADD CONSTRAINT "environment_node_config_snapshot_3y0HYOFWmCwQ_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot" ADD CONSTRAINT "environment_node_config_snapshot_CUaPaujMBOIs_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot" ADD CONSTRAINT "environment_node_config_snapshot_D4DPm1gvv2Di_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
@@ -983,10 +921,10 @@ ALTER TABLE "environment_node_introduction" ADD CONSTRAINT "environment_node_int
 ALTER TABLE "environment_node_introduction_secret" ADD CONSTRAINT "environment_node_introduction_secret_sC7ALWFOnE38_fkey" FOREIGN KEY ("environment_id","node_type","node_id") REFERENCES "environment_node_introduction"("environment_id","node_type","node_id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "organization_pairing" ADD CONSTRAINT "organization_pairing_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "teardown_attempt" ADD CONSTRAINT "teardown_attempt_requested_by_user_id_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "teardown_attempt" ADD CONSTRAINT "teardown_attempt_retry_of_attempt_id_teardown_attempt_id_fkey" FOREIGN KEY ("retry_of_attempt_id") REFERENCES "teardown_attempt"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_requested_by_user_id_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_2ncjupSSetid_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_FQapB8QhQW1M_fkey" FOREIGN KEY ("retry_of_attempt_id") REFERENCES "volume_remove_attempt"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "machine_enrollment_token" ADD CONSTRAINT "machine_enrollment_token_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "machine_enrollment_token" ADD CONSTRAINT "machine_enrollment_token_created_by_user_id_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
@@ -1002,7 +940,7 @@ ALTER TABLE "github_repository_cache" ADD CONSTRAINT "github_repository_cache_us
 ALTER TABLE "organization_billing_state" ADD CONSTRAINT "organization_billing_state_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;
 --> statement-breakpoint
 -- Electric replication settings are not represented in Drizzle snapshots.
-ALTER TABLE "destructive_volume_attempt" REPLICA IDENTITY FULL;
+ALTER TABLE "volume_remove_attempt" REPLICA IDENTITY FULL;
 
 --> statement-breakpoint
 ALTER TABLE "environment" REPLICA IDENTITY FULL;

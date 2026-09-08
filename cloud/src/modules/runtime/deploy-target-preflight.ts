@@ -15,7 +15,7 @@ export function getDeployTargetPreflight(input: {
   isLoading: boolean;
   error: string | null;
 }): DeployTargetPreflight {
-  if (!input.isLoading && input.status === "live_rows" && input.machineCount > 0) {
+  if (!input.isLoading && input.status === "observed" && input.machineCount > 0) {
     return { ok: true };
   }
 

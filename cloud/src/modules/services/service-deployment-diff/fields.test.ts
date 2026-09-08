@@ -5,7 +5,6 @@ import {
   type ServiceDeployMount,
 } from "#/modules/environment-design/services";
 import {
-  getManagedHostnameDriftRow,
   getServiceDeploymentDiffRows,
 } from "#/modules/services/service-deployment-diff/fields";
 
@@ -57,60 +56,4 @@ describe("service deployment mount diff", () => {
     expect(rows[0]?.derivedFrom).toBeUndefined();
   });
 
-});
-
-describe("getManagedHostnameDriftRow", () => {
-  const base = {
-    serviceId: "service-1",
-    managedHostname: { prefix: "api", targetPort: null },
-    autoDomain: "new-lease.up.ployz.app",
-  };
-
-  it("flags a hostname served under an older cluster domain", () => {
-    const row = getManagedHostnameDriftRow({
-      ...base,
-      boundHostnames: ["api.old-lease.up.ployz.app"],
-    });
-    expect(row).toMatchObject({
-      path: "managedHostname.drift",
-      currentValue: "api.old-lease.up.ployz.app",
-      newValue: "api.new-lease.up.ployz.app",
-    });
-  });
-
-  it("returns null when already serving the current domain", () => {
-    expect(
-      getManagedHostnameDriftRow({
-        ...base,
-        boundHostnames: ["api.new-lease.up.ployz.app"],
-      }),
-    ).toBeNull();
-  });
-
-  it("does not treat a staged prefix change as cluster-domain drift", () => {
-    expect(
-      getManagedHostnameDriftRow({
-        ...base,
-        managedHostname: { prefix: "web", targetPort: null },
-        boundHostnames: ["api.new-lease.up.ployz.app"],
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null without a managed hostname or auto domain", () => {
-    expect(
-      getManagedHostnameDriftRow({
-        ...base,
-        managedHostname: null,
-        boundHostnames: ["api.old-lease.up.ployz.app"],
-      }),
-    ).toBeNull();
-    expect(
-      getManagedHostnameDriftRow({
-        ...base,
-        autoDomain: null,
-        boundHostnames: ["api.old-lease.up.ployz.app"],
-      }),
-    ).toBeNull();
-  });
 });

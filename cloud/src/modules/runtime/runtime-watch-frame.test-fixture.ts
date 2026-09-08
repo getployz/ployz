@@ -1,4 +1,5 @@
 import type {
+  CertificateObservation,
   ContainerId,
   ContainerObservation,
   DockerVolume,
@@ -96,6 +97,19 @@ export function runtimeWatchVolumeFixture(
     options: {},
     labels: {},
     storage: { kind: "plain", driver: "local" },
+    ...extra,
+  };
+}
+
+export function runtimeWatchCertificateFixture(
+  hostname: string,
+  extra: Partial<CertificateObservation> = {},
+): CertificateObservation {
+  return {
+    hostname,
+    status: "unknown",
+    last_error: null,
+    backoff: null,
     ...extra,
   };
 }

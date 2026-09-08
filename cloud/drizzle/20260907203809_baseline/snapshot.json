@@ -158,12 +158,6 @@
     },
     {
       "isRlsEnabled": false,
-      "name": "destructive_volume_attempt",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
       "name": "environment_node_config_snapshot",
       "entityType": "tables",
       "schema": "public"
@@ -2790,266 +2784,6 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "organization_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "environment_deployment_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "environment_resource_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "retry_of_attempt_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "target",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "evidence",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "evidence_fingerprint",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'active'",
-      "generated": null,
-      "identity": null,
-      "name": "disposition",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "operation_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "start_sequence",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "inngest_run_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "request_published_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "accepted_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "terminal_event",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "failure",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "deadline_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "terminal_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "updated_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
-      "schema": "public",
       "table": "environment_node_config_snapshot"
     },
     {
@@ -3547,19 +3281,6 @@
       "table": "teardown_attempt"
     },
     {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "retry_of_attempt_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "teardown_attempt"
-    },
-    {
       "type": "text",
       "typeSchema": null,
       "notNull": true,
@@ -3750,6 +3471,19 @@
       "generated": null,
       "identity": null,
       "name": "environment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_remove_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_deployment_id",
       "entityType": "columns",
       "schema": "public",
       "table": "volume_remove_attempt"
@@ -6313,195 +6047,6 @@
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "destructive_volume_attempt_organization_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_deployment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "created_at",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_deployment_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_resource_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "created_at",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_resource_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "retry_of_attempt_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"retry_of_attempt_id\" is not null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_retry_of_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_resource_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"disposition\" in ('active', 'accepted')",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_one_active_target_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "operation_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": "\"operation_id\" is not null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_operation_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "inngest_run_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"inngest_run_id\" is not null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_inngest_run_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "created_at",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": "\"request_published_at\" is null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "destructive_volume_attempt_unpublished_request_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "organization_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
       "name": "environment_node_config_snapshot_organization_id_idx",
       "entityType": "indexes",
       "schema": "public",
@@ -6693,27 +6238,6 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "retry_of_attempt_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"retry_of_attempt_id\" is not null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "teardown_attempt_retry_of_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "teardown_attempt"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
           "value": "environment_id",
           "isExpression": false,
           "asc": true,
@@ -6840,6 +6364,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "environment_deployment_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "volume_remove_attempt_deployment_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "volume_remove_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "environment_resource_id",
           "isExpression": false,
           "asc": true,
@@ -6897,7 +6449,7 @@
         }
       ],
       "isUnique": true,
-      "where": "\"status\" in ('pending', 'running')\n          and \"environment_resource_id\" is not null",
+      "where": "\"status\" in ('awaiting_deployment', 'pending', 'running')\n          and \"environment_resource_id\" is not null",
       "with": "",
       "method": "btree",
       "concurrently": false,
@@ -8404,57 +7956,6 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "destructive_volume_attempt_organization_id_organization_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "environment_deployment_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "environment_deployment",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "RESTRICT",
-      "name": "destructive_volume_attempt_cVJ73enJtw9z_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "retry_of_attempt_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "destructive_volume_attempt",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "RESTRICT",
-      "name": "destructive_volume_attempt_ep248mgRYD0C_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "organization_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "organization",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
       "name": "environment_node_config_snapshot_3y0HYOFWmCwQ_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -8603,23 +8104,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "retry_of_attempt_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "teardown_attempt",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "RESTRICT",
-      "name": "teardown_attempt_retry_of_attempt_id_teardown_attempt_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "teardown_attempt"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "organization_id"
       ],
       "schemaTo": "public",
@@ -8664,6 +8148,23 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "name": "volume_remove_attempt_environment_id_environment_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "volume_remove_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "environment_deployment_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "environment_deployment",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "volume_remove_attempt_2ncjupSSetid_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "volume_remove_attempt"
@@ -9214,16 +8715,6 @@
       "name": "core_operation_watch_pkey",
       "schema": "public",
       "table": "core_operation_watch",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "destructive_volume_attempt_pkey",
-      "schema": "public",
-      "table": "destructive_volume_attempt",
       "entityType": "pks"
     },
     {
@@ -9842,41 +9333,6 @@
       "table": "core_operation_watch"
     },
     {
-      "value": "\"disposition\" in ('active', 'accepted', 'completed', 'partial', 'core_terminal', 'cloud_timeout', 'cloud_cancelled', 'failed')",
-      "name": "destructive_volume_attempt_disposition_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "value": "\"target\"->>'resourceId' = \"environment_resource_id\"::text\n        and \"evidence\"->>'fingerprint' = \"evidence_fingerprint\"",
-      "name": "destructive_volume_attempt_identity_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "value": "(\n        \"disposition\" = 'active'\n        and \"operation_id\" is null\n        and \"start_sequence\" is null\n        and \"accepted_at\" is null\n        and \"terminal_at\" is null\n      ) or (\n        \"disposition\" = 'accepted'\n        and \"operation_id\" is not null\n        and \"start_sequence\" is not null\n        and \"accepted_at\" is not null\n        and \"terminal_at\" is null\n      ) or (\n        \"disposition\" in ('completed', 'partial', 'core_terminal', 'cloud_timeout')\n        and \"operation_id\" is not null\n        and \"start_sequence\" is not null\n        and \"accepted_at\" is not null\n        and \"terminal_at\" is not null\n      ) or (\n        \"disposition\" = 'cloud_cancelled'\n        and (\n          (\"operation_id\" is null and \"start_sequence\" is null and \"accepted_at\" is null)\n          or (\"operation_id\" is not null and \"start_sequence\" is not null and \"accepted_at\" is not null)\n        )\n        and \"terminal_at\" is not null\n      ) or (\n        \"disposition\" = 'failed'\n        and \"operation_id\" is null\n        and \"start_sequence\" is null\n        and \"accepted_at\" is null\n        and \"terminal_at\" is not null\n      )",
-      "name": "destructive_volume_attempt_evidence_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "value": "(\n        \"disposition\" in ('active', 'accepted', 'completed')\n        and \"failure\" is null\n      ) or (\n        \"disposition\" in ('partial', 'failed')\n        and \"failure\" is not null\n      ) or \"disposition\" in ('core_terminal', 'cloud_timeout', 'cloud_cancelled')",
-      "name": "destructive_volume_attempt_terminal_payload_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
-      "value": "(\"inngest_run_id\" is null) = (\"deadline_at\" is null)",
-      "name": "destructive_volume_attempt_workflow_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "destructive_volume_attempt"
-    },
-    {
       "value": "\"node_type\" in ('service', 'variable_group', 'volume')",
       "name": "environment_node_config_snapshot_node_type_check",
       "entityType": "checks",
@@ -9947,14 +9403,14 @@
       "table": "teardown_attempt"
     },
     {
-      "value": "(\n        (\"status\" = 'pending' and \"inngest_run_id\" is null\n          and \"started_at\" is null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'running' and \"inngest_run_id\" is not null\n          and length(\"inngest_run_id\") between 1 and 255\n          and \"started_at\" is not null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'completed' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null and \"failure_message\" is null)\n        or (\"status\" = 'partial' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null)\n        or (\"status\" in ('failed', 'cancelled')\n          and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 2000)\n      )",
+      "value": "(\n        (\"status\" = 'pending' and \"inngest_run_id\" is null\n          and \"started_at\" is null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'running' and \"inngest_run_id\" is not null\n          and length(\"inngest_run_id\") between 1 and 255\n          and \"started_at\" is not null and \"terminal_at\" is null\n          and \"failure_message\" is null)\n        or (\"status\" = 'completed' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null and \"failure_message\" is null)\n        or (\"status\" = 'partial' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null)\n        or (\"status\" in ('failed', 'cancelled')\n          and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 2000)\n      )",
       "name": "teardown_attempt_status_shape_check",
       "entityType": "checks",
       "schema": "public",
       "table": "teardown_attempt"
     },
     {
-      "value": "\"status\" in ('pending','running','completed','partial','failed','cancelled')",
+      "value": "\"status\" in ('awaiting_deployment','pending','running','unknown','completed','partial','failed','cancelled')",
       "name": "volume_remove_attempt_status_check",
       "entityType": "checks",
       "schema": "public",
@@ -9968,7 +9424,7 @@
       "table": "volume_remove_attempt"
     },
     {
-      "value": "(\n        (\"status\" = 'pending' and \"inngest_run_id\" is null\n          and \"started_at\" is null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'running' and \"inngest_run_id\" is not null\n          and length(\"inngest_run_id\") between 1 and 255\n          and \"started_at\" is not null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'completed' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null and \"failure_message\" is null)\n        or (\"status\" = 'partial' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null)\n        or (\"status\" in ('failed', 'cancelled')\n          and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 2000)\n      )",
+      "value": "(\n        (\"status\" = 'awaiting_deployment'\n          and \"environment_deployment_id\" is not null\n          and \"inngest_run_id\" is null\n          and \"started_at\" is null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'pending' and \"inngest_run_id\" is null\n          and \"started_at\" is null and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'running' and \"inngest_run_id\" is not null\n          and length(\"inngest_run_id\") between 1 and 255\n          and \"terminal_at\" is null\n          and \"outcome\" is null and \"failure_message\" is null)\n        or (\"status\" = 'unknown' and \"inngest_run_id\" is not null\n          and length(\"inngest_run_id\") between 1 and 255\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is null and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 2000)\n        or (\"status\" = 'completed' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null and \"failure_message\" is null)\n        or (\"status\" = 'partial' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"terminal_at\" is not null\n          and \"outcome\" is not null)\n        or (\"status\" in ('failed', 'cancelled')\n          and \"started_at\" is null and \"terminal_at\" is not null\n          and \"outcome\" is null and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 2000\n          and (\n            (\"inngest_run_id\" is not null\n              and length(\"inngest_run_id\") between 1 and 255)\n            or (\"inngest_run_id\" is null\n              and \"environment_deployment_id\" is not null)\n          ))\n      )",
       "name": "volume_remove_attempt_status_shape_check",
       "entityType": "checks",
       "schema": "public",

@@ -17,4 +17,3 @@ export function serviceDocumentRecord(
     createdAt: identity.createdAt, updatedAt: identity.updatedAt,
   });
 }
-

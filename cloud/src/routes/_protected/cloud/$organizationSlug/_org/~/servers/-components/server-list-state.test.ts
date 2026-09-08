@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeLensStatus } from "#/modules/runtime/runtime.collection";
-import { getServerListState } from "./server-list-state";
+import {
+  getServerListState,
+  incompleteRuntimeObservationDescription,
+} from "./server-list-state";
 
 describe("getServerListState", () => {
   const emptyStates = [
@@ -8,8 +11,7 @@ describe("getServerListState", () => {
     ["no_connection", "empty"],
     ["unavailable", "empty"],
     ["unreachable", "empty"],
-    ["live_empty", "empty"],
-    ["live_rows", "empty"],
+    ["observed", "empty"],
   ] satisfies Array<[RuntimeLensStatus, string]>;
 
   it.each(emptyStates)(
@@ -27,7 +29,7 @@ describe("getServerListState", () => {
     },
   );
 
-  it("distinguishes no Cloud connection from a connected empty cluster", () => {
+  it("distinguishes no Cloud connection from an empty Runtime Watch observation", () => {
     const state = (runtimeStatus: RuntimeLensStatus) =>
       getServerListState({
         rowCount: 0,
@@ -43,12 +45,14 @@ describe("getServerListState", () => {
       description: "Add a server to create a cluster and connect it to Cloud",
       variant: "first-run",
     });
-    expect(state("live_empty")).toMatchObject({ title: "No active servers" });
+    expect(state("observed")).toMatchObject({
+      title: "No servers in the latest observation",
+    });
     expect(state("unreachable")).toMatchObject({
       title: "Can't reach the cluster",
     });
     expect(state("unreachable")).not.toMatchObject({
-      title: "No active servers",
+      title: "No servers in the latest observation",
     });
   });
 
@@ -112,7 +116,7 @@ describe("getServerListState", () => {
         rowCount: 1,
         visibleRowCount: 1,
         query: "",
-        runtimeStatus: "live_rows",
+        runtimeStatus: "observed",
         runtimeError: null,
       }),
     ).toEqual({ kind: "rows" });
@@ -124,7 +128,7 @@ describe("getServerListState", () => {
         rowCount: 1,
         visibleRowCount: 0,
         query: "missing",
-        runtimeStatus: "live_rows",
+        runtimeStatus: "observed",
         runtimeError: null,
       }),
     ).toMatchObject({ kind: "empty", title: "No matches" });
@@ -192,5 +196,31 @@ describe("getServerListState", () => {
         runtimeError: "Credentials expired",
       }),
     ).toMatchObject({ title: "Runtime unavailable" });
+  });
+});
+
+describe("incompleteRuntimeObservationDescription", () => {
+  it("keeps incomplete IDs visible beside observed workload counts", () => {
+    expect(
+      incompleteRuntimeObservationDescription({
+        machines: ["machine-1"],
+        containers: ["container-1", "container-2"],
+        volumes: [],
+        certificates: ["api.example.com"],
+      }),
+    ).toBe(
+      "The Runtime Watch lists incomplete IDs for 1 machine, 2 containers, 1 certificate. Server workload counts include only containers it observed.",
+    );
+  });
+
+  it("does not show an uncertainty notice for a complete observation", () => {
+    expect(
+      incompleteRuntimeObservationDescription({
+        machines: [],
+        containers: [],
+        volumes: [],
+        certificates: [],
+      }),
+    ).toBeNull();
   });
 });

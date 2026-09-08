@@ -2,9 +2,12 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type {
   Client,
+  ClusterTeardown,
   ConnectOptions,
   DataLossConfirmation,
+  DeployOutcome,
   DeployIntent,
+  ExecutionError,
   HeldRegister,
   MachineId,
   MachineTarget,
@@ -18,10 +21,11 @@ import type {
   VolumeRemoval,
 } from "@ployz/sdk";
 import type * as PloyzSdk from "@ployz/sdk";
-import { Context, Data, Effect, Layer, type Scope } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { projectJsonValue } from "#/lib/json";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
+import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
@@ -35,24 +39,6 @@ const {
   "connect" | "listHeld" | "register" | "revokePairing"
 >;
 
-export class SdkSurfaceNotShipped extends Data.TaggedError(
-  "SdkSurfaceNotShipped",
-)<{
-  readonly surface: string;
-  readonly ticket: string;
-  readonly message: string;
-}> {
-  readonly retriable = false as const;
-  readonly failureCode = "sdk_surface_not_shipped" as const;
-
-  constructor(args: { surface: string; ticket: string }) {
-    super({
-      ...args,
-      message: `${args.surface} is not shipped in @ployz/sdk yet (${args.ticket})`,
-    });
-  }
-}
-
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",
 )<{
@@ -62,7 +48,6 @@ export class PloyzProviderError extends Data.TaggedError(
 
 export type PloyzSdkError =
   | PloyzProviderError
-  | SdkSurfaceNotShipped
   | MissingDataLossIdentities;
 
 export type PloyzPreparedDeploy = Omit<PreparedDeploy, "confirm"> & {
@@ -77,11 +62,22 @@ export interface PloyzSession {
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
+  readonly dataLossIfProjectDestroyed: (
+    projectName: ProjectName,
+    destroyVolumes?: boolean,
+  ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
   readonly destroyProject: (
     projectName: ProjectName,
     confirmDataLoss: DataLossConfirmation,
     destroyVolumes?: boolean,
-  ) => Effect.Effect<unknown, PloyzSdkError>;
+  ) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
+  readonly dataLossIfClusterDestroyed: () => Effect.Effect<
+    ObservedDataLoss,
+    PloyzSdkError
+  >;
+  readonly destroyCluster: (
+    confirmDataLoss: DataLossConfirmation,
+  ) => Effect.Effect<ClusterTeardown, PloyzSdkError>;
   readonly removeVolumes: (
     request: RemoveVolumesRequest,
   ) => Effect.Effect<VolumeRemoval[], PloyzSdkError>;
@@ -144,8 +140,27 @@ export class Ployz extends Context.Service<Ployz, PloyzService>()(
   "ployz/Ployz",
 ) {}
 
+const UnconfirmedDataLossDetails = Schema.Struct({
+  missing: Schema.Array(dataLossIdentitySchema),
+});
+const UnconfirmedDataLossError = Schema.Struct({
+  code: Schema.Literal("invalid_argument"),
+  message: Schema.String,
+  details: UnconfirmedDataLossDetails,
+});
+
+function missingDataLossFromSdkError(cause: unknown) {
+  const decoded = Schema.decodeUnknownOption(UnconfirmedDataLossError)(cause);
+  if (
+    Option.isNone(decoded) ||
+    decoded.value.details.missing.length === 0
+  ) return null;
+  return new MissingDataLossIdentities(decoded.value.details.missing);
+}
+
 function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
-  if (cause instanceof SdkSurfaceNotShipped) return cause;
+  const missingDataLoss = missingDataLossFromSdkError(cause);
+  if (missingDataLoss !== null) return missingDataLoss;
   if (cause instanceof MissingDataLossIdentities) return cause;
   if (cause instanceof PloyzProviderError) return cause;
   return new PloyzProviderError({ operation, cause });
@@ -194,9 +209,21 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("load machine data loss", () =>
         client.dataLossIfMachineRemoved(machine),
       ),
+    dataLossIfProjectDestroyed: (projectName, destroyVolumes) =>
+      sdkPromise("load project data loss", () =>
+        client.dataLossIfProjectDestroyed(projectName, destroyVolumes),
+      ),
     destroyProject: (projectName, confirmDataLoss, destroyVolumes) =>
       sdkPromise("destroy project", () =>
         client.destroyProject(projectName, confirmDataLoss, destroyVolumes),
+      ),
+    dataLossIfClusterDestroyed: () =>
+      sdkPromise("load cluster data loss", () =>
+        client.dataLossIfClusterDestroyed(),
+      ),
+    destroyCluster: (confirmDataLoss) =>
+      sdkPromise("destroy cluster", () =>
+        client.destroyCluster(confirmDataLoss),
       ),
     removeVolumes: (request) =>
       sdkPromise("remove volumes", () => client.removeVolumes(request)),

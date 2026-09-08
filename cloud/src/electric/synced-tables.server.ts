@@ -49,10 +49,7 @@ export const PLOYZ_TABLES = {
     scope: "organization",
     whereColumn: "organization_id",
   },
-  volume_remove_attempt: { scope: "organization", whereColumn: "organization_id",
-    columns: ["id", "organization_id", "environment_id", "environment_resource_id", "status", "terminal_at"],
-  },
-  destructive_volume_attempt: {
+  volume_remove_attempt: {
     scope: "organization",
     whereColumn: "organization_id",
   },

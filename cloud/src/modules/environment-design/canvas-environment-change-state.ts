@@ -1,8 +1,5 @@
+import type { ReviewAggregateDiscardPlan } from "@ployz/sdk/config";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
-import { automaticBoundHostnames } from "#/modules/runtime/runtime";
-import type { RuntimeServiceRecord } from "#/modules/runtime/runtime";
-import { getManagedHostnameDriftRow } from "#/modules/services/service-deployment-diff/fields";
-import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { ServiceRecord } from "#/modules/environment-design/services";
 import type {
   EnvironmentChangeSlice,
@@ -20,9 +17,6 @@ import { buildEnvironmentChangeSet } from "#/modules/environment-design/environm
 import {
   type CanvasNodeDiffGroup,
 } from "#/modules/environment-design/canvas-node-diff";
-import type {
-  EnvironmentSavedStateDiscardCommand,
-} from "#/modules/environment-design/saved-state";
 
 export type CanvasDeploymentEvidence = {
   id: string;
@@ -55,18 +49,7 @@ export type CanvasEnvironmentChangeSlice = Omit<
 export type CanvasWorkingNodeDiscardPlan =
   Extract<EnvironmentNodeDiscardPlan, { target: "working" }>;
 
-export type CanvasSavedNodeDiscardPlan = Extract<
-  EnvironmentNodeDiscardPlan,
-  { target: "saved" }
->;
-
-export type CanvasDiscardAllPlan = {
-  nodes: Array<{
-    node: EnvironmentNodeIdentity;
-    working: CanvasWorkingNodeDiscardPlan;
-  }>;
-  savedCommand: EnvironmentSavedStateDiscardCommand | null;
-};
+export type CanvasDiscardAllPlan = ReviewAggregateDiscardPlan;
 
 export type CanvasEnvironmentChangeState = {
   slices: Record<EnvironmentChangeSliceKind, CanvasEnvironmentChangeSlice>;
@@ -80,122 +63,6 @@ export function toCanvasWorkingNodeDiscardPlan(
   plan: EnvironmentNodeDiscardPlan,
 ): CanvasWorkingNodeDiscardPlan {
   return { kind: plan.kind, target: "working", node: plan.node };
-}
-
-export function buildCanvasRuntimeObservations(input: {
-  environmentNamespace: string;
-  applied: EnvironmentStateProjection;
-  runtimeServices: RuntimeServiceRecord[];
-  autoDomain: string | null;
-  appliedRevisionByNodeId?: Map<string, string | null>;
-}): EnvironmentRuntimeObservationsProjection {
-  const runtimeByServiceId = new Map(
-    input.runtimeServices.flatMap((runtime) =>
-      runtime.namespaceId === input.environmentNamespace
-        ? [[runtime.serviceId, runtime] as const]
-        : [],
-    ),
-  );
-  const settings: EnvironmentRuntimeObservationsProjection["settings"] = [];
-  const presence: NonNullable<
-    EnvironmentRuntimeObservationsProjection["presence"]
-  > = [];
-  const matchedRuntimeIds = new Set<string>();
-
-  for (const projectedNode of input.applied.nodes) {
-    if (projectedNode.node.type !== "service" || !projectedNode.config) {
-      continue;
-    }
-    // SAFETY: node.type is "service"; config stays the node-config union until this branch.
-    const config = projectedNode.config as ServiceDeploymentConfig;
-    if (config.source.type === "empty") continue;
-    const runtime = runtimeByServiceId.get(config.privateDns) ?? null;
-    if (!runtime) {
-      presence.push({
-        node: projectedNode.node,
-        applied: "present",
-        observed: "absent",
-      });
-      continue;
-    }
-    matchedRuntimeIds.add(runtime.id);
-    const appliedRevision = input.appliedRevisionByNodeId?.get(
-      projectedNode.node.id,
-    );
-    if (
-      runtime &&
-      appliedRevision &&
-      runtime.activeRevisionId !== appliedRevision
-    ) {
-      settings.push({
-        node: projectedNode.node,
-        setting: "runtime.revision",
-        label: "Runtime revision",
-        appliedValue: appliedRevision,
-        observedValue: runtime.activeRevisionId,
-      });
-    }
-    const observedReplicas = runtime?.instanceCount ?? 0;
-    if (observedReplicas !== config.replicas) {
-      settings.push({
-        node: projectedNode.node,
-        setting: "runtime.replicas",
-        label: "Replicas",
-        appliedValue: String(config.replicas),
-        observedValue: String(observedReplicas),
-      });
-    } else if (
-      runtime &&
-      runtime.readyInstanceCount < runtime.instanceCount
-    ) {
-      settings.push({
-        node: projectedNode.node,
-        setting: "runtime.readyReplicas",
-        label: "Ready replicas",
-        appliedValue: `${runtime.instanceCount} of ${runtime.instanceCount}`,
-        observedValue: `${runtime.readyInstanceCount} of ${runtime.instanceCount}`,
-      });
-    }
-
-    const managedHostnameDrift = getManagedHostnameDriftRow({
-      serviceId: projectedNode.node.id,
-      managedHostname: config.managedHostname,
-      autoDomain: input.autoDomain,
-      boundHostnames: automaticBoundHostnames(runtime),
-    });
-    if (managedHostnameDrift) {
-      settings.push({
-        node: projectedNode.node,
-        setting: managedHostnameDrift.path,
-        label: managedHostnameDrift.label,
-        appliedValue: managedHostnameDrift.newValue,
-        observedValue: managedHostnameDrift.currentValue,
-      });
-    }
-  }
-
-  for (const runtime of input.runtimeServices) {
-    if (
-      runtime.namespaceId !== input.environmentNamespace ||
-      matchedRuntimeIds.has(runtime.id)
-    ) {
-      continue;
-    }
-    presence.push({
-      node: { type: "service", id: runtime.serviceId },
-      applied: "absent",
-      observed: "present",
-    });
-  }
-
-  return {
-    token: input.runtimeServices
-      .map((runtime) => `${runtime.id}:${runtime.updatedAt}`)
-      .sort()
-      .join("|") || "runtime:empty",
-    presence,
-    settings,
-  };
 }
 
 function nodeKey(node: EnvironmentNodeIdentity) {
@@ -294,7 +161,8 @@ export function buildCanvasEnvironmentChangeState(input: {
     discardAllPlan: changeSet.discardAllPlan,
     totalCount:
       unsaved.totalCount + pending.totalCount + drift.totalCount,
-    canDeploy: input.runtimeObserved !== null,
+    // Deploy admission uses the direct Runtime Watch preflight at action time.
+    canDeploy: true,
     deploymentEvidence: input.deploymentEvidence,
   };
 }

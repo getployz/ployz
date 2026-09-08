@@ -14,10 +14,7 @@ import {
   PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY,
   type EnvironmentDeploymentStepTools,
 } from "./environment-deployment.inngest";
-import {
-  PloyzProviderError,
-  SdkSurfaceNotShipped,
-} from "#/modules/runtime/ployz.server";
+import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import type { DeploymentContext } from "#/modules/deployments/runtime-repository.server";
 import * as runtimeCancellation from "#/modules/deployments/runtime-cancellation.repository.server";
 import * as runtimeHydration from "#/modules/deployments/runtime-hydration.repository.server";
@@ -71,8 +68,7 @@ function runtimeFailure(
 ) {
   if (
     cause instanceof DeploymentRuntimeInvalid ||
-    cause instanceof PloyzProviderError ||
-    cause instanceof SdkSurfaceNotShipped
+    cause instanceof PloyzProviderError
   ) {
     return cause;
   }
@@ -273,27 +269,6 @@ describe("process environment deployment", () => {
     });
   });
 
-  it("fails preview with SdkSurfaceNotShipped without writing Applied", async () => {
-    mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    mocks.executeEnvironmentDeployment.mockRejectedValue(
-      new SdkSurfaceNotShipped({
-        surface: "preview",
-        ticket: "getployz/ployz2#253",
-      }),
-    );
-
-    await expect(
-      runDeploy({
-        event: { data: { environmentDeploymentId: "deployment-1" } },
-      }),
-    ).rejects.toBeInstanceOf(NonRetriableError);
-    expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
-    expect(mocks.markDeploymentFailedIfOwned).toHaveBeenCalledWith(
-      expect.objectContaining({
-        failureCode: "sdk_surface_not_shipped",
-      }),
-    );
-  });
 
   it("does not write Applied from a failed DeployOutcome", async () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());

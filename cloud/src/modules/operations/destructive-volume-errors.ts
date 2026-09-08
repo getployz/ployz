@@ -1,18 +1,6 @@
 import { Data } from "effect";
 import { describeFailureCause } from "#/lib/error-message";
 
-export class DestructiveVolumeConflict extends Data.TaggedError(
-  "DestructiveVolumeConflict",
-)<{ readonly message: string }> {
-  readonly publicErrorCategory = "conflict" as const;
-}
-
-export class DestructiveVolumeEvidenceInvalid extends Data.TaggedError(
-  "DestructiveVolumeEvidenceInvalid",
-)<{ readonly message: string }> {
-  readonly publicErrorCategory = "validation" as const;
-}
-
 export class DestructiveVolumeEnvironmentNotFound extends Data.TaggedError(
   "DestructiveVolumeEnvironmentNotFound",
 )<{ readonly environmentId: string; readonly message: string }> {

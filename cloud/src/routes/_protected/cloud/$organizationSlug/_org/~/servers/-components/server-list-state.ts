@@ -1,5 +1,6 @@
 import {
   CLUSTER_UNREACHABLE_ERROR,
+  type RuntimeIncompleteIds,
   type RuntimeLensStatus,
 } from "#/modules/runtime/runtime.collection";
 
@@ -7,6 +8,31 @@ type ConnectionNotice = {
   title: string;
   description: string;
 };
+
+/** Incomplete IDs are explicitly not deletions. Keep that uncertainty visible
+ * beside the direct container counts shown by the Server list. */
+export function incompleteRuntimeObservationDescription(
+  input: RuntimeIncompleteIds,
+) {
+  const parts = [
+    input.machines.length > 0
+      ? `${input.machines.length} ${input.machines.length === 1 ? "machine" : "machines"}`
+      : null,
+    input.containers.length > 0
+      ? `${input.containers.length} ${input.containers.length === 1 ? "container" : "containers"}`
+      : null,
+    input.volumes.length > 0
+      ? `${input.volumes.length} ${input.volumes.length === 1 ? "volume" : "volumes"}`
+      : null,
+    input.certificates.length > 0
+      ? `${input.certificates.length} ${input.certificates.length === 1 ? "certificate" : "certificates"}`
+      : null,
+  ].filter((part): part is string => part !== null);
+
+  return parts.length > 0
+    ? `The Runtime Watch lists incomplete IDs for ${parts.join(", ")}. Server workload counts include only containers it observed.`
+    : null;
+}
 
 type ServerListState =
   | {
@@ -58,8 +84,7 @@ export function getServerListState(input: {
       };
       break;
     case "connecting":
-    case "live_empty":
-    case "live_rows":
+    case "observed":
       notice = undefined;
       break;
     default: {
@@ -103,9 +128,9 @@ export function getServerListState(input: {
 
   return {
     kind: "empty",
-    title: "No active servers",
+    title: "No servers in the latest observation",
     description:
-      "Cloud is connected, but the cluster returned no active servers",
+      "The Runtime Watch entry returned no server observations",
     variant: "placeholder",
   };
 }

@@ -37,6 +37,7 @@ function createVolumeRecord(
     canvasPosition: null,
     attachments: [],
     consumerCount: 0,
+    isAuthored: true,
     runtimeStatus: null,
     projectSlug: "project",
     environmentSlug: "production",
@@ -292,6 +293,24 @@ describe("buildNodes", () => {
         target: "service-1",
       }),
     ]);
+  });
+
+  it("omits mount edges for a volume removed from the authored document", () => {
+    const edges = buildEdges(
+      [],
+      [],
+      [createVolumeRecord({ isAuthored: false })],
+      [
+        {
+          environmentId: "env-1",
+          serviceId: "service-1",
+          volumeResourceId: "volume-1",
+          mountPath: "/data",
+        },
+      ],
+    );
+
+    expect(edges).toEqual([]);
   });
 
   it("builds collapsed Variable Group attachment edges", () => {

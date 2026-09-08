@@ -92,7 +92,6 @@ function canvasState(input: {
   working: ServiceDeploymentConfig | null;
   saved: ServiceDeploymentConfig | null;
   applied: ServiceDeploymentConfig | null;
-  runtime: ServiceDeploymentConfig | null;
   deploymentEvidence?: CanvasDeploymentEvidence | null;
 }) {
   return buildCanvasEnvironmentChangeState({
@@ -100,7 +99,7 @@ function canvasState(input: {
     saved: savedState("saved", input.saved),
     applied: state("applied", input.applied),
     nodeIntroductions: { token: "introduction", nodes: [] },
-    runtimeObserved: state("runtime", input.runtime),
+    runtimeObserved: null,
     deploymentEvidence: input.deploymentEvidence ?? null,
     nodes: [{ node, name: "api", summaryLabel: "api" }],
   });
@@ -167,14 +166,12 @@ describe("Environment Change Set cross-layer acceptance matrix", () => {
       working,
       saved,
       applied,
-      runtime: applied,
       deploymentEvidence: evidence(4),
     });
     const coalesced = canvasState({
       working,
       saved,
       applied,
-      runtime: applied,
       deploymentEvidence: evidence(5),
     });
 
@@ -210,9 +207,9 @@ describe("Environment Change Set cross-layer acceptance matrix", () => {
     expect(projected.unsaved.groups[0]?.settings[0]?.targetValue).toBe("3");
   });
 
-  it("reconnect reveals runtime drift without changing Saved or Applied", () => {
+  it("keeps Saved and Applied changes independent of Runtime Watch availability", () => {
     const desired = config({ replicas: 2 });
-    const disconnected = buildCanvasEnvironmentChangeState({
+    const canvasState = buildCanvasEnvironmentChangeState({
       working: state("working", desired),
       saved: savedState("saved", desired),
       applied: state("applied", desired),
@@ -221,19 +218,11 @@ describe("Environment Change Set cross-layer acceptance matrix", () => {
       deploymentEvidence: null,
       nodes: [{ node, name: "api", summaryLabel: "api" }],
     });
-    const reconnected = canvasState({
-      working: desired,
-      saved: desired,
-      applied: desired,
-      runtime: config({ replicas: 1 }),
-    });
 
-    expect(disconnected.canDeploy).toBe(false);
-    expect(disconnected.slices.drift.totalCount).toBe(0);
-    expect(reconnected.canDeploy).toBe(true);
-    expect(reconnected.slices.drift.groups[0]?.rows[0]).toMatchObject({
-      path: "replicas",
-      canDiscard: false,
-    });
+    // Runtime Watch does not carry a current Service configuration. Deploy
+    // admission observes it at action time, so its availability cannot add
+    // replica drift or disable this configuration change set.
+    expect(canvasState.canDeploy).toBe(true);
+    expect(canvasState.slices.drift.totalCount).toBe(0);
   });
 });

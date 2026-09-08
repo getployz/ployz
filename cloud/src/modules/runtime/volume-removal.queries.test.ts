@@ -21,6 +21,7 @@ function latestAttempt(
     organizationId: "00000000-0000-4000-8000-000000000601",
     requestedByUserId: "00000000-0000-4000-8000-000000000602",
     environmentId: input.environmentId,
+    environmentDeploymentId: null,
     environmentResourceId: input.resourceId,
     retryOfAttemptId: null,
     volumes: [],

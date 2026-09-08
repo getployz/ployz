@@ -1,4 +1,4 @@
-import { Effect, Exit } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { Inngest } from "inngest";
 import {
   afterAll,
@@ -19,9 +19,15 @@ import {
   dropTeardownCloudRowsActivity,
   failOwnedTeardownAttemptActivity,
   prepareTeardownAttemptActivity,
+  recordTeardownRuntimeEvidenceActivity,
 } from "#/modules/runtime/teardown-activities.server";
-import { insertTeardownAttempt } from "#/modules/runtime/teardown.repository";
+import type { TeardownOutcome } from "#/modules/runtime/teardown";
+import {
+  completeTeardownAttempt,
+  insertTeardownAttempt,
+} from "#/modules/runtime/teardown.repository";
 import { dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
+import { Validation } from "#/server/public-error";
 
 const organizationId = "00000000-0000-4000-8000-000000000701";
 const userId = "00000000-0000-4000-8000-000000000702";
@@ -42,16 +48,30 @@ async function insertAttempt(harness: GithubPostgresTestHarness) {
           {
             environmentId,
             projectId,
-            namespace: "app-production",
+            projectName: "app-production",
             cloudName: "acme/app/Production",
-            identities: [],
           },
         ],
-        machines: [],
+        destroyRuntimeProjects: true,
         revokePairing: false,
         runtimeMembership: "untouched",
       },
     }),
+  );
+}
+
+type RuntimeCompletionInput = {
+  attemptId: string;
+  inngestRunId: string;
+  status: "completed" | "partial";
+  outcome?: TeardownOutcome | null;
+  now?: Date;
+};
+
+function completeFromRuntimeInput(input: RuntimeCompletionInput) {
+  // SAFETY: The test models a JavaScript caller that bypasses TypeScript's input contract.
+  return completeTeardownAttempt(
+    input as Parameters<typeof completeTeardownAttempt>[0],
   );
 }
 
@@ -167,7 +187,40 @@ describe("teardown durable state", () => {
     expect(environment.rowCount).toBe(0);
   });
 
-  it("terminalizes failure and cancellation only for their owning runs", async () => {
+  it("rejects completed terminalization without a runtime outcome", async () => {
+    const attempt = await insertAttempt(harness);
+    await runPromiseDb(
+      prepareTeardownAttemptActivity({
+        attemptId: attempt.id,
+        inngestRunId: "run-no-outcome",
+        now: new Date("2026-09-04T05:04:00Z"),
+      }),
+    );
+
+    const exit = await runPromiseDb(
+      completeFromRuntimeInput({
+        attemptId: attempt.id,
+        inngestRunId: "run-no-outcome",
+        status: "completed",
+        now: new Date("2026-09-04T05:05:00Z"),
+      }).pipe(Effect.exit),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(Validation);
+    }
+
+    const state = await harness.pool.query<{
+      status: string;
+      outcome: unknown;
+    }>(
+      "select status, outcome from teardown_attempt where id = $1",
+      [attempt.id],
+    );
+    expect(state.rows).toEqual([{ status: "running", outcome: null }]);
+  });
+
+  it("preserves recorded runtime evidence through an unknown outcome or cancellation", async () => {
     const failedAttempt = await insertAttempt(harness);
     await runPromiseDb(
       prepareTeardownAttemptActivity({
@@ -176,6 +229,33 @@ describe("teardown durable state", () => {
         now: new Date("2026-09-04T06:00:00Z"),
       }),
     );
+    const failedEvidence = {
+      rustMustRevokePairing: false,
+      runtimeMembership: "untouched" as const,
+      projectTeardowns: [
+        {
+          projectName: "app-production",
+          outcome: { type: "success" as const, completed: [] },
+        },
+      ],
+    } satisfies TeardownOutcome;
+    await runPromiseDb(
+      recordTeardownRuntimeEvidenceActivity({
+        attemptId: failedAttempt.id,
+        inngestRunId: "run-fail",
+        outcome: failedEvidence,
+        now: new Date("2026-09-04T06:00:30Z"),
+      }),
+    );
+    const stolenEvidence = await runPromiseDb(
+      recordTeardownRuntimeEvidenceActivity({
+        attemptId: failedAttempt.id,
+        inngestRunId: "run-other",
+        outcome: failedEvidence,
+        now: new Date("2026-09-04T06:00:45Z"),
+      }).pipe(Effect.exit),
+    );
+    expect(Exit.isFailure(stolenEvidence)).toBe(true);
     const wrongOwner = await runPromiseDb(
       failOwnedTeardownAttemptActivity({
         attemptId: failedAttempt.id,
@@ -202,6 +282,24 @@ describe("teardown durable state", () => {
         now: new Date("2026-09-04T06:03:00Z"),
       }),
     );
+    const cancelledEvidence = {
+      rustMustRevokePairing: false,
+      runtimeMembership: "untouched" as const,
+      projectTeardowns: [
+        {
+          projectName: "app-production",
+          outcome: { type: "success" as const, completed: [] },
+        },
+      ],
+    } satisfies TeardownOutcome;
+    await runPromiseDb(
+      recordTeardownRuntimeEvidenceActivity({
+        attemptId: cancelledAttempt.id,
+        inngestRunId: "run-cancel",
+        outcome: cancelledEvidence,
+        now: new Date("2026-09-04T06:03:30Z"),
+      }),
+    );
     await runPromiseDb(
       cancelTeardownAttemptActivity({
         inngestRunId: "run-cancel",
@@ -212,12 +310,25 @@ describe("teardown durable state", () => {
     const states = await harness.pool.query<{
       status: string;
       inngest_run_id: string;
+      outcome: unknown;
+      failure_message: string | null;
     }>(
-      `select status, inngest_run_id from teardown_attempt order by created_at`,
+      `select status, inngest_run_id, outcome, failure_message
+       from teardown_attempt order by created_at`,
     );
     expect(states.rows).toEqual([
-      { status: "failed", inngest_run_id: "run-fail" },
-      { status: "cancelled", inngest_run_id: "run-cancel" },
+      {
+        status: "partial",
+        inngest_run_id: "run-fail",
+        outcome: failedEvidence,
+        failure_message: "Runtime teardown outcome is unknown: retries exhausted",
+      },
+      {
+        status: "cancelled",
+        inngest_run_id: "run-cancel",
+        outcome: cancelledEvidence,
+        failure_message: "Teardown was cancelled.",
+      },
     ]);
   });
 });

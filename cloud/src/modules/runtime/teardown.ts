@@ -1,17 +1,10 @@
-import {
-  confirmedVolumeRemove,
-  type DataLossList,
-} from "#/modules/runtime/data-loss-confirm";
-import {
-  dataLossIdentitySchema,
-  type DataLossIdentity,
-} from "#/modules/runtime/data-loss-identity";
-import {
-  remainingVolumeIdentities,
-  volumeRemoveStatusFromOutcome,
-  type VolumeRemoveOutcome,
-  type VolumeRemoveVolume,
-} from "#/modules/runtime/volume-removal";
+import type {
+  ClusterTeardown,
+  DeployOutcome,
+  ExecutionError,
+} from "@ployz/sdk";
+import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
+import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { Schema } from "effect";
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
@@ -61,65 +54,65 @@ export const TEARDOWN_ATTEMPT_STATUSES = [
 export type TeardownAttemptStatus =
   (typeof TEARDOWN_ATTEMPT_STATUSES)[number];
 
-export type TeardownVolumeOwnership = {
-  namespace: string;
-  machine: string;
-  name: string;
-};
+const TeardownEnvironmentTargetSchema = Schema.Struct({
+  environmentId: NonEmptyString,
+  projectId: NonEmptyString,
+  projectName: NonEmptyString,
+  cloudName: NonEmptyString,
+});
+export type TeardownEnvironmentTarget =
+  typeof TeardownEnvironmentTargetSchema.Type;
 
-export type TeardownEnvironmentTarget = {
-  environmentId: string;
-  projectId: string;
-  namespace: string;
-  cloudName: string;
-  identities: DataLossIdentity[];
-};
-
-export type TeardownRuntimeMembership = "verified" | "unknown" | "untouched";
+const TeardownRuntimeMembershipSchema = Schema.Literals([
+  "verified",
+  "unknown",
+  "untouched",
+]);
+export type TeardownRuntimeMembership =
+  typeof TeardownRuntimeMembershipSchema.Type;
 
 export type TeardownRuntimeOutcome = "verified_zero" | "unknown" | "untouched";
 
-export type TeardownTargets = {
-  environments: TeardownEnvironmentTarget[];
-  machines: string[];
-  revokePairing: boolean;
-  runtimeMembership: TeardownRuntimeMembership;
-};
+const TeardownTargetsSchema = Schema.Struct({
+  environments: Schema.Array(TeardownEnvironmentTargetSchema),
+  destroyRuntimeProjects: Schema.Boolean,
+  revokePairing: Schema.Boolean,
+  runtimeMembership: TeardownRuntimeMembershipSchema,
+});
+export type TeardownTargets = typeof TeardownTargetsSchema.Type;
 
-/** Old attempt JSON may omit membership; treat that as env/project untouched. */
-export function parseTeardownTargets(targets: {
-  environments: TeardownEnvironmentTarget[];
-  machines: string[];
-  revokePairing: boolean;
-  runtimeMembership?: TeardownRuntimeMembership;
-}): TeardownTargets {
-  return {
-    environments: targets.environments,
-    machines: targets.machines,
-    revokePairing: targets.revokePairing,
-    runtimeMembership: targets.runtimeMembership ?? "untouched",
-  };
+export function parseTeardownTargets<Input>(targets: Input): TeardownTargets {
+  return Schema.decodeUnknownSync(TeardownTargetsSchema)(targets, {
+    onExcessProperty: "error",
+  });
 }
 
+export type TeardownRuntimeEvidence = {
+  projectTeardowns?: Array<{
+    projectName: string;
+    outcome: DeployOutcome<ExecutionError>;
+  }>;
+  clusterTeardown?: ClusterTeardown;
+};
+
 export type TeardownOutcome =
-  | {
+  | ({
       rustMustRevokePairing: false;
       runtimeMembership: TeardownRuntimeOutcome;
-    }
-  | {
+    } & TeardownRuntimeEvidence)
+  | ({
       rustMustRevokePairing: true;
       runtimeMembership: "unknown";
-    };
+    } & TeardownRuntimeEvidence);
 
 export type TeardownClusterView =
   | { kind: "no_cluster" }
   | { kind: "unreachable" }
-  | { kind: "live"; machines: readonly string[] };
+  | { kind: "live" };
 
 export type TeardownRuntimePlan =
   | {
       kind: "ok";
-      machines: string[];
       revokePairing: boolean;
       runtimeMembership: TeardownRuntimeMembership;
     }
@@ -140,7 +133,6 @@ export function planTeardownRuntime(input: {
   if (input.scope !== "organization") {
     return {
       kind: "ok",
-      machines: [],
       revokePairing: false,
       runtimeMembership: "untouched",
     };
@@ -155,7 +147,6 @@ export function planTeardownRuntime(input: {
     }
     return {
       kind: "ok",
-      machines: [],
       revokePairing: true,
       runtimeMembership: "unknown",
     };
@@ -166,14 +157,12 @@ export function planTeardownRuntime(input: {
     case "no_cluster":
       return {
         kind: "ok",
-        machines: [],
         revokePairing: false,
         runtimeMembership: "untouched",
       };
     case "live":
       return {
         kind: "ok",
-        machines: [...input.cluster.machines],
         revokePairing: true,
         runtimeMembership: "verified",
       };
@@ -202,12 +191,12 @@ export function teardownRuntimeRefuseMessage(
 }
 
 export function teardownCompletedDescription(
-  outcome: TeardownOutcome | null,
+  outcome: TeardownOutcome,
 ): string {
-  const membership = outcome?.runtimeMembership ?? "untouched";
+  const membership = outcome.runtimeMembership;
   switch (membership) {
     case "unknown":
-      return outcome?.rustMustRevokePairing
+      return outcome.rustMustRevokePairing
         ? "Cloud management was dropped. Runtime membership remains unknown, and pairing must still be revoked in Rust."
         : "Cloud management was dropped. Runtime membership remains unknown.";
     case "verified_zero":
@@ -241,22 +230,32 @@ function teardownRuntimeOutcome(
 export function teardownOutcome(
   membership: TeardownRuntimeMembership,
   rustMustRevokePairing: boolean,
+  evidence: TeardownRuntimeEvidence = {},
 ): TeardownOutcome {
   if (rustMustRevokePairing) {
-    return { rustMustRevokePairing: true, runtimeMembership: "unknown" };
+    return {
+      rustMustRevokePairing: true,
+      runtimeMembership: "unknown",
+      ...evidence,
+    };
   }
   return {
     rustMustRevokePairing: false,
     runtimeMembership: teardownRuntimeOutcome(membership),
+    ...evidence,
   };
 }
 
-/** Inngest retries the same step. Do not persist failed for leftover rust. */
-export class TeardownIncompleteError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TeardownIncompleteError";
-  }
+/** A partial Cluster result is evidence of remaining unknown runtime state. */
+export function incompleteTeardownOutcome(
+  membership: TeardownRuntimeMembership,
+  evidence: TeardownRuntimeEvidence = {},
+): TeardownOutcome {
+  return teardownOutcome(
+    membership === "verified" ? "unknown" : membership,
+    false,
+    evidence,
+  );
 }
 
 export function cloudEnvironmentName(input: {
@@ -310,82 +309,12 @@ export function organizationCloudRow(organizationSlug: string): DataLossList {
   };
 }
 
-export function machineCloudRow(machineId: string): DataLossList {
-  return {
-    rust: [],
-    cloud: [{ kind: "machine", name: machineId }],
-  };
-}
-
-export function identitiesForMachine(
-  identities: readonly DataLossIdentity[],
-  machineId: string,
-): DataLossIdentity[] {
-  return identities.filter((identity) => identity.id.machine_id === machineId);
-}
-
-function volumeOwnershipKey(machine: string, name: string) {
-  return `${machine}\0${name}`;
-}
-
-export function identitiesForEnvironment(
-  identities: readonly DataLossIdentity[],
-  namespace: string,
-  ownership: readonly TeardownVolumeOwnership[],
-): DataLossIdentity[] {
-  const keys = new Set(
-    ownership
-      .filter((row) => row.namespace === namespace)
-      .map((row) => volumeOwnershipKey(row.machine, row.name)),
-  );
-  return identities.filter(
-    (identity) =>
-      keys.has(
-        volumeOwnershipKey(identity.id.machine_id, identity.id.name),
-      ),
-  );
-}
-
-export function environmentTargetsWithIdentities(input: {
-  environments: readonly Omit<TeardownEnvironmentTarget, "identities">[];
-  identities: readonly DataLossIdentity[];
-  ownership: readonly TeardownVolumeOwnership[];
-}): TeardownEnvironmentTarget[] {
-  return input.environments.map((environment) => ({
-    ...environment,
-    identities: identitiesForEnvironment(
-      input.identities,
-      environment.namespace,
-      input.ownership,
-    ),
-  }));
-}
-
-export function leftoverVolumeMessage(
-  requested: readonly VolumeRemoveVolume[],
-  outcome: VolumeRemoveOutcome,
-): string | null {
-  const leftover = remainingVolumeIdentities(requested, outcome.destroyed);
-  if (
-    leftover.length === 0 &&
-    volumeRemoveStatusFromOutcome(requested, outcome) === "completed"
-  ) {
-    return null;
-  }
-  return `Volume remove left ${leftover.length} identit${leftover.length === 1 ? "y" : "ies"} for Inngest to retry.`;
-}
-
 export function teardownIsBusy(status: TeardownAttemptStatus) {
   return status === "pending" || status === "running";
 }
 
 export function teardownIsRetryable(status: TeardownAttemptStatus) {
-  return (
-    status === "pending" ||
-    status === "partial" ||
-    status === "failed" ||
-    status === "cancelled"
-  );
+  return status === "pending";
 }
 
 export function teardownIsTerminal(status: TeardownAttemptStatus) {
@@ -394,7 +323,6 @@ export function teardownIsTerminal(status: TeardownAttemptStatus) {
 
 export type TeardownRetryPlan =
   | { kind: "resend" }
-  | { kind: "retry" }
   | { kind: "conflict" };
 
 export function retryPlanForAttempt(status: TeardownAttemptStatus): TeardownRetryPlan {
@@ -404,7 +332,6 @@ export function retryPlanForAttempt(status: TeardownAttemptStatus): TeardownRetr
     case "partial":
     case "failed":
     case "cancelled":
-      return { kind: "retry" };
     case "running":
     case "completed":
       return { kind: "conflict" };
@@ -413,10 +340,4 @@ export function retryPlanForAttempt(status: TeardownAttemptStatus): TeardownRetr
       return exhaustive;
     }
   }
-}
-
-export function confirmedVolumesForTeardown(
-  identities: readonly DataLossIdentity[],
-) {
-  return confirmedVolumeRemove({ rust: [...identities], cloud: [] });
 }

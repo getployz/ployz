@@ -3,6 +3,7 @@ import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { CLUSTER_UNREACHABLE_ERROR } from "#/modules/runtime/runtime.collection";
 import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
 import {
+  runtimeWatchCertificateFixture,
   runtimeWatchContainerFixture,
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
@@ -12,8 +13,12 @@ import {
 const OBSERVED_AT = "2026-08-18T00:00:00.000Z";
 
 describe("createRuntimeEventsResponse", () => {
-  it("projects a watch frame's machine testimony into a lens event", async () => {
+  it("streams a redacted Runtime Watch observation without inventing a lens", async () => {
     const close = vi.fn(async () => undefined);
+    const secret = "postgres://runtime-secret@example.test/app";
+    const container = runtimeWatchContainerFixture("machine-a", "ctr-1");
+    const certificate = runtimeWatchCertificateFixture("api.example.test");
+    container.resolved_spec.container.environment = { DATABASE_URL: secret };
     const watchFrame = runtimeWatchFrameFixture({
       observed_at: OBSERVED_AT,
       machines: [
@@ -22,7 +27,22 @@ describe("createRuntimeEventsResponse", () => {
           membership: "up",
         }),
       ],
-      containers: [runtimeWatchContainerFixture("machine-a", "ctr-1")],
+      containers: [container],
+      services: [
+        {
+          identity: "production/api",
+          service_id: container.resolved_spec.service_id,
+          containers: [container],
+          hook_containers: [],
+        },
+      ],
+      certificates: [certificate],
+      incomplete_ids: {
+        machines: [],
+        containers: [],
+        volumes: [],
+        certificates: [certificate.hostname],
+      },
     });
 
     async function* frames() {
@@ -40,12 +60,16 @@ describe("createRuntimeEventsResponse", () => {
 
     const first = await reader?.read();
     const second = await reader?.read();
+    const event = new TextDecoder().decode(second?.value);
 
     expect(new TextDecoder().decode(first?.value)).toBe("retry: 1000\n\n");
-    const event = new TextDecoder().decode(second?.value);
-    expect(event).toContain("event: runtime.lens\n");
-    expect(event).toContain('"observedContainerCount":1');
-    expect(event).not.toContain('"observed_container_count"');
+    expect(event).toContain("event: runtime.watch\n");
+    expect(event).toContain('"observed_at":"2026-08-18T00:00:00.000Z"');
+    expect(event).toContain('"identity":"production/api"');
+    expect(event).toContain('"hostname":"api.example.test"');
+    expect(event).not.toContain(secret);
+    expect(event).not.toContain("resolved_spec");
+    expect(event).not.toContain('"environment"');
     expect(response.headers.get("content-type")).toBe("text/event-stream");
 
     await reader?.cancel();
@@ -77,36 +101,9 @@ describe("createRuntimeEventsResponse", () => {
     const event = await reader?.read();
 
     expect(new TextDecoder().decode(event?.value)).toContain(
-      '"updatedAt":"1970-01-01T00:00:03.000Z"',
+      '"observed_at":"1970-01-01T00:00:03.000Z"',
     );
     await reader?.cancel();
-  });
-
-  it("closes the stream when watch-frame projection fails", async () => {
-    const close = vi.fn(async () => undefined);
-    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    async function* frames() {
-      yield runtimeWatchFrameFixture({
-        observed_at: OBSERVED_AT,
-        machines: [
-          runtimeWatchMachineObservationFixture({
-            machine: runtimeWatchMachineFixture("", "edge-a"),
-          }),
-        ],
-      });
-    }
-    const response = createRuntimeEventsResponse({
-      request: new Request("http://localhost/api/runtime/events"),
-      status: "connected",
-      frames: frames(),
-      close,
-    });
-    const reader = response.body?.getReader();
-
-    await reader?.read();
-    expect(await reader?.read()).toMatchObject({ done: true });
-    expect(close).toHaveBeenCalledOnce();
-    log.mockRestore();
   });
 
   it("handles client cancellation after the upstream finishes", async () => {
@@ -210,12 +207,12 @@ describe("createRuntimeEventsResponse", () => {
     const statusChunk = await reader?.read();
     const statusText = new TextDecoder().decode(statusChunk?.value);
 
-    expect(statusText).toContain("event: runtime.lens\n");
+    expect(statusText).toContain("event: runtime.status\n");
     expect(statusText).toContain('"status":"no_connection"');
     expect(await reader?.read()).toMatchObject({ done: true });
   });
 
-  it("closes an unreachable stream with empty machines so stale rows are not membership", async () => {
+  it("closes an unreachable stream with a connection-only status", async () => {
     const response = createRuntimeEventsResponse({
       request: new Request("http://localhost/api/runtime/events"),
       status: "unreachable",
@@ -227,9 +224,9 @@ describe("createRuntimeEventsResponse", () => {
     const statusChunk = await reader?.read();
     const statusText = new TextDecoder().decode(statusChunk?.value);
 
-    expect(statusText).toContain("event: runtime.lens\n");
+    expect(statusText).toContain("event: runtime.status\n");
     expect(statusText).toContain('"status":"unreachable"');
-    expect(statusText).toContain('"machines":[]');
+    expect(statusText).not.toContain('"machines"');
     expect(await reader?.read()).toMatchObject({ done: true });
   });
 

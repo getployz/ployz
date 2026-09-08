@@ -6,131 +6,126 @@ import {
   projectRuntimeMachineRecord,
   unavailableRuntimeSnapshot,
   unreachableRuntimeSnapshot,
-  type RuntimeSnapshotLens,
+  type RuntimeSnapshot,
 } from "#/modules/runtime/runtime.collection";
 
+function observedSnapshot(): RuntimeSnapshot {
+  return {
+    status: "observed",
+    error: null,
+    hostedDnsHostname: "brisk-river.up.ployz.app",
+    machines: [
+      {
+        id: "m1",
+        name: "node-1",
+        publicIp: null,
+        endpoints: [],
+        membership: "up",
+        observedContainerCount: 1,
+        observedAt: "2026-07-01T00:00:00.000Z",
+      },
+    ],
+    services: [
+      {
+        id: "production/api",
+        identity: "production/api",
+        serviceId: "runtime-api",
+        containers: [
+          {
+            id: "ctr-1",
+            displayName: "api-1",
+            machineId: "m1",
+            projectName: "production",
+            kind: "service_container",
+          },
+        ],
+        hookContainers: [],
+        observedAt: "2026-07-01T00:00:00.000Z",
+      },
+    ],
+    certificates: [
+      {
+        hostname: "api.example.test",
+        status: "pending",
+        lastError: null,
+        backoff: null,
+      },
+    ],
+    incompleteIds: {
+      machines: [],
+      containers: [],
+      volumes: [],
+      certificates: [],
+    },
+    observedAt: "2026-07-01T00:00:00.000Z",
+  };
+}
+
 describe("projectRuntimeMachineRecord", () => {
-  it("accepts cached records written before storage evidence was added", () => {
+  it("returns only direct Machine evidence", () => {
     expect(
       projectRuntimeMachineRecord({
         id: "m1",
         name: "node-1",
         publicIp: null,
-        gateway: { status: "not_installed" },
-        observedContainerCount: null,
-        region: null,
-        availabilityZone: null,
-        overlayIp: null,
         endpoints: [],
-        testimonyStatus: "no_answer",
-        lastObservedAt: null,
-        updatedAt: "2026-07-01T00:00:00.000Z",
+        membership: "down",
+        observedContainerCount: 0,
+        observedAt: "2026-07-01T00:00:00.000Z",
       }),
-    ).not.toHaveProperty("storage");
+    ).toEqual({
+      id: "m1",
+      name: "node-1",
+      publicIp: null,
+      endpoints: [],
+      membership: "down",
+      observedContainerCount: 0,
+      observedAt: "2026-07-01T00:00:00.000Z",
+    });
   });
 });
 
 describe("applyRuntimeSnapshot", () => {
-  it("fans one full snapshot into every runtime collection cache", () => {
-    const snapshot: RuntimeSnapshotLens = {
-      status: "live_empty",
-      error: null,
-      publicUrl: {
-        mode: "disabled",
-        domain: null,
-        leaseApex: null,
-        dnsTarget: {
-          intent: "disabled",
-          allocation: "unacquired",
-          publication: "unpublished",
-        },
-      },
-      machines: [],
-      services: [],
-      updatedAt: "2026-07-01T00:00:00.000Z",
-    };
-
-    applyRuntimeSnapshot({
-      organizationSlug: "acme",
-      snapshot,
-    });
+  it("fans one direct watch observation into the local collections", () => {
+    const snapshot = observedSnapshot();
+    applyRuntimeSnapshot({ organizationSlug: "runtime-observation", snapshot });
 
     expect(
-      getCachedRuntimeSnapshot({ organizationSlug: "acme" }),
+      getCachedRuntimeSnapshot({ organizationSlug: "runtime-observation" }),
     ).toEqual(snapshot);
   });
 });
 
 describe("unavailableRuntimeSnapshot", () => {
-  it("retains previous machines/services and updatedAt", () => {
-    const previous: RuntimeSnapshotLens = {
-      status: "live_rows",
-      error: null,
-      publicUrl: {
-        mode: "ployz",
-        domain: "brisk-river.up.ployz.app",
-        leaseApex: "brisk-river.up.ployz.app",
-        dnsTarget: {
-          intent: "enabled",
-          allocation: "allocated",
-          publication: "applied",
-        },
-      },
-      machines: [
-        {
-          id: "m1",
-          name: "node-1",
-          publicIp: null,
-          gateway: { status: "silent", reason: "no_answer" },
-          observedContainerCount: null,
-          region: null,
-          availabilityZone: null,
-          overlayIp: null,
-          endpoints: [],
-          testimonyStatus: "answered",
-          lastObservedAt: "2026-07-01T00:00:00.000Z",
-          updatedAt: "2026-07-01T00:00:00.000Z",
-        },
-      ],
-      services: [
-        {
-          id: "s1",
-          namespaceId: "ns1",
-          serviceId: "svc1",
-          activeRevisionId: "rev1",
-          routeCount: 1,
-          instanceCount: 1,
-          readyInstanceCount: 1,
-          bindings: [],
-          updatedAt: "2026-07-01T00:00:00.000Z",
-        },
-      ],
-      updatedAt: "2026-07-01T00:00:00.000Z",
-    };
+  it("retains the last observation and marks it unavailable", () => {
+    const previous = observedSnapshot();
 
-    const snapshot = unavailableRuntimeSnapshot(
-      previous,
-      "Runtime connection lost.",
-    );
-
-    expect(snapshot).toEqual({
+    expect(
+      unavailableRuntimeSnapshot(previous, "Runtime connection lost."),
+    ).toEqual({
+      ...previous,
       status: "unavailable",
       error: "Runtime connection lost.",
-      publicUrl: previous.publicUrl,
-      machines: previous.machines,
-      services: previous.services,
-      updatedAt: previous.updatedAt,
     });
   });
 });
 
 describe("unreachableRuntimeSnapshot", () => {
-  it("clears machines so stale rows are not rendered as membership", () => {
-    expect(unreachableRuntimeSnapshot(CLUSTER_UNREACHABLE_ERROR)).toMatchObject({
+  it("clears observation rows so they are not rendered as membership", () => {
+    expect(unreachableRuntimeSnapshot(CLUSTER_UNREACHABLE_ERROR)).toEqual({
       status: "unreachable",
       error: CLUSTER_UNREACHABLE_ERROR,
+      hostedDnsHostname: null,
       machines: [],
       services: [],
+      certificates: [],
+      incompleteIds: {
+        machines: [],
+        containers: [],
+        volumes: [],
+        certificates: [],
+      },
+      observedAt: null,
     });
   });
 });

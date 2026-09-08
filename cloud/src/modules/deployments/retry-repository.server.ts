@@ -3,8 +3,8 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import {
-  destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
-} from "#/modules/operations/tables";
+  volumeRemoveAttempt as schemaVolumeRemoveAttempt,
+} from "#/modules/runtime/tables";
 import {
   environment as schemaEnvironment,
   project as schemaProject,
@@ -123,17 +123,17 @@ export const createRetryAttempt = Effect.fn("Deployments.createRetryAttempt")(
             message: "The failed attempt is no longer retryable.",
           });
         }
-        const [destructiveAttempt] = yield* tx
-          .select({ id: schemaDestructiveVolumeAttempt.id })
-          .from(schemaDestructiveVolumeAttempt)
+        const [volumeRemoveAttempt] = yield* tx
+          .select({ id: schemaVolumeRemoveAttempt.id })
+          .from(schemaVolumeRemoveAttempt)
           .where(
             eq(
-              schemaDestructiveVolumeAttempt.environmentDeploymentId,
+              schemaVolumeRemoveAttempt.environmentDeploymentId,
               source.id,
             ),
           )
           .limit(1);
-        if (destructiveAttempt) {
+        if (volumeRemoveAttempt) {
           return yield* new Validation({
             field: "failedDeploymentId",
             message:

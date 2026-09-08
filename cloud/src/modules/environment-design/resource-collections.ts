@@ -2,7 +2,7 @@ import { createLiveQueryCollection, eq, toArray, type Collection, type UtilsReco
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { variableGroupDocumentRecord, volumeDocumentRecord, volumeIsVisible, type VolumeHistory, type ResourceDocumentView } from "./resource-document";
 
-import type { getRawEnvironmentResourcesCollection, getResourceLineagesCollection, getCanvasPositionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemovalResultsCollection, getDestructiveVolumeAttemptsCollection } from "#/electric/collections";
+import type { getRawEnvironmentResourcesCollection, getResourceLineagesCollection, getCanvasPositionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemoveAttemptsCollection } from "#/electric/collections";
 import type { getEnvironmentDocumentsCollection } from "./environment-document.collection";
 
 type Source<C> = C extends Collection<infer Row, infer Key, infer _Utils, infer Schema, infer Input>
@@ -15,8 +15,7 @@ type ResourceSources = {
 };
 type VolumeSources = ResourceSources & {
   snapshots: Source<ReturnType<typeof getEnvironmentNodeConfigSnapshotsCollection>>;
-  removals: Source<ReturnType<typeof getVolumeRemovalResultsCollection>>;
-  destructive: Source<ReturnType<typeof getDestructiveVolumeAttemptsCollection>>;
+  removals: Source<ReturnType<typeof getVolumeRemoveAttemptsCollection>>;
 };
 
 function resourceDocumentRows(organizationSlug: string, type: "variable_group" | "volume", { resources, lineages, positions, documents }: ResourceSources) {
@@ -68,7 +67,7 @@ export function createEnvironmentResourcesCollection(input: { organizationSlug: 
 
 export function createVolumeResourcesCollection(input: { organizationSlug: string; sources: VolumeSources }) {
   const resources = resourceDocumentRows(input.organizationSlug, "volume", input.sources);
-  const { snapshots, removals, destructive } = input.sources;
+  const { snapshots, removals } = input.sources;
   const rows = createLiveQueryCollection({
     id: `electric:${input.organizationSlug}:volume-history`, startSync: true,
     query: (q) => q.from({ resource: input.sources.resources })
@@ -83,16 +82,14 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
         .where(({ removal }) => eq(removal.environmentResourceId, resource.id))
         .where(({ removal }) => eq(removal.status, "completed"))
         .orderBy(({ removal }) => removal.terminalAt, "desc").findOne()),
-      destructive: toArray(q.from({ removal: destructive })
-        .where(({ removal }) => eq(removal.environmentResourceId, resource.id))
-        .where(({ removal }) => eq(removal.disposition, "completed"))
-        .orderBy(({ removal }) => removal.terminalAt, "desc").findOne()),
     })),
   });
   const withHistory = createLiveQueryCollection({
     id: `electric:${input.organizationSlug}:volume-document-history`, startSync: true,
     query: (q) => q.from({ history: rows }).fn.select(({ history }) => {
-      const dates = [...history.removals, ...history.destructive].flatMap((row) => row.terminalAt ? [row.terminalAt] : []);
+      const dates = history.removals.flatMap((removal) =>
+        removal.terminalAt ? [removal.terminalAt] : [],
+      );
       return { resourceId: history.resourceId, history: {
         snapshot: history.snapshots[0] ?? null,
         removedAt: dates.length ? new Date(Math.max(...dates.map((date) => date.getTime()))) : null,

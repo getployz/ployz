@@ -1,12 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Effect, Redacted, type Schema } from "effect";
-import { environmentDeploymentSecret } from "#/modules/deployments/tables";
-import { SecretEncryption } from "#/utils/encrypted-secret.server";
-import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import {
-  service as schemaService,
-} from "#/modules/environment-design/tables";
+  environmentDeployment as schemaEnvironmentDeployment,
+  environmentDeploymentSecret,
+} from "#/modules/deployments/tables";
+import { service as schemaService } from "#/modules/environment-design/tables";
 import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
@@ -20,26 +19,25 @@ import {
   type EnvironmentDeploymentApplyResult,
 } from "#/modules/deployments/runtime-contract";
 import {
-  failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction,
-  releaseDestructiveVolumeAttemptsForAppliedDeploymentInTransaction,
-} from "#/modules/operations/destructive-volume-attempt.repository";
-import {
-  dispatchDestructiveVolumeAttempt,
-} from "#/modules/operations/destructive-volume-dispatch.server";
+  failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction,
+  releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction,
+} from "#/modules/runtime/volume-removal.repository";
+import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
 
-function dispatchReleasedDestructiveVolumeAttempts(
+function dispatchReleasedVolumeRemoveAttempts(
   attempts: readonly { id: string }[],
 ) {
   return Effect.forEach(
     attempts,
     (attempt) =>
-      dispatchDestructiveVolumeAttempt(attempt.id).pipe(
+      dispatchVolumeRemoveRequested(attempt.id).pipe(
         Effect.catch((error) =>
           Effect.logError(
-            "Failed to dispatch released destructive volume attempt",
+            "Failed to dispatch released volume removal",
             error,
           ).pipe(Effect.annotateLogs({ attemptId: attempt.id })),
         ),
@@ -53,8 +51,8 @@ function afterAppliedDeployment(
   released: readonly { id: string }[],
 ) {
   return Effect.gen(function* () {
-    yield* dispatchReleasedDestructiveVolumeAttempts(released);
     yield* latchFirstDeployedAtForDeployment(environmentDeploymentId);
+    yield* dispatchReleasedVolumeRemoveAttempts(released);
   });
 }
 
@@ -86,6 +84,7 @@ function latchFirstDeployedAtForDeployment(environmentDeploymentId: string) {
       );
   });
 }
+
 
 interface EnvironmentDeploymentStatusPatch {
   status: EnvironmentDeploymentStatus;
@@ -137,13 +136,13 @@ function markEnvironmentDeploymentStatus(input: {
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
         if (input.status === "applied") {
-          return yield* releaseDestructiveVolumeAttemptsForAppliedDeploymentInTransaction(
+          return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
             tx,
             input.environmentDeploymentId,
           );
         }
         if (input.status === "failed" || input.status === "cancelled") {
-          yield* failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction(
+          yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
             tx,
             {
               environmentDeploymentId: input.environmentDeploymentId,
@@ -237,7 +236,7 @@ export const markDeploymentFailedIfOwned = Effect.fn(
         )
         .returning({ id: schemaEnvironmentDeployment.id });
       if (!deployment) return false;
-      yield* failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction(
+      yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
         tx,
         {
           environmentDeploymentId: input.environmentDeploymentId,
@@ -260,13 +259,24 @@ export const persistSdkDeployOutcome = Effect.fn(
 }) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;
-  const rows = yield* drizzle.update(environmentDeploymentSecret)
-    .set({ encryptedRuntimeOutcome: encryption.encrypt(JSON.stringify(Redacted.value(input.outcome))) })
-    .where(eq(environmentDeploymentSecret.environmentDeploymentId, input.environmentDeploymentId))
+  const rows = yield* drizzle
+    .update(environmentDeploymentSecret)
+    .set({
+      encryptedRuntimeOutcome: encryption.encrypt(
+        JSON.stringify(Redacted.value(input.outcome)),
+      ),
+    })
+    .where(
+      eq(
+        environmentDeploymentSecret.environmentDeploymentId,
+        input.environmentDeploymentId,
+      ),
+    )
     .returning({ id: environmentDeploymentSecret.environmentDeploymentId });
   if (rows.length === 0) {
     return yield* new DeploymentExecutionError({
-      message: "Deployment attempt record was not found; runtime outcome could not be retained.",
+      message:
+        "Deployment attempt record was not found; runtime outcome could not be retained.",
       failureCode: "sdk_deploy_outcome_unknown",
     });
   }
@@ -343,7 +353,7 @@ export const persistDeployApplyResult = Effect.fn(
                   and snapshot.node_id = ${schemaEnvironmentNodeIntroduction.nodeId}
               )`,
         );
-      return yield* releaseDestructiveVolumeAttemptsForAppliedDeploymentInTransaction(
+      return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
         tx,
         input.environmentDeploymentId,
       );

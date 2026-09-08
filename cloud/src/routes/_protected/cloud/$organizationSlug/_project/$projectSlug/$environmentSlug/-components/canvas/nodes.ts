@@ -265,11 +265,11 @@ export function buildEdges(
     }
   }
 
-  // Mount edges connect a volume node to each consuming service. Only active
-  // (non-tombstoned) volumes render edges.
+  // Mount edges connect a volume node to each consuming service. Only authored
+  // volumes render edges.
   const activeVolumeIds = new Set(
     volumeResources.flatMap((volume) =>
-      volume.resource.deletedAt == null ? [volume.resource.id] : [],
+      volume.isAuthored ? [volume.resource.id] : [],
     ),
   );
   // Volumes render below their service: the volume's top (exit) flows into the

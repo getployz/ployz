@@ -148,22 +148,22 @@ export const previewRuntimeIntent = Effect.fn(
 )(function* (organizationId: string, intent: DeployIntent) {
     const sdk = yield* connectedRuntime(organizationId);
     const prepared = yield* sdk.preview(intent);
-    const previewWithoutNewVolumes = {
+    let previewInput: SdkPreparedPreviewInput = {
       project_name: prepared.project_name,
-      ...(prepared.storage === undefined ? {} : { storage: prepared.storage }),
-      ...(prepared.prune_refusal === undefined ? {} : { prune_refusal: prepared.prune_refusal }),
       operations: prepared.operations,
       warnings: prepared.warnings,
       would_remove: prepared.would_remove,
       preserved_volumes: prepared.preserved_volumes,
     };
-    const previewInput =
-      prepared.volumes_to_create === undefined
-        ? previewWithoutNewVolumes
-        : {
-            ...previewWithoutNewVolumes,
-            volumes_to_create: prepared.volumes_to_create,
-          };
+    if (prepared.storage !== undefined) {
+      previewInput = { ...previewInput, storage: prepared.storage };
+    }
+    if (prepared.prune_refusal !== undefined) {
+      previewInput = { ...previewInput, prune_refusal: prepared.prune_refusal };
+    }
+    if (prepared.volumes_to_create !== undefined) {
+      previewInput = { ...previewInput, volumes_to_create: prepared.volumes_to_create };
+    }
     const preview = yield* decodeSdkDeployPreview(previewInput);
     return { prepared, preview };
 });

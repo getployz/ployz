@@ -18,6 +18,7 @@ import { destructiveVolumeReviewsSchema } from "./destructive-volume-review";
 const savedStateColumns = {
   id: schemaEnvironmentSavedStateSnapshot.id,
   environmentId: schemaEnvironmentSavedStateSnapshot.environmentId,
+  actorId: schemaEnvironmentSavedStateSnapshot.actorId,
   intent: schemaEnvironmentSavedStateSnapshot.intent,
   volumeDeletionAuthorizations:
     schemaEnvironmentSavedStateSnapshot.volumeDeletionAuthorizations,
@@ -27,6 +28,7 @@ const decodeSavedState = Effect.fn("EnvironmentDesign.decodeSavedState")(
   function* (row: {
     id: string;
     environmentId: string;
+    actorId: string;
     intent: unknown;
     volumeDeletionAuthorizations: unknown;
   }) {

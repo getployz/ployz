@@ -117,6 +117,7 @@ export const volumeResourceRecordSchema = Schema.Struct({
   canvasPosition: Schema.NullOr(environmentResourceCanvasPositionSchema),
   attachments: Schema.mutable(Schema.Array(volumeAttachmentSummarySchema)),
   consumerCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  isAuthored: Schema.Boolean,
   runtimeStatus: Schema.NullOr(Schema.NonEmptyString),
   projectSlug: Schema.NonEmptyString,
   environmentSlug: Schema.NonEmptyString,

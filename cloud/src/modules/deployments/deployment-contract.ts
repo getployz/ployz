@@ -5,12 +5,9 @@ import type { ServiceDeploymentConfig } from "#/modules/environment-design/servi
 import type { VariableGroupConfig } from "#/modules/environment-design/variable-group-config";
 import type { VolumeConfig } from "#/modules/environment-design/volume-config";
 import {
-  destructiveVolumeReviewSchema,
   destructiveVolumeReviewsSchema,
-  reviewedDestructiveVolumeEvidenceSchema,
-  reviewedDestructiveVolumeTargetSchema,
-  type DestructiveVolumeReview,
 } from "#/modules/environment-design/destructive-volume-review";
+import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
 import {
   environmentSavedStateBasisSchema,
   environmentSavedStateDiscardCommandSchema,
@@ -24,6 +21,7 @@ import {
 import { finiteNumber } from "#/modules/environment-design/schema";
 import { runtimeDeployPreviewSchema } from "#/modules/deployments/runtime-preview";
 import type { SdkDeployPreview } from "#/modules/deployments/runtime-preview";
+import { VOLUME_REMOVE_ATTEMPT_STATUSES } from "#/modules/runtime/volume-removal";
 
 export {
   DestructiveVolumeReviewChangedError,
@@ -51,47 +49,35 @@ export const prepareEnvironmentDestructiveVolumesSchema = Schema.Struct(
   EnvironmentContext,
 );
 
-export const prepareDestructiveVolumeRetrySchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  attemptId: Uuid,
+const volumeRemoveVolumeSummarySchema = Schema.Struct({
+  machine_id: NonEmptyString,
+  name: NonEmptyString,
 });
 
-export const retryDestructiveVolumeAttemptSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  attemptId: Uuid,
-  review: destructiveVolumeReviewSchema,
-});
-
-const destructiveVolumeDispositionSchema = Schema.Literals([
-  "active",
-  "accepted",
-  "completed",
-  "partial",
-  "core_terminal",
-  "cloud_timeout",
-  "cloud_cancelled",
-  "failed",
-]);
-
-const destructiveVolumeAttemptSummarySchema = Schema.Struct({
-  id: Uuid,
-  environmentDeploymentId: Uuid,
-  environmentResourceId: Uuid,
-  retryOfAttemptId: Schema.NullOr(Uuid),
-  target: reviewedDestructiveVolumeTargetSchema,
-  evidence: reviewedDestructiveVolumeEvidenceSchema,
-  evidenceFingerprint: NonEmptyString,
-  disposition: destructiveVolumeDispositionSchema,
-  operationId: Schema.NullOr(Schema.String),
-  startSequence: Schema.NullOr(Schema.String),
-  inngestRunId: Schema.NullOr(Schema.String),
-  requestPublishedAt: Schema.NullOr(Schema.Date),
-  acceptedAt: Schema.NullOr(Schema.Date),
-  terminalEvent: Schema.NullOr(Schema.Record(Schema.String, Schema.Json)),
-  failure: Schema.NullOr(
-    Schema.Struct({ code: Schema.String, message: Schema.String }),
+const volumeRemoveOutcomeSummarySchema = Schema.Struct({
+  destroyed: Schema.mutable(Schema.Array(volumeRemoveVolumeSummarySchema)),
+  failed: Schema.mutable(
+    Schema.Array(
+      Schema.Struct({
+        ...volumeRemoveVolumeSummarySchema.fields,
+        message: Schema.optional(Schema.String),
+      }),
+    ),
   ),
-  deadlineAt: Schema.NullOr(Schema.Date),
+  omitted: Schema.mutable(Schema.Array(volumeRemoveVolumeSummarySchema)),
+});
+
+export const volumeRemoveAttemptSummarySchema = Schema.Struct({
+  id: Uuid,
+  environmentDeploymentId: Schema.NullOr(Uuid),
+  environmentResourceId: Schema.NullOr(Uuid),
+  retryOfAttemptId: Schema.NullOr(Uuid),
+  volumes: Schema.mutable(Schema.Array(volumeRemoveVolumeSummarySchema)),
+  status: Schema.Literals(VOLUME_REMOVE_ATTEMPT_STATUSES),
+  inngestRunId: Schema.NullOr(Schema.String),
+  outcome: Schema.NullOr(volumeRemoveOutcomeSummarySchema),
+  failureMessage: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(Schema.Date),
   terminalAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
@@ -160,8 +146,8 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   serviceCount: finiteNumber({ integer: true, minimum: 0 }),
   projectSlug: ProjectSlug,
   environmentSlug: EnvironmentSlug,
-  destructiveVolumeAttempts: Schema.mutable(
-    Schema.Array(destructiveVolumeAttemptSummarySchema),
+  volumeRemoveAttempts: Schema.mutable(
+    Schema.Array(volumeRemoveAttemptSummarySchema),
   ),
 });
 

@@ -3,10 +3,6 @@ import {
   createScheduleNightlyBillingReconcile,
   createSyncOrganizationBillingStateFunction,
 } from "#/modules/billing/inngest-sync/sync";
-import { createRecoverAbandonedDestructiveVolumeAttempts } from "#/modules/operations/inngest-destructive-volume/abandoned-owner-recovery";
-import { createCancelDestructiveVolume } from "#/modules/operations/inngest-destructive-volume/cancellation";
-import { createProcessDestructiveVolume } from "#/modules/operations/inngest-destructive-volume/processor";
-import { createRecoverDestructiveVolumeOutbox } from "#/modules/operations/inngest-destructive-volume/scheduled-recovery";
 import {
   createProcessGithubCheckSuiteReceived,
   createProcessGithubPushReceived,
@@ -48,10 +44,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createScheduleGithubRepositorySync(inngest),
     createSyncOrganizationBillingStateFunction(inngest),
     createScheduleNightlyBillingReconcile(inngest),
-    createProcessDestructiveVolume(inngest),
-    createCancelDestructiveVolume(inngest),
-    createRecoverDestructiveVolumeOutbox(inngest),
-    createRecoverAbandonedDestructiveVolumeAttempts(inngest),
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createProcessVolumeRemove(inngest),

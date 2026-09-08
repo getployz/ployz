@@ -5,11 +5,12 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { DeploymentRow } from "#/components/deployment-row";
 import { DeploymentHistorySkeleton } from "#/components/deployment-history-skeleton";
 import {
-  getDestructiveVolumeAttemptsCollection,
   getEnvironmentDeploymentsCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
+  getRawEnvironmentResourcesCollection,
+  getVolumeRemoveAttemptsCollection,
 } from "#/electric/collections";
 import {
   Empty,
@@ -34,7 +35,8 @@ export const Route = createFileRoute(
         organizationSlug,
         baseUrl,
       ).preload(),
-      getDestructiveVolumeAttemptsCollection(
+      getRawEnvironmentResourcesCollection(organizationSlug, baseUrl).preload(),
+      getVolumeRemoveAttemptsCollection(
         organizationSlug,
         baseUrl,
       ).preload(),

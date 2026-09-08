@@ -10,8 +10,8 @@ import {
 } from "#/modules/project/tables";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/runtime-contract";
 import {
-  failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction,
-} from "#/modules/operations/destructive-volume-attempt.repository";
+  failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction,
+} from "#/modules/runtime/volume-removal.repository";
 import { Database } from "#/server/database.server";
 
 export const markCancelledByInngestRunId = Effect.fn(
@@ -83,7 +83,7 @@ export const markCancelledByInngestRunId = Effect.fn(
             ),
           );
       }
-      yield* failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction(
+      yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
         tx,
         {
           environmentDeploymentId: record.deployment.id,

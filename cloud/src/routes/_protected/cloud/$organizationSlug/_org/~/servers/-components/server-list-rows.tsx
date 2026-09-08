@@ -94,7 +94,7 @@ function RuntimeMachineRow({
   machine: RuntimeMachineRecord;
   organizationSlug: string;
 }) {
-  const address = machine.publicIp ?? machine.overlayIp ?? machine.id;
+  const address = machine.publicIp ?? machine.id;
 
   async function copyAddress() {
     const clipboard = globalThis.navigator?.clipboard;
@@ -108,21 +108,9 @@ function RuntimeMachineRow({
 
   const description = [
     machine.publicIp ? `public ${machine.publicIp}` : null,
-    machine.overlayIp ? `overlay ${machine.overlayIp}` : null,
-    machine.region,
-    machine.availabilityZone,
-    machine.gateway.status === "not_installed"
-      ? null
-      : `gateway ${machine.gateway.status.replaceAll("_", " ")}`,
-    "routeCount" in machine.gateway
-      ? `${machine.gateway.routeCount} routes`
-      : null,
-    machine.observedContainerCount === null
-      ? null
-      : `${machine.observedContainerCount} containers`,
-    machine.lastObservedAt
-      ? `observed ${new Date(machine.lastObservedAt).toLocaleString()}`
-      : "no fresh testimony",
+    ...machine.endpoints,
+    `${machine.observedContainerCount} containers observed`,
+    `observed ${new Date(machine.observedAt).toLocaleString()}`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -134,16 +122,8 @@ function RuntimeMachineRow({
         <CardDescription>{description || machine.id}</CardDescription>
         <CardAction>
           <div className="flex items-center gap-2">
-            <Badge
-              variant={
-                machine.testimonyStatus === "answered"
-                  ? "success"
-                  : "destructive"
-              }
-            >
-              {machine.testimonyStatus === "answered"
-                ? "Responding"
-                : "No response"}
+            <Badge variant="outline">
+              Membership: {machine.membership.replaceAll("_", " ")}
             </Badge>
             <RemoveMachineControls
               machine={machine}

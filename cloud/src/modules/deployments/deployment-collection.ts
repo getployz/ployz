@@ -5,11 +5,11 @@ import {
   type Collection,
 } from "@tanstack/react-db";
 import {
-  getDestructiveVolumeAttemptsCollection,
   getEnvironmentDeploymentsCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
+  getVolumeRemoveAttemptsCollection,
 } from "#/electric/collections";
 import { plainRowCollection } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
@@ -30,8 +30,7 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
   const projects = getProjectsCollection(organizationSlug);
   const nodeSnapshots =
     getEnvironmentNodeConfigSnapshotsCollection(organizationSlug);
-  const destructiveAttempts =
-    getDestructiveVolumeAttemptsCollection(organizationSlug);
+  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug);
 
   const rows = createLiveQueryCollection({
     id: `electric:${organizationSlug}:deployment-relationships`,
@@ -55,11 +54,11 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
               eq(snapshot.environmentDeploymentId, deployment.id),
             ),
         ),
-        destructiveAttempts: toArray(
+        volumeRemoveAttempts: toArray(
           q
-            .from({ destructiveAttempt: destructiveAttempts })
-            .where(({ destructiveAttempt }) =>
-              eq(destructiveAttempt.environmentDeploymentId, deployment.id),
+            .from({ volumeRemoveAttempt: volumeRemoveAttempts })
+            .where(({ volumeRemoveAttempt }) =>
+              eq(volumeRemoveAttempt.environmentDeploymentId, deployment.id),
             ),
         ),
       })),
@@ -85,7 +84,7 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
             deployPreview: deployment.deployPreview,
             canRetry:
               deployment.status === "failed" &&
-              deploymentRelationships.destructiveAttempts.length === 0,
+              deploymentRelationships.volumeRemoveAttempts.length === 0,
             failureCode: deployment.failureCode,
             dispatchRequestedAt: deployment.dispatchRequestedAt,
             startedAt: deployment.startedAt,
@@ -97,24 +96,18 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
             ).length,
             projectSlug: deploymentRelationships.projectSlug,
             environmentSlug: deploymentRelationships.environmentSlug,
-            destructiveVolumeAttempts:
-              deploymentRelationships.destructiveAttempts.map((attempt) => ({
+            volumeRemoveAttempts:
+              deploymentRelationships.volumeRemoveAttempts.map((attempt) => ({
                 id: attempt.id,
                 environmentDeploymentId: attempt.environmentDeploymentId,
                 environmentResourceId: attempt.environmentResourceId,
                 retryOfAttemptId: attempt.retryOfAttemptId,
-                target: attempt.target,
-                evidence: attempt.evidence,
-                evidenceFingerprint: attempt.evidenceFingerprint,
-                disposition: attempt.disposition,
-                operationId: attempt.operationId,
-                startSequence: attempt.startSequence,
+                volumes: attempt.volumes,
+                status: attempt.status,
                 inngestRunId: attempt.inngestRunId,
-                requestPublishedAt: attempt.requestPublishedAt,
-                acceptedAt: attempt.acceptedAt,
-                terminalEvent: attempt.terminalEvent,
-                failure: attempt.failure,
-                deadlineAt: attempt.deadlineAt,
+                outcome: attempt.outcome,
+                failureMessage: attempt.failureMessage,
+                startedAt: attempt.startedAt,
                 terminalAt: attempt.terminalAt,
                 createdAt: attempt.createdAt,
                 updatedAt: attempt.updatedAt,

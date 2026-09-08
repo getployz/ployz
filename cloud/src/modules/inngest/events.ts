@@ -24,7 +24,6 @@ import type {
   GithubInstallationRepositoriesWebhook,
   GithubInstallationWebhook,
 } from "#/modules/github/github-webhook-contracts";
-import type { destructiveVolumeRequestedEvent } from "#/modules/operations/destructive-volume-outbox";
 
 export const inngestEventEnvelopeFields = {
   id: Schema.optionalKey(Schema.String),
@@ -413,5 +412,4 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
-  | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
-  | ReturnType<typeof destructiveVolumeRequestedEvent>;
+  | ReturnType<typeof createGithubCheckSuiteReceivedEvent>;

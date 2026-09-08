@@ -80,25 +80,4 @@ describe("service drawer Working comparison", () => {
       changed: false,
     });
   });
-
-  it("labels managed-hostname drift from runtime testimony as Runtime", () => {
-    const working = config(1);
-    working.managedHostname = { prefix: "api", targetPort: null };
-    const diff = getServiceDeploymentDiffState({
-      service: { id: "service-1", ...working },
-      comparison: { role: "saved", value: working },
-      managedHostnameRuntime: {
-        autoDomain: "new.example.com",
-        boundHostnames: ["api.old.example.com"],
-      },
-    });
-
-    expect(
-      diff.field("managedHostname.drift"),
-    ).toMatchObject({
-      changed: true,
-      baselineLabel: "Runtime",
-      baselineValue: "api.old.example.com",
-    });
-  });
 });

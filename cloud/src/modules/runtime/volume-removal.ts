@@ -33,8 +33,10 @@ export const RetryVolumeRemoveInput = Schema.Struct({
 export type RetryVolumeRemoveInput = typeof RetryVolumeRemoveInput.Type;
 
 export const VOLUME_REMOVE_ATTEMPT_STATUSES = [
+  "awaiting_deployment",
   "pending",
   "running",
+  "unknown",
   "completed",
   "partial",
   "failed",
@@ -121,12 +123,17 @@ export function volumesConfirmedForPhysicalName(
 }
 
 export function volumeRemoveIsBusy(status: VolumeRemoveAttemptStatus) {
-  return status === "pending" || status === "running";
+  return (
+    status === "awaiting_deployment" ||
+    status === "pending" ||
+    status === "running"
+  );
 }
 
 export function volumeRemoveIsRetryable(status: VolumeRemoveAttemptStatus) {
   return (
     status === "pending" ||
+    status === "unknown" ||
     status === "partial" ||
     status === "failed" ||
     status === "cancelled"
@@ -148,6 +155,8 @@ export function retryVolumesForAttempt(attempt: {
   outcome: VolumeRemoveOutcome | null;
 }): VolumeRemoveRetryPlan {
   switch (attempt.status) {
+    case "awaiting_deployment":
+      return { kind: "conflict" };
     case "pending":
       return { kind: "resend" };
     case "partial":
@@ -158,6 +167,7 @@ export function retryVolumesForAttempt(attempt: {
           attempt.outcome?.destroyed ?? [],
         ),
       };
+    case "unknown":
     case "failed":
     case "cancelled":
       return { kind: "retry", volumes: [...attempt.volumes] };

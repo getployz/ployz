@@ -1,6 +1,5 @@
 import "@tanstack/react-start/server-only";
 
-import type { MachineId } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import {
@@ -10,16 +9,9 @@ import {
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createTeardownRequestedEvent } from "#/modules/inngest/events";
 import {
-  directVolumeDataLoss,
   unionDataLossLists,
   type DataLossList,
 } from "#/modules/runtime/data-loss-confirm";
-import {
-  RUNTIME_VOLUME_REQUEST_TIMEOUT_MS,
-  runtimeVolumeNamespace,
-  runtimeVolumeSnapshotFromWatch,
-  type RuntimeVolumeSnapshot,
-} from "#/modules/runtime/runtime-volume";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { type PloyzSession } from "#/modules/runtime/ployz.server";
@@ -27,8 +19,6 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import {
   cloudEnvironmentName,
   environmentCloudRows,
-  environmentTargetsWithIdentities,
-  machineCloudRow,
   organizationCloudRow,
   planTeardownRuntime,
   projectCloudRow,
@@ -40,7 +30,6 @@ import {
   type TeardownRuntimePlan,
   type TeardownTargetInput,
   type TeardownTargets,
-  type TeardownVolumeOwnership,
 } from "#/modules/runtime/teardown";
 import {
   insertTeardownAttempt,
@@ -223,22 +212,16 @@ const loadCatalog = Effect.fn("Teardown.loadCatalog")(function* (
 
 type RuntimeInspection =
   | {
-      readonly cluster: Extract<
-        TeardownClusterView,
-        { kind: "no_cluster" | "unreachable" }
-      >;
-      readonly volumes: readonly RuntimeVolumeSnapshot[] | null;
-      readonly client: PloyzSession | null;
+      readonly cluster: Extract<TeardownClusterView, { kind: "no_cluster" | "unreachable" }>;
     }
   | {
       readonly cluster: Extract<TeardownClusterView, { kind: "live" }>;
-      readonly volumes: readonly RuntimeVolumeSnapshot[] | null;
       readonly client: PloyzSession;
     };
 
-function isLiveRuntimeInspection(
+function isConnectedRuntimeInspection(
   runtime: RuntimeInspection,
-): runtime is Extract<RuntimeInspection, { cluster: { kind: "live" } }> {
+): runtime is Extract<RuntimeInspection, { client: PloyzSession }> {
   return runtime.cluster.kind === "live";
 }
 
@@ -250,33 +233,15 @@ const inspectRuntime = Effect.fn("Teardown.inspectRuntime")(function* (
   if (session.status === "no_connection") {
     return {
       cluster: { kind: "no_cluster" },
-      volumes: null,
-      client: null,
     } satisfies RuntimeInspection;
   }
   if (session.status === "unreachable") {
     return {
       cluster: { kind: "unreachable" },
-      volumes: null,
-      client: null,
-    } satisfies RuntimeInspection;
-  }
-  const frame = yield* session.connected
-    .watchFirstFrame(RUNTIME_VOLUME_REQUEST_TIMEOUT_MS)
-    .pipe(Effect.exit);
-  if (frame._tag === "Failure") {
-    return {
-      cluster: { kind: "unreachable" },
-      volumes: null,
-      client: session.connected,
     } satisfies RuntimeInspection;
   }
   return {
-    cluster: {
-      kind: "live",
-      machines: frame.value.machines.map((entry) => entry.machine.id),
-    },
-    volumes: frame.value.volumes.map(runtimeVolumeSnapshotFromWatch),
+    cluster: { kind: "live" },
     client: session.connected,
   } satisfies RuntimeInspection;
 });
@@ -287,69 +252,38 @@ function dataLossForEnvironment(input: {
   environment: EnvironmentRecord;
   services: readonly { name: string }[];
   volumes: readonly { name: string }[];
-  runtimeVolumes: readonly RuntimeVolumeSnapshot[] | null;
 }): DataLossList {
   const cloudName = cloudEnvironmentName({
     organizationSlug: input.organizationSlug,
     projectSlug: input.projectSlug,
     environmentName: input.environment.name,
   });
-  const rustVolumes = (input.runtimeVolumes ?? []).flatMap((volume) =>
-    runtimeVolumeNamespace(volume) === input.environment.namespace
-      ? [
-          {
-            // SAFETY: Runtime observations carry SDK machine identities.
-            machine_id: volume.machine_id as MachineId,
-            name: volume.name,
-          },
-        ]
-      : [],
-  );
-  return unionDataLossLists([
-    directVolumeDataLoss(rustVolumes),
-    environmentCloudRows({
-      cloudName,
-      services: input.services,
-      volumes: input.volumes,
-    }),
-  ]);
+  return environmentCloudRows({
+    cloudName,
+    services: input.services,
+    volumes: input.volumes,
+  });
 }
-
-const loadMachineDataLoss = Effect.fn("Teardown.loadMachineDataLoss")(
-  function* (session: PloyzSession, machineId: string) {
-    const observed = yield* session
-      .dataLossIfMachineRemoved(
-        // SAFETY: Cloud and SDK use the same machine identifier bytes.
-        machineId as MachineId,
-      )
-      .pipe(Effect.catchTag("SdkSurfaceNotShipped", () => Effect.succeed(null)));
-    return observed?.data_loss ?? [];
-  },
-);
 
 function targetsFor(
   access: TeardownAccess,
   environments: readonly EnvironmentWithProject[],
-  identities: ConfirmTeardownInput["identities"],
-  ownership: readonly TeardownVolumeOwnership[],
   plan: Extract<TeardownRuntimePlan, { kind: "ok" }>,
+  runtime: RuntimeInspection,
 ): TeardownTargets {
   return {
-    environments: environmentTargetsWithIdentities({
-      environments: environments.map((environment) => ({
-        environmentId: environment.id,
-        projectId: environment.projectId,
-        namespace: environment.namespace,
-        cloudName: cloudEnvironmentName({
-          organizationSlug: access.organization.slug,
-          projectSlug: environment.projectSlug,
-          environmentName: environment.name,
-        }),
-      })),
-      identities,
-      ownership,
-    }),
-    machines: plan.machines,
+    environments: environments.map((environment) => ({
+      environmentId: environment.id,
+      projectId: environment.projectId,
+      projectName: environment.namespace,
+      cloudName: cloudEnvironmentName({
+        organizationSlug: access.organization.slug,
+        projectSlug: environment.projectSlug,
+        environmentName: environment.name,
+      }),
+    })),
+    destroyRuntimeProjects:
+      access.scope !== "organization" && isConnectedRuntimeInspection(runtime),
     revokePairing: plan.revokePairing,
     runtimeMembership: plan.runtimeMembership,
   };
@@ -363,6 +297,14 @@ export const loadTeardownDataLoss = Effect.fn("Teardown.loadDataLoss")(
       graph.environments.map((environment) => environment.id),
     );
     const runtime = yield* inspectRuntime(access.organization.id);
+    if (
+      access.scope !== "organization" &&
+      runtime.cluster.kind === "unreachable"
+    ) {
+      return yield* new Validation({
+        message: "The runtime is unreachable. Reconnect it before tearing down this target.",
+      });
+    }
     const environmentLists = graph.environments.map((environment) =>
       dataLossForEnvironment({
         organizationSlug: input.organizationSlug,
@@ -374,9 +316,21 @@ export const loadTeardownDataLoss = Effect.fn("Teardown.loadDataLoss")(
         volumes: catalog.volumes.filter(
           (volume) => volume.environmentId === environment.id,
         ),
-        runtimeVolumes: runtime.volumes,
       }),
     );
+    let rust: DataLossList["rust"] = [];
+    if (isConnectedRuntimeInspection(runtime)) {
+      if (access.scope === "organization") {
+        rust = (yield* runtime.client.dataLossIfClusterDestroyed()).data_loss;
+      } else {
+        const observed = yield* Effect.all(
+          graph.environments.map((environment) =>
+            runtime.client.dataLossIfProjectDestroyed(environment.namespace, true),
+          ),
+        );
+        rust = observed.flatMap((dataLoss) => dataLoss.data_loss);
+      }
+    }
     const projectLists =
       access.scope === "environment"
         ? []
@@ -386,30 +340,14 @@ export const loadTeardownDataLoss = Effect.fn("Teardown.loadDataLoss")(
               projectSlug: project.slug,
             }),
           );
-    let machineLists: DataLossList[] = [];
-    if (isLiveRuntimeInspection(runtime) && access.scope === "organization") {
-      const client = runtime.client;
-      machineLists = yield* Effect.all(
-        runtime.cluster.machines.map((machineId) =>
-          loadMachineDataLoss(client, machineId).pipe(
-            Effect.map((rust) =>
-              unionDataLossLists([
-                { rust, cloud: [] },
-                machineCloudRow(machineId),
-              ]),
-            ),
-          ),
-        ),
-      );
-    }
     const organizationLists =
       access.scope === "organization"
         ? [organizationCloudRow(input.organizationSlug)]
         : [];
     return unionDataLossLists([
       ...environmentLists,
+      { rust, cloud: [] },
       ...projectLists,
-      ...machineLists,
       ...organizationLists,
     ]);
   },
@@ -426,6 +364,14 @@ export const confirmTeardown = Effect.fn("Teardown.confirm")(
     const access = yield* requireTeardownAccess(actor, input);
     const graph = yield* loadTeardownGraph(access);
     const runtime = yield* inspectRuntime(access.organization.id);
+    if (
+      access.scope !== "organization" &&
+      runtime.cluster.kind === "unreachable"
+    ) {
+      return yield* new Validation({
+        message: "The runtime is unreachable. Reconnect it before tearing down this target.",
+      });
+    }
     const plan = planTeardownRuntime({
       scope: access.scope,
       abandon: input.abandon === true,
@@ -439,19 +385,7 @@ export const confirmTeardown = Effect.fn("Teardown.confirm")(
         message: teardownRuntimeRefuseMessage(plan.reason),
       });
     }
-    const ownership = (runtime.volumes ?? []).flatMap((volume) => {
-      const namespace = runtimeVolumeNamespace(volume);
-      return namespace === undefined
-        ? []
-        : [{ namespace, machine: volume.machine_id, name: volume.name }];
-    });
-    const targets = targetsFor(
-      access,
-      graph.environments,
-      input.identities,
-      ownership,
-      plan,
-    );
+    const targets = targetsFor(access, graph.environments, plan, runtime);
     const attempt = yield*
       insertTeardownAttempt({
         organizationId: access.organization.id,
@@ -486,23 +420,8 @@ export const retryTeardown = Effect.fn("Teardown.retry")(
         message: "This teardown cannot be retried yet.",
       });
     }
-    if (retry.kind === "resend") {
-      yield* dispatchTeardownRequested(attempt.id);
-      return attempt;
-    }
-    const created = yield*
-      insertTeardownAttempt({
-        organizationId: attempt.organizationId,
-        requestedByUserId: actor.userId,
-        projectId: attempt.projectId,
-        environmentId: attempt.environmentId,
-        scope: attempt.scope,
-        confirmDataLoss: attempt.confirmDataLoss,
-        targets: attempt.targets,
-        retryOfAttemptId: attempt.id,
-      });
-    yield* dispatchTeardownRequested(created.id);
-    return created;
+    yield* dispatchTeardownRequested(attempt.id);
+    return attempt;
   },
 );
 

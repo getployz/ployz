@@ -1,36 +1,20 @@
-import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import "@tanstack/react-start/server-only";
 
 import { and, eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
-import {
-  destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
-} from "#/modules/operations/tables";
-import { environment as schemaEnvironment } from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationReceipt } from "#/server/mutation-receipt.server";
 import { DeployImageNotPullableError } from "#/modules/deployments/deployment-errors";
 import { isActiveDeploymentUniqueViolation } from "#/modules/deployments/queue-lock.server";
 import {
-  destructiveVolumeRetryModeForAttempt,
-} from "#/modules/operations/destructive-volume-attempt";
-import {
-  retryDestructiveVolumeAttempt as retryDestructiveVolumeAttemptRecord,
-} from "#/modules/operations/destructive-volume-attempt.repository";
-import {
-  completeDestructiveVolumeAttempt,
-} from "#/modules/operations/destructive-volume-attempt-reconciliation.server";
-import {
-  dispatchDestructiveVolumeAttempt,
-} from "#/modules/operations/destructive-volume-dispatch.server";
-import {
   createRetryAttempt,
   loadAuthorizedDeploymentEvidence,
 } from "#/modules/deployments/retry-repository.server";
 import {
   loadCurrentEnvironmentSnapshotProjection,
+  loadEnvironmentDocument,
 } from "#/modules/environment-design/working-state-repository.server";
 import {
   gatherExactTombstonedVolumeReviews,
@@ -75,7 +59,6 @@ import type {
   EnvironmentChangeStateProjection,
   OrganizationEnvironmentChangeStateQueryInput,
   RetryEnvironmentDeploymentInput,
-  DestructiveVolumeReview,
 } from "#/modules/deployments/deployment-contract";
 
 type EnvironmentContextInput = {
@@ -148,145 +131,6 @@ export const prepareEnvironmentDestructiveVolumes = Effect.fn(
       environmentId: context.environment.id,
       resourceIds: destructiveSave.volumeIds,
     });
-});
-
-const loadAuthorizedDestructiveVolumeRetry = Effect.fn(
-  "Deployments.loadAuthorizedDestructiveVolumeRetry",
-)(function* (
-  actor: Actor,
-  input: { readonly organizationSlug: string; readonly attemptId: string },
-) {
-  const { drizzle: database } = yield* Database;
-  const organization = yield* requireOrganization(actor, input.organizationSlug);
-  const rows = yield* database
-        .select({
-          attempt: schemaDestructiveVolumeAttempt,
-          environmentId: schemaEnvironment.id,
-        })
-        .from(schemaDestructiveVolumeAttempt)
-        .innerJoin(
-          schemaEnvironmentDeployment,
-          eq(
-            schemaEnvironmentDeployment.id,
-            schemaDestructiveVolumeAttempt.environmentDeploymentId,
-          ),
-        )
-        .innerJoin(
-          schemaEnvironment,
-          eq(
-            schemaEnvironment.id,
-            schemaEnvironmentDeployment.environmentId,
-          ),
-        )
-        .where(
-          and(
-            eq(schemaDestructiveVolumeAttempt.id, input.attemptId),
-            eq(schemaEnvironment.organizationId, organization.id),
-          ),
-        )
-        .limit(1);
-  const source = rows[0];
-  if (source === undefined) {
-    return yield* new NotFound({
-      message: "The destructive volume attempt was not found.",
-    });
-  }
-  const mode = destructiveVolumeRetryModeForAttempt(source.attempt);
-  if (mode === null) {
-    return yield* new Conflict({
-      message: "This volume removal attempt has no safe retry action.",
-    });
-  }
-  return { source, mode };
-});
-
-export const prepareDestructiveVolumeRetry = Effect.fn(
-  "Deployments.prepareDestructiveVolumeRetry",
-)(function* (
-  actor: Actor,
-  input: { readonly organizationSlug: string; readonly attemptId: string },
-) {
-  const { source, mode } = yield* loadAuthorizedDestructiveVolumeRetry(
-    actor,
-    input,
-  );
-  if (mode === "new_removal") {
-    const reviews = yield* gatherExactTombstonedVolumeReviews({
-      actor,
-      organizationSlug: input.organizationSlug,
-      environmentId: source.environmentId,
-      resourceIds: [source.attempt.environmentResourceId],
-    });
-    return { mode, reviews };
-  }
-  return {
-    mode,
-    reviews: [
-      { target: source.attempt.target, evidence: source.attempt.evidence },
-    ],
-  };
-});
-
-export const retryDestructiveVolumeAttempt = Effect.fn(
-  "Deployments.retryDestructiveVolumeAttempt",
-)(function* (
-  actor: Actor,
-  input: {
-    readonly organizationSlug: string;
-    readonly attemptId: string;
-    readonly review: DestructiveVolumeReview;
-  },
-) {
-  const { source, mode } = yield* loadAuthorizedDestructiveVolumeRetry(
-    actor,
-    input,
-  );
-  if (mode === "new_removal") {
-    const freshReviews = yield* gatherExactTombstonedVolumeReviews({
-      actor,
-      organizationSlug: input.organizationSlug,
-      environmentId: source.environmentId,
-      resourceIds: [source.attempt.environmentResourceId],
-    });
-    const mismatch = getDestructiveVolumeReviewMismatch({
-      reviewed: [input.review],
-      fresh: freshReviews,
-    });
-    if (mismatch !== null) {
-      return yield* new DestructiveVolumeReviewChangedError({
-        reason: "review_updated_evidence",
-        message: mismatch,
-        freshReviews,
-      });
-    }
-  }
-
-  const retried = yield* retryDestructiveVolumeAttemptRecord({
-    attemptId: input.attemptId,
-    target: input.review.target,
-    evidence: input.review.evidence,
-  });
-  if (
-    retried.mode === "new_removal" ||
-    retried.mode === "reobserve_operation"
-  ) {
-    yield* dispatchDestructiveVolumeAttempt(retried.attempt.id);
-  }
-  if (
-    retried.mode === "reconcile_tombstone" &&
-    retried.attempt.disposition !== "completed"
-  ) {
-    yield* completeDestructiveVolumeAttempt({
-      attemptId: retried.attempt.id,
-      operationId: retried.operationId,
-    });
-  }
-  return retried.txid === undefined
-    ? { state: "created" as const }
-    : {
-        txid: retried.txid,
-        data: { state: "created" as const },
-      };
 });
 
 function parseEnvironmentChangeStateNode(input: {
@@ -403,7 +247,11 @@ const requirePullableManualSdkDeploy = Effect.fn(
   "Deployments.requirePullableManualSdkDeploy",
 )(function* (environmentId: string) {
   const document = yield* loadEnvironmentDocument(environmentId);
-  const services = document.intent.services.map((node) => ({ id: node.id, name: node.config.name, source: node.config.source }));
+  const services = document.intent.services.map((node) => ({
+    id: node.id,
+    name: node.config.name,
+    source: node.config.source,
+  }));
   return yield* requirePullableSdkDeployImagesEffect(services);
 });
 

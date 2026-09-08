@@ -5,14 +5,13 @@ import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
   parseTeardownTargets,
-  type TeardownAttemptStatus,
   type TeardownOutcome,
   type TeardownScope,
   type TeardownTargets,
 } from "#/modules/runtime/teardown";
 import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
 import { Database, isUniqueViolation } from "#/server/database.server";
-import { Conflict } from "#/server/public-error";
+import { Conflict, Validation } from "#/server/public-error";
 
 export type TeardownAttempt = typeof schemaTeardownAttempt.$inferSelect;
 
@@ -97,7 +96,6 @@ export const insertTeardownAttempt = Effect.fn("TeardownRepository.insert")(
     scope: TeardownScope;
     confirmDataLoss: readonly DataLossIdentity[];
     targets: TeardownTargets;
-    retryOfAttemptId?: string;
     now?: Date;
   }) {
     const now = input.now ?? new Date();
@@ -109,7 +107,6 @@ export const insertTeardownAttempt = Effect.fn("TeardownRepository.insert")(
         requestedByUserId: input.requestedByUserId,
         projectId: input.projectId ?? null,
         environmentId: input.environmentId ?? null,
-        retryOfAttemptId: input.retryOfAttemptId,
         scope: input.scope,
         confirmDataLoss: [...input.confirmDataLoss],
         targets: input.targets,
@@ -177,19 +174,69 @@ export const claimTeardownAttempt = Effect.fn("TeardownRepository.claim")(
   },
 );
 
-export const completeTeardownAttempt = Effect.fn(
-  "TeardownRepository.complete",
+export const recordTeardownRuntimeEvidence = Effect.fn(
+  "TeardownRepository.recordRuntimeEvidence",
 )(function* (input: {
   attemptId: string;
   inngestRunId: string;
-  status: Extract<
-    TeardownAttemptStatus,
-    "completed" | "partial" | "failed" | "cancelled"
-  >;
-  outcome?: TeardownOutcome | null;
-  failureMessage?: string | null;
+  outcome: TeardownOutcome;
   now?: Date;
 }) {
+  const now = input.now ?? new Date();
+  const database = yield* Database;
+  const updatedRows = yield* database.drizzle
+    .update(schemaTeardownAttempt)
+    .set({ outcome: input.outcome, updatedAt: now })
+    .where(
+      and(
+        eq(schemaTeardownAttempt.id, input.attemptId),
+        eq(schemaTeardownAttempt.status, "running"),
+        eq(schemaTeardownAttempt.inngestRunId, input.inngestRunId),
+      ),
+    )
+    .returning();
+  const updated = updatedRows[0];
+  if (!updated) {
+    return yield* new Conflict({
+      message: "Teardown runtime evidence lost workflow ownership.",
+    });
+  }
+  return parsedAttempt(updated);
+});
+
+type CompleteTeardownAttemptInput = {
+  attemptId: string;
+  inngestRunId: string;
+  now?: Date;
+} & (
+  | {
+      status: "completed";
+      outcome: TeardownOutcome;
+      failureMessage?: never;
+    }
+  | {
+      status: "partial";
+      outcome: TeardownOutcome;
+      failureMessage?: string | null;
+    }
+  | {
+      status: "failed" | "cancelled";
+      outcome?: TeardownOutcome;
+      failureMessage: string;
+    }
+);
+
+export const completeTeardownAttempt = Effect.fn(
+  "TeardownRepository.complete",
+)(function* (input: CompleteTeardownAttemptInput) {
+  if (
+    (input.status === "completed" || input.status === "partial") &&
+    (input.outcome === undefined || input.outcome === null)
+  ) {
+    return yield* new Validation({
+      message: "Completed and partial teardowns require a runtime outcome.",
+    });
+  }
   const now = input.now ?? new Date();
   const database = yield* Database;
   return yield* database
@@ -212,11 +259,15 @@ export const completeTeardownAttempt = Effect.fn(
             message: "Teardown completion lost workflow ownership.",
           });
         }
+        const outcome =
+          input.status === "completed" || input.status === "partial"
+            ? input.outcome
+            : input.outcome ?? owned.outcome;
         const updatedRows = yield* transaction.drizzle
           .update(schemaTeardownAttempt)
           .set({
             status: input.status,
-            outcome: input.outcome ?? null,
+            outcome,
             failureMessage: input.failureMessage ?? null,
             terminalAt: now,
             updatedAt: now,

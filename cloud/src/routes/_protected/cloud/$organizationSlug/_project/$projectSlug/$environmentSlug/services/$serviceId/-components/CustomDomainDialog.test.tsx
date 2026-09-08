@@ -16,46 +16,24 @@ afterEach(() => {
   document.body.style.removeProperty("overflow");
 });
 
-const manualGuidance = {
-  kind: "manual" as const,
-  title: "Configure DNS separately",
-  description: "Save the route before configuring DNS.",
-};
-
 function capabilityAction() {
   return <a href="/billing">Review billing</a>;
 }
 
 describe("CustomDomainDialog", () => {
-  it("copies the exact lease target and closes only after persistence succeeds", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+  it("closes only after route persistence succeeds", async () => {
     const onClose = vi.fn();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
 
     render(
       <CustomDomainDialog
         defaultTargetPort={8080}
-        guidance={{
-          kind: "target",
-          target: "tenant.up.ployz.app",
-          title: "Configure DNS manually",
-          description:
-            "Create a CNAME record to this target, or use your provider's ALIAS or ANAME record at the zone apex.",
-        }}
         capabilityAction={capabilityAction()}
         onCapabilityRejected={vi.fn().mockResolvedValue(undefined)}
         onClose={onClose}
         onSubmit={onSubmit}
       />,
     );
-
-    expect(screen.getByText("tenant.up.ployz.app")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Copy DNS target" }));
-    expect(writeText).toHaveBeenCalledWith("tenant.up.ployz.app");
 
     fireEvent.change(screen.getByLabelText("Domain"), {
       target: { value: "api.example.com" },
@@ -75,31 +53,6 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  it("keeps Save available without inventing a DNS target", () => {
-    render(
-      <CustomDomainDialog
-        defaultTargetPort={8080}
-        guidance={{
-          kind: "manual",
-          title: "DNS target unavailable right now",
-          description:
-            "Runtime evidence is not current, so Ployz cannot show a DNS target. Save the route now and configure DNS separately.",
-        }}
-        capabilityAction={capabilityAction()}
-        onCapabilityRejected={vi.fn().mockResolvedValue(undefined)}
-        onClose={vi.fn()}
-        onSubmit={vi.fn().mockResolvedValue(undefined)}
-      />,
-    );
-
-    expect(screen.getByText("DNS target unavailable right now")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy DNS target" })).toBeNull();
-    expect(
-      (screen.getByRole("button", { name: "Save route" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(false);
-  });
-
   it("keeps the dialog open and refreshes billing after capability rejection", async () => {
     const onClose = vi.fn();
     const onCapabilityRejected = vi.fn().mockResolvedValue(undefined);
@@ -107,7 +60,6 @@ describe("CustomDomainDialog", () => {
     render(
       <CustomDomainDialog
         defaultTargetPort={8080}
-        guidance={manualGuidance}
         capabilityAction={capabilityAction()}
         onCapabilityRejected={onCapabilityRejected}
         onClose={onClose}
@@ -136,7 +88,6 @@ describe("CustomDomainDialog", () => {
     render(
       <CustomDomainDialog
         defaultTargetPort={8080}
-        guidance={manualGuidance}
         capabilityAction={capabilityAction()}
         onCapabilityRejected={vi.fn().mockResolvedValue(undefined)}
         onClose={onClose}

@@ -1,40 +1,39 @@
-import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
-import { not } from "drizzle-orm";
 import "@tanstack/react-start/server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  not,
+  type SQL,
+} from "drizzle-orm";
 import { Effect, Schema } from "effect";
-import { environmentDeployment as schemaEnvironmentDeployment, environmentDeploymentSecret } from "#/modules/deployments/tables";
+import {
+  environmentDeployment as schemaEnvironmentDeployment,
+  environmentDeploymentSecret,
+} from "#/modules/deployments/tables";
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
 import {
   environmentResource as schemaEnvironmentResource,
 } from "#/modules/environment-design/tables";
 import {
-  destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
-} from "#/modules/operations/tables";
-import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeConfigSnapshotSecret as schemaEnvironmentNodeConfigSnapshotSecret,
+  volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { EnvironmentDeploymentServiceActionPolicy } from "#/modules/deployments/tables";
 import {
-  organizationIdForDeployment,
   organizationIdForEnvironment,
 } from "#/db/scope-values.server";
 import { projectJsonObject } from "#/lib/json";
 import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
-import {
-  assertDestructiveVolumeReplayIdentity,
-  assertReviewedDestructiveVolumeIdentity,
-} from "#/modules/operations/destructive-volume-attempt-persistence.server";
-import {
-  validateDestructiveVolumeStagingAuthority,
-} from "#/modules/operations/destructive-volume-attempt-admission.server";
-import {
-  DestructiveVolumeConflict,
-  DestructiveVolumeEvidenceInvalid,
-} from "#/modules/operations/destructive-volume-errors";
+import { getVolumePhysicalName } from "#/modules/environment-design/volume-config";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { stageVolumeRemoveAttempt } from "#/modules/runtime/volume-removal.repository";
 import type {
   DestructiveVolumeReview,
 } from "#/modules/environment-design/destructive-volume-review";
@@ -72,6 +71,7 @@ export type PreparedEnvironmentNodeSnapshot = Pick<
 
 export type SavedDeploymentTarget = CompiledSavedEnvironmentIntent & {
   readonly savedStateSnapshotId: string;
+  readonly requestedByUserId: string;
   readonly volumeDeletionAuthorizations: readonly DestructiveVolumeReview[];
 };
 
@@ -97,6 +97,7 @@ function loadExactSavedDeploymentTarget(input: {
     }
     return {
       savedStateSnapshotId: saved.id,
+      requestedByUserId: saved.actorId,
       ...compileSavedEnvironmentIntent({
         environmentId: input.environmentId,
         intent: saved.intent,
@@ -118,6 +119,7 @@ export const loadLatestSavedDeploymentTarget = Effect.fn(
   }
   return {
     savedStateSnapshotId: saved.id,
+    requestedByUserId: saved.actorId,
     ...compileSavedEnvironmentIntent({ environmentId, intent: saved.intent }),
     volumeDeletionAuthorizations: saved.volumeDeletionAuthorizations,
   } satisfies SavedDeploymentTarget;
@@ -240,152 +242,54 @@ function actionableVolumeDeletionAuthorizations(
   });
 }
 
-function mapDestructiveVolumeAssertError(
-  error: DestructiveVolumeEvidenceInvalid | DestructiveVolumeConflict,
-) {
-  switch (error._tag) {
-    case "DestructiveVolumeEvidenceInvalid":
-      return new Validation({ message: error.message });
-    case "DestructiveVolumeConflict":
-      return new Conflict({ message: error.message });
-    default: {
-      const _exhaustive: never = error;
-      return _exhaustive;
-    }
-  }
-}
-
-function stageDestructiveVolumeAttempt(input: {
+function stageReviewedVolumeRemoveAttempt(input: {
+  organizationId: string | SQL;
+  requestedByUserId: string;
+  environmentId: string;
   environmentDeploymentId: string;
   environmentResourceId: string;
   target: DestructiveVolumeReview["target"];
   evidence: DestructiveVolumeReview["evidence"];
 }) {
   return Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* assertReviewedDestructiveVolumeIdentity(input).pipe(
-      Effect.mapError(mapDestructiveVolumeAssertError),
-    );
-    const [removalDeployment] = yield* drizzle
-      .select({
-        environmentId: schemaEnvironmentDeployment.environmentId,
-        status: schemaEnvironmentDeployment.status,
-      })
-      .from(schemaEnvironmentDeployment)
-      .where(
-        eq(
-          schemaEnvironmentDeployment.id,
-          input.environmentDeploymentId,
-        ),
-      )
-      .limit(1);
-    if (!removalDeployment) {
-      return yield* new Conflict({
-        message: "Destructive volume staging deployment was not found.",
+    const target = input.target;
+    const testimony = input.evidence.evidence;
+    if (
+      target.resourceId !== input.environmentResourceId ||
+      target.volumeName !== getVolumePhysicalName(input.environmentResourceId) ||
+      input.evidence.fingerprint.length === 0 ||
+      target.namespaceId !== testimony.namespaceId ||
+      target.volumeName !== testimony.volumeName ||
+      target.machineId !== testimony.machineId
+    ) {
+      return yield* new Validation({
+        message:
+          "Saved destructive volume review does not identify the exact tombstoned volume.",
       });
     }
-    const tombstones = yield* drizzle
-      .select({ id: schemaEnvironmentResource.id })
-      .from(schemaEnvironmentResource)
-      .where(
-        and(
-          eq(schemaEnvironmentResource.id, input.environmentResourceId),
-          eq(
-            schemaEnvironmentResource.environmentId,
-            removalDeployment.environmentId,
-          ),
-          eq(schemaEnvironmentResource.implementationType, "volume"),
-          not(volumeIsAuthored),
-        ),
-      );
-    const [priorApplied] = yield* drizzle
-      .select({ id: schemaEnvironmentDeployment.id })
-      .from(schemaEnvironmentDeployment)
-      .where(
-        and(
-          eq(
-            schemaEnvironmentDeployment.environmentId,
-            removalDeployment.environmentId,
-          ),
-          eq(schemaEnvironmentDeployment.status, "applied"),
-          ne(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
-        ),
-      )
-      .orderBy(desc(schemaEnvironmentDeployment.createdAt))
-      .limit(1);
-    const priorSnapshots = priorApplied
-      ? yield* drizzle
-          .select({ id: schemaEnvironmentNodeConfigSnapshot.id })
-          .from(schemaEnvironmentNodeConfigSnapshot)
-          .where(
-            and(
-              eq(
-                schemaEnvironmentNodeConfigSnapshot.environmentDeploymentId,
-                priorApplied.id,
-              ),
-              eq(
-                schemaEnvironmentNodeConfigSnapshot.environmentId,
-                removalDeployment.environmentId,
-              ),
-              eq(schemaEnvironmentNodeConfigSnapshot.nodeType, "volume"),
-              eq(
-                schemaEnvironmentNodeConfigSnapshot.nodeId,
-                input.environmentResourceId,
-              ),
-            ),
-          )
-      : [];
-    yield* validateDestructiveVolumeStagingAuthority({
-      removalDeploymentStatus: removalDeployment.status,
-      tombstoneCount: tombstones.length,
-      priorAppliedSnapshotCount: priorSnapshots.length,
-    }).pipe(Effect.mapError(mapDestructiveVolumeAssertError));
-    const loadActive = () =>
-      drizzle
-        .select()
-        .from(schemaDestructiveVolumeAttempt)
-        .where(
-          and(
-            eq(
-              schemaDestructiveVolumeAttempt.environmentResourceId,
-              input.environmentResourceId,
-            ),
-            inArray(schemaDestructiveVolumeAttempt.disposition, [
-              "active",
-              "accepted",
-            ]),
-          ),
-        )
-        .limit(1)
-        .pipe(Effect.map((rows) => rows[0] ?? null));
-    const active = yield* loadActive();
-    if (active) {
-      yield* assertDestructiveVolumeReplayIdentity(active, input).pipe(
-        Effect.mapError(mapDestructiveVolumeAssertError),
-      );
-      return active;
-    }
-    const [inserted] = yield* drizzle
-      .insert(schemaDestructiveVolumeAttempt)
-      .values({
-        organizationId: organizationIdForDeployment(
-          input.environmentDeploymentId,
-        ),
-        ...input,
-        evidenceFingerprint: input.evidence.fingerprint,
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (inserted) return inserted;
-    const raced = yield* loadActive();
-    if (raced) {
-      yield* assertDestructiveVolumeReplayIdentity(raced, input).pipe(
-        Effect.mapError(mapDestructiveVolumeAssertError),
-      );
-      return raced;
-    }
-    return yield* new Conflict({
-      message: "Destructive volume staging lost its active-row race.",
+    const machineId = yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(
+      target.machineId,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new Validation({
+            message:
+              "Saved destructive volume review has an invalid machine ID.",
+          }),
+      ),
+    );
+    return yield* stageVolumeRemoveAttempt({
+      organizationId: input.organizationId,
+      requestedByUserId: input.requestedByUserId,
+      environmentId: input.environmentId,
+      environmentDeploymentId: input.environmentDeploymentId,
+      environmentResourceId: input.environmentResourceId,
+      volumes: [
+        {
+          machine_id: machineId,
+          name: target.volumeName,
+        },
+      ],
     });
   });
 }
@@ -453,15 +357,16 @@ function writeQueuedSavedTarget(
     if (deployment === undefined) {
       return yield* Effect.die("Deployment write returned no row.");
     }
-    yield* drizzle.insert(environmentDeploymentSecret)
+    yield* drizzle
+      .insert(environmentDeploymentSecret)
       .values({ environmentDeploymentId: deployment.id })
       .onConflictDoNothing();
     if (queued !== undefined) {
       yield* drizzle
-        .delete(schemaDestructiveVolumeAttempt)
+        .delete(schemaVolumeRemoveAttempt)
         .where(
           eq(
-            schemaDestructiveVolumeAttempt.environmentDeploymentId,
+            schemaVolumeRemoveAttempt.environmentDeploymentId,
             deployment.id,
           ),
         );
@@ -486,7 +391,10 @@ function writeQueuedSavedTarget(
     yield* Effect.forEach(
       authorizations,
       (authorization) =>
-        stageDestructiveVolumeAttempt({
+        stageReviewedVolumeRemoveAttempt({
+          organizationId: organizationIdForEnvironment(input.environmentId),
+          requestedByUserId: target.requestedByUserId,
+          environmentId: input.environmentId,
           environmentDeploymentId: deployment.id,
           environmentResourceId: authorization.target.resourceId,
           target: authorization.target,

@@ -8,7 +8,6 @@ import {
   type ServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
 import {
-  getManagedHostnameDriftRow,
   getServiceDeploymentDiffRows,
   SERVICE_DEPLOYMENT_DIFF_PATHS,
   type ServiceDeploymentDiffKind,
@@ -33,12 +32,6 @@ export function getServiceDeploymentDiffState(input: {
   service: Pick<ServiceRecord, "id" | "source"> &
     ServiceDeploymentFieldSelection;
   comparison: EnvironmentWorkingComparison<ServiceDeploymentConfig>;
-  /** Live runtime state used to detect cluster-domain drift for the managed
-   * hostname. Omit when no runtime lens is available (e.g. server-side diffs). */
-  managedHostnameRuntime?: {
-    autoDomain: string | null;
-    boundHostnames: string[];
-  };
 }): ServiceDeploymentDiffState {
   const current = projectServiceDeploymentConfig(input.service);
   const rows = input.comparison
@@ -48,15 +41,6 @@ export function getServiceDeploymentDiffState(input: {
         baseline: input.comparison.value,
       })
     : [];
-  if (input.managedHostnameRuntime) {
-    const driftRow = getManagedHostnameDriftRow({
-      serviceId: input.service.id,
-      managedHostname: current.managedHostname,
-      autoDomain: input.managedHostnameRuntime.autoDomain,
-      boundHostnames: input.managedHostnameRuntime.boundHostnames,
-    });
-    if (driftRow) rows.push(driftRow);
-  }
   const rowsByPath = new Map(rows.map((row) => [row.path, row]));
 
   return {
@@ -74,14 +58,11 @@ export function getServiceDeploymentDiffState(input: {
       return row
         ? {
             changed: true,
-            baselineLabel:
-              row.path === "managedHostname.drift"
-                ? "Runtime"
-                : input.comparison
-                  ? input.comparison.role === "saved"
-                    ? "Saved"
-                    : "Introduced"
-                  : undefined,
+            baselineLabel: input.comparison
+              ? input.comparison.role === "saved"
+                ? "Saved"
+                : "Introduced"
+              : undefined,
             baselineValue: row.currentValue,
             currentValue: row.newValue,
             kind: row.kind,

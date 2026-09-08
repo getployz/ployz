@@ -21,9 +21,6 @@ import {
   environmentResource as schemaEnvironmentResource,
 } from "#/modules/environment-design/tables";
 import {
-  destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
-} from "#/modules/operations/tables";
-import {
   project as schemaProject,
   environment as schemaEnvironment,
 } from "#/modules/project/tables";
@@ -48,8 +45,7 @@ type EnvironmentNodeConfigSnapshotRow =
   typeof schemaEnvironmentNodeConfigSnapshot.$inferSelect;
 type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
-type DestructiveVolumeAttemptRow =
-  typeof schemaDestructiveVolumeAttempt.$inferSelect;
+type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
 const dateParser = (value: string) => new Date(value);
 const parser = {
@@ -199,17 +195,12 @@ export const getEnvironmentNodeIntroductionsCollection =
     }),
   );
 
-export const getDestructiveVolumeAttemptsCollection = cachedByOrganization(
+export const getVolumeRemoveAttemptsCollection = cachedByOrganization(
   (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<DestructiveVolumeAttemptRow>({
-      table: "destructive_volume_attempt",
+    makeOrganizationCollection<VolumeRemoveAttemptRow>({
+      table: "volume_remove_attempt",
       organizationSlug,
       baseUrl,
       getKey: (row) => row.id,
     }),
 );
-
-export const getVolumeRemovalResultsCollection = cachedByOrganization((organizationSlug, baseUrl) =>
-  makeOrganizationCollection<Pick<typeof schemaVolumeRemoveAttempt.$inferSelect, "id" | "organizationId" | "environmentId" | "environmentResourceId" | "status" | "terminalAt">>({
-    table: "volume_remove_attempt", organizationSlug, baseUrl, getKey: (row) => row.id,
-  }));

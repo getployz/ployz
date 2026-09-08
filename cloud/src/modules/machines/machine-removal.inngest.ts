@@ -1,5 +1,4 @@
-import { Data, Effect, Option, Schema } from "effect";
-import { NonRetriableError } from "inngest";
+import { Effect, Option, Schema } from "effect";
 import {
   inngestEventEnvelopeFields,
   inngestFunctionCancelledEnvelopeSchema,
@@ -40,12 +39,6 @@ export const decodeMachineRemoveFailureEvent = Schema.decodeUnknownOption(
 );
 
 type StepTools = Pick<PloyzStepTools, "run">;
-
-export class MachineRemoveTerminalFailure extends Data.TaggedError(
-  "MachineRemoveTerminalFailure",
-)<{ readonly failureCode: string; readonly failureMessage: string }> {
-  readonly retriable = false as const;
-}
 
 export async function executeProcessMachineRemove({
   event,
@@ -110,29 +103,6 @@ export async function executeProcessMachineRemove({
       ),
     );
     return { attemptId, status: "missing_identities" as const };
-  }
-
-  if (removed.kind === "permanent_failure") {
-    await step.run("complete-failed-remove", () =>
-      runInngestEffect(
-        completeMachineRemoveAttemptActivity({
-          attemptId,
-          inngestRunId: runId,
-          completion: {
-            state: "failed",
-            failureCode: removed.failureCode,
-            failureMessage: removed.failureMessage,
-          },
-          now: new Date(),
-        }),
-      ),
-    );
-    throw new NonRetriableError(removed.failureMessage, {
-      cause: new MachineRemoveTerminalFailure({
-        failureCode: removed.failureCode,
-        failureMessage: removed.failureMessage,
-      }),
-    });
   }
 
   await step.run("complete-succeeded", () =>

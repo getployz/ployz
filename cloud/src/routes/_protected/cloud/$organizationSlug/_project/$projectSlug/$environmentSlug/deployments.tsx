@@ -12,11 +12,12 @@ import {
   EmptyTitle,
 } from "#/components/ui/empty";
 import {
-  getDestructiveVolumeAttemptsCollection,
   getEnvironmentDeploymentsCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
+  getRawEnvironmentResourcesCollection,
+  getVolumeRemoveAttemptsCollection,
 } from "#/electric/collections";
 import { useDeploymentsCollection } from "#/modules/services/services.collection";
 
@@ -34,7 +35,8 @@ export const Route = createFileRoute(
         organizationSlug,
         baseUrl,
       ).preload(),
-      getDestructiveVolumeAttemptsCollection(
+      getRawEnvironmentResourcesCollection(organizationSlug, baseUrl).preload(),
+      getVolumeRemoveAttemptsCollection(
         organizationSlug,
         baseUrl,
       ).preload(),

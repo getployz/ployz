@@ -66,6 +66,11 @@ cloud-sdk-version	scripts/test-cloud-sdk-version.py	-	-	-	-
 cloud-sdk-preview	cloud/src/modules/deployments/runtime-preview.test.ts	-	-	-	-
 cloud-production-build	cloud/scripts/pr-check.sh	-	-	-	-
 cloud-fresh-database	cloud/src/db/baseline.postgres.test.ts	-	-	-	-
+cloud-teardown-sdk	cloud/src/modules/runtime/ployz.server.effect.test.ts	-	-	-	-
+cloud-teardown-data-loss	cloud/src/modules/runtime/teardown-data-loss.server.postgres.test.ts	-	-	-	-
+cloud-teardown-outcomes	cloud/src/modules/runtime/teardown.inngest.test.ts	-	-	-	-
+cloud-volume-removal	cloud/src/modules/runtime/volume-removal.server.postgres.test.ts	-	-	-	-
+cloud-runtime-watch	cloud/src/modules/runtime/runtime-events.server.test.ts	-	-	-	-
 cloud-document-persistence	cloud/src/modules/environment-design/working-document-restore.server.postgres.test.ts	-	-	-	-
 cloud-document-authoring	cloud/src/modules/environment-design/variable-operations.server.postgres.test.ts	-	-	-	-
 cloud-resource-document-updates	cloud/src/modules/environment-design/resource-collections.test.ts	-	-	-	-

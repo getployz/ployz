@@ -42,21 +42,12 @@ describe("teardown attempt database invariants", () => {
     expect(organization?.config.unique).toBe(true);
   });
 
-  it("stores a unique Inngest run id and retry provenance", () => {
+  it("stores a unique Inngest run id", () => {
     const config = getTableConfig(teardownAttempt);
     const runIndex = config.indexes.find(
       ({ config: index }) => index.name === "teardown_attempt_inngest_run_uidx",
     );
-    const retryIndex = config.indexes.find(
-      ({ config: index }) => index.name === "teardown_attempt_retry_of_idx",
-    );
-    const retryForeignKey = config.foreignKeys.find(({ reference }) =>
-      reference().columns.some(({ name }) => name === "retry_of_attempt_id"),
-    );
-
     expect(runIndex?.config.unique).toBe(true);
-    expect(retryIndex?.config.unique).toBe(true);
-    expect(retryForeignKey?.onDelete).toBe("restrict");
   });
 
   it("does not foreign-key organization, project, or environment so leftover rust stays retryable after Cloud rows drop", () => {

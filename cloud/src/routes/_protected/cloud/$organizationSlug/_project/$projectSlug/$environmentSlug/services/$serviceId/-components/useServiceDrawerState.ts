@@ -23,16 +23,11 @@ import {
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
 import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/environment-node-names";
-import { automaticBoundHostnames } from "#/modules/runtime/runtime";
 import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
-import {
-  useRuntimePublicUrl,
-  useRuntimeService,
-} from "#/providers/runtime-provider";
 
 export type ServiceRouteParams = {
   organizationSlug: string;
@@ -133,12 +128,6 @@ export function useServiceDrawerState(
         .where(({ introduction }) => eq(introduction.nodeId, params.serviceId))
         .select(({ introduction }) => introduction),
   });
-  // Runtime state for cluster-domain drift on the managed hostname. Keyed by the
-  // runtime service id (== privateDns); read from the collection so the hooks stay
-  // unconditional even before the live query resolves.
-  const privateDns = collection.get(params.serviceId)?.privateDns ?? "";
-  const { runtime } = useRuntimeService(params.environmentSlug, privateDns);
-  const publicUrl = useRuntimePublicUrl();
   const environmentResources = environmentResourceRows.map((resource) =>
     parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
@@ -211,10 +200,6 @@ export function useServiceDrawerState(
         applied,
         introduction,
       }),
-      managedHostnameRuntime: {
-        autoDomain: publicUrl.autoDomain,
-        boundHostnames: automaticBoundHostnames(runtime),
-      },
     }),
     collection: serviceWriter,
     managedPrefixesInUse: services

@@ -129,9 +129,4 @@ export type MachineRemoveCompletion =
 
 export type RemoveMachineOutcome =
   | { kind: "removed" }
-  | { kind: "missing_identities"; identities: DataLossIdentity[] }
-  | {
-      kind: "permanent_failure";
-      failureCode: string;
-      failureMessage: string;
-    };
+  | { kind: "missing_identities"; identities: DataLossIdentity[] };

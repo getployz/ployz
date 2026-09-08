@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCanvasEnvironmentChangeState,
-  buildCanvasRuntimeObservations,
   type CanvasDeploymentEvidence,
 } from "#/modules/environment-design/canvas-environment-change-state";
 import type {
@@ -160,7 +159,7 @@ describe("canvas Environment Change Set seam", () => {
     expect(canvasState.slices.drift.totalCount).toBe(0);
   });
 
-  it("shows neither runtime drift nor a deploy affordance without a connection", () => {
+  it("does not synthesize runtime drift when no Runtime Watch is available", () => {
     const canvasState = buildCanvasEnvironmentChangeState({
       working: state("working-2", serviceConfig(2)),
       saved: savedState("saved-2", serviceConfig(2)),
@@ -174,7 +173,7 @@ describe("canvas Environment Change Set seam", () => {
       nodes: [{ node, name: "api", summaryLabel: "api" }],
     });
 
-    expect(canvasState.canDeploy).toBe(false);
+    expect(canvasState.canDeploy).toBe(true);
     expect(canvasState.slices.drift).toMatchObject({
       groups: [],
       lifecycleCount: 0,
@@ -227,88 +226,6 @@ describe("canvas Environment Change Set seam", () => {
         },
       ],
     });
-  });
-
-  it("adapts observed runtime replicas against Applied config", () => {
-    const observations = buildCanvasRuntimeObservations({
-      environmentNamespace: "production",
-      applied: state("applied-2", serviceConfig(2)),
-      runtimeServices: [
-        {
-          id: "production:api",
-          namespaceId: "production",
-          serviceId: "api",
-          activeRevisionId: "revision-1",
-          routeCount: 0,
-          instanceCount: 3,
-          readyInstanceCount: 3,
-          bindings: [],
-          updatedAt: "2026-07-18T12:00:00.000Z",
-        },
-      ],
-      autoDomain: null,
-      appliedRevisionByNodeId: new Map([["service-1", "revision-applied"]]),
-    });
-
-    expect(observations.settings).toContainEqual({
-      node,
-      setting: "runtime.replicas",
-      label: "Replicas",
-      appliedValue: "2",
-      observedValue: "3",
-    });
-    expect(observations.settings).toContainEqual({
-      node,
-      setting: "runtime.revision",
-      label: "Runtime revision",
-      appliedValue: "revision-applied",
-      observedValue: "revision-1",
-    });
-  });
-
-  it("reports runtime presence changes instead of synthesizing replica drift", () => {
-    const observations = buildCanvasRuntimeObservations({
-      environmentNamespace: "production",
-      applied: state("applied-2", serviceConfig(2)),
-      runtimeServices: [
-        {
-          id: "production:orphan",
-          namespaceId: "production",
-          serviceId: "orphan",
-          activeRevisionId: "revision-orphan",
-          routeCount: 0,
-          instanceCount: 1,
-          readyInstanceCount: 1,
-          bindings: [],
-          updatedAt: "2026-07-18T12:00:00.000Z",
-        },
-      ],
-      autoDomain: null,
-    });
-    const canvasState = buildCanvasEnvironmentChangeState({
-      working: state("working-2", serviceConfig(2)),
-      saved: savedState("saved-2", serviceConfig(2)),
-      applied: state("applied-2", serviceConfig(2)),
-      nodeIntroductions: { token: "none", nodes: [] },
-      runtimeObserved: state("runtime", serviceConfig(2)),
-      runtimeObservations: observations,
-      deploymentEvidence: null,
-      nodes: [{ node, name: "api", summaryLabel: "api" }],
-    });
-
-    expect(canvasState.slices.drift.groups).toMatchObject([
-      {
-        nodeId: "orphan",
-        lifecycle: "create",
-        rows: [],
-      },
-      {
-        nodeId: "service-1",
-        lifecycle: "delete",
-        rows: [],
-      },
-    ]);
-    expect(canvasState.slices.drift.totalCount).toBe(2);
   });
 
   it("keeps pending Discard plans available to the presentation adapter", () => {

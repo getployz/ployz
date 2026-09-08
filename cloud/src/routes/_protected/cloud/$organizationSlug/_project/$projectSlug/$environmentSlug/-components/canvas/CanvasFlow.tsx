@@ -16,11 +16,6 @@ import type {
 } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import {
-  useRuntimePublicUrl,
-  useRuntimeServices,
-  useRuntimeStatus,
-} from "#/providers/runtime-provider";
 import { ApplyChangesBar } from "./ApplyChangesBar";
 import { SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
@@ -84,10 +79,6 @@ export function CanvasFlow({
     useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
-  const { status: runtimeStatus } = useRuntimeStatus();
-  const { autoDomain } = useRuntimePublicUrl();
-  const { runtimeServices, isLoading: runtimeServicesAreLoading } =
-    useRuntimeServices(params.environmentSlug);
   const { onNodeDrag } = useCanvasPositionMutation({
     ...params,
     organizationId,
@@ -115,10 +106,6 @@ export function CanvasFlow({
     volumeResources,
     environmentChangeState,
     nodeIntroductions,
-    runtimeServices,
-    runtimeStatus,
-    runtimeIsLoading: runtimeServicesAreLoading,
-    autoDomain,
     canvasNodes,
     selectedNodeId,
   });

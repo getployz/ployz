@@ -35,6 +35,10 @@ export const volumeRemoveAttempt = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environment.id, { onDelete: "cascade" }),
+    environmentDeploymentId: uuid("environment_deployment_id").references(
+      () => environmentDeployment.id,
+      { onDelete: "cascade" },
+    ),
     environmentResourceId: uuid("environment_resource_id"),
     retryOfAttemptId: uuid("retry_of_attempt_id").references(
       (): AnyPgColumn => volumeRemoveAttempt.id,
@@ -62,6 +66,10 @@ export const volumeRemoveAttempt = pgTable(
   (table) => [
     index("volume_remove_attempt_organization_id_idx").on(table.organizationId),
     index("volume_remove_attempt_environment_id_idx").on(table.environmentId),
+    index("volume_remove_attempt_deployment_idx").on(
+      table.environmentDeploymentId,
+      table.createdAt,
+    ),
     index("volume_remove_attempt_resource_idx").on(
       table.environmentResourceId,
       table.createdAt,
@@ -72,7 +80,7 @@ export const volumeRemoveAttempt = pgTable(
     uniqueIndex("volume_remove_attempt_one_active_resource_idx")
       .on(table.environmentResourceId)
       .where(
-        sql`${table.status} in ('pending', 'running')
+        sql`${table.status} in ('awaiting_deployment', 'pending', 'running')
           and ${table.environmentResourceId} is not null`,
       ),
     uniqueIndex("volume_remove_attempt_inngest_run_uidx")
@@ -90,13 +98,23 @@ export const volumeRemoveAttempt = pgTable(
     check(
       "volume_remove_attempt_status_shape_check",
       sql`(
-        (${table.status} = 'pending' and ${table.inngestRunId} is null
+        (${table.status} = 'awaiting_deployment'
+          and ${table.environmentDeploymentId} is not null
+          and ${table.inngestRunId} is null
+          and ${table.startedAt} is null and ${table.terminalAt} is null
+          and ${table.outcome} is null and ${table.failureMessage} is null)
+        or (${table.status} = 'pending' and ${table.inngestRunId} is null
           and ${table.startedAt} is null and ${table.terminalAt} is null
           and ${table.outcome} is null and ${table.failureMessage} is null)
         or (${table.status} = 'running' and ${table.inngestRunId} is not null
           and length(${table.inngestRunId}) between 1 and 255
-          and ${table.startedAt} is not null and ${table.terminalAt} is null
+          and ${table.terminalAt} is null
           and ${table.outcome} is null and ${table.failureMessage} is null)
+        or (${table.status} = 'unknown' and ${table.inngestRunId} is not null
+          and length(${table.inngestRunId}) between 1 and 255
+          and ${table.startedAt} is not null and ${table.terminalAt} is not null
+          and ${table.outcome} is null and ${table.failureMessage} is not null
+          and length(${table.failureMessage}) between 1 and 2000)
         or (${table.status} = 'completed' and ${table.inngestRunId} is not null
           and ${table.startedAt} is not null and ${table.terminalAt} is not null
           and ${table.outcome} is not null and ${table.failureMessage} is null)
@@ -104,10 +122,15 @@ export const volumeRemoveAttempt = pgTable(
           and ${table.startedAt} is not null and ${table.terminalAt} is not null
           and ${table.outcome} is not null)
         or (${table.status} in ('failed', 'cancelled')
-          and ${table.inngestRunId} is not null
-          and ${table.startedAt} is not null and ${table.terminalAt} is not null
-          and ${table.failureMessage} is not null
-          and length(${table.failureMessage}) between 1 and 2000)
+          and ${table.startedAt} is null and ${table.terminalAt} is not null
+          and ${table.outcome} is null and ${table.failureMessage} is not null
+          and length(${table.failureMessage}) between 1 and 2000
+          and (
+            (${table.inngestRunId} is not null
+              and length(${table.inngestRunId}) between 1 and 255)
+            or (${table.inngestRunId} is null
+              and ${table.environmentDeploymentId} is not null)
+          ))
       )`,
     ),
   ],
@@ -123,10 +146,6 @@ export const teardownAttempt = pgTable(
       .references(() => user.id, { onDelete: "restrict" }),
     projectId: uuid("project_id"),
     environmentId: uuid("environment_id"),
-    retryOfAttemptId: uuid("retry_of_attempt_id").references(
-      (): AnyPgColumn => teardownAttempt.id,
-      { onDelete: "restrict" },
-    ),
     scope: text("scope").notNull().$type<TeardownScope>(),
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
@@ -154,9 +173,6 @@ export const teardownAttempt = pgTable(
     index("teardown_attempt_organization_id_idx").on(table.organizationId),
     index("teardown_attempt_project_id_idx").on(table.projectId),
     index("teardown_attempt_environment_id_idx").on(table.environmentId),
-    uniqueIndex("teardown_attempt_retry_of_idx")
-      .on(table.retryOfAttemptId)
-      .where(sql`${table.retryOfAttemptId} is not null`),
     uniqueIndex("teardown_attempt_one_active_environment_idx")
       .on(table.environmentId)
       .where(
@@ -216,7 +232,7 @@ export const teardownAttempt = pgTable(
         or (${table.status} = 'running' and ${table.inngestRunId} is not null
           and length(${table.inngestRunId}) between 1 and 255
           and ${table.startedAt} is not null and ${table.terminalAt} is null
-          and ${table.outcome} is null and ${table.failureMessage} is null)
+          and ${table.failureMessage} is null)
         or (${table.status} = 'completed' and ${table.inngestRunId} is not null
           and ${table.startedAt} is not null and ${table.terminalAt} is not null
           and ${table.outcome} is not null and ${table.failureMessage} is null)

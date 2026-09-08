@@ -38,6 +38,7 @@ function volumeResourceRecord() {
     canvasPosition: null,
     attachments: [],
     consumerCount: 0,
+    isAuthored: true,
     runtimeStatus: null,
     projectSlug: "project",
     environmentSlug: "production",
@@ -157,6 +158,7 @@ describe("environment resource models", () => {
     expect(parsed.resource.deletedAt).toBeNull();
     expect(parsed.attachments).toEqual([]);
     expect(parsed.consumerCount).toBe(0);
+    expect(parsed.isAuthored).toBe(true);
     expect(parsed.runtimeStatus).toBeNull();
   });
 

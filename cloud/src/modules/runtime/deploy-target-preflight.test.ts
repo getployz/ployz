@@ -5,7 +5,7 @@ describe("deploy target preflight", () => {
   it("allows deploy when runtime has machines", () => {
     expect(
       getDeployTargetPreflight({
-        status: "live_rows",
+        status: "observed",
         machineCount: 1,
         isLoading: false,
         error: null,

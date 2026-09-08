@@ -63,7 +63,7 @@ describe("runtime events route", () => {
     const status = await reader?.read();
 
     expect(new TextDecoder().decode(status?.value)).toContain(
-      "event: runtime.lens\n",
+      "event: runtime.status\n",
     );
     await reader?.cancel();
   });
@@ -82,12 +82,12 @@ describe("runtime events route", () => {
     const status = await reader?.read();
 
     expect(new TextDecoder().decode(status?.value)).toContain(
-      'event: runtime.lens\ndata: {"status":"unreachable"',
+      'event: runtime.status\ndata: {"status":"unreachable"',
     );
     await reader?.cancel();
   });
 
-  it("streams a projected runtime lens and closes the SDK watch", async () => {
+  it("streams a redacted runtime watch and closes the SDK watch", async () => {
     const close = vi.fn(async () => undefined);
     const watchFrame = runtimeWatchFrameFixture();
     async function* frames() {
@@ -108,7 +108,7 @@ describe("runtime events route", () => {
     const event = await reader?.read();
 
     expect(new TextDecoder().decode(event?.value)).toContain(
-      'event: runtime.lens\ndata: {"status":"live_empty"',
+      'event: runtime.watch\ndata: {"services":[],"machines":[]',
     );
     await reader?.cancel();
     expect(close).toHaveBeenCalledOnce();

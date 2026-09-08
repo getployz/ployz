@@ -23,10 +23,6 @@ import {
   createCancelMachineRemove,
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
-import { createRecoverAbandonedDestructiveVolumeAttempts } from "#/modules/operations/inngest-destructive-volume/abandoned-owner-recovery";
-import { createCancelDestructiveVolume } from "#/modules/operations/inngest-destructive-volume/cancellation";
-import { createProcessDestructiveVolume } from "#/modules/operations/inngest-destructive-volume/processor";
-import { createRecoverDestructiveVolumeOutbox } from "#/modules/operations/inngest-destructive-volume/scheduled-recovery";
 import {
   createCancelTeardown,
   createProcessTeardown,
@@ -57,10 +53,6 @@ describe("Inngest function policies", () => {
       createCancelTeardown(inngest),
       createProcessVolumeRemove(inngest),
       createCancelVolumeRemove(inngest),
-      createProcessDestructiveVolume(inngest),
-      createCancelDestructiveVolume(inngest),
-      createRecoverAbandonedDestructiveVolumeAttempts(inngest),
-      createRecoverDestructiveVolumeOutbox(inngest),
     ];
 
     expect(
@@ -83,14 +75,10 @@ describe("Inngest function policies", () => {
       { id: "mark-cancelled-row-backed-workflow", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "process-machine-remove", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-machine-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
-      { id: "process-teardown", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
+      { id: "process-teardown", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-teardown", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
-      { id: "process-volume-remove", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
+      { id: "process-volume-remove", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
-      { id: "process-destructive-volume", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
-      { id: "cancel-destructive-volume", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
-      { id: "recover-abandoned-destructive-volume-attempts", retries: 3, concurrency: [{ limit: 1 }] },
-      { id: "recover-destructive-volume-outbox", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 });

@@ -14,10 +14,7 @@ import {
 } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
-import {
-  useRuntimeService,
-  useRuntimeStatus,
-} from "#/providers/runtime-provider";
+import { useRuntimeService } from "#/providers/runtime-provider";
 import { cn } from "#/lib/utils";
 import { useCanvasService } from "./CanvasServicesContext";
 import {
@@ -62,11 +59,10 @@ export function ServiceNode({
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const serviceState = useCanvasService(data.serviceId);
-  const { status: clusterStatus } = useRuntimeStatus();
-  const { runtime, isLoading: runtimeIsLoading } = useRuntimeService(
-    params.environmentSlug,
-    serviceState?.serviceView.service.slug ?? "",
-  );
+  const runtimeIdentity = serviceState
+    ? `${serviceState.serviceView.service.environmentSlug}/${serviceState.serviceView.service.privateDns}`
+    : "";
+  const { runtime } = useRuntimeService(runtimeIdentity);
 
   if (!serviceState) {
     return <LoadingNode />;
@@ -83,12 +79,14 @@ export function ServiceNode({
     latestDeploymentDiffRowCount: serviceState.latestDeploymentDiffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
-    runtime,
-    runtimeIsLoading,
-    clusterStatus,
   });
   const state = semantics.state;
-  const statusCopy = semantics.statusText;
+  const observedContainers = runtime
+    ? `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"} observed`
+    : null;
+  const statusCopy = observedContainers
+    ? `${semantics.statusText} · ${observedContainers}`
+    : semantics.statusText;
   const statusClasses = getServiceStatusClasses(state);
 
   return (

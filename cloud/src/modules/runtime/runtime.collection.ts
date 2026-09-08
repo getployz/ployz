@@ -8,11 +8,11 @@ import { Schema } from "effect";
 import { strictParseOptions } from "#/modules/environment-design/schema";
 import { parseLiveQueryRow, withoutVirtualProps } from "#/lib/tanstack-db";
 
+/** The connection state of Cloud's one entry-local Runtime Watch. */
 export const runtimeLensStatusSchema = Schema.Literals([
   "no_connection",
   "connecting",
-  "live_empty",
-  "live_rows",
+  "observed",
   "unavailable",
   "unreachable",
 ]);
@@ -20,43 +20,30 @@ export const runtimeLensStatusSchema = Schema.Literals([
 export type RuntimeLensStatus = typeof runtimeLensStatusSchema.Type;
 
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 
-export const runtimeGatewayTestimonySchema = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("current"),
-    routeCount: NonnegativeInt,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("last_known_good"),
-    routeCount: NonnegativeInt,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("unavailable"),
-    routeCount: NonnegativeInt,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("silent"),
-    reason: Schema.Literals(["no_answer", "not_reported"]),
-  }),
-  Schema.Struct({ status: Schema.Literal("not_installed") }),
-]);
+/** A directly observed container identity and display detail. It deliberately
+ * omits runtime-health interpretation and historical resolved specs. */
+export const runtimeContainerRecordSchema = Schema.Struct({
+  id: Schema.String,
+  displayName: Schema.String,
+  machineId: Schema.String,
+  projectName: Schema.String,
+  kind: Schema.String,
+});
 
-export type RuntimeGatewayTestimony = typeof runtimeGatewayTestimonySchema.Type;
+export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;
 
+/** A Machine as the watched entry Machine reported it. `membership` is an open
+ * Runtime value; Cloud displays it as evidence and does not turn it into a
+ * response or health verdict. */
 export const runtimeMachineRecordSchema = Schema.Struct({
-  id: NonEmptyString,
-  name: NonEmptyString,
+  id: Schema.String,
+  name: Schema.String,
   publicIp: Schema.NullOr(Schema.String),
-  gateway: runtimeGatewayTestimonySchema,
-  observedContainerCount: Schema.NullOr(NonnegativeInt),
-  region: Schema.NullOr(Schema.String),
-  availabilityZone: Schema.NullOr(Schema.String),
-  overlayIp: Schema.NullOr(Schema.String),
   endpoints: Schema.Array(Schema.String),
-  testimonyStatus: Schema.Literals(["answered", "no_answer"]),
-  lastObservedAt: Schema.NullOr(Schema.String),
-  updatedAt: Schema.String,
+  membership: Schema.String,
+  observedContainerCount: NonnegativeInt,
+  observedAt: Schema.String,
 });
 
 export type RuntimeMachineRecord = typeof runtimeMachineRecordSchema.Type;
@@ -71,146 +58,153 @@ export function projectRuntimeMachineRecord(
   );
 }
 
-// Automatic-hostname namespace mode (#462): disabled, Ployz-managed, or a custom
-// user suffix.
-export const runtimePublicUrlModeSchema = Schema.Literals([
-  "disabled",
-  "ployz",
-  "custom",
-]);
-
-/** A hostname Rust is serving for a service, its origin (user-declared vs the
- * managed automatic binding), and whether its TLS certificate is available. */
-export const runtimeRouteBindingSchema = Schema.Struct({
-  id: NonEmptyString,
-  hostname: Schema.String,
-  origin: Schema.Literals(["declared", "automatic"]),
-  tls: Schema.Union([
-    Schema.Struct({
-      status: Schema.Literal("available"),
-      certificateId: NonEmptyString,
-    }),
-    Schema.Struct({ status: Schema.Literal("unavailable") }),
-    Schema.Struct({ status: Schema.Literal("unknown") }),
-  ]),
-});
-export type RuntimeRouteBinding = typeof runtimeRouteBindingSchema.Type;
-
-/** Cluster-level public-URL state. `domain` is the managed lease suffix
- * (e.g. `brisk-river.up.ployz.app`), null until the lease is acquired. */
-export const runtimePublicUrlSchema = Schema.Struct({
-  mode: runtimePublicUrlModeSchema,
-  domain: Schema.NullOr(Schema.String),
-  leaseApex: Schema.NullOr(Schema.String),
-  dnsTarget: Schema.Struct({
-    intent: Schema.Literals(["enabled", "disabled"]),
-    allocation: Schema.Literals(["unacquired", "allocated"]),
-    publication: Schema.Literals(["unpublished", "applied", "withdrawn"]),
-  }),
-});
-export type RuntimePublicUrl = typeof runtimePublicUrlSchema.Type;
-
+/** A direct Runtime Watch grouping. `identity` and `serviceId` retain their
+ * distinct Engine meanings; neither is a Cloud revision or serving claim. */
 export const runtimeServiceRecordSchema = Schema.Struct({
-  id: NonEmptyString,
-  namespaceId: NonEmptyString,
-  serviceId: NonEmptyString,
-  activeRevisionId: NonEmptyString,
-  routeCount: NonnegativeInt,
-  instanceCount: NonnegativeInt,
-  readyInstanceCount: NonnegativeInt,
-  // Route bindings Rust is actually serving for this service (origin-tagged, with
-  // per-binding TLS availability).
-  bindings: Schema.Array(runtimeRouteBindingSchema),
-  updatedAt: Schema.String,
+  id: Schema.String,
+  identity: Schema.String,
+  serviceId: Schema.String,
+  containers: Schema.Array(runtimeContainerRecordSchema),
+  hookContainers: Schema.Array(runtimeContainerRecordSchema),
+  observedAt: Schema.String,
 });
 
 export type RuntimeServiceRecord = typeof runtimeServiceRecordSchema.Type;
+
+export function projectRuntimeServiceRecord(
+  row: VirtualRowProps | RuntimeServiceRecord,
+) {
+  // SAFETY: parseLiveQueryRow only drops TanStack's four virtual keys when present.
+  return parseLiveQueryRow(
+    runtimeServiceRecordSchema,
+    row as VirtualRowProps,
+  );
+}
+
+/** A Machine-local volume identity reported as incomplete evidence. */
+const runtimeIncompleteVolumeIdSchema = Schema.Struct({
+  machineId: Schema.String,
+  name: Schema.String,
+});
+
+/** Certificate evidence stays in the Engine's own vocabulary. In particular,
+ * a certificate observation does not establish a Route or serving binding. */
+export const runtimeCertificateRecordSchema = Schema.Struct({
+  hostname: Schema.String,
+  status: Schema.String,
+  lastError: Schema.NullOr(Schema.String),
+  backoff: Schema.NullOr(
+    Schema.Struct({
+      failureKind: Schema.String,
+      nextAttemptAt: Schema.String,
+      failures: NonnegativeInt,
+    }),
+  ),
+});
+
+export type RuntimeCertificateRecord =
+  typeof runtimeCertificateRecordSchema.Type;
+
+/** Incomplete IDs are evidence of an incomplete observation, never deletion. */
+export const runtimeIncompleteIdsSchema = Schema.Struct({
+  machines: Schema.Array(Schema.String),
+  containers: Schema.Array(Schema.String),
+  volumes: Schema.Array(runtimeIncompleteVolumeIdSchema),
+  certificates: Schema.Array(Schema.String),
+});
+
+export type RuntimeIncompleteIds = typeof runtimeIncompleteIdsSchema.Type;
+
+export const EMPTY_RUNTIME_INCOMPLETE_IDS: RuntimeIncompleteIds = {
+  machines: [],
+  containers: [],
+  volumes: [],
+  certificates: [],
+};
 
 export const runtimeStatusRecordSchema = Schema.Struct({
   id: Schema.Literal("runtime"),
   status: runtimeLensStatusSchema,
   error: Schema.NullOr(Schema.String),
-  publicUrl: runtimePublicUrlSchema,
-  updatedAt: Schema.String,
+  /** Hosted DNS hostname as observed by Runtime. Its presence says nothing
+   * about DNS publication. */
+  hostedDnsHostname: Schema.NullOr(Schema.String),
+  certificates: Schema.Array(runtimeCertificateRecordSchema),
+  incompleteIds: runtimeIncompleteIdsSchema,
+  /** Null when Cloud has not received a Runtime Watch observation. */
+  observedAt: Schema.NullOr(Schema.String),
 });
 
 export type RuntimeStatusRecord = typeof runtimeStatusRecordSchema.Type;
 
-export const runtimeSnapshotLensSchema = Schema.Struct({
+/** The cached portion of one Runtime Watch observation plus Cloud's connection
+ * state. It has no Cloud-generated deployment, DNS, gateway, or health state. */
+export const runtimeSnapshotSchema = Schema.Struct({
   status: runtimeLensStatusSchema,
   error: Schema.NullOr(Schema.String),
-  publicUrl: runtimePublicUrlSchema,
+  hostedDnsHostname: Schema.NullOr(Schema.String),
   machines: Schema.Array(runtimeMachineRecordSchema),
   services: Schema.Array(runtimeServiceRecordSchema),
-  updatedAt: Schema.String,
+  certificates: Schema.Array(runtimeCertificateRecordSchema),
+  incompleteIds: runtimeIncompleteIdsSchema,
+  observedAt: Schema.NullOr(Schema.String),
 });
 
-export type RuntimeSnapshotLens = typeof runtimeSnapshotLensSchema.Type;
+export type RuntimeSnapshot = typeof runtimeSnapshotSchema.Type;
 
-export const RUNTIME_PUBLIC_URL_NONE: RuntimePublicUrl = {
-  mode: "disabled",
-  domain: null,
-  leaseApex: null,
-  dnsTarget: {
-    intent: "disabled",
-    allocation: "unacquired",
-    publication: "unpublished",
-  },
-};
-
-function connectingSnapshot(): RuntimeSnapshotLens {
+function emptyRuntimeSnapshot(input: {
+  status: Exclude<RuntimeLensStatus, "observed" | "unavailable">;
+  error: string | null;
+}): RuntimeSnapshot {
   return {
-    status: "connecting",
-    error: null,
-    publicUrl: RUNTIME_PUBLIC_URL_NONE,
+    status: input.status,
+    error: input.error,
+    hostedDnsHostname: null,
     machines: [],
     services: [],
-    updatedAt: new Date().toISOString(),
+    certificates: [],
+    incompleteIds: { ...EMPTY_RUNTIME_INCOMPLETE_IDS },
+    observedAt: null,
   };
 }
 
+function connectingSnapshot(): RuntimeSnapshot {
+  return emptyRuntimeSnapshot({ status: "connecting", error: null });
+}
+
+export function noConnectionRuntimeSnapshot(): RuntimeSnapshot {
+  return emptyRuntimeSnapshot({ status: "no_connection", error: null });
+}
+
 /**
- * Builds an `unavailable` lens that keeps the previous machines/services and
- * updatedAt so stale rows stay visible while the runtime is down. Only when
- * there is no previous snapshot does it stamp the current time.
+ * Keeps the last observation visible when the EventSource loses its connection.
+ * The preserved timestamp makes the stale evidence explicit to consumers.
  */
 export function unavailableRuntimeSnapshot(
-  previous: RuntimeSnapshotLens | null,
+  previous: RuntimeSnapshot | null,
   error: string,
-): RuntimeSnapshotLens {
+): RuntimeSnapshot {
+  if (previous) {
+    return { ...previous, status: "unavailable", error };
+  }
   return {
+    ...emptyRuntimeSnapshot({ status: "connecting", error }),
     status: "unavailable",
-    error,
-    publicUrl: previous?.publicUrl ?? RUNTIME_PUBLIC_URL_NONE,
-    machines: previous?.machines ?? [],
-    services: previous?.services ?? [],
-    updatedAt: previous?.updatedAt ?? new Date().toISOString(),
   };
 }
 
 export const CLUSTER_UNREACHABLE_ERROR =
   "The cluster is expected but unreachable.";
 
-/**
- * Pairing is present but Cloud cannot Dial. Clear Machine rows so a stale
- * `organization_machine` leftover is never rendered as membership.
- */
-export function unreachableRuntimeSnapshot(
-  error: string,
-): RuntimeSnapshotLens {
-  return {
-    status: "unreachable",
-    error,
-    publicUrl: RUNTIME_PUBLIC_URL_NONE,
-    machines: [],
-    services: [],
-    updatedAt: new Date().toISOString(),
-  };
+/** Pairing is present but Cloud cannot dial an entry Machine. Clearing rows
+ * prevents prior observations from being rendered as current membership. */
+export function unreachableRuntimeSnapshot(error: string): RuntimeSnapshot {
+  return emptyRuntimeSnapshot({ status: "unreachable", error });
 }
 
 export function applyRuntimeSnapshot(input: {
   organizationSlug: string;
-  snapshot: RuntimeSnapshotLens;
+  snapshot: RuntimeSnapshot;
 }) {
   const collections = getRuntimeCollections({
     organizationSlug: input.organizationSlug,
@@ -222,8 +216,10 @@ export function applyRuntimeSnapshot(input: {
       id: "runtime",
       status: input.snapshot.status,
       error: input.snapshot.error,
-      publicUrl: input.snapshot.publicUrl,
-      updatedAt: input.snapshot.updatedAt,
+      hostedDnsHostname: input.snapshot.hostedDnsHostname,
+      certificates: input.snapshot.certificates,
+      incompleteIds: input.snapshot.incompleteIds,
+      observedAt: input.snapshot.observedAt,
     },
   ]);
 }
@@ -234,10 +230,10 @@ export function getCachedRuntimeSnapshot(input: {
   const collections = getRuntimeCollections(input);
   const status = collections.status.get("runtime");
   if (!status) return null;
-  return Schema.decodeUnknownSync(runtimeSnapshotLensSchema)({
+  return Schema.decodeUnknownSync(runtimeSnapshotSchema)({
     status: status.status,
     error: status.error,
-    publicUrl: status.publicUrl,
+    hostedDnsHostname: status.hostedDnsHostname,
     // SAFETY: local-only collection values carry TanStack's four virtual keys at runtime.
     machines: Array.from(collections.machines.values()).map((row) =>
       withoutVirtualProps(row as VirtualRowProps & RuntimeMachineRecord),
@@ -246,7 +242,9 @@ export function getCachedRuntimeSnapshot(input: {
     services: Array.from(collections.services.values()).map((row) =>
       withoutVirtualProps(row as VirtualRowProps & RuntimeServiceRecord),
     ),
-    updatedAt: status.updatedAt,
+    certificates: status.certificates,
+    incompleteIds: status.incompleteIds,
+    observedAt: status.observedAt,
   });
 }
 
@@ -259,7 +257,9 @@ function createRuntimeCollections(organizationSlug: string) {
       localOnlyCollectionOptions({
         id: `runtime:${organizationSlug}:machines`,
         getKey: (item: RuntimeMachineRecord) => item.id,
-        schema: Schema.toStandardSchemaV1(runtimeMachineRecordSchema, { parseOptions: strictParseOptions }),
+        schema: Schema.toStandardSchemaV1(runtimeMachineRecordSchema, {
+          parseOptions: strictParseOptions,
+        }),
         initialData: [...snapshot.machines],
       }),
     ),
@@ -267,14 +267,18 @@ function createRuntimeCollections(organizationSlug: string) {
       localOnlyCollectionOptions({
         id: `runtime:${organizationSlug}:status`,
         getKey: (item: RuntimeStatusRecord) => item.id,
-        schema: Schema.toStandardSchemaV1(runtimeStatusRecordSchema, { parseOptions: strictParseOptions }),
+        schema: Schema.toStandardSchemaV1(runtimeStatusRecordSchema, {
+          parseOptions: strictParseOptions,
+        }),
         initialData: [
           {
             id: "runtime",
             status: snapshot.status,
             error: snapshot.error,
-            publicUrl: snapshot.publicUrl,
-            updatedAt: snapshot.updatedAt,
+            hostedDnsHostname: snapshot.hostedDnsHostname,
+            certificates: snapshot.certificates,
+            incompleteIds: snapshot.incompleteIds,
+            observedAt: snapshot.observedAt,
           },
         ],
       }),
@@ -283,7 +287,9 @@ function createRuntimeCollections(organizationSlug: string) {
       localOnlyCollectionOptions({
         id: `runtime:${organizationSlug}:services`,
         getKey: (item: RuntimeServiceRecord) => item.id,
-        schema: Schema.toStandardSchemaV1(runtimeServiceRecordSchema, { parseOptions: strictParseOptions }),
+        schema: Schema.toStandardSchemaV1(runtimeServiceRecordSchema, {
+          parseOptions: strictParseOptions,
+        }),
         initialData: [...snapshot.services],
       }),
     ),
@@ -294,13 +300,9 @@ export type RuntimeCollections = ReturnType<
   typeof createRuntimeCollections
 >;
 
-export function getRuntimeCollections(input: {
-  organizationSlug: string;
-}) {
+export function getRuntimeCollections(input: { organizationSlug: string }) {
   const existing = runtimeCollections.get(input.organizationSlug);
-  if (existing) {
-    return existing;
-  }
+  if (existing) return existing;
 
   const collections = createRuntimeCollections(input.organizationSlug);
   runtimeCollections.set(input.organizationSlug, collections);
@@ -318,10 +320,7 @@ export async function preloadRuntimeCollections(input: {
   ]);
 }
 
-function replaceRuntimeRows<
-  T extends { id: string },
-  TKey extends string,
->(
+function replaceRuntimeRows<T extends { id: string }, TKey extends string>(
   collection: Collection<T, TKey>,
   rows: readonly T[],
 ) {
@@ -329,9 +328,10 @@ function replaceRuntimeRows<
   const existingIds = new Set<string>();
   for (const current of collection.values()) {
     existingIds.add(current.id);
-    if (!next.has(current.id))
+    if (!next.has(current.id)) {
       // SAFETY: collections are keyed by row.id, so string ids are TKey.
       collection.delete(current.id as TKey);
+    }
   }
   for (const row of rows) {
     if (existingIds.has(row.id)) {

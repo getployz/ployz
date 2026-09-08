@@ -1,4 +1,10 @@
-import type { Client, MachineId } from "@ployz/sdk";
+import type {
+  Client,
+  ClusterTeardown,
+  DeployOutcome,
+  ExecutionError,
+  MachineId,
+} from "@ployz/sdk";
 import { it as effectIt } from "@effect/vitest";
 import { Cause, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -14,11 +20,9 @@ import {
 } from "#/modules/runtime/organization-runtime.server";
 import {
   makePloyzLayer,
-  SdkSurfaceNotShipped,
-  type PloyzSession,
 } from "#/modules/runtime/ployz.server";
 import {
-  composeEnvironmentDestroy,
+  destroyClusterActivity,
   destroyEnvironmentActivity,
 } from "#/modules/runtime/teardown-activities.server";
 import { dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
@@ -32,9 +36,20 @@ const volume = {
 };
 
 describe("teardown provider outcomes", () => {
-  effectIt.effect("finalizes its runtime session inside the durable activity", () =>
+  effectIt.effect("preserves project failure evidence and finalizes its session", () =>
     Effect.gen(function* () {
       let closed = 0;
+      const calls: unknown[] = [];
+      const projectOutcome: DeployOutcome<ExecutionError> = {
+        type: "failed",
+        completed: [],
+        failed: {
+          type: "operation",
+          operation: { type: "remove_volume", id: volume.id },
+          error: { type: "cancelled" },
+        },
+        unexecuted: [],
+      };
       const tenant = {
         relayUrl: "wss://relay.example.test",
         bearer: "tenant-token",
@@ -42,78 +57,98 @@ describe("teardown provider outcomes", () => {
         preferredMachineId: "machine-a",
         enrolledMachineIds: ["machine-a"],
       } satisfies DialTenant;
+      const client = asTestDouble<Client>()({
+        destroyProject: async (
+          ...args: Parameters<Client["destroyProject"]>
+        ) => {
+          calls.push(args);
+          return projectOutcome;
+        },
+        removeVolumes: async () => {
+          throw new Error("independent volume fallback must not run");
+        },
+        close: async () => {
+          closed += 1;
+        },
+      });
       const ployz = makePloyzLayer({
-        connect: async () =>
-          asTestDouble<Client>()({
-            destroyProject: async () => undefined,
-            close: async () => {
-              closed += 1;
-            },
-          }),
+        connect: async () => client,
       });
       const runtime = makeOrganizationRuntimeLayer(() =>
         Effect.succeed({ kind: "ready", tenant }),
       ).pipe(Layer.provide(ployz));
 
-      yield* Effect.scoped(
+      const result = yield* Effect.scoped(
         destroyEnvironmentActivity({
           organizationId: "org-1",
           target: {
             environmentId: "env-1",
             projectId: "project-1",
-            namespace: "app-production",
+            projectName: "app-production",
             cloudName: "acme/app/Production",
-            identities: [],
           },
+          confirmDataLoss: [volume],
         }),
       ).pipe(Effect.provide(runtime));
 
+      expect(result).toEqual(projectOutcome);
+      expect(calls).toEqual([["app-production", { confirmed: [volume] }, true]]);
       expect(closed).toBe(1);
     }),
   );
 
-  it("stops after destroyProject succeeds", async () => {
-    await expect(
-      Effect.runPromise(
-        composeEnvironmentDestroy(
-          asTestDouble<PloyzSession>()({
-            destroyProject: () => Effect.void,
-            removeVolumes: () => Effect.die("must not run"),
-          }),
-          {
-            namespace: "app-production",
-            identities: [volume],
-          },
-        ),
-      ),
-    ).resolves.toBeNull();
-  });
-
-  it("falls back through truthful not-shipped outcomes", async () => {
-    const result = await Effect.runPromise(
-      composeEnvironmentDestroy(
-        asTestDouble<PloyzSession>()({
-          destroyProject: () =>
-            Effect.fail(
-              new SdkSurfaceNotShipped({
-                surface: "destroyProject",
-                ticket: "getployz/ployz2#253",
-              }),
-            ),
-          removeVolumes: (request: Parameters<PloyzSession["removeVolumes"]>[0]) => {
-            expect(request).toEqual({ volumes: [volume.id], force: false });
-            return Effect.succeed([{ id: volume.id, outcome: { status: "removed" } }]);
-          },
-        }),
-        {
-          namespace: "app-production",
-          identities: [volume],
+  effectIt.effect("returns the cluster partial result without local orchestration", () =>
+    Effect.gen(function* () {
+      const clusterTeardown: ClusterTeardown = {
+        destroyed_projects: [],
+        machines: {
+          successes: [],
+          failures: [
+            {
+              machine_id: volume.id.machine_id,
+              error: {
+                code: "unavailable",
+                message: "machine did not answer",
+                details: null,
+              },
+            },
+          ],
+          omissions: [],
         },
-      ),
-    );
+        pairing_revoked: false,
+      };
+      const calls: unknown[] = [];
+      const tenant = {
+        relayUrl: "wss://relay.example.test",
+        bearer: "tenant-token",
+        pairing: "ppair_test",
+        preferredMachineId: "machine-a",
+        enrolledMachineIds: ["machine-a"],
+      } satisfies DialTenant;
+      const client = asTestDouble<Client>()({
+        destroyCluster: async (
+          ...args: Parameters<Client["destroyCluster"]>
+        ) => {
+          calls.push(args);
+          return clusterTeardown;
+        },
+        close: async () => undefined,
+      });
+      const runtime = makeOrganizationRuntimeLayer(() =>
+        Effect.succeed({ kind: "ready", tenant }),
+      ).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
 
-    expect(result?.destroyed).toEqual([volume.id]);
-  });
+      const result = yield* Effect.scoped(
+        destroyClusterActivity({
+          organizationId: "org-1",
+          confirmDataLoss: [volume],
+        }),
+      ).pipe(Effect.provide(runtime));
+
+      expect(result).toEqual(clusterTeardown);
+      expect(calls).toEqual([[{ confirmed: [volume] }]]);
+    }),
+  );
 
   it("keeps its pending row retryable when dispatch fails", async () => {
     const failing = new Inngest({ id: "teardown-dispatch-fail-test" });

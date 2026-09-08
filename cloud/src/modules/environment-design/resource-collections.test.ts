@@ -22,7 +22,6 @@ const stores = (() => {
     positions: collection<Row<"positions">>([{ id: "00000000-0000-4000-8000-000000000006", environmentId, organizationId, resourceType: "volume", resourceId: id, x: 10, y: 20, createdAt: now, updatedAt: now }]),
     snapshots: collection<Row<"snapshots">>([]),
     removals: collection<Row<"removals">>([]),
-    destructive: collection<Row<"destructive">>([]),
   };
   return { sources, id, environmentId };
 })();
@@ -30,7 +29,7 @@ const stores = (() => {
 it("loads an authored volume with its Electric canvas position and no runtime history", async () => {
   const volumes = createVolumeResourcesCollection({ organizationSlug: "test", sources: stores.sources });
   await volumes.preload();
-  expect(volumes.get(stores.id)).toMatchObject({ resource: { name: "data", deletedAt: null }, canvasPosition: { x: 10, y: 20 } });
+  expect(volumes.get(stores.id)).toMatchObject({ resource: { name: "data" }, isAuthored: true, canvasPosition: { x: 10, y: 20 } });
   expect(volumes.get(stores.id)?.canvasPosition).not.toHaveProperty("organizationId");
   stores.sources.documents.update(stores.environmentId, (document) => {
     const volume = document.intent.volumes.find((volume) => volume.resourceId === stores.id);

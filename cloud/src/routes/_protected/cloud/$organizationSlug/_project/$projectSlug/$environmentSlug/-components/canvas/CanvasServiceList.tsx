@@ -11,10 +11,7 @@ import {
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import type { CanvasServiceState } from "./CanvasServicesContext";
-import {
-  useRuntimeService,
-  useRuntimeStatus,
-} from "#/providers/runtime-provider";
+import { useRuntimeService } from "#/providers/runtime-provider";
 import {
   getServiceIcon,
   getServiceStatusClasses,
@@ -36,11 +33,9 @@ function ServiceListItem({
   selected: boolean;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { status: clusterStatus } = useRuntimeStatus();
   const service = serviceView.service;
-  const { runtime, isLoading: runtimeIsLoading } = useRuntimeService(
-    params.environmentSlug,
-    service.slug,
+  const { runtime } = useRuntimeService(
+    `${service.environmentSlug}/${service.privateDns}`,
   );
   const subtitle = getServiceSubtitle(service);
   const semantics = getServiceDeploymentSemantics({
@@ -50,10 +45,10 @@ function ServiceListItem({
     latestDeploymentDiffRowCount: serviceState.latestDeploymentDiffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
-    runtime,
-    runtimeIsLoading,
-    clusterStatus,
   });
+  const observedContainers = runtime
+    ? `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"} observed`
+    : null;
   const statusClasses = getServiceStatusClasses(semantics.state);
 
   return (
@@ -98,6 +93,7 @@ function ServiceListItem({
             </span>
             <span className="min-w-0 flex-1 truncate text-muted-foreground">
               {semantics.statusText}
+              {observedContainers ? ` · ${observedContainers}` : null}
             </span>
           </div>
         </CardContent>

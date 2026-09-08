@@ -19,8 +19,7 @@ import {
   getRawEnvironmentResourcesCollection,
   getResourceLineagesCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
-  getVolumeRemovalResultsCollection,
-  getDestructiveVolumeAttemptsCollection,
+  getVolumeRemoveAttemptsCollection,
 } from "#/electric/collections";
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment-collection";
 import {
@@ -183,8 +182,7 @@ const getVolumeResourcesCollection = cachedByOrganization(
       sources: {
         ...resourceSources(organizationSlug),
         snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug),
-        removals: getVolumeRemovalResultsCollection(organizationSlug),
-        destructive: getDestructiveVolumeAttemptsCollection(organizationSlug),
+        removals: getVolumeRemoveAttemptsCollection(organizationSlug),
       },
     }),
 );

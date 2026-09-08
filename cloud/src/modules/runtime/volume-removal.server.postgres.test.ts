@@ -17,15 +17,21 @@ import { InngestClient } from "#/modules/inngest/client";
 import {
   cancelVolumeRemoveAttemptActivity,
   completeVolumeRemoveAttemptActivity,
+  confirmVolumeRemove,
   dispatchVolumeRemoveRequested,
   loadLatestVolumeRemoveAttempt,
   prepareVolumeRemoveAttemptActivity,
   reconcileVolumeRemoveTombstoneActivity,
 } from "#/modules/runtime/volume-removal.server";
 import {
+  beginVolumeRemoveAttempt,
+  failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction,
   insertVolumeRemoveAttempt,
+  releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction,
+  stageVolumeRemoveAttempt,
   type VolumeRemoveAttempt,
 } from "#/modules/runtime/volume-removal.repository";
+import { Database } from "#/server/database.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000601";
 const userId = "00000000-0000-4000-8000-000000000602";
@@ -150,6 +156,42 @@ describe("direct volume removal durable state", () => {
     expect(Exit.isFailure(denied)).toBe(true);
   });
 
+  it("requires a document tombstone before confirming volume removal", async () => {
+    await harness.pool.query(
+      "update environment set intent = jsonb_set(intent, '{volumes}', $1::jsonb) where id = $2",
+      [
+        JSON.stringify([
+          { resourceId, resourceLineageId: lineageId, name: "Data" },
+        ]),
+        environmentId,
+      ],
+    );
+
+    const failure = await harness.runEffect(
+      confirmVolumeRemove(
+        { userId },
+        {
+          organizationSlug: "volumes",
+          environmentId,
+          resourceId,
+          identities: [{ kind: "docker_volume", id: volume }],
+        },
+      ).pipe(
+        Effect.provideService(
+          InngestClient,
+          new Inngest({ id: "volume-authored-confirm-postgres" }),
+        ),
+        Effect.flip,
+      ),
+    );
+
+    expect(failure).toMatchObject({
+      _tag: "Validation",
+      field: "resourceId",
+      message: "Stage deletion before removing volume data.",
+    });
+  });
+
   it("binds provider completion, replay, and tombstone reconciliation to one run", async () => {
     const attempt = await insertAttempt(harness);
     const prepared = await runPromiseDb(
@@ -177,6 +219,15 @@ describe("direct volume removal durable state", () => {
     );
     expect(Exit.isFailure(stolen)).toBe(true);
 
+    const begun = await runPromiseDb(
+      beginVolumeRemoveAttempt({
+        attemptId: attempt.id,
+        inngestRunId: "run-1",
+        now: new Date("2026-09-04T03:02:30Z"),
+      }),
+    );
+    expect(begun.kind).toBe("started");
+
     const completed = await runPromiseDb(
       completeVolumeRemoveAttemptActivity({
         attemptId: attempt.id,
@@ -193,6 +244,153 @@ describe("direct volume removal durable state", () => {
       [resourceId],
     );
     expect(resource.rows).toEqual([{ id: resourceId }]);
+  });
+
+  it("marks a repeated submission as unknown instead of replaying it", async () => {
+    const attempt = await insertAttempt(harness);
+    await runPromiseDb(
+      prepareVolumeRemoveAttemptActivity({
+        attemptId: attempt.id,
+        inngestRunId: "run-once",
+        now: new Date("2026-09-04T03:00:00Z"),
+      }),
+    );
+    const first = await runPromiseDb(
+      beginVolumeRemoveAttempt({
+        attemptId: attempt.id,
+        inngestRunId: "run-once",
+        now: new Date("2026-09-04T03:01:00Z"),
+      }),
+    );
+    expect(first.kind).toBe("started");
+
+    const replay = await runPromiseDb(
+      beginVolumeRemoveAttempt({
+        attemptId: attempt.id,
+        inngestRunId: "run-once",
+        now: new Date("2026-09-04T03:02:00Z"),
+      }),
+    );
+    expect(replay).toMatchObject({ kind: "unknown" });
+
+    const rows = await harness.pool.query<
+      Pick<VolumeRemoveAttempt, "status" | "startedAt" | "terminalAt">
+    >(
+      `select status, started_at as "startedAt", terminal_at as "terminalAt"
+       from volume_remove_attempt where id = $1`,
+      [attempt.id],
+    );
+    expect(rows.rows[0]).toMatchObject({
+      status: "unknown",
+      startedAt: expect.any(Date),
+      terminalAt: expect.any(Date),
+    });
+  });
+
+  it("releases an approved removal only after its deployment applies", async () => {
+    const savedStateSnapshotId = "00000000-0000-4000-8000-000000000608";
+    const failedDeploymentId = "00000000-0000-4000-8000-000000000609";
+    const appliedDeploymentId = "00000000-0000-4000-8000-000000000610";
+    await harness.pool.query(
+      `insert into environment_saved_state_snapshot (
+        id, organization_id, environment_id, actor_id, intent,
+        volume_deletion_authorizations
+      ) values ($1, $2, $3, $4, '{}'::jsonb, '[]'::jsonb)`,
+      [savedStateSnapshotId, organizationId, environmentId, userId],
+    );
+    await harness.pool.query(
+      `insert into environment_deployment (
+        id, organization_id, environment_id, trigger_origin,
+        saved_state_snapshot_id, status
+      ) values
+        ($1, $2, $3, '{"origin":"manual","actorId":"${userId}"}'::jsonb, $4, 'queued'),
+        ($5, $2, $3, '{"origin":"manual","actorId":"${userId}"}'::jsonb, $4, 'applied')`,
+      [
+        failedDeploymentId,
+        organizationId,
+        environmentId,
+        savedStateSnapshotId,
+        appliedDeploymentId,
+      ],
+    );
+
+    const release = (environmentDeploymentId: string) =>
+      Effect.gen(function* () {
+        const database = yield* Database;
+        return yield* database.transaction(
+          Effect.gen(function* () {
+            const tx = (yield* Database).drizzle;
+            return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
+              tx,
+              environmentDeploymentId,
+            );
+          }),
+        );
+      });
+    const fail = (environmentDeploymentId: string) =>
+      Effect.gen(function* () {
+        const database = yield* Database;
+        return yield* database.transaction(
+          Effect.gen(function* () {
+            const tx = (yield* Database).drizzle;
+            return yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
+              tx,
+              {
+                environmentDeploymentId,
+                deploymentDisposition: "failed",
+                now: new Date("2026-09-04T03:00:00Z"),
+              },
+            );
+          }),
+        );
+      });
+    const stage = (environmentDeploymentId: string) =>
+      stageVolumeRemoveAttempt({
+        organizationId,
+        requestedByUserId: userId,
+        environmentId,
+        environmentDeploymentId,
+        environmentResourceId: resourceId,
+        volumes: [volume],
+      });
+
+    const failedAttempt = await runPromiseDb(stage(failedDeploymentId));
+    const releasedBeforeApply = await runPromiseDb(
+      release(failedDeploymentId).pipe(Effect.exit),
+    );
+    expect(Exit.isFailure(releasedBeforeApply)).toBe(true);
+
+    await harness.pool.query(
+      "update environment_deployment set status = 'failed' where id = $1",
+      [failedDeploymentId],
+    );
+    await runPromiseDb(fail(failedDeploymentId));
+
+    const failedRows = await harness.pool.query<{
+      status: string;
+      inngest_run_id: string | null;
+    }>(
+      "select status, inngest_run_id from volume_remove_attempt where id = $1",
+      [failedAttempt.id],
+    );
+    expect(failedRows.rows).toEqual([{ status: "failed", inngest_run_id: null }]);
+    const resourceBeforeAppliedRelease = await harness.pool.query(
+      "select id from environment_resource where id = $1",
+      [resourceId],
+    );
+    expect(resourceBeforeAppliedRelease.rowCount).toBe(1);
+
+    const appliedAttempt = await runPromiseDb(stage(appliedDeploymentId));
+    const released = await runPromiseDb(release(appliedDeploymentId));
+    expect(released).toEqual([{ id: appliedAttempt.id }]);
+    const appliedRows = await harness.pool.query<{
+      status: string;
+      inngest_run_id: string | null;
+    }>(
+      "select status, inngest_run_id from volume_remove_attempt where id = $1",
+      [appliedAttempt.id],
+    );
+    expect(appliedRows.rows).toEqual([{ status: "pending", inngest_run_id: null }]);
   });
 
   it("terminalizes cancellation by exact Inngest run identity", async () => {

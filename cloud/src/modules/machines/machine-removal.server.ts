@@ -51,13 +51,6 @@ export function asRemoveMachineOutcome<R>(
         identities: cause.identities,
       } satisfies RemoveMachineOutcome),
     ),
-    Effect.catchTag("SdkSurfaceNotShipped", (cause) =>
-      Effect.succeed({
-        kind: "permanent_failure" as const,
-        failureCode: "sdk_not_shipped",
-        failureMessage: cause.message,
-      } satisfies RemoveMachineOutcome),
-    ),
     Effect.mapError(
       (cause) =>
         new MachineRemovalProviderFailure({

@@ -193,21 +193,27 @@ function teardownStatusCopy(attempt: TeardownAttemptSummary) {
     case "partial":
       return {
         title: "Teardown is incomplete",
-        description: "Retry to finish leftover rust work.",
+        description:
+          "Review fresh Data Loss and confirm a new teardown to finish the remaining work.",
       };
     case "cancelled":
       return {
         title: "Teardown cancelled",
         description:
-          attempt.failureMessage ?? "Retry to run the same teardown again.",
+          attempt.failureMessage ??
+          "Review fresh Data Loss and confirm a new teardown.",
       };
     case "failed":
       return {
         title: "Teardown failed",
         description:
-          attempt.failureMessage ?? "Retry to run the same teardown again.",
+          attempt.failureMessage ??
+          "Review fresh Data Loss and confirm a new teardown.",
       };
     case "completed":
+      if (attempt.outcome === null) {
+        throw new Error("Completed teardown is missing its runtime outcome.");
+      }
       return {
         title: "Teardown finished",
         description: teardownCompletedDescription(attempt.outcome),

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { desc, eq, sql } from "drizzle-orm";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Result } from "effect";
 import { Inngest } from "inngest";
 import { SqlError, SerializationError } from "effect/unstable/sql/SqlError";
 import * as schema from "#/db/schema";
@@ -14,6 +14,7 @@ import { markDeploymentStatus } from "#/modules/deployments/runtime-repository.s
 import {
   createManualEnvironmentDeployment,
 } from "#/modules/deployments/manual-admission.server";
+import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import { saveReviewedEnvironmentState } from "#/modules/environment-design/saved-state-operations.server";
 import type { ReviewedEnvironmentPublication } from "#/modules/environment-design/working-state-review";
 import { fingerprintReviewedEnvironmentWorkingState } from "#/modules/environment-design/working-state-review";
@@ -753,16 +754,75 @@ describe("manual environment saved-state persistence", () => {
       })
       .where(eq(schema.environmentSavedStateSnapshot.id, saved.id));
 
+    const malformedAdmission = await harness.runTransactionResult(() =>
+      admitEnvironmentDeployment({
+        environmentId,
+        savedStateSnapshotId: saved.id,
+        triggerOrigin: { origin: "manual", actorId: userId },
+        message: "Deploy without volume destroy",
+        serviceActionPolicy: { kind: "all_affected_required" },
+      }),
+    );
+    expect(Result.isFailure(malformedAdmission)).toBe(true);
+    if (Result.isSuccess(malformedAdmission)) return;
+    expect(malformedAdmission.failure).toMatchObject({
+      _tag: "Validation",
+      message: "Saved destructive volume review has an invalid machine ID.",
+    });
+
+    await harness.db
+      .update(schema.environmentSavedStateSnapshot)
+      .set({
+        volumeDeletionAuthorizations: [
+          {
+            target: {
+              version: 1,
+              resourceId: volumeId,
+              namespaceId: "production",
+              volumeName: `vol-${volumeId}`,
+              machineId: "a".repeat(32),
+            },
+            evidence: {
+              version: 1,
+              fingerprint: "reviewed-volume-removal",
+              reviewedAt: "2026-08-12T00:00:00.000Z",
+              evidence: {
+                namespaceId: "production",
+                volumeName: `vol-${volumeId}`,
+                machineId: "a".repeat(32),
+                kind: { kind: "plain" },
+                availability: {
+                  status: "available",
+                  usedBytes: 0,
+                  lastWriteUnixSeconds: 0,
+                },
+                referencingServices: [],
+              },
+            },
+          },
+        ],
+      })
+      .where(eq(schema.environmentSavedStateSnapshot.id, saved.id));
+
     const next = await deploy("Deploy without volume destroy");
     const attempts = await harness.db
-        .select({ id: schema.destructiveVolumeAttempt.id })
-        .from(schema.destructiveVolumeAttempt)
-        .where(
-          eq(
-            schema.destructiveVolumeAttempt.environmentDeploymentId,
-            next.environmentDeploymentId,
-          ),
-        );
-    expect(attempts).toHaveLength(1);
+      .select({
+        id: schema.volumeRemoveAttempt.id,
+        status: schema.volumeRemoveAttempt.status,
+        requestedByUserId: schema.volumeRemoveAttempt.requestedByUserId,
+      })
+      .from(schema.volumeRemoveAttempt)
+      .where(
+        eq(
+          schema.volumeRemoveAttempt.environmentDeploymentId,
+          next.environmentDeploymentId,
+        ),
+      );
+    expect(attempts).toEqual([
+      expect.objectContaining({
+        status: "awaiting_deployment",
+        requestedByUserId: userId,
+      }),
+    ]);
   });
 });

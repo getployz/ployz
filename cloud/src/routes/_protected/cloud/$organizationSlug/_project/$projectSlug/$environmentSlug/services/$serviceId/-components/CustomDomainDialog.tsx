@@ -3,8 +3,7 @@ import {
   strictParseOptions,
 } from "#/modules/environment-design/schema";
 import { useState, type ReactNode } from "react";
-import { CircleAlertIcon, CopyIcon, GlobeIcon } from "lucide-react";
-import { toast } from "sonner";
+import { CircleAlertIcon } from "lucide-react";
 import { Schema, SchemaGetter } from "effect";
 import type { ServiceRoute } from "#/modules/environment-design/tables";
 import { asRecord } from "#/lib/json";
@@ -32,7 +31,6 @@ import {
   validateAfterBlurThenWhileInvalid,
 } from "#/form";
 import { serviceRouteSchema } from "#/modules/environment-design/services";
-import type { CustomDomainDnsGuidance } from "./ServiceNetworkingSection.presentation";
 
 const portStringSchema = Schema.String.check(
   Schema.makeFilter((value) => {
@@ -93,15 +91,9 @@ function errorMessage<T>(error: T) {
     : "The custom domain could not be saved.";
 }
 
-function copyToClipboard(value: string) {
-  void navigator.clipboard.writeText(value);
-  toast.info("Copied to clipboard");
-}
-
 export function CustomDomainDialog({
   route,
   defaultTargetPort,
-  guidance,
   capabilityAction,
   onCapabilityRejected,
   onClose,
@@ -109,7 +101,6 @@ export function CustomDomainDialog({
 }: {
   route?: ServiceRoute;
   defaultTargetPort: number;
-  guidance: CustomDomainDnsGuidance;
   capabilityAction: ReactNode;
   onCapabilityRejected: () => Promise<void>;
   onClose: () => void;
@@ -189,29 +180,6 @@ export function CustomDomainDialog({
                 )}
               </form.Field>
             </FieldGroup>
-            <Alert>
-              <GlobeIcon />
-              <AlertTitle>{guidance.title}</AlertTitle>
-              <AlertDescription>
-                {guidance.description}
-                {guidance.kind === "target" ? (
-                  <div className="mt-1 font-mono">{guidance.target}</div>
-                ) : null}
-              </AlertDescription>
-              {guidance.kind === "target" ? (
-                <AlertAction>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon-sm"
-                    aria-label="Copy DNS target"
-                    onClick={() => copyToClipboard(guidance.target)}
-                  >
-                    <CopyIcon />
-                  </Button>
-                </AlertAction>
-              ) : null}
-            </Alert>
             {saveFailure ? (
               <Alert variant="destructive">
                 <CircleAlertIcon />

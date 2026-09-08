@@ -1,44 +1,32 @@
+import type { ClusterTeardown, MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import type { MachineId } from "@ployz/sdk";
-import {
-  confirmedVolumeRemove,
-  unionDataLossLists,
-} from "#/modules/runtime/data-loss-confirm";
+import { unionDataLossLists } from "#/modules/runtime/data-loss-confirm";
 import {
   cloudEnvironmentName,
-  confirmedVolumesForTeardown,
   environmentCloudRows,
-  identitiesForEnvironment,
-  identitiesForMachine,
-  leftoverVolumeMessage,
-  machineCloudRow,
+  incompleteTeardownOutcome,
   organizationCloudRow,
-  projectCloudRow,
-  environmentTargetsWithIdentities,
-  planTeardownRuntime,
   parseTeardownTargets,
+  planTeardownRuntime,
+  projectCloudRow,
   retryPlanForAttempt,
   teardownCompletedDescription,
+  teardownIsRetryable,
   teardownOutcome,
   type TeardownTargets,
 } from "./teardown";
 
 const machineA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
 const machineB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as MachineId;
-
-function rustVolume(machine_id: MachineId, name: string) {
-  return { kind: "docker_volume" as const, id: { machine_id, name } };
-}
+const clusterTeardown = {
+  destroyed_projects: ["app-production"],
+  machines: { successes: [], failures: [], omissions: [] },
+  pairing_revoked: false,
+} satisfies ClusterTeardown;
 
 describe("teardown Data Loss", () => {
-  it("unions five environments into one list for a Cloud project delete", () => {
-    const names = [
-      "production",
-      "staging",
-      "preview",
-      "dev",
-      "qa",
-    ] as const;
+  it("unions Rust project evidence with Cloud rows for a Cloud project delete", () => {
+    const names = ["production", "staging", "preview", "dev", "qa"] as const;
     const lists = names.map((environmentName, index) => {
       const cloudName = cloudEnvironmentName({
         organizationSlug: "acme",
@@ -48,10 +36,13 @@ describe("teardown Data Loss", () => {
       return unionDataLossLists([
         {
           rust: [
-            rustVolume(
-              index === 1 ? machineB : machineA,
-              `vol-env-${environmentName}`,
-            ),
+            {
+              kind: "docker_volume" as const,
+              id: {
+                machine_id: index === 1 ? machineB : machineA,
+                name: `vol-env-${environmentName}`,
+              },
+            },
           ],
           cloud: [],
         },
@@ -79,136 +70,56 @@ describe("teardown Data Loss", () => {
     expect(united.cloud.some((row) => row.kind === "project")).toBe(true);
   });
 
-  it("gives each environment only its confirmed volume identities", () => {
-    const environments = [
-      { id: "env-1", projectId: "project-1", name: "production", namespace: "ns-prod" },
-      { id: "env-2", projectId: "project-1", name: "staging", namespace: "ns-staging" },
-    ];
-    const identities = [
-      rustVolume(machineA, "vol-production"),
-      rustVolume(machineB, "vol-staging"),
-    ];
-    const ownership = [
-      { namespace: "ns-prod", machine: machineA, name: "vol-production" },
-      { namespace: "ns-staging", machine: machineB, name: "vol-staging" },
-    ];
-
-    expect(
-      identitiesForEnvironment(identities, "ns-staging", ownership),
-    ).toEqual([rustVolume(machineB, "vol-staging")]);
-
-    const targets = environmentTargetsWithIdentities({
-      environments: environments.map((environment) => ({
-        environmentId: environment.id,
-        projectId: environment.projectId,
-        namespace: environment.namespace,
-        cloudName: `acme/web/${environment.name}`,
-      })),
-      identities,
-      ownership,
-    });
-    expect(targets[0]?.identities).toEqual([
-      rustVolume(machineA, "vol-production"),
-    ]);
-    expect(targets[1]?.identities).toEqual([
-      rustVolume(machineB, "vol-staging"),
-    ]);
-  });
-
-  it("filters confirmed identities down to one machine for removeMachine", () => {
-    const identities = [
-      rustVolume(machineA, "pg-data"),
-      rustVolume(machineB, "pg-data"),
-    ];
-
-    expect(identitiesForMachine(identities, machineA)).toEqual([
-      rustVolume(machineA, "pg-data"),
-    ]);
-  });
-
-  it("turns confirmed rust identities into SDK volume ids", () => {
-    expect(
-      confirmedVolumesForTeardown([
-        rustVolume(machineA, "vol-1"),
-        rustVolume(machineB, "vol-2"),
-      ]),
-    ).toEqual(confirmedVolumeRemove({
-      rust: [
-        rustVolume(machineA, "vol-1"),
-        rustVolume(machineB, "vol-2"),
-      ],
-      cloud: [],
-    }));
-  });
-
-  it("treats leftover volume identities as retryable, not complete", () => {
-    const requested = [
-      { machine_id: machineA, name: "vol-1" },
-      { machine_id: machineB, name: "vol-1" },
-    ];
-    const [destroyed, omitted] = requested;
-    if (destroyed === undefined || omitted === undefined) {
-      throw new Error("fixture is missing volume identities");
-    }
-    expect(
-      leftoverVolumeMessage(requested, {
-        destroyed: [destroyed],
-        failed: [],
-        omitted: [omitted],
-      }),
-    ).toMatch(/retry/);
-    expect(
-      leftoverVolumeMessage(requested, {
-        destroyed: requested,
-        failed: [],
-        omitted: [],
-      }),
-    ).toBeNull();
-  });
-
-  it("resends pending teardown and retries terminal leftovers", () => {
-    expect(retryPlanForAttempt("pending")).toEqual({ kind: "resend" });
-    expect(retryPlanForAttempt("partial")).toEqual({ kind: "retry" });
-    expect(retryPlanForAttempt("failed")).toEqual({ kind: "retry" });
-    expect(retryPlanForAttempt("cancelled")).toEqual({ kind: "retry" });
-    expect(retryPlanForAttempt("running")).toEqual({ kind: "conflict" });
-    expect(retryPlanForAttempt("completed")).toEqual({ kind: "conflict" });
-  });
-
-  it("snapshots org pairing revoke on targets so retry works after Cloud rows drop", () => {
+  it("keeps Cloud runtime project targets without reconstructing volume ownership", () => {
     const targets: TeardownTargets = {
       environments: [
         {
           environmentId: "env-1",
           projectId: "project-1",
-          namespace: "ns-1",
-          cloudName: "acme/web/production",
-          identities: [],
+          projectName: "app-production",
+          cloudName: "acme/app/production",
         },
       ],
-      machines: [machineA],
-      revokePairing: true,
-      runtimeMembership: "verified",
+      destroyRuntimeProjects: true,
+      revokePairing: false,
+      runtimeMembership: "untouched",
     };
-    expect(targets.revokePairing).toBe(true);
+
+    expect(targets.environments).toEqual([
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        projectName: "app-production",
+        cloudName: "acme/app/production",
+      },
+    ]);
+    expect(targets.destroyRuntimeProjects).toBe(true);
+  });
+
+  it("only resends a pending dispatch; terminal work needs a fresh confirmation", () => {
+    expect(retryPlanForAttempt("pending")).toEqual({ kind: "resend" });
+    expect(teardownIsRetryable("pending")).toBe(true);
+    for (const status of ["partial", "failed", "cancelled", "running", "completed"] as const) {
+      expect(retryPlanForAttempt(status)).toEqual({ kind: "conflict" });
+      expect(teardownIsRetryable(status)).toBe(false);
+    }
+  });
+
+  it("keeps organization Cloud row loss without inventing a machine list", () => {
     expect(organizationCloudRow("acme").cloud).toEqual([
       { kind: "organization", name: "acme" },
     ]);
-    expect(machineCloudRow(machineA).cloud).toEqual([
-      { kind: "machine", name: machineA },
-    ]);
   });
 
-  it("pins live Cluster machines for reachable org teardown and refuses to call that zero", () => {
+  it("uses the reachable Rust cluster target without pinning Cloud ownership", () => {
     expect(
       planTeardownRuntime({
         scope: "organization",
         abandon: false,
-        cluster: { kind: "live", machines: [machineA, machineB] },
+        cluster: { kind: "live" },
       }),
     ).toEqual({
       kind: "ok",
-      machines: [machineA, machineB],
       revokePairing: true,
       runtimeMembership: "verified",
     });
@@ -219,10 +130,6 @@ describe("teardown Data Loss", () => {
         cluster: { kind: "unreachable" },
       }),
     ).toEqual({ kind: "refuse", reason: "use_abandon" });
-    expect(teardownOutcome("verified", false)).toEqual({
-      rustMustRevokePairing: false,
-      runtimeMembership: "verified_zero",
-    });
   });
 
   it("abandons only an unreachable Cluster and records unknown membership", () => {
@@ -234,7 +141,6 @@ describe("teardown Data Loss", () => {
       }),
     ).toEqual({
       kind: "ok",
-      machines: [],
       revokePairing: true,
       runtimeMembership: "unknown",
     });
@@ -242,7 +148,7 @@ describe("teardown Data Loss", () => {
       planTeardownRuntime({
         scope: "organization",
         abandon: true,
-        cluster: { kind: "live", machines: [machineA] },
+        cluster: { kind: "live" },
       }),
     ).toEqual({ kind: "refuse", reason: "use_verified" });
     expect(
@@ -252,24 +158,33 @@ describe("teardown Data Loss", () => {
         cluster: { kind: "no_cluster" },
       }),
     ).toEqual({ kind: "refuse", reason: "nothing_to_abandon" });
-    expect(teardownOutcome("unknown", false)).toEqual({
-      rustMustRevokePairing: false,
-      runtimeMembership: "unknown",
-    });
   });
 
-  it("leaves env and project teardown off Cluster membership", () => {
+  it("leaves environment and project teardown off Cluster membership", () => {
     expect(
       planTeardownRuntime({
         scope: "project",
         abandon: false,
-        cluster: { kind: "live", machines: [machineA] },
+        cluster: { kind: "live" },
       }),
     ).toEqual({
       kind: "ok",
-      machines: [],
       revokePairing: false,
       runtimeMembership: "untouched",
+    });
+  });
+
+  it("does not turn a partial Cluster result into verified zero", () => {
+    expect(
+      incompleteTeardownOutcome("verified", { clusterTeardown }),
+    ).toEqual({
+      rustMustRevokePairing: false,
+      runtimeMembership: "unknown",
+      clusterTeardown,
+    });
+    expect(teardownOutcome("verified", false)).toEqual({
+      rustMustRevokePairing: false,
+      runtimeMembership: "verified_zero",
     });
   });
 
@@ -288,22 +203,28 @@ describe("teardown Data Loss", () => {
     ).toBe(
       "Cloud management was dropped. Runtime membership remains unknown, and pairing must still be revoked in Rust.",
     );
-    expect(teardownOutcome("verified", true)).toEqual({
-      rustMustRevokePairing: true,
-      runtimeMembership: "unknown",
-    });
-    expect(teardownCompletedDescription(null)).toBe(
-      "Confirmed rust work ran, then Cloud rows were dropped.",
-    );
   });
 
-  it("treats attempt JSON missing runtimeMembership as untouched", () => {
-    expect(
+  it("requires the current teardown target shape", () => {
+    const current = {
+      environments: [],
+      destroyRuntimeProjects: false,
+      revokePairing: false,
+      runtimeMembership: "untouched",
+    };
+    expect(parseTeardownTargets(current)).toEqual(current);
+    expect(() =>
       parseTeardownTargets({
         environments: [],
-        machines: [],
         revokePairing: false,
-      }).runtimeMembership,
-    ).toBe("untouched");
+      }),
+    ).toThrow();
+    expect(() =>
+      parseTeardownTargets({
+        ...current,
+        machines: [],
+      }),
+    ).toThrow();
   });
+
 });

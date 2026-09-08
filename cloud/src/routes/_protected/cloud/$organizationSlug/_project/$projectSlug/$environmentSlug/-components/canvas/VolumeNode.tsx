@@ -54,7 +54,7 @@ export function VolumeNode({
   }
 
   const resource = resourceState.resource;
-  const isDeleted = resource.resource.deletedAt != null;
+  const isRemoved = !resource.isAuthored;
   const mountPaths = resource.attachments.map((attachment) => attachment.mountPath);
   const mountSummary =
     mountPaths.length === 0 ? "No mounts" : mountPaths.slice(0, 2).join(", ");
@@ -91,7 +91,7 @@ export function VolumeNode({
         className={cn(
           "h-full justify-between",
           selected && "ring-2 ring-ring",
-          isDeleted && "opacity-60",
+          isRemoved && "opacity-60",
         )}
       >
         <CardHeader>
@@ -108,7 +108,7 @@ export function VolumeNode({
               </CardDescription>
             </div>
             <Badge variant="secondary">{resource.consumerCount}</Badge>
-            {isDeleted ? (
+            {isRemoved ? (
               <Badge variant="destructive">Removing</Badge>
             ) : resourceState.diffRowCount > 0 ? (
               <Badge variant="changed">{resourceState.diffRowCount}</Badge>

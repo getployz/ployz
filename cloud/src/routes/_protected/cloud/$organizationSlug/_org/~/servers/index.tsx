@@ -16,7 +16,10 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServerDialog } from "./-components/add-server-dialog";
 import { RuntimeMachineRow } from "./-components/server-list-rows";
 import { ServersSkeleton } from "./-components/servers-skeleton";
-import { getServerListState } from "./-components/server-list-state";
+import {
+  getServerListState,
+  incompleteRuntimeObservationDescription,
+} from "./-components/server-list-state";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
@@ -43,9 +46,7 @@ function RouteComponent() {
           machine.id,
           machine.name,
           machine.publicIp,
-          machine.overlayIp,
-          machine.region,
-          machine.availabilityZone,
+          ...machine.endpoints,
         ]
           .filter(Boolean)
           .join(" ")
@@ -55,6 +56,9 @@ function RouteComponent() {
     : runtimeMachineRows;
   const runtimeStatus = runtime.status;
   const runtimeError = runtime.error;
+  const incompleteObservation = incompleteRuntimeObservationDescription(
+    runtime.incompleteIds,
+  );
   const listState = getServerListState({
     rowCount: runtimeMachineRows.length,
     visibleRowCount: filtered.length,
@@ -81,6 +85,16 @@ function RouteComponent() {
           <AlertDescription>
             {listState.notice.description}
           </AlertDescription>
+        </Alert>
+      ) : null}
+      {incompleteObservation ? (
+        <Alert>
+          <AlertTitle>
+            {runtimeStatus === "unavailable"
+              ? "Last observed Runtime Watch was incomplete"
+              : "Runtime Watch observation is incomplete"}
+          </AlertTitle>
+          <AlertDescription>{incompleteObservation}</AlertDescription>
         </Alert>
       ) : null}
 
