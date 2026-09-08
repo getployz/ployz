@@ -512,6 +512,7 @@ fn write_docker(path: &Path, root: &Path) {
     let script = format!(
         r#"#!/bin/sh
 root='{root}'
+case "$1" in --ready) exit 0 ;; esac
 printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
   'buildx create') : > "$root/builder"; exit 0 ;;
@@ -551,6 +552,18 @@ exit 1
     );
     fs::write(path, script).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    // A concurrently forked process can briefly hold a just-written program
+    // open, so wait until this one can actually be executed.
+    for _ in 0..100 {
+        match Command::new(path).arg("--ready").status() {
+            Ok(_) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("Docker stand-in {}: {error}", path.display()),
+        }
+    }
+    panic!("Docker stand-in {} never became executable", path.display());
 }
 
 #[test]
