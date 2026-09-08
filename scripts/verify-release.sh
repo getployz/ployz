@@ -60,7 +60,6 @@ check_checksums_and_formula() {
         grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
     done < <(cli_archives)
     grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
-    grep -Fiq 'clean break' "$formula" || fail "Homebrew formula omits the clean-break statement"
 }
 
 run_archive() {

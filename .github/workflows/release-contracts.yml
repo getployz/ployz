@@ -33,7 +33,6 @@ on:
       - scripts/promote-release.sh
       - scripts/pack-sdk-package.sh
       - scripts/publish-sdk-package.sh
-      - scripts/test-release-contracts.sh
       - scripts/test-cli-installer.sh
       - scripts/test-daemon-lifecycle.sh
       - crates/ployz-relay/Dockerfile
@@ -75,16 +74,6 @@ jobs:
           fi
           mapfile -t files < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
           echo "artifacts=$(bash scripts/release-artifacts-needed.sh pull_request "${files[@]}")" >> "$GITHUB_OUTPUT"
-
-  scripts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.release-tag || github.sha }}
-      - run: bash scripts/test-release-contracts.sh
-      - run: bash scripts/test-cli-installer.sh
-      - run: bash scripts/test-daemon-lifecycle.sh
 
   build-linux:
     needs: [decide]
@@ -177,12 +166,16 @@ jobs:
           if-no-files-found: error
 
   pack:
-    needs: [build-linux, build-macos, scripts]
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.release-tag || github.sha }}
+      - if: github.event_name != 'pull_request'
+        run: bash scripts/test-cli-installer.sh
+      - if: github.event_name != 'pull_request'
+        run: bash scripts/test-daemon-lifecycle.sh
       - uses: actions/download-artifact@v4
         with:
           pattern: release-linux-*

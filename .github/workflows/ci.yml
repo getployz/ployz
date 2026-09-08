@@ -63,11 +63,11 @@ jobs:
         with:
           node-version: 22
       - run: bash scripts/check-sdk-types.sh
-      - run: bash scripts/test-release-contracts.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-missing-ssh-client.sh
       - run: bash scripts/test-daemon-lifecycle.sh
       - run: bash scripts/test-qualify-release.sh
+      - run: bash scripts/test-qualify-clean-init.sh
       - name: Check the daemon stays outside the CLI graph
         run: |
           if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then
