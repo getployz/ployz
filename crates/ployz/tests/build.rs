@@ -163,7 +163,7 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     fs::set_permissions(root.join("api/readonly"), fs::Permissions::from_mode(0o555)).unwrap();
     fs::write(root.join("shared/data"), "original shared").unwrap();
     fs::write(root.join("Dockerfile"), "FROM scratch\nCOPY . /app\n").unwrap();
-    fs::write(root.join("Dockerfile.dockerignore"), "hidden\n").unwrap();
+    fs::write(root.join("Dockerfile.dockerignore"), "hidden\nkey\n").unwrap();
     fs::write(root.join("api/.dockerignore"), "source\n").unwrap();
     fs::create_dir(root.join("api/hidden")).unwrap();
     let _socket = std::os::unix::net::UnixListener::bind(root.join("api/hidden/socket")).unwrap();
@@ -267,7 +267,7 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     let dockerfile = dockerfile.display();
     assert_eq!(
         fs::read_to_string(format!("{dockerfile}.dockerignore")).unwrap(),
-        "hidden\n"
+        "hidden\nkey\n"
     );
     let ssh = captured_build["ssh"][0]
         .as_str()

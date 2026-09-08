@@ -15,7 +15,7 @@ pub struct BuildSpec {
 #[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
 pub(crate) enum ProjectSecret {
     Unresolved(SecretSource),
-    Resolved { source: SecretSource, value: String },
+    Resolved(String),
 }
 
 /// How an unresolved project secret is obtained.
@@ -39,8 +39,6 @@ pub struct ComposeProject {
     pub service_profiles: BTreeMap<String, Vec<String>>,
     pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
-    /// Inputs already resolved by Compose, kept out of reusable build source.
-    pub(super) environment_files: Vec<PathBuf>,
 }
 
 impl ComposeProject {

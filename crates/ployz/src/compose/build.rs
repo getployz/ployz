@@ -101,6 +101,8 @@ const DROPPED_BY_UPSTREAM: &[&str] = &["entitlements", "isolation", "privileged"
 const LOCAL_CACHE: &[&str] = &["cache_from", "cache_to"];
 
 /// Freeze build sources, options, and provider values before invoking Docker.
+/// Authored files follow Docker's ignore rules, including Compose and environment
+/// files. Generated argument/credential material is staged separately.
 ///
 /// Service environment values default declared Dockerfile arguments; Compose
 /// arguments override them, and CLI arguments override Compose. Ordinary build
@@ -132,28 +134,6 @@ pub fn capture_build(
         }
     }
     inputs.docker_config(&project.environment, &project.working_dir)?;
-    // Identify private files before staging any context, including sibling Builds.
-    for path in &project.environment_files {
-        inputs.exclude(&project.working_dir.join(path))?;
-    }
-    for secret in project.secrets.values() {
-        let source = match secret {
-            super::model::ProjectSecret::Unresolved(source)
-            | super::model::ProjectSecret::Resolved { source, .. } => source,
-        };
-        if let super::model::SecretSource::File(path) = source {
-            inputs.exclude(&project.working_dir.join(path))?;
-        }
-    }
-    for service in plan {
-        if let Some(ssh) = service.build.get("ssh").and_then(Value::as_sequence) {
-            for key in ssh {
-                for path in ssh_paths(key)?.1.split(',') {
-                    inputs.exclude(&project.working_dir.join(path))?;
-                }
-            }
-        }
-    }
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
     let mut targets = Vec::new();
@@ -168,62 +148,7 @@ pub fn capture_build(
         let platform = requested_platform(&name, build)?;
         targets.push(ployz_build::Target { name, platform });
         retain_service_image_tag(&service.name, image, build)?;
-        // All values are fixed now; Compose/Buildx must never fill null arguments
-        // from the execution host's shell. Build overrides affect only this copy.
-        let runtime = project
-            .services
-            .get(&service.name)
-            .ok_or_else(|| invalid_build("build Service is missing"))?
-            .container
-            .environment
-            .clone();
-        let mut args = serde_norway::Mapping::new();
-        for (key, value) in runtime {
-            let value = if let Some(secret) = value.strip_prefix("secret://") {
-                project.resolve_secret(secret)?.to_owned()
-            } else {
-                value
-            };
-            args.insert(Value::String(key), Value::String(value));
-        }
-        if let Some(declared) = build
-            .get(Value::String("args".into()))
-            .and_then(Value::as_mapping)
-        {
-            for (key, value) in declared {
-                let value = if value.is_null() {
-                    key.as_str()
-                        .and_then(|key| project.environment.get(key))
-                        .map(|value| Value::String(value.clone()))
-                } else {
-                    Some(value.clone())
-                };
-                match value {
-                    Some(value) => {
-                        args.insert(key.clone(), value);
-                    }
-                    None => {
-                        args.remove(key);
-                    }
-                }
-            }
-        }
-        for argument in &options.build_args {
-            let (key, value) = match argument.split_once('=') {
-                Some(pair) => pair,
-                None => (
-                    argument.as_str(),
-                    project
-                        .environment
-                        .get(argument)
-                        .ok_or_else(|| {
-                            invalid_build("a build argument has no captured environment value")
-                        })?
-                        .as_str(),
-                ),
-            };
-            args.insert(Value::String(key.into()), Value::String(value.into()));
-        }
+        let args = effective_build_args(&service.name, build, &options.build_args, project)?;
         build.insert(Value::String("args".into()), Value::Mapping(args));
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
@@ -387,6 +312,71 @@ pub fn capture_build(
             .collect(),
         inputs,
     })
+}
+
+fn effective_build_args(
+    service: &str,
+    build: &serde_norway::Mapping,
+    overrides: &[String],
+    project: &mut ComposeProject,
+) -> Result<serde_norway::Mapping, ComposeError> {
+    // All values are fixed now; Compose/Buildx must never fill null arguments
+    // from the execution host's shell. Build overrides affect only this copy.
+    let runtime = project
+        .services
+        .get(service)
+        .ok_or_else(|| invalid_build("build Service is missing"))?
+        .container
+        .environment
+        .clone();
+    let mut args = serde_norway::Mapping::new();
+    for (key, value) in runtime {
+        let value = if let Some(secret) = value.strip_prefix("secret://") {
+            project.resolve_secret(secret)?.to_owned()
+        } else {
+            value
+        };
+        args.insert(Value::String(key), Value::String(value));
+    }
+    if let Some(declared) = build
+        .get(Value::String("args".into()))
+        .and_then(Value::as_mapping)
+    {
+        for (key, value) in declared {
+            let value = if value.is_null() {
+                key.as_str()
+                    .and_then(|key| project.environment.get(key))
+                    .map(|value| Value::String(value.clone()))
+            } else {
+                Some(value.clone())
+            };
+            match value {
+                Some(value) => {
+                    args.insert(key.clone(), value);
+                }
+                None => {
+                    args.remove(key);
+                }
+            }
+        }
+    }
+    for argument in overrides {
+        let (key, value) = match argument.split_once('=') {
+            Some(pair) => pair,
+            None => (
+                argument.as_str(),
+                project
+                    .environment
+                    .get(argument)
+                    .ok_or_else(|| {
+                        invalid_build("a build argument has no captured environment value")
+                    })?
+                    .as_str(),
+            ),
+        };
+        args.insert(Value::String(key.into()), Value::String(value.into()));
+    }
+    Ok(args)
 }
 
 impl CapturedBuild {

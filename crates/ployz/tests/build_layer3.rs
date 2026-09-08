@@ -277,7 +277,7 @@ secrets:
     fs::write(root.join("src/token"), "private-$VALUE").unwrap();
     fs::write(root.join("src/included"), "captured source").unwrap();
     fs::write(root.join("src/ignored"), "excluded source").unwrap();
-    fs::write(root.join("src/.dockerignore"), "ignored\n").unwrap();
+    fs::write(root.join("src/.dockerignore"), "ignored\ntoken\n").unwrap();
     fs::write(root.join("shared/data"), "named context").unwrap();
     fs::write(root.join("Dockerfile"), r#"FROM busybox:1.37.0
 ARG MODE

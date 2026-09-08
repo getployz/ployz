@@ -108,6 +108,7 @@ fn resolved_file_credentials_stay_private_across_captures() {
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
     fs::write(root.join("src/token"), "private-file-token").unwrap();
+    fs::write(root.join("src/.dockerignore"), "token\n").unwrap();
     let mut project = parse_normalized("services: {api: {build: {context: ./src, secrets: [token]}, environment: {TOKEN: 'secret://token'}}}\nsecrets: {token: {file: ./src/token}}", &root).unwrap();
     project.resolve_secrets().unwrap();
     let options = BuildOptions {
@@ -305,20 +306,27 @@ secrets:
 
 #[test]
 #[expect(clippy::indexing_slicing, reason = "Fixed capture fixture")]
-fn environment_input_files_do_not_enter_reusable_source() {
+fn authored_configuration_follows_dockerignore() {
     let root = std::env::temp_dir().join(format!("ployz-build-envfiles-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("compose.yaml"), "services: {api: {build: {context: ., secrets: [token]}, env_file: ./runtime.env, environment: {TOKEN: 'secret://token'}}}\nsecrets: {token: {environment: PLOYZ_CAPTURE_TOKEN}}\n").unwrap();
+    fs::write(root.join("compose.yaml"), "services: {api: {build: {context: ., secrets: [token]}, env_file: ./runtime.env, environment: {TOKEN: 'secret://token', INLINE: private-inline-value}}}\nsecrets: {token: {environment: PLOYZ_CAPTURE_TOKEN}}\n").unwrap();
     fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    fs::write(root.join(".dockerignore"), ".env\nruntime.env\n").unwrap();
     fs::write(
         root.join(".env"),
         "PLOYZ_CAPTURE_TOKEN=private-provider-value\n",
     )
     .unwrap();
     fs::write(root.join("runtime.env"), "RUNTIME=private-runtime-value\n").unwrap();
+    fs::write(
+        root.join("override.yaml"),
+        "services: {api: {build: {args: {OVERRIDE: private-override-value}}}}\n",
+    )
+    .unwrap();
     let mut project = load_project(&LoadOptions {
         working_dir: Some(root.clone()),
+        files: vec!["compose.yaml".into(), "override.yaml".into()],
         ..Default::default()
     })
     .unwrap();
@@ -339,6 +347,14 @@ fn environment_input_files_do_not_enter_reusable_source() {
             .unwrap(),
     );
     assert!(
+        context.join("compose.yaml").exists(),
+        "authored Compose source was filtered without a Docker exclusion"
+    );
+    assert!(
+        context.join("override.yaml").exists(),
+        "authored override source was filtered without a Docker exclusion"
+    );
+    assert!(
         !context.join(".env").exists(),
         "environment provider file entered source"
     );
@@ -353,6 +369,14 @@ fn environment_input_files_do_not_enter_reusable_source() {
     assert_eq!(
         config["services"]["api"]["build"]["args"]["RUNTIME"].as_str(),
         Some("private-runtime-value")
+    );
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["INLINE"].as_str(),
+        Some("private-inline-value")
+    );
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["OVERRIDE"].as_str(),
+        Some("private-override-value")
     );
     fs::remove_dir_all(root).unwrap();
 }

@@ -20,7 +20,6 @@ use super::ComposeError;
 pub(super) struct BuildInputs {
     root: PathBuf,
     captures: BTreeMap<Input, CapturedInput>,
-    excluded: BTreeSet<PathBuf>,
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd)]
@@ -50,7 +49,7 @@ impl Input {
         }
     }
 
-    fn selection(&self, excluded: &BTreeSet<PathBuf>) -> Result<Option<Selection>, ComposeError> {
+    fn selection(&self) -> Result<Option<Selection>, ComposeError> {
         let Self::Context { path, dockerfile } = self else {
             return Ok(None);
         };
@@ -62,7 +61,7 @@ impl Input {
         let response: Response = super::loader::helper(&serde_json::json!({
             "version": 1, "build_context": { "path": path, "dockerfile": dockerfile }
         }))?;
-        let mut paths: BTreeSet<PathBuf> = response
+        let paths: BTreeSet<PathBuf> = response
             .paths
             .into_iter()
             .map(|path| {
@@ -84,15 +83,14 @@ impl Input {
                 "build context path escapes staging".into(),
             ));
         }
-        paths.retain(|entry| !excluded.contains(&path.join(entry)));
         Ok(Some(Selection {
             paths,
             ignore: response.ignore,
         }))
     }
 
-    fn fingerprint(&self, excluded: &BTreeSet<PathBuf>) -> Result<Vec<u8>, ComposeError> {
-        fingerprint(self.path(), self.selection(excluded)?.as_ref()).map_err(input_error)
+    fn fingerprint(&self) -> Result<Vec<u8>, ComposeError> {
+        fingerprint(self.path(), self.selection()?.as_ref()).map_err(input_error)
     }
 }
 
@@ -116,7 +114,6 @@ impl BuildInputs {
         Ok(Self {
             root,
             captures: BTreeMap::new(),
-            excluded: BTreeSet::new(),
         })
     }
 
@@ -143,20 +140,10 @@ impl BuildInputs {
         })
     }
 
-    /// Keep declared credentials out of every reusable context, even when not ignored.
-    pub(super) fn exclude(&mut self, path: &Path) -> Result<(), ComposeError> {
-        match path.canonicalize() {
-            Ok(canonical) => {
-                self.excluded.insert(canonical);
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(input_error(error)),
-        }
-        // Preserve the lexical spelling too for a credential reached through a link.
-        self.excluded.insert(path.to_owned());
-        Ok(())
-    }
-
+    /// Freeze a regular credential file outside reusable source with mode 0600.
+    ///
+    /// # Errors
+    /// Rejects unreadable, nonregular, or unstable inputs.
     pub(super) fn private_file(&mut self, path: &Path) -> Result<PathBuf, ComposeError> {
         self.capture_input(Input::PrivateFile(
             path.canonicalize().map_err(input_error)?,
@@ -190,10 +177,10 @@ impl BuildInputs {
         {
             return Err(ComposeError::Invalid("build credential or Dockerfile must be a regular file; SSH agent sockets are unsupported".into()));
         }
-        let selection = input.selection(&self.excluded)?;
+        let selection = input.selection()?;
         let before = fingerprint(source, selection.as_ref()).map_err(input_error)?;
         copy(source, &target, source, selection.as_ref()).map_err(input_error)?;
-        if before != input.fingerprint(&self.excluded)?
+        if before != input.fingerprint()?
             || before != fingerprint(&target, selection.as_ref()).map_err(input_error)?
         {
             return Err(ComposeError::Invalid(
@@ -224,7 +211,7 @@ impl BuildInputs {
     /// Fails if a source changed or can no longer be fingerprinted.
     pub(super) fn verify(&self) -> Result<(), ComposeError> {
         for (input, captured) in &self.captures {
-            if input.fingerprint(&self.excluded)? != captured.fingerprint {
+            if input.fingerprint()? != captured.fingerprint {
                 return Err(ComposeError::Invalid(
                     "build inputs changed during capture; retry when the source is stable".into(),
                 ));
@@ -274,6 +261,10 @@ impl BuildInputs {
 
     /// Snapshot only explicitly supplied registry auth. Never consult the host's
     /// default Docker login, credential helpers, contexts, or plugin settings.
+    ///
+    /// # Errors
+    /// Rejects unreadable/invalid configuration and host-specific helpers, or
+    /// fails when private configuration cannot be staged.
     pub(super) fn docker_config(
         &mut self,
         environment: &BTreeMap<String, String>,
@@ -285,7 +276,6 @@ impl BuildInputs {
             .filter(|path| !path.is_empty())
         {
             let path = directory.join(path).join("config.json");
-            self.exclude(&path)?;
             let captured = self.private_file(&path)?;
             let supplied: serde_json::Value = serde_json::from_slice(
                 &fs::read(captured).map_err(input_error)?,
@@ -522,7 +512,9 @@ fn validate_link(path: &Path, root: &Path, selection: Option<&Selection>) -> io:
                 Component::CurDir => continue,
                 Component::ParentDir if resolved.pop() => continue,
                 Component::Normal(name) => resolved.push(name),
-                _ => return Err(link_error()),
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                    return Err(link_error());
+                }
             }
             if selection.is_some_and(|selection| !selection.paths.contains(&resolved)) {
                 return Err(link_error());
