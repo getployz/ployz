@@ -100,3 +100,4 @@ volume-size-overflow	crates/ployz/src/volume.rs::overflowing_volume_size_names_t
 project-name-source	crates/ployz/src/project.rs::missing_project_source_explains_how_to_supply_a_name	-	-	-	-
 caddy-image-reference	crates/ployz/src/ingress/caddy.rs::invalid_caddy_reference_names_the_value_and_discovery_alternative	-	-	-	-
 volume-observation-refusal	crates/ployz/src/handlers/project.rs::listing_warnings_are_observer_relative_and_include_volume_gaps	-	crates/ployz/tests/connect/main.rs::volume_list_prints_healthy_and_unavailable_rows_then_fails	-	-
+machine-store-catch-up	crates/ployzd/src/corrosion/store_tests.rs::catch_up_waits_for_pending_target_transactions	-	-	-	-

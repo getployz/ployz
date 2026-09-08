@@ -16,30 +16,12 @@ pub async fn wait_for_catch_up(
     store: &ReplicatedStore,
     target: &BTreeMap<String, i64>,
 ) -> Result<(), Error> {
-    if target.is_empty() {
-        return Ok(());
-    }
     let warning_interval = Duration::from_secs(5 * 60);
     let mut warning_at = tokio::time::Instant::now() + warning_interval;
     loop {
-        let status = match store.version().await {
-            Ok(local) => {
-                let lagging = target
-                    .iter()
-                    .filter(|(actor, target)| {
-                        local.get(*actor).copied().unwrap_or_default() < **target
-                    })
-                    .count();
-                if lagging == 0 {
-                    match store.has_known_missing_changes().await {
-                        Ok(false) => return Ok(()),
-                        Ok(true) => "known bookkeeping gaps remain".to_owned(),
-                        Err(error) => error.to_string(),
-                    }
-                } else {
-                    format!("{lagging} actor(s) remain behind the target")
-                }
-            }
+        let status = match store.has_reached_version(target).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => "target replication is incomplete".to_owned(),
             Err(error) => error.to_string(),
         };
         tokio::select! {

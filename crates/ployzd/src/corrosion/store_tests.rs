@@ -397,6 +397,118 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
     .unwrap();
     (machine, local)
 }
+fn sql_param(value: &serde_json::Value) -> rusqlite::types::Value {
+    match value {
+        serde_json::Value::String(value) => value.clone().into(),
+        serde_json::Value::Number(value) => value.as_i64().unwrap().into(),
+        serde_json::Value::Array(bytes) => bytes
+            .iter()
+            .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
+            .collect::<Vec<_>>()
+            .into(),
+        value @ (serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Object(_)) => panic!("unsupported test parameter: {value}"),
+    }
+}
+
+#[tokio::test]
+async fn catch_up_waits_for_pending_target_transactions() {
+    use super::{Statement, wait_for_catch_up};
+    use std::time::Duration;
+
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);
+         INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 5);
+         INSERT INTO __corro_seq_bookkeeping VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 5);",
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    let target = BTreeMap::from([("a".repeat(32), 5)]);
+    assert!(!store.has_reached_version(&target).await.unwrap());
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            wait_for_catch_up(&store, &target)
+        )
+        .await
+        .is_err()
+    );
+
+    store
+        .api()
+        .execute([
+            Statement::new("DELETE FROM __corro_seq_bookkeeping", []),
+            Statement::new(
+                "INSERT INTO __corro_bookkeeping_gaps VALUES (?, 5, 5)",
+                [json!(vec![0xaa; 16])],
+            ),
+        ])
+        .await
+        .unwrap();
+    assert!(!store.has_reached_version(&target).await.unwrap());
+
+    // Later gaps and pending transactions, including other actors, do not block this target.
+    store
+        .api()
+        .execute([
+            Statement::new("UPDATE __corro_bookkeeping_gaps SET start = 6, end = 6", []),
+            Statement::new(
+                "INSERT INTO __corro_seq_bookkeeping VALUES (?, 6)",
+                [json!(vec![0xaa; 16])],
+            ),
+            Statement::new(
+                "INSERT INTO __corro_bookkeeping_gaps VALUES (?, 1, 1)",
+                [json!(vec![0xbb; 16])],
+            ),
+            Statement::new(
+                "INSERT INTO __corro_seq_bookkeeping VALUES (?, 1)",
+                [json!(vec![0xbb; 16])],
+            ),
+        ])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), wait_for_catch_up(&store, &target))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !store
+            .has_reached_version(&BTreeMap::from([("a".repeat(32), 6)]))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .has_reached_version(&BTreeMap::from([("c".repeat(32), 1)]))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .has_reached_version(&BTreeMap::from([("c".repeat(32), 0)]))
+            .await
+            .unwrap()
+    );
+    assert!(store.has_reached_version(&BTreeMap::new()).await.unwrap());
+    assert!(
+        store
+            .has_reached_version(&BTreeMap::from([("invalid".into(), 1)]))
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .has_reached_version(&BTreeMap::from([("a".repeat(32), -1)]))
+            .await
+            .is_err()
+    );
+    server.abort();
+}
+
 // Exercise the store API against real SQL rows, including corrupt imported documents.
 async fn identity_store(
     db: rusqlite::Connection,
@@ -419,14 +531,24 @@ async fn identity_store(
             .as_array()
             .unwrap()
             .iter()
-            .map(|value| value.as_str().unwrap());
+            .map(sql_param);
         let mut rows = statement.query(rusqlite::params_from_iter(params)).unwrap();
         let mut response = serde_json::to_vec(&json!({"columns": columns})).unwrap();
         let mut index = 0;
         while let Some(row) = rows.next().unwrap() {
             index += 1;
             let values = (0..columns.len())
-                .map(|i| row.get::<_, Option<String>>(i).unwrap())
+                .map(|i| match row.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                    rusqlite::types::ValueRef::Integer(value) => json!(value),
+                    rusqlite::types::ValueRef::Text(value) => {
+                        json!(std::str::from_utf8(value).unwrap())
+                    }
+                    value @ (rusqlite::types::ValueRef::Real(_)
+                    | rusqlite::types::ValueRef::Blob(_)) => {
+                        panic!("unsupported test row value: {value:?}")
+                    }
+                })
                 .collect::<Vec<_>>();
             response.extend(serde_json::to_vec(&json!({"row": [index, values]})).unwrap());
         }
@@ -445,7 +567,7 @@ async fn identity_store(
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|value| value.as_str().unwrap());
+                    .map(sql_param);
                 let affected = db
                     .execute(
                         request.get("query").unwrap().as_str().unwrap(),
