@@ -134,7 +134,7 @@ impl VolumeSnapshot {
         for volume in &self.observations {
             if !ids.insert(&volume.id) {
                 return Err(invalid(format!(
-                    "Docker Volume observation {:?} is repeated",
+                    "Docker Volume observation {} is repeated",
                     volume.id
                 )));
             }
@@ -142,7 +142,7 @@ impl VolumeSnapshot {
         for failure in &self.named_failures {
             if !ids.insert(&failure.id) {
                 return Err(invalid(format!(
-                    "Docker Volume evidence {:?} is repeated or contradictory",
+                    "Docker Volume evidence {} is repeated or contradictory",
                     failure.id
                 )));
             }
@@ -169,7 +169,7 @@ impl VolumeSnapshot {
             .find(|id| machine_gaps.contains(&id.machine_id))
         {
             return Err(invalid(format!(
-                "Docker Volume evidence {id:?} contradicts its Machine inventory gap"
+                "Docker Volume evidence {id} contradicts its Machine inventory gap"
             )));
         }
         Ok(())
@@ -545,7 +545,7 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
-    #[error("Docker Volume {id:?} is unavailable: {message}")]
+    #[error("Docker Volume {id} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
     #[error("hostname {hostname} is already published by {owner}")]
     HostnameConflict {

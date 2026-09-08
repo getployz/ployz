@@ -686,6 +686,20 @@ pub enum MachineAction {
     RemoveVolume,
 }
 
+impl Display for MachineAction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::PrepareVolumes => "prepare Volumes",
+            Self::CreateContainer => "create Container",
+            Self::StartContainer => "start Container",
+            Self::InspectContainer => "inspect Container",
+            Self::StopContainer => "stop Container",
+            Self::RemoveContainer => "remove Container",
+            Self::RemoveVolume => "remove Volume",
+        })
+    }
+}
+
 /// Why health monitoring rejected a started container.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -695,6 +709,16 @@ pub enum HealthFailure {
     Runtime {
         observation: ContainerRuntimeObservation,
     },
+}
+
+impl Display for HealthFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::TimedOut => f.write_str("timed out"),
+            Self::Runtime { observation } => Display::fmt(observation, f),
+        }
+    }
 }
 
 /// Why a `service_healthy` dependency gate failed.
@@ -707,7 +731,7 @@ pub enum DependencyHealthFailure {
     NoContainers,
     #[error("container observation failed: {}", error.message)]
     Observation { error: RpcError },
-    #[error("container {container_id} failed health monitoring: {failure:?}")]
+    #[error("container {container_id} failed health monitoring: {failure}")]
     Container {
         container_id: ContainerId,
         failure: HealthFailure,
@@ -723,16 +747,36 @@ pub enum HookFailure {
     Exit { code: i64 },
 }
 
+impl Display for HookFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let stop_error = match self {
+            Self::Cancelled { stop_error } => {
+                f.write_str("cancelled")?;
+                stop_error
+            }
+            Self::TimedOut { stop_error } => {
+                f.write_str("timed out")?;
+                stop_error
+            }
+            Self::Exit { code } => return write!(f, "exited with code {code}"),
+        };
+        if let Some(error) = stop_error {
+            write!(f, "; stop also failed: {}", error.message.escape_debug())?;
+        }
+        Ok(())
+    }
+}
+
 /// Error from preflighting or executing one Deploy Operation.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionError {
-    #[error("{action:?} failed: {}", error.message)]
+    #[error("{action} failed: {}", error.message)]
     Machine {
         action: MachineAction,
         error: RpcError,
     },
-    #[error("container {container_id} failed health monitoring: {failure:?}")]
+    #[error("container {container_id} failed health monitoring: {failure}")]
     Health {
         container_id: ContainerId,
         failure: HealthFailure,
@@ -742,7 +786,7 @@ pub enum ExecutionError {
         dependency: QualifiedService,
         failure: DependencyHealthFailure,
     },
-    #[error("hook container {container_id} failed: {failure:?}")]
+    #[error("hook container {container_id} failed: {failure}")]
     Hook {
         container_id: ContainerId,
         failure: HookFailure,

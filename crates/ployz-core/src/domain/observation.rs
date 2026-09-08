@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
@@ -42,6 +42,27 @@ pub enum ContainerRuntimeObservation {
     Unknown {
         raw: Value,
     },
+}
+
+impl fmt::Display for ContainerRuntimeObservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Created => f.write_str("created"),
+            Self::Running { health } => {
+                write!(f, "running (health: {})", health.as_str().escape_debug())
+            }
+            Self::Paused => f.write_str("paused"),
+            Self::Restarting => f.write_str("restarting"),
+            Self::Exited { code } => write!(f, "exited with code {code}"),
+            Self::Removing => f.write_str("removing"),
+            Self::Dead => f.write_str("dead"),
+            Self::Unknown { raw } => write!(
+                f,
+                "unrecognized runtime state: {}",
+                raw.to_string().escape_debug()
+            ),
+        }
+    }
 }
 
 /// The `state` spellings this reader classifies; anything else is kept as observed.
@@ -101,6 +122,15 @@ impl ContainerRuntimeObservation {
 pub enum ContainerKind {
     ServiceContainer,
     PreDeployHook,
+}
+
+impl fmt::Display for ContainerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ServiceContainer => "Service",
+            Self::PreDeployHook => "pre-deploy hook",
+        })
+    }
 }
 
 /// Raw facts for admitting one Container observation.
@@ -263,7 +293,7 @@ pub enum ContainerRef<'a> {
 
 /// Rejected conversion from a mixed Container observation to a requested role.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("cannot convert a {actual:?} Container observation to a {requested:?} view")]
+#[error("cannot convert a {actual} Container observation to a {requested} view")]
 pub struct ContainerRoleError {
     pub requested: ContainerKind,
     pub actual: ContainerKind,

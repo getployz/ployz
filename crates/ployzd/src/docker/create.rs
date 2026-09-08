@@ -248,7 +248,7 @@ pub(super) fn docker_ports(
                     .collect::<Vec<_>>();
                 if addresses.is_empty() {
                     return Err(Error::InvalidContainerConfig(format!(
-                        "no host addresses are contained in prefix {prefix:?}"
+                        "no host addresses are contained in prefix {prefix}"
                     )));
                 }
                 addresses

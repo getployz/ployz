@@ -619,7 +619,7 @@ pub enum ConnectError {
     Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
     ProxyUnsupported(String),
-    #[error("proxy dialing does not support network {0:?}")]
+    #[error("proxy dialing does not support network {0}")]
     UnsupportedNetwork(String),
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -629,7 +629,7 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("could not inspect {path}: {source}")]
     Path { path: PathBuf, source: io::Error },
-    #[error("all {attempts} connections from {source:?} failed: {}", last.as_ref().map_or_else(|| "no connection available".to_owned(), ToString::to_string))]
+    #[error("all {attempts} connections from {source} failed: {}", last.as_ref().map_or_else(|| "no connection available".to_owned(), ToString::to_string))]
     AllFailed {
         source: ConnectionSource,
         attempts: usize,

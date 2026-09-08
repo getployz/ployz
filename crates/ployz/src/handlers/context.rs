@@ -79,7 +79,7 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
     };
     config.set_current_context(Some(selected.clone()))?;
     config.save()?;
-    println!("Current context is now {selected:?}.");
+    println!("Current context is now {}.", selected.escape_debug());
     Ok(())
 }
 
@@ -88,7 +88,7 @@ pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let name = required(leaf_matches(matches), "context-name")?;
     let removed = config.remove_context(&name)?;
     config.save()?;
-    println!("Removed context {name:?}.");
+    println!("Removed context {}.", name.escape_debug());
     if removed == RemovedContext::Current {
         println!("Current context is now unset.");
     }
@@ -103,13 +103,13 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
             config.path().display()
         )));
     };
-    let context = config
-        .contexts
-        .get_mut(&name)
-        .ok_or_else(|| Error::usage(format!("current context {name:?} not found")))?;
+    let context = config.contexts.get_mut(&name).ok_or_else(|| {
+        Error::usage(format!("current context {} not found", name.escape_debug()))
+    })?;
     if context.connections.is_empty() {
         return Err(Error::usage(format!(
-            "no connections found in context {name:?}"
+            "no connections found in context {}",
+            name.escape_debug()
         )));
     }
     let Some(requested) = requested else {
@@ -134,7 +134,11 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
         .expect("a connection was selected")
         .to_string();
     config.save()?;
-    println!("Default connection for context {name:?} is now {selected:?}.");
+    println!(
+        "Default connection for context {} is now {}.",
+        name.escape_debug(),
+        selected.escape_debug()
+    );
     Ok(())
 }
 

@@ -483,12 +483,74 @@ fn docker_network_conflict(
     required_options: &HashMap<String, String>,
     reason: impl Into<String>,
 ) -> NetworkError {
+    let options = |values: &HashMap<String, String>| {
+        let mut pairs = values
+            .iter()
+            .map(|(key, value)| format!("{}={}", key.escape_debug(), value.escape_debug()))
+            .collect::<Vec<_>>();
+        pairs.sort();
+        pairs.join(", ")
+    };
+    let ipam = network
+        .ipam
+        .as_ref()
+        .and_then(|ipam| ipam.config.as_ref())
+        .map(|configs| {
+            configs
+                .iter()
+                .map(|config| {
+                    format!(
+                        "subnet={}, gateway={}",
+                        config.subnet.as_deref().unwrap_or("unknown").escape_debug(),
+                        config
+                            .gateway
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .escape_debug()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+    let containers = network.containers.as_ref().map(|containers| {
+        let mut ids = containers
+            .keys()
+            .map(|id| id.escape_debug().to_string())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.join(", ")
+    });
     NetworkError::DockerNetworkConflict {
         reason: reason.into(),
         expected: format!(
-            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={DOCKER_NETWORK_MANAGED_LABEL}=\"\", subnet={subnet}, gateway={gateway}, options={required_options:?}"
+            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={DOCKER_NETWORK_MANAGED_LABEL}=\"\", subnet={subnet}, gateway={gateway}, options={}",
+            options(required_options)
         ),
-        observed: format!("{network:?}"),
+        observed: format!(
+            "id={}, name={}, driver={}, scope={}, labels={}, IPAM={}, options={}, containers={}",
+            network.id.as_deref().unwrap_or("unknown").escape_debug(),
+            network.name.as_deref().unwrap_or("unknown").escape_debug(),
+            network
+                .driver
+                .as_deref()
+                .unwrap_or("unknown")
+                .escape_debug(),
+            network.scope.as_deref().unwrap_or("unknown").escape_debug(),
+            network
+                .labels
+                .as_ref()
+                .map(&options)
+                .as_deref()
+                .unwrap_or("unknown"),
+            ipam.as_deref().unwrap_or("unknown"),
+            network
+                .options
+                .as_ref()
+                .map(options)
+                .as_deref()
+                .unwrap_or("unknown"),
+            containers.as_deref().unwrap_or("unknown"),
+        ),
         recovery: DOCKER_NETWORK_CONFLICT_RECOVERY,
     }
 }
@@ -560,6 +622,49 @@ fn delete_route(route: &IpNet) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn network_conflict_names_observed_values_without_debug_wrappers() {
+        let mut network = stale_network("ployz", Some(""), true);
+        network.options = Some(required_docker_network_options(1400));
+        network
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("key\n".into(), "value\u{1b}[2J".into());
+        network
+            .options
+            .as_mut()
+            .unwrap()
+            .insert("option\n".into(), "setting\u{1b}[2J".into());
+        network.driver = Some("bridge\u{1b}[2J".into());
+
+        let message = docker_network_conflict(
+            &network,
+            "10.0.0.0/24",
+            "10.0.0.1",
+            &required_docker_network_options(1420),
+            "containers are attached",
+        )
+        .to_string();
+        assert!(!message.chars().any(char::is_control), "{message}");
+        for detail in [
+            "name=ployz",
+            "id=unknown",
+            "7074faa8a368",
+            "mtu=1400",
+            "mtu=1420",
+            r"key\n=value\u{1b}[2J",
+            r"option\n=setting\u{1b}[2J",
+            r"driver=bridge\u{1b}[2J",
+        ] {
+            assert!(message.contains(detail), "{message}");
+        }
+        assert!(
+            !message.contains("Some(") && !message.contains("NetworkInspect"),
+            "{message}"
+        );
+    }
+
     use super::*;
 
     fn stale_network(name: &str, managed_label: Option<&str>, attached: bool) -> NetworkInspect {
@@ -629,7 +734,7 @@ mod tests {
 
         assert!(error.contains("expected: name=ployz"));
         assert!(error.contains("subnet=10.210.1.0/24"));
-        assert!(error.contains("observed: NetworkInspect"));
+        assert!(error.contains("observed: id=unknown, name=ployz"));
         assert!(error.contains("7074faa8a368"));
         assert!(error.contains("systemctl stop ployz"));
         assert!(error.contains("docker network inspect ployz"));

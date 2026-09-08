@@ -664,7 +664,7 @@ pub enum Error {
         services: Vec<QualifiedService>,
     },
     /// Docker created a Volume but its resulting state could not be observed.
-    #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
+    #[error("Docker Volume creation succeeded but verification failed for {id}: {error}")]
     VolumeCreatedButUnverified {
         id: DockerVolumeId,
         error: Box<RpcError>,
@@ -701,7 +701,7 @@ pub enum Error {
     #[error("peer image pull failed: {0}")]
     PeerPull(String),
     /// The disposable image-ingest helper did not become reachable in time.
-    #[error("Unregistry did not accept TCP at {address} within {timeout:?}")]
+    #[error("Unregistry did not accept TCP at {address} within {} seconds", .timeout.as_secs_f64())]
     UnregistryNotReady {
         /// Management-plane endpoint that failed readiness.
         address: SocketAddr,

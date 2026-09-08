@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 use ts_rs::TS;
 
 use serde::{Deserialize, Serialize};
@@ -145,6 +145,16 @@ pub enum ContainerAction {
     Start,
     Stop,
     Remove,
+}
+
+impl fmt::Display for ContainerAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Remove => "remove",
+        })
+    }
 }
 
 /// Entry-relative Live Observations: the container PartialResult.

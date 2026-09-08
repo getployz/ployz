@@ -150,7 +150,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 for container in containers {
                     let observation = container.as_observation();
                     println!(
-                        "{}\t{}\t{}\t{}\t{:?}",
+                        "{}\t{}\t{}\t{}\t{}",
                         observation.container_id,
                         observation.identity(),
                         process_kind(container),
@@ -500,7 +500,7 @@ async fn apply_service_action(
             .await;
         for success in outcomes.successes {
             println!(
-                "{:?}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}",
                 action, service.identity, success.machine_id, success.value
             );
             if service_container_ids.contains(&success.value) {
@@ -509,7 +509,7 @@ async fn apply_service_action(
         }
         for failure in outcomes.failures {
             eprintln!(
-                "WARNING: {:?} failed for {} on {}: {}",
+                "WARNING: {} failed for {} on {}: {}",
                 action, failure.error.container_id, failure.machine_id, failure.error.error.message
             );
             partial = true;

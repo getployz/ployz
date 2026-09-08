@@ -269,6 +269,16 @@ pub enum ConnectionSource {
     LocalSocket,
 }
 
+impl fmt::Display for ConnectionSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Direct => f.write_str("the explicit connection"),
+            Self::Context(name) => write!(f, "context {}", name.escape_debug()),
+            Self::LocalSocket => f.write_str("the local socket"),
+        }
+    }
+}
+
 pub fn select_connections(
     direct: Option<Connection>,
     config: Option<&Config>,
@@ -681,9 +691,9 @@ pub enum ContextError {
     NoContexts(PathBuf),
     #[error("current context is not set in Ployz config {0}")]
     NoCurrentContext(PathBuf),
-    #[error("context {name:?} not found in Ployz config {path}")]
+    #[error("context {} not found in Ployz config {path}", .name.escape_debug())]
     ContextNotFound { name: String, path: PathBuf },
-    #[error("no connections found in context {name:?} in Ployz config {path}")]
+    #[error("no connections found in context {} in Ployz config {path}", .name.escape_debug())]
     NoConnections { name: String, path: PathBuf },
     #[error(transparent)]
     Connection(ConnectionError),
@@ -691,6 +701,23 @@ pub enum ContextError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn connection_sources_are_plain_text() {
+        use super::ConnectionSource;
+        assert_eq!(
+            ConnectionSource::Direct.to_string(),
+            "the explicit connection"
+        );
+        assert_eq!(
+            ConnectionSource::LocalSocket.to_string(),
+            "the local socket"
+        );
+        assert_eq!(
+            ConnectionSource::Context("prod".into()).to_string(),
+            "context prod"
+        );
+    }
+
     use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use super::{Config, Context, ContextError, RemovedContext};

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, process::Command};
 
-use ployz::context::{Config, Connection, Context, ContextError};
+use ployz::context::{Config, Connection, Context};
 
 #[test]
 fn context_commands_list_show_and_persist_an_explicit_selection() {
@@ -210,22 +210,30 @@ fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
     );
     before.save().unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "ctx",
-            "connection",
+    for (requested, expected) in [
+        (
             "unix:///tmp/missing.sock",
-            "--ployz-config",
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr).trim(),
-        r#"connection "unix:///tmp/missing.sock" not found"#
-    );
-    assert_eq!(Config::load(&path).unwrap(), before);
+            r#"connection "unix:///tmp/missing.sock" not found"#,
+        ),
+        (
+            "unix:///tmp/missing socket\n\u{1b}[2J",
+            r#"connection "unix:///tmp/missing socket\n\u{1b}[2J" not found"#,
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args([
+                "ctx",
+                "connection",
+                requested,
+                "--ployz-config",
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), expected);
+        assert_eq!(Config::load(&path).unwrap(), before);
+    }
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -390,7 +398,7 @@ fn ctx_rm_of_a_non_current_context_persists() {
     );
     assert_eq!(
         String::from_utf8(removed.stdout).unwrap().trim(),
-        r#"Removed context "default"."#
+        "Removed context default."
     );
 
     let config = Config::load(&path).unwrap();
@@ -456,7 +464,7 @@ fn ctx_rm_of_the_current_context_unsets_current() {
         String::from_utf8_lossy(&removed.stderr)
     );
     let stdout = String::from_utf8(removed.stdout).unwrap();
-    assert!(stdout.contains(r#"Removed context "prod"."#), "{stdout}");
+    assert!(stdout.contains("Removed context prod."), "{stdout}");
     assert!(stdout.contains("Current context is now unset."), "{stdout}");
 
     let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -558,26 +566,28 @@ fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
     );
     before.save().unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "ctx",
-            "rm",
-            "gone",
-            "--ployz-config",
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr).trim(),
-        ContextError::ContextNotFound {
-            name: "gone".into(),
-            path: path.clone(),
+    for action in ["use", "rm"] {
+        for name in ["gone", "gone\n\u{1b}[2J"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .args([
+                    "ctx",
+                    action,
+                    name,
+                    "--ployz-config",
+                    path.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(&format!("context {} not found", name.escape_debug())),
+                "{error}"
+            );
+            assert!(!error.trim().chars().any(char::is_control), "{error}");
+            assert_eq!(Config::load(&path).unwrap(), before);
         }
-        .to_string()
-    );
-    assert_eq!(Config::load(&path).unwrap(), before);
+    }
 
     fs::remove_dir_all(root).unwrap();
 }

@@ -318,8 +318,12 @@ impl QueryResult {
     ) -> Result<Vec<[Value; N]>, Error> {
         if self.columns != expected {
             return Err(Error::Protocol(format!(
-                "unexpected columns: {:?}",
+                "unexpected columns: {}",
                 self.columns
+                    .iter()
+                    .map(|column| column.escape_debug().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
         self.rows
@@ -351,6 +355,19 @@ enum QueryEvent {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unexpected_columns_escape_remote_values() {
+        let error = super::QueryResult {
+            columns: vec!["name\n\u{1b}[2J".into(), "id".into()],
+            rows: Vec::new(),
+        }
+        .rows(["expected"])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(r"name\n\u{1b}[2J, id"), "{error}");
+        assert!(!error.chars().any(char::is_control), "{error}");
+    }
+
     use std::{
         convert::Infallible,
         sync::{Arc, Mutex},

@@ -118,10 +118,14 @@ fn select_machine(
 ) -> Result<Machine, Error> {
     let selector = MachineTarget::parse(selector)?;
     match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
+        NameMatches::None => Err(Error::usage(format!(
+            "Machine {} was not found",
+            selector.as_str().escape_debug()
+        ))),
         NameMatches::One(machine) => Ok(machine.clone()),
         matches @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
-            "Machine name {selector:?} is ambiguous: {}",
+            "Machine name {} is ambiguous: {}",
+            selector.as_str().escape_debug(),
             matches
                 .iter()
                 .map(|machine| machine.id.as_str())

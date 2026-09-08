@@ -241,6 +241,27 @@ fn machine_challenge_ips(machine: &Machine) -> impl Iterator<Item = IpAddr> {
     )
 }
 
+fn authorization_status(status: AuthorizationStatus) -> &'static str {
+    match status {
+        AuthorizationStatus::Pending => "pending",
+        AuthorizationStatus::Valid => "valid",
+        AuthorizationStatus::Invalid => "invalid",
+        AuthorizationStatus::Revoked => "revoked",
+        AuthorizationStatus::Expired => "expired",
+        AuthorizationStatus::Deactivated => "deactivated",
+    }
+}
+
+fn order_status(status: OrderStatus) -> &'static str {
+    match status {
+        OrderStatus::Pending => "pending",
+        OrderStatus::Ready => "ready",
+        OrderStatus::Processing => "processing",
+        OrderStatus::Valid => "valid",
+        OrderStatus::Invalid => "invalid",
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum Error {
     #[error(transparent)]
@@ -261,12 +282,12 @@ pub(crate) enum Error {
     InvalidChallenge,
     #[error("HTTP-01 challenge was not served by the proxy")]
     ChallengeNotServed,
-    #[error("authorization for {hostname} is {status:?}")]
+    #[error("authorization for {hostname} is {}", authorization_status(*status))]
     Authorization {
         hostname: IngressHost,
         status: AuthorizationStatus,
     },
-    #[error("order for {hostname} is {status:?}")]
+    #[error("order for {hostname} is {}", order_status(*status))]
     Order {
         hostname: IngressHost,
         status: OrderStatus,

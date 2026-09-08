@@ -415,6 +415,17 @@ pub struct DockerVolumeId {
     pub name: DockerVolumeName,
 }
 
+impl fmt::Display for DockerVolumeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} on Machine {}",
+            self.name.as_str().escape_debug(),
+            self.machine_id
+        )
+    }
+}
+
 validated_string_newtype!(
     /// A DNS-label Service selector. It is not a unique identity.
     ServiceName,

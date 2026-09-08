@@ -370,7 +370,7 @@ impl Handler {
                     Protocol::Udp => forward_udp(request.as_slice(), *upstream).await,
                     Protocol::Tcp => forward_tcp(request.as_slice(), *upstream).await,
                     protocol => Err(io::Error::other(format!(
-                        "unsupported forwarding transport {protocol:?}"
+                        "unsupported forwarding transport {protocol}"
                     ))),
                 }
             })

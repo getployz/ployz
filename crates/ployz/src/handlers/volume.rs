@@ -62,8 +62,8 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
             let volume = crate::service::verified_created_volume(report)?;
             if size.as_ref().is_some_and(|size| !size.matches(&volume)) {
                 return Err(Error::usage(format!(
-                    "Docker Volume {:?} already exists with a different Provisioned shape; resizing is not supported; use the future `ployz volume update` capability",
-                    volume.id.name
+                    "Docker Volume {} already exists with a different Provisioned shape; resizing is not supported; use the future `ployz volume update` capability",
+                    volume.id.name.as_str().escape_debug()
                 )));
             }
             println!("{}\t{}", machine.machine.name, volume.id.name);
@@ -176,14 +176,16 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .collect();
             match NameMatches::from_matches(volumes) {
                 NameMatches::None => Err(Error::usage(format!(
-                    "Docker Volume {name:?} was not found"
+                    "Docker Volume {} was not found",
+                    name.as_str().escape_debug()
                 ))),
                 NameMatches::One(volume) => {
                     println!("{}", serde_json::to_string_pretty(&volume)?);
                     Ok(())
                 }
                 volumes @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
-                    "Docker Volume {name:?} is ambiguous; select one Machine: {}",
+                    "Docker Volume {} is ambiguous; select one Machine: {}",
+                    name.as_str().escape_debug(),
                     volumes
                         .iter()
                         .map(|volume| volume.machine_name.as_str())
@@ -229,7 +231,8 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
             {
                 return Err(Error::usage(format!(
-                    "Docker Volume {name:?} was not found"
+                    "Docker Volume {} was not found",
+                    name.as_str().escape_debug()
                 )));
             }
             report_partial_removal_discovery(&result);
@@ -324,9 +327,13 @@ fn select_create_machine(
                     .expect("resolve returned a Machine from this snapshot")
                     .clone(),
             )),
-            NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
+            NameMatches::None => Err(Error::usage(format!(
+                "Machine {} was not found",
+                selector.escape_debug()
+            ))),
             NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
-                "Machine Target {selector:?} matched multiple Machines"
+                "Machine Target {} matched multiple Machines",
+                selector.escape_debug()
             ))),
         };
     }

@@ -24,6 +24,25 @@ enum StreamKind {
     ExecError = 0x85,
 }
 
+impl fmt::Display for StreamKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ExecConfig => "exec config",
+            Self::ExecStdin => "exec stdin",
+            Self::ExecResize => "exec resize",
+            Self::LogStdout => "log stdout",
+            Self::LogStderr => "log stderr",
+            Self::LogHeartbeat => "log heartbeat",
+            Self::LogError => "log error",
+            Self::ExecId => "exec ID",
+            Self::ExecStdout => "exec stdout",
+            Self::ExecStderr => "exec stderr",
+            Self::ExecExit => "exec exit",
+            Self::ExecError => "exec error",
+        })
+    }
+}
+
 impl TryFrom<u8> for StreamKind {
     type Error = StreamProtocolError;
 
@@ -99,7 +118,7 @@ pub enum StreamProtocolError {
     LengthMismatch { declared: usize, actual: usize },
     #[error("stream frame payload is too large: {0} bytes")]
     PayloadTooLarge(usize),
-    #[error("expected {expected} stream frame, received {actual:?}")]
+    #[error("expected {expected} stream frame, received {actual}")]
     UnexpectedKind {
         expected: &'static str,
         actual: String,
@@ -416,7 +435,7 @@ fn decode_json<T: DeserializeOwned>(
 fn unexpected(expected: &'static str, actual: StreamKind) -> StreamProtocolError {
     StreamProtocolError::UnexpectedKind {
         expected,
-        actual: format!("{actual:?}"),
+        actual: actual.to_string(),
     }
 }
 

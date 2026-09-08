@@ -1,6 +1,7 @@
 use crate::StorageCapacity;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     net::IpAddr,
 };
 use ts_rs::TS;
@@ -167,12 +168,12 @@ pub enum CodecError {
     UnsupportedCommand(String),
     #[error("unsupported protocol major {requested}; this endpoint supports {supported}")]
     UnsupportedProtocolMajor { requested: u32, supported: u32 },
-    #[error("expected response kind {expected:?}, received {actual:?}")]
+    #[error("expected response kind {expected}, received {}", .actual.escape_debug())]
     UnexpectedResponse {
         expected: &'static str,
         actual: String,
     },
-    #[error("expected request command {expected:?}, received {actual:?}")]
+    #[error("expected request command {expected}, received {actual}")]
     UnexpectedRequest {
         expected: &'static str,
         actual: String,
@@ -939,6 +940,12 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Internal => "internal",
     Unauthenticated => "unauthenticated",
 });
+
+impl fmt::Display for RpcErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().escape_debug().fmt(f)
+    }
+}
 
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[error("{message}")]

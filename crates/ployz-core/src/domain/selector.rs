@@ -70,7 +70,7 @@ impl ContainerSelector {
 pub enum ContainerSelectorError {
     #[error("Container \"{selector}\" was not found")]
     NotFound { selector: ContainerSelector },
-    #[error("Container \"{selector}\" matches multiple containers: {container_ids:?}")]
+    #[error("Container \"{selector}\" matches multiple containers: {}", .container_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     Ambiguous {
         selector: ContainerSelector,
         container_ids: Vec<ContainerId>,

@@ -473,7 +473,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "all 1 connections from Direct failed: connection attempt failed: transport error",
+            "all 1 connections from the explicit connection failed: connection attempt failed: transport error",
         );
     }
 

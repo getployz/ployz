@@ -72,7 +72,7 @@ async fn removal_tty_retry_enter_eof_and_ctrl_c_precede_mutation() {
             // The fake Machine deliberately refuses volume removal after removing the Service.
             assert!(!status.success(), "{text}");
             assert!(mutations.load(Ordering::SeqCst) > 0);
-            assert!(text.contains("Remove\tapp/web"), "{text}");
+            assert!(text.contains("remove\tapp/web"), "{text}");
             assert!(!text.contains("Cancelled"), "{text}");
             assert!(
                 text.contains("app_data") && text.contains("unused"),
@@ -183,7 +183,7 @@ async fn service_volume_removal_proceeds_when_an_unrelated_machine_is_omitted() 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(mutations.load(Ordering::SeqCst) > 0, "{stdout}\n{stderr}");
-    assert!(stdout.contains("Remove\tapp/web"), "{stdout}");
+    assert!(stdout.contains("remove\tapp/web"), "{stdout}");
     // The fake Machine refuses the volume RPC; this must be an execution failure, not a preflight refusal.
     assert!(!output.status.success());
     assert!(

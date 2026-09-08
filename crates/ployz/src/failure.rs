@@ -308,7 +308,10 @@ mod tests {
             )))),
         });
         let display = failure.to_string();
-        assert!(display.contains("3"), "{display}");
+        assert!(
+            display.contains("3 connections from context prod"),
+            "{display}"
+        );
         assert!(
             !display.contains("Os {") && !display.contains("code: 111"),
             "{display}"

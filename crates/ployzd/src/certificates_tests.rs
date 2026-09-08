@@ -708,3 +708,23 @@ fn observation(
     })
     .unwrap()
 }
+
+#[test]
+fn certificate_status_errors_use_plain_status_and_hostname() {
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let authorization = super::Error::Authorization {
+        hostname: hostname.clone(),
+        status: instant_acme::AuthorizationStatus::Expired,
+    }
+    .to_string();
+    assert!(
+        authorization.contains("app.example.com is expired"),
+        "{authorization}"
+    );
+    let order = super::Error::Order {
+        hostname,
+        status: instant_acme::OrderStatus::Invalid,
+    }
+    .to_string();
+    assert!(order.contains("app.example.com is invalid"), "{order}");
+}

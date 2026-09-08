@@ -113,7 +113,7 @@ pub(super) async fn wait_direct_participating(
                 .await?;
             if details.phase != LocalMachinePhase::Participating {
                 return Err(ConnectError::Attempt(
-                    format!("Machine phase is {:?}", details.phase).into(),
+                    format!("Machine phase is {}", details.phase.as_str().escape_debug()).into(),
                 ));
             }
             Ok(client)
@@ -223,7 +223,7 @@ async fn observe_mutation(
         ConnectError::is_setup_retryable,
         async |client| {
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
-            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {:?}; expected {operation} outcome not yet observed", details.phase).into())) }
+            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {}; expected {operation} outcome not yet observed", details.phase.as_str().escape_debug()).into())) }
         },
     ).await.map_err(|error| Error::usage(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
 }
@@ -240,7 +240,8 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(Error::usage(format!(
-            "cannot confirm {prompt:?} without a terminal; pass --yes"
+            "cannot confirm {} without a terminal; pass --yes",
+            prompt.escape_debug()
         )));
     }
     println!("{prompt}");
