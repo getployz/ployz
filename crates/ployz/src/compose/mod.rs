@@ -8,7 +8,8 @@ mod ports;
 mod secrets;
 
 pub use build::{
-    BuildOptions, BuildService, CapturedBuild, capture_build, execute_build, plan_build,
+    BuildOptions, BuildService, BuiltService, CapturedBuild, capture_build, execute_build,
+    plan_build,
 };
 pub use capture::{CapturedCompose, ComposeSource};
 pub(crate) use convert::duration_millis;

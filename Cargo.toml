@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/ployz-core", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployzd", "crates/ployz-testkit"]
-default-members = ["crates/ployz-core", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployzd"]
+members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployzd", "crates/ployz-testkit"]
+default-members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployzd"]
 resolver = "3"
 
 [workspace.package]
@@ -10,6 +10,7 @@ rust-version = "1.97.1"
 repository = "https://github.com/getployz/ployz2"
 
 [workspace.dependencies]
+ployz-build = { path = "crates/ployz-build" }
 ployz-core = { path = "crates/ployz-core" }
 ployz-relay = { path = "crates/ployz-relay" }
 ployz-testkit = { path = "crates/ployz-testkit" }

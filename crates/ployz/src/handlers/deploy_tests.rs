@@ -374,3 +374,54 @@ fn deploy_preparation_captures_resolved_input_and_selection_before_planning() {
     assert_eq!(web.container.environment.get("B").unwrap(), "resolved");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn a_failed_build_leaves_the_deployment_unattempted() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = std::env::temp_dir().join(format!("ployz-build-fail-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("Dockerfile"), "FROM scratch\n").unwrap();
+    let yaml = "services: {web: {image: 'example.test/web:1', build: .}}";
+    let source = directory.join("compose.yaml");
+    std::fs::write(&source, yaml).unwrap();
+    let docker = directory.join("docker");
+    // Every builder step succeeds; only the build itself fails.
+    std::fs::write(
+        &docker,
+        "#!/bin/sh\ncase \"$1 $2\" in\n  'version --format') echo linux/amd64; exit 0 ;;\n  'buildx ls'|'buildx create'|'buildx inspect'|'buildx rm') exit 0 ;;\nesac\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let project = crate::compose::parse_normalized(yaml, &directory).unwrap();
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy"])
+        .unwrap();
+    let load = LoadOptions {
+        files: vec![source],
+        working_dir: Some(directory.clone()),
+        docker: Some(docker),
+        all_profiles: true,
+        ..Default::default()
+    };
+    let resolved = ResolvedProject {
+        name: ployz_core::ProjectName::parse("shop").unwrap(),
+        source: ProjectNameSource::CommandLine,
+    };
+
+    let error = match prepare_deploy(
+        leaf_matches(&root),
+        &load,
+        project,
+        &resolved,
+        ployz_core::PlanOptions::default(),
+    ) {
+        Ok(_) => panic!("a failed build was admitted for deployment"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("No Service, hook, or volume change was attempted"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}

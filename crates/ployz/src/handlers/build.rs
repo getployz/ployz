@@ -1,5 +1,7 @@
 use clap::ArgMatches;
 
+use ployz_build::Output;
+
 use crate::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
@@ -17,11 +19,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     };
     let options = BuildOptions {
         build_args: string_values(leaf, "build-arg"),
-        check: leaf.get_flag("check"),
         deps: leaf.get_flag("deps"),
         no_cache: leaf.get_flag("no-cache"),
+        output: requested_output(leaf),
         pull: leaf.get_flag("pull"),
-        push_registry: leaf.get_flag("push-registry"),
         services: string_values(leaf, "service"),
     };
     let mut project = load_project(&load)?;
@@ -33,8 +34,28 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         println!("No buildable services selected.");
         return Ok(());
     }
-    execute_build(&plan, &options, &load, &mut project)?;
-    if options.check || !leaf.get_flag("push") {
+    let built = execute_build(&plan, &options, &load, &mut project)?;
+    match options.output {
+        Output::Validate => {
+            println!("Validated the selected builds. No image was produced.");
+            return Ok(());
+        }
+        Output::Registry => {
+            println!("Published the built images to their registries.");
+            return Ok(());
+        }
+        Output::Load => {
+            for service in &built {
+                println!(
+                    "Built {} ({}) as {} in local Docker",
+                    service.built.tags.join(", "),
+                    service.built.platform,
+                    service.built.reference,
+                );
+            }
+        }
+    }
+    if !leaf.get_flag("push") {
         return Ok(());
     }
 
@@ -47,9 +68,9 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let failures = runtime.block_on(async {
         let mut client = connect_client(matches, context).await?;
         let mut failures = Vec::new();
-        for service in &plan {
+        for service in &built {
             let targets = push_targets(&explicit, &service.machines);
-            match crate::image::push(&mut client, &service.image, None, &targets).await {
+            match crate::image::push(&mut client, service.content(), None, &targets).await {
                 Ok(result) => failures.extend(report_push(&service.image, result)),
                 Err(error) => failures.push(push_failure(&service.image, error)?),
             }
@@ -60,6 +81,17 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::usage(failures.join("; ")))
+    }
+}
+
+/// Validation supersedes publication: a checked recipe produces no image.
+fn requested_output(leaf: &ArgMatches) -> Output {
+    if leaf.get_flag("check") {
+        Output::Validate
+    } else if leaf.get_flag("push-registry") {
+        Output::Registry
+    } else {
+        Output::Load
     }
 }
 

@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    compose::{BuildService, CapturedCompose},
+    compose::{BuiltService, CapturedCompose},
     connect::{Client, ConnectError},
     dns::{IngressDnsWarning, resolve_ingress_dns_warnings_for_ports},
     failure::Failure,
@@ -42,6 +42,8 @@ pub(crate) struct ReconciliationHints {
 /// Execution failure is a [`DeployOutcome::Failed`], not this error.
 #[derive(Debug, Error)]
 pub enum DeployError {
+    #[error("{0}. No Service, hook, or volume change was attempted.")]
+    Build(#[from] crate::compose::ComposeError),
     #[error(transparent)]
     Connect(#[from] ConnectError),
     #[error(transparent)]
@@ -242,6 +244,7 @@ impl From<DeployError> for RpcError {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into_rpc_error(),
             DeployError::Project(error) => invalid_argument(error.to_string()),
+            DeployError::Build(error) => invalid_argument(error.to_string()),
         }
     }
 }
@@ -276,7 +279,7 @@ impl From<IngressDnsWarning> for DeployWarning {
 
 pub(super) async fn push_project_images(
     client: &mut Client,
-    builds: &[BuildService],
+    builds: &[BuiltService],
     machines: &[MachineObservation],
 ) -> Result<PushOutcome, Failure> {
     let mut pushed = Vec::new();
@@ -523,7 +526,7 @@ fn needs_ingress_expansion(requested: &RequestedServiceSpec) -> bool {
 
 async fn push_image(
     client: &mut Client,
-    service: &BuildService,
+    service: &BuiltService,
     machines: &[MachineObservation],
 ) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
     let targets = service
@@ -531,8 +534,10 @@ async fn push_image(
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
+    // Deliver the content this command built, not whatever the tag now holds.
     let result =
-        crate::image::push_using_machines(client, &service.image, None, &targets, machines).await?;
+        crate::image::push_using_machines(client, service.content(), None, &targets, machines)
+            .await?;
     let pushed = result
         .successes
         .iter()

@@ -209,6 +209,8 @@ impl From<DeployError> for Failure {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
             DeployError::Project(error) => error.into(),
+            // A failed Build is a library error, not a usage mistake.
+            error @ DeployError::Build(_) => Self::command(error),
         }
     }
 }

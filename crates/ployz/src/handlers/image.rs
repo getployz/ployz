@@ -130,7 +130,7 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>(
             crate::image::push(
                 &mut client,
-                image,
+                crate::image::ImageContent::tagged(image),
                 leaf.get_one::<String>("platform").map(String::as_str),
                 &string_values(leaf, "machine"),
             )

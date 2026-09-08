@@ -1,9 +1,7 @@
 use std::{
     fs, io,
-    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::Duration,
 };
@@ -85,7 +83,7 @@ pub(super) fn helper<T: serde::de::DeserializeOwned>(
         PathBuf::from(format!("/proc/self/fd/{}", executable.as_raw_fd()))
     };
     #[cfg(not(target_os = "linux"))]
-    let executable = TemporaryComposeFile::create(content, 0o700)?;
+    let executable = ExtractedHelper::create(content)?;
     #[cfg(not(target_os = "linux"))]
     let path = &executable.path;
     let mut child = retry_executable_busy(|| {
@@ -284,51 +282,56 @@ fn retry_executable_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result
     op()
 }
 
-pub(super) struct TemporaryComposeFile {
+/// The Compose helper executable, extracted on platforms without a sealed
+/// anonymous file, and removed when this handle drops.
+#[cfg(not(target_os = "linux"))]
+pub(super) struct ExtractedHelper {
     pub(super) path: PathBuf,
 }
 
-impl TemporaryComposeFile {
-    pub(super) fn new(content: &str) -> Result<Self, ComposeError> {
-        Self::create(content.as_bytes(), 0o600)
-    }
-
-    fn create(content: &[u8], mode: u32) -> Result<Self, ComposeError> {
+#[cfg(not(target_os = "linux"))]
+impl ExtractedHelper {
+    fn create(content: &[u8]) -> Result<Self, ComposeError> {
+        use std::{
+            os::unix::fs::OpenOptionsExt as _,
+            sync::atomic::{AtomicU64, Ordering},
+        };
         static NEXT: AtomicU64 = AtomicU64::new(0);
         for _ in 0..100 {
             let path = std::env::temp_dir().join(format!(
-                "ployz-compose-{}-{}.yaml",
+                "ployz-compose-helper-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .mode(mode)
+                .mode(0o700)
                 .open(&path)
             {
                 Ok(mut file) => {
                     use std::io::Write as _;
                     file.write_all(content).map_err(|error| {
-                        ComposeError::Io(format!("write Compose override: {error}"))
+                        ComposeError::Io(format!("write the Compose helper: {error}"))
                     })?;
                     return Ok(Self { path });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
                     return Err(ComposeError::Io(format!(
-                        "create Compose override: {error}"
+                        "create the Compose helper: {error}"
                     )));
                 }
             }
         }
         Err(ComposeError::Io(
-            "could not allocate temporary Compose override".into(),
+            "could not allocate a file for the Compose helper".into(),
         ))
     }
 }
 
-impl Drop for TemporaryComposeFile {
+#[cfg(not(target_os = "linux"))]
+impl Drop for ExtractedHelper {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
@@ -338,7 +341,6 @@ impl Drop for TemporaryComposeFile {
 mod tests {
     use std::{
         io,
-        os::unix::fs::PermissionsExt as _,
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -386,13 +388,6 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-    }
-
-    #[test]
-    fn temporary_compose_files_are_private() {
-        let file = TemporaryComposeFile::new("services: {}\n").unwrap();
-        let mode = fs::metadata(&file.path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
     }
 
     #[test]

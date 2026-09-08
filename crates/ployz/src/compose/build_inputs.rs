@@ -152,6 +152,11 @@ impl BuildInputs {
         Ok(target)
     }
 
+    /// The private directory holding every captured input for this attempt.
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Check that all original inputs still match their captured fingerprints.
     ///
     /// # Errors
@@ -185,22 +190,37 @@ impl BuildInputs {
         Ok(captured)
     }
 
+    /// Write the captured Compose file beside the sources it points at, so the
+    /// build sees one private directory rather than scattered temporary paths.
+    ///
+    /// # Errors
+    /// Fails if the private file cannot be written.
+    pub(super) fn compose(&self, yaml: &str) -> Result<PathBuf, ComposeError> {
+        let path = self.root.join("compose.yaml");
+        self.private(&path, yaml.as_bytes())?;
+        Ok(path)
+    }
+
     /// Write one resolved secret to an owner-readable file for Docker.
     ///
     /// # Errors
     /// Fails if the index is already used or the private file cannot be written.
     pub(super) fn secret(&self, index: usize, value: &str) -> Result<PathBuf, ComposeError> {
+        let path = self.root.join(format!("secret-{index}"));
+        self.private(&path, value.as_bytes())?;
+        Ok(path)
+    }
+
+    fn private(&self, path: &Path, content: &[u8]) -> Result<(), ComposeError> {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
-        let path = self.root.join(format!("secret-{index}"));
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&path)
-            .and_then(|mut file| file.write_all(value.as_bytes()))
-            .map_err(input_error)?;
-        Ok(path)
+            .open(path)
+            .and_then(|mut file| file.write_all(content))
+            .map_err(input_error)
     }
 }
 
@@ -396,6 +416,21 @@ mod tests {
         inputs.verify().unwrap();
         fs::write(source.join("first.Dockerfile.dockerignore"), "cache\n").unwrap();
         assert!(inputs.verify().is_err());
+    }
+
+    #[test]
+    fn the_captured_compose_file_and_secrets_stay_private() {
+        let inputs = BuildInputs::new().unwrap();
+        let compose = inputs.compose("services: {}\n").unwrap();
+        let secret = inputs.secret(0, "private-token").unwrap();
+        for path in [&compose, &secret] {
+            let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", path.display());
+        }
+        assert_eq!(fs::read_to_string(&compose).unwrap(), "services: {}\n");
+        let root = inputs.root().to_owned();
+        drop(inputs);
+        assert!(!root.exists());
     }
 
     #[test]

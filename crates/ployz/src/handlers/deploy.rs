@@ -5,7 +5,7 @@ use ployz_core::{ComposePruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
+        BuildOptions, BuiltService, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
         capture_build, compose_identity, has_explicit_nondefault_compose_file, load_project,
         plan_build,
     },
@@ -257,7 +257,7 @@ fn prepare_deploy(
     mut project: ComposeProject,
     resolved: &ResolvedProject,
     options: ployz_core::PlanOptions,
-) -> Result<(CapturedCompose, Vec<BuildService>), Error> {
+) -> Result<(CapturedCompose, Vec<BuiltService>), Error> {
     let selected = string_values(matches, "service");
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
@@ -271,13 +271,13 @@ fn prepare_deploy(
         build_args: string_values(matches, "build-arg"),
         deps: true,
         no_cache: matches.get_flag("no-cache"),
+        // A Deploy needs the image on this host, so it always loads it.
+        output: ployz_build::Output::Load,
         pull: matches.get_flag("build-pull"),
         services: build_names,
-        ..Default::default()
     };
-    let mut builds = plan_build(&project, &build_options)?;
+    let builds = plan_build(&project, &build_options)?;
     let captured_build = if matches.get_flag("no-build") {
-        builds.clear();
         None
     } else {
         Some(capture_build(&builds, &build_options, &mut project)?)
@@ -291,10 +291,14 @@ fn prepare_deploy(
         hints.compose_refusal,
         load.files.clone(),
     );
-    if let Some(build) = captured_build {
-        build.execute(load.docker.as_deref())?;
-    }
-    Ok((candidate, builds))
+    // Every required Build finishes before any application change begins.
+    let built = match captured_build {
+        Some(build) => build
+            .execute(load.docker.as_deref())
+            .map_err(crate::deploy::DeployError::from)?,
+        None => Vec::new(),
+    };
+    Ok((candidate, built))
 }
 
 fn selected_attempts(

@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    compose::{BuildService, CapturedCompose},
+    compose::{BuiltService, CapturedCompose},
     connect::Client,
     failure::Failure,
     project::ResolvedProject,
@@ -154,7 +154,7 @@ pub(crate) struct ConfirmGate<'a> {
 pub(crate) async fn deploy_project(
     client: &mut Client,
     candidate: &CapturedCompose,
-    builds: &[BuildService],
+    builds: &[BuiltService],
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
     let machines = client.machines().await?;

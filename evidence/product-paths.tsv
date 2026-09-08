@@ -89,6 +89,7 @@ cloud-node-introduction-history	cloud/src/modules/environment-design/working-doc
 cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
 cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-
 compose-ignored-tree-pruning	crates/ployz/compose-helper/build_context_test.go::TestExceptionCanMatchDescendant	-	-	-	-
+local-build-runner	crates/ployz-build/src/builder.rs::every_attempt_replaces_the_container_and_leaves_its_cache	crates/ployz/tests/build.rs::built_images_bind_to_exact_content_after_tag_reuse	crates/ployz/tests/build.rs::check_with_direct_push_stops_after_validation	crates/ployz/tests/build_layer3.rs::local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache	-
 error-display	crates/ployz/src/failure.rs::exhausted_connections_print_how_many_were_tried	crates/ployz-core/tests/error_display.rs::selector_errors_list_plain_targets_and_ids	-	-	-
 ssh-establishment-cancellation	crates/ployz/src/connect/tests.rs::cancelling_ssh_establishment_returns_without_waiting_for_ssh	-	-	-	-
 image-push-registry-port	crates/ployz/src/image.rs::registry_port_refusal_names_the_reference_and_retagging_alternative	-	-	-	-

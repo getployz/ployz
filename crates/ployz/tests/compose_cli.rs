@@ -261,7 +261,7 @@ x-volumes:
     };
     let mut project = load_project(&load).unwrap();
     let options = BuildOptions {
-        check: true,
+        output: ployz_build::Output::Validate,
         services: vec!["api".into()],
         ..Default::default()
     };
