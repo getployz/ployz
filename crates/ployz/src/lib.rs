@@ -1,3 +1,4 @@
+pub mod changes;
 pub mod cli;
 mod cloud_enroll;
 mod cluster;

@@ -1,14 +1,13 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { restoreWorkingDocumentServerFn } from "#/modules/environment-design/working-document-restore.functions";
+import { createWorkingSettingRestoreAction } from "#/modules/environment-design/working-setting-restore-action";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
-  getRawEnvironmentResourcesCollection,
-  getRawServiceVariableGroupAttachmentsCollection,
-  getRawServicesCollection,
-  getRawVariablesCollection,
-  getServiceVolumeAttachmentsCollection,
-  getEnvironmentDeploymentsCollection,
+  getEnvironmentDeploymentsCollection, getEnvironmentsCollection,
 } from "#/electric/collections";
 import type {
   CanvasEnvironmentChangeGroup,
@@ -24,11 +23,6 @@ import type {
   EnvironmentSavedStateBasis,
   EnvironmentSavedStateDiscardCommand,
 } from "#/modules/environment-design/saved-state";
-import {
-  discardVolumeResourceServerFn,
-  restoreVariableGroupResourceSnapshotServerFn,
-} from "#/modules/environment-design/environment-resources.functions";
-import { deleteVariableGroupResourceServerFn } from "#/modules/environment-design/resource-functions";
 import { getDeployTargetPreflight } from "#/modules/runtime/deploy-target-preflight";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
@@ -38,19 +32,10 @@ import {
 } from "#/modules/deployments/deployment.functions";
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";
 import { discardServiceDeploymentDiffPath } from "#/modules/services/service-deployment-diff/mutations";
-import type { ServiceDeploymentDiffPath } from "#/modules/services/service-deployment-diff/fields";
-import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { EnvironmentSnapshotSource } from "#/modules/environment-design/environment-snapshot-source";
-import { deleteServicesServerFn } from "#/modules/environment-design/service-functions";
-import { restoreServiceWorkingIntentServerFn } from "#/modules/services/services.functions";
 import { useServiceWriter } from "#/modules/services/services.collection";
 import type { PreparedDestructiveReview } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
 import { prepareVolumeDestructionReview } from "#/components/destructive-volume/destructive-volume-review";
-import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import type {
-  VariableGroupResourceRecord,
-  VolumeResourceRecord,
-} from "#/modules/environment-design/resources";
 import {
   fingerprintReviewedEnvironmentWorkingState,
   projectReviewedEnvironmentWorkingState,
@@ -70,9 +55,6 @@ type UseCanvasChangeActionsInput = {
     kind: "saved";
     environmentSavedStateSnapshotId: string;
   } | null;
-  servicesWithBoundEnv: EnvironmentServiceViewRecord[];
-  environmentResources: VariableGroupResourceRecord[];
-  volumeResources: VolumeResourceRecord[];
   destructiveServiceIds: string[];
   deletedDeployedVolumeIds: string[];
   commitMessage: string;
@@ -85,28 +67,25 @@ export function useCanvasChangeActions({
   params,
   changeState,
   savedSnapshotSource,
-  servicesWithBoundEnv,
-  environmentResources,
-  volumeResources,
   destructiveServiceIds,
   deletedDeployedVolumeIds,
   commitMessage,
   setCommitMessage,
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
+  const document = useEnvironmentDocument(params.organizationSlug, environmentId);
+  function workingReview() {
+    if (!document) throw new Error("Environment is not loaded.");
+    return projectReviewedEnvironmentWorkingState(document);
+  }
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const serviceWriter = useServiceWriter(params.organizationSlug);
-  const rawServices = getRawServicesCollection(params.organizationSlug);
-  const rawVariables = getRawVariablesCollection(params.organizationSlug);
-  const rawVariableGroupAttachments =
-    getRawServiceVariableGroupAttachmentsCollection(params.organizationSlug);
-  const rawVolumeAttachments = getServiceVolumeAttachmentsCollection(
-    params.organizationSlug,
-  );
-  const rawResources = getRawEnvironmentResourcesCollection(
-    params.organizationSlug,
-  );
+  const environments = getEnvironmentsCollection(params.organizationSlug);
+  const restoreWorkingSetting = createWorkingSettingRestoreAction({
+    environments, environmentId, organizationSlug: params.organizationSlug,
+    restore: restoreWorkingDocumentServerFn, awaitTxId: async (txid) => { await environments.utils.awaitTxId(txid); },
+  });
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
     status: runtime.status,
@@ -121,13 +100,6 @@ export function useCanvasChangeActions({
           savedSnapshotSource.environmentSavedStateSnapshotId,
       }
     : { kind: "no_saved_state" };
-  const restoreVariableGroupResourceSnapshot = useServerFn(
-    restoreVariableGroupResourceSnapshotServerFn,
-  );
-  const deleteVariableGroupResource = useServerFn(
-    deleteVariableGroupResourceServerFn,
-  );
-  const discardVolumeResource = useServerFn(discardVolumeResourceServerFn);
   const createDeploymentSnapshot = useServerFn(
     createEnvironmentDeploymentSnapshotServerFn,
   );
@@ -137,7 +109,6 @@ export function useCanvasChangeActions({
   const prepareEnvironmentDestructiveVolumes = useServerFn(
     prepareEnvironmentDestructiveVolumesServerFn,
   );
-  const deleteServices = useServerFn(deleteServicesServerFn);
   const createDeploymentSnapshotMutation = useMutation({
     mutationFn: async (input: {
       deploy: boolean;
@@ -150,11 +121,7 @@ export function useCanvasChangeActions({
       const reviewedWorkingStateFingerprint =
         input.reviewedWorkingStateFingerprint ??
         (await fingerprintReviewedEnvironmentWorkingState(
-          projectReviewedEnvironmentWorkingState({
-            services: servicesWithBoundEnv,
-            variableGroups: environmentResources,
-            volumes: volumeResources,
-          }),
+          workingReview(),
         ));
       const result: EnvironmentPublicationSubmissionOutcome =
         await createDeploymentSnapshot({
@@ -234,9 +201,13 @@ export function useCanvasChangeActions({
           receipt.data.savedStateSnapshotId,
       };
     }
-    for (const plan of changeState.discardAllPlan.nodes) {
-      await discardWorkingNodePlan(plan.working, workingSnapshotSource);
-    }
+    const document = environments.get(environmentId);
+    if (!document) throw new Error("Environment is not loaded.");
+    const receipt = await restoreWorkingDocumentServerFn({ data: {
+      organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
+      snapshotSource: workingSnapshotSource, command: { kind: "all" },
+    } });
+    await environments.utils.awaitTxId(receipt.txid);
   }
 
   async function discardServiceChanges(serviceId: string) {
@@ -264,83 +235,14 @@ export function useCanvasChangeActions({
     plan: CanvasWorkingNodeDiscardPlan,
     snapshotSource: EnvironmentSnapshotSource | null,
   ) {
-    if (plan.node.type === "variable_group") {
-      if (plan.kind === "delete") {
-        const receipt = await deleteVariableGroupResource({
-          data: {
-            organizationSlug: params.organizationSlug,
-            environmentId,
-            resourceId: plan.node.id,
-          },
-        });
-        await rawResources.utils.awaitTxId(receipt.txid);
-        return;
-      }
-      if (!snapshotSource) return;
-      const receipt = await restoreVariableGroupResourceSnapshot({
-          data: {
-            organizationSlug: params.organizationSlug,
-            environmentId,
-            resourceId: plan.node.id,
-            snapshotSource,
-          },
-        });
-      await rawResources.utils.awaitTxId(receipt.txid);
-      return;
-    }
-
-    if (plan.node.type === "volume") {
-      const receipt = await discardVolumeResource({
-          data: {
-            organizationSlug: params.organizationSlug,
-            environmentId,
-            resourceId: plan.node.id,
-            snapshotSource,
-          },
-        });
-      await rawResources.utils.awaitTxId(receipt.txid);
-      return;
-    }
-
-    if (plan.kind === "delete") {
-      const receipt = await deleteServices({
-        data: {
-          organizationSlug: params.organizationSlug,
-          environmentId,
-          serviceIds: [plan.node.id],
-        },
-      });
-      await rawServices.utils.awaitTxId(receipt.txid);
-      return;
-    }
-
-    if (!snapshotSource || snapshotSource.kind !== "saved") {
-      throw new Error(
-        "A complete Service Working Intent reset requires Saved provenance.",
-      );
-    }
-    const receipt = await restoreServiceWorkingIntentServerFn({
-        data: {
-          organizationSlug: params.organizationSlug,
-          environmentId,
-          serviceId: plan.node.id,
-          savedStateSnapshotId:
-            snapshotSource.environmentSavedStateSnapshotId,
-        },
-      });
-    const waits: Promise<unknown>[] = [
-      rawServices.utils.awaitTxId(receipt.txid),
-    ];
-    if (receipt.data.changedCollections.variables) {
-      waits.push(rawVariables.utils.awaitTxId(receipt.txid));
-    }
-    if (receipt.data.changedCollections.variableGroupAttachments) {
-      waits.push(rawVariableGroupAttachments.utils.awaitTxId(receipt.txid));
-    }
-    if (receipt.data.changedCollections.volumeAttachments) {
-      waits.push(rawVolumeAttachments.utils.awaitTxId(receipt.txid));
-    }
-    await Promise.all(waits);
+    const document = environments.get(environmentId);
+    if (!document) throw new Error("Environment is not loaded.");
+    const receipt = await restoreWorkingDocumentServerFn({ data: {
+      organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
+      snapshotSource: plan.kind === "delete" ? null : snapshotSource,
+      command: { kind: "node", nodeType: plan.node.type, nodeId: plan.node.id },
+    } });
+    await environments.utils.awaitTxId(receipt.txid);
   }
 
   async function discardVolumeChanges(group: CanvasEnvironmentChangeGroup) {
@@ -408,12 +310,23 @@ export function useCanvasChangeActions({
       return;
     }
 
+    if (path === "variableGroupAttachments" || path === "source.credentials" || path === "source") {
+      const current = environments.get(environmentId);
+      if (!current) throw new Error("Environment is not loaded.");
+      await restoreWorkingSetting({ serviceId: group.nodeId, revision: current.revision, path,
+        baseline: parseServiceConfig(plan.config),
+        snapshotSource: setting?.baselineSource?.role === "node_introduction"
+          ? { kind: "introduction" } : savedSnapshotSource,
+      }).isPersisted.promise;
+      return;
+    }
+
     const transaction = serviceWriter.update(group.nodeId, (draft) => {
       // SAFETY: this path only runs for service groups; discard plans store a node-union config, and the row path is a service deployment diff path.
       discardServiceDeploymentDiffPath({
         draft,
-        baseline: plan.config as ServiceDeploymentConfig,
-        path: path as ServiceDeploymentDiffPath,
+        baseline: parseServiceConfig(plan.config),
+        path,
       });
     });
 
@@ -507,11 +420,7 @@ export function useCanvasChangeActions({
       savedStateBasis,
       workingStateFingerprint:
         await fingerprintReviewedEnvironmentWorkingState(
-          projectReviewedEnvironmentWorkingState({
-            services: servicesWithBoundEnv,
-            variableGroups: environmentResources,
-            volumes: volumeResources,
-          }),
+          workingReview(),
         ),
       serviceIds: [...destructiveServiceIds],
       volumeIds: [...deletedDeployedVolumeIds],

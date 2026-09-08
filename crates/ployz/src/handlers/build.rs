@@ -24,7 +24,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         push_registry: leaf.get_flag("push-registry"),
         services: string_values(leaf, "service"),
     };
-    let project = load_project(&load)?;
+    let mut project = load_project(&load)?;
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
@@ -33,7 +33,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         println!("No buildable services selected.");
         return Ok(());
     }
-    execute_build(&plan, &options, &load, &project)?;
+    execute_build(&plan, &options, &load, &mut project)?;
     if options.check || !leaf.get_flag("push") {
         return Ok(());
     }

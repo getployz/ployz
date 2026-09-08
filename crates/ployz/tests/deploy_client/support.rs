@@ -45,6 +45,7 @@ pub(super) struct DeployService {
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
     created_specs: Arc<Mutex<Vec<ResolvedServiceSpec>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
+    failed_container_listing: Option<MachineId>,
     mutating_rpcs: Arc<AtomicUsize>,
     observation_rpcs: Arc<AtomicUsize>,
     observation_delays: Arc<Mutex<BTreeMap<MachineId, usize>>>,
@@ -68,6 +69,7 @@ impl DeployService {
             created_projects: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
+            failed_container_listing: None,
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -91,6 +93,7 @@ impl DeployService {
             created_projects: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
+            failed_container_listing: None,
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -145,6 +148,11 @@ impl DeployService {
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = machines;
+        self
+    }
+
+    pub(super) fn fail_container_listing(mut self, machine: MachineId) -> Self {
+        self.failed_container_listing = Some(machine);
         self
     }
 
@@ -224,6 +232,7 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         encoded(RpcResponse::from(ployz_core::PreparedVolumes {
             names: Vec::new(),
         }))
@@ -267,10 +276,25 @@ impl MachineRpc for DeployService {
 
     async fn list_containers(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id = machine_from_metadata(&request)?;
+        if self.failed_container_listing == Some(machine_id) {
+            return encoded(RpcResponse::from(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "inspection failed".into(),
+                details: Value::Null,
+            }));
+        }
         encoded(RpcResponse::from(ContainerList {
-            containers: self.listed_containers.lock().unwrap().clone(),
+            containers: self
+                .listed_containers
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|container| container.machine_id == machine_id)
+                .cloned()
+                .collect(),
         }))
     }
 
@@ -382,6 +406,7 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
 
@@ -443,24 +468,28 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn register(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn join(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn set_cloud_pairing(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn inspect_container(
@@ -487,6 +516,10 @@ impl MachineRpc for DeployService {
             )
             .expect("volume graph is scoped");
         encoded(RpcResponse::from(ContainerDetails {
+            environment: Some(BTreeMap::from([
+                ("TOKEN".into(), "live-only-sentinel".into()),
+                ("PLAIN".into(), "from-docker".into()),
+            ])),
             container: ployz_core::ContainerObservation::try_from(
                 ployz_core::ContainerObservationParts {
                     container_id: inspect.container_id,
@@ -628,6 +661,7 @@ impl MachineRpc for DeployService {
         &self,
         request: Request<Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::ExecStream>, Status> {
+        self.record_mutation();
         let Some(code) = self.exec_exit else {
             return unused();
         };
@@ -678,12 +712,14 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn pull_image_from_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn get_ingress_proxy_config(
@@ -696,6 +732,7 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn get_domain(
@@ -715,36 +752,42 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn create_domain_records(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn reset(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn update_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn remove_local_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn remove_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
         unused()
     }
     async fn inspect_wireguard(

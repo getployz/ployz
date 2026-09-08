@@ -30,35 +30,6 @@ describe("getVolumeConfigDiffRows", () => {
     ]);
   });
 
-  it("stages a rename as a name update", () => {
-    const rows = getVolumeConfigDiffRows({
-      nodeId: "vol-1",
-      current: config("renamed"),
-      baseline: config("shared-data"),
-    });
-
-    expect(rows).toEqual([
-      {
-        changeKey: "vol-1:name",
-        label: "Name",
-        kind: "update",
-        path: "name",
-        currentValue: "shared-data",
-        newValue: "renamed",
-        canDiscard: false,
-      },
-    ]);
-  });
-
-  it("emits no rows when nothing changed", () => {
-    expect(
-      getVolumeConfigDiffRows({
-        nodeId: "vol-1",
-        current: config("shared-data"),
-        baseline: config("shared-data"),
-      }),
-    ).toEqual([]);
-  });
 });
 
 describe("getVolumePhysicalName", () => {

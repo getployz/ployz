@@ -59,10 +59,10 @@ describe("deployment Inngest durable smoke", () => {
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'Cloud', 'cloud');
       insert into environment (
-        id, project_id, organization_id, name, namespace
+        id, project_id, organization_id, name, namespace, intent
       ) values (
         '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production'
+        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
       );
     `);
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({
@@ -127,21 +127,15 @@ describe("deployment Inngest durable smoke", () => {
               .where(eq(schema.environmentDeployment.id, activeDeploymentId));
           },
         },
-        { id: "preview-sdk-deploy", handler: () => undefined },
       ],
       transformCtx: (context) => ({
         ...mockCtx(context),
         runId: targetRunId,
       }),
-    }).executeStep("wait-for-deploy-confirm");
+    }).executeStep("mark-deployment-deploying");
 
     expect(interrupted).toBe(true);
-    expect(resumed.step).toEqual(
-      expect.objectContaining({
-        displayName: "wait-for-deploy-confirm",
-        name: "environment/deploy.confirmed",
-      }),
-    );
+    expect(resumed.result).toBe(true);
     const [planning] = await harness.db
       .select({
         status: schema.environmentDeployment.status,
@@ -149,7 +143,7 @@ describe("deployment Inngest durable smoke", () => {
       })
       .from(schema.environmentDeployment)
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
-    expect(planning).toEqual({ status: "planning", inngestRunId: targetRunId });
+    expect(planning).toEqual({ status: "deploying", inngestRunId: targetRunId });
 
     const cancellation = await new InngestTestEngine({
       function: createMarkCancelledRowBackedWorkflow(inngest, runEffect),

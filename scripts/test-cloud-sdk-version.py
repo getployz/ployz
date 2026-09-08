@@ -24,6 +24,16 @@ class CloudSdkVersionTest(unittest.TestCase):
             }
             package.write_text(json.dumps(cloud))
             check(manifest, package)
+            sdk = manifest.parent / "crates/ployz-sdk/package.json"
+            sdk.parent.mkdir(parents=True)
+            sdk.write_text(json.dumps({"version": "1.2.3"}))
+            cloud["dependencies"]["@ployz/sdk"] = "link:../crates/ployz-sdk"
+            package.write_text(json.dumps(cloud))
+            check(manifest, package)
+            sdk.write_text(json.dumps({"version": "1.2.2"}))
+            with self.assertRaisesRegex(ValueError, "@ployz/sdk"):
+                check(manifest, package)
+            cloud["dependencies"]["@ployz/sdk"] = "1.2.3"
             for section in cloud.values():
                 for name in list(section):
                     for invalid in ("1.2.2", "^1.2.3", "file:../sdk.tgz", None):

@@ -1,15 +1,16 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    process::Command,
+};
 
 use ployz_core::MachineTarget;
 use serde::Serialize;
 use serde_norway::Value;
 
 use super::{
-    BuildSpec, ComposeError, ComposeProject, LoadOptions,
-    loader::{
-        TemporaryComposeFile, compose_command, discover_default_compose_file,
-        first_compose_file_from_environment,
-    },
+    BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::BuildInputs,
+    loader::TemporaryComposeFile,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -63,83 +64,163 @@ pub fn plan_build(
         .collect()
 }
 
-pub fn execute_build(
+/// A build whose configuration, options, and local sources have already been captured.
+pub struct CapturedBuild {
+    plan: Vec<BuildService>,
+    options: BuildOptions,
+    project_name: String,
+    environment: BTreeMap<String, String>,
+    compose: TemporaryComposeFile,
+    _inputs: BuildInputs,
+}
+
+/// Freeze build sources, options, and provider values before invoking Docker.
+///
+/// # Errors
+/// Rejects invalid build inputs, provider failures, and unreadable or unstable source files.
+pub fn capture_build(
     plan: &[BuildService],
     options: &BuildOptions,
-    load: &LoadOptions,
-    project: &ComposeProject,
-) -> Result<(), ComposeError> {
-    if plan.is_empty() {
-        return Ok(());
-    }
-    let mut load = load.clone();
-    if load.files.is_empty() && first_compose_file_from_environment().is_none() {
-        load.files.push(discover_default_compose_file(&load)?);
-    }
-    let override_file = TemporaryComposeFile::new(&build_override(plan, project)?)?;
-    let docker = load
-        .docker
-        .as_deref()
-        .unwrap_or_else(|| std::path::Path::new("docker"));
-    let mut command = compose_command(docker, &load, Some(&override_file))?;
-    command.arg("build");
-    for argument in &options.build_args {
-        command.arg("--build-arg").arg(argument);
-    }
-    for (enabled, flag) in [
-        (options.check, "--check"),
-        (options.no_cache, "--no-cache"),
-        (options.pull, "--pull"),
-        (options.push_registry, "--push"),
-    ] {
-        if enabled {
-            command.arg(flag);
+    project: &mut ComposeProject,
+) -> Result<CapturedBuild, ComposeError> {
+    let mut inputs = BuildInputs::new()?;
+    let mut plan = plan.to_vec();
+    let mut secret_names = BTreeSet::new();
+    for service in &mut plan {
+        let build = service
+            .build
+            .as_mapping_mut()
+            .ok_or_else(|| invalid_build("expected a build mapping"))?;
+        if let Some(args) = build
+            .get_mut(Value::String("args".into()))
+            .and_then(Value::as_mapping_mut)
+        {
+            args.retain(|key, value| {
+                if value.is_null() {
+                    let Some(captured) = key.as_str().and_then(|key| project.environment.get(key))
+                    else {
+                        return false;
+                    };
+                    *value = Value::String(captured.clone());
+                }
+                true
+            });
+        }
+        if let Some(ssh) = build
+            .get_mut(Value::String("ssh".into()))
+            .and_then(Value::as_sequence_mut)
+        {
+            for key in ssh {
+                let (id, path) = key
+                    .as_str()
+                    .and_then(|key| key.split_once(": ").or_else(|| key.split_once('=')))
+                    .ok_or_else(|| {
+                        invalid_build(
+                            "SSH agent sockets cannot be frozen; use an explicit key file",
+                        )
+                    })?;
+                let paths = path
+                    .split(',')
+                    .map(|path| {
+                        inputs
+                            .capture(&project.working_dir.join(path))
+                            .map(|path| path.to_string_lossy().into_owned())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                *key = Value::String(format!("{id}={}", paths.join(",")));
+            }
+        }
+        let context = build
+            .get(Value::String("context".into()))
+            .and_then(Value::as_str)
+            .unwrap_or(".")
+            .to_owned();
+        let captured = capture_context(&context, &project.working_dir, &mut inputs)?;
+        build.insert(Value::String("context".into()), Value::String(captured));
+        if !build.contains_key(Value::String("dockerfile_inline".into()))
+            && !is_remote_context(&context)
+        {
+            let dockerfile = build
+                .get(Value::String("dockerfile".into()))
+                .and_then(Value::as_str)
+                .unwrap_or("Dockerfile");
+            let source = project.working_dir.join(&context).join(dockerfile);
+            build.insert(
+                Value::String("dockerfile".into()),
+                Value::String(inputs.dockerfile(&source)?.to_string_lossy().into_owned()),
+            );
+        }
+        if let Some(contexts) = build.get_mut(Value::String("additional_contexts".into())) {
+            match contexts {
+                Value::Mapping(contexts) => {
+                    for context in contexts.values_mut() {
+                        let source = context
+                            .as_str()
+                            .ok_or_else(|| invalid_build("invalid additional context"))?;
+                        *context = Value::String(capture_context(
+                            source,
+                            &project.working_dir,
+                            &mut inputs,
+                        )?);
+                    }
+                }
+                Value::Sequence(contexts) => {
+                    for context in contexts {
+                        let (name, source) = context
+                            .as_str()
+                            .and_then(|value| value.split_once('='))
+                            .ok_or_else(|| invalid_build("invalid additional context"))?;
+                        *context = Value::String(format!(
+                            "{name}={}",
+                            capture_context(source, &project.working_dir, &mut inputs)?
+                        ));
+                    }
+                }
+                Value::Null => {}
+                Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
+                    return Err(invalid_build("invalid additional contexts"));
+                }
+            }
+        }
+        if let Some(names) = build
+            .get(Value::String("secrets".into()))
+            .and_then(Value::as_sequence)
+        {
+            for secret in names {
+                let name = secret
+                    .as_str()
+                    .or_else(|| {
+                        secret
+                            .as_mapping()?
+                            .get(Value::String("source".into()))?
+                            .as_str()
+                    })
+                    .ok_or_else(|| invalid_build("invalid build secret"))?;
+                secret_names.insert(name.to_owned());
+            }
         }
     }
-    command.args(plan.iter().map(|service| service.name.as_str()));
-    let status = command
-        .status()
-        .map_err(|error| ComposeError::Io(format!("run Docker Compose build: {error}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(ComposeError::Compose(format!(
-            "Docker Compose build exited with {status}"
-        )))
+    inputs.verify()?;
+    let mut secrets = BTreeMap::new();
+    for name in secret_names {
+        let value = project.resolve_secret(&name)?;
+        let file = inputs.secret(secrets.len(), value)?;
+        secrets.insert(
+            name,
+            BuildSecret {
+                file: file.to_string_lossy().into_owned(),
+            },
+        );
     }
-}
-
-#[derive(Serialize)]
-struct BuildServiceOverride<'a> {
-    image: &'a str,
-    build: &'a Value,
-}
-
-#[derive(Serialize)]
-struct EmptyVolume {}
-
-#[derive(Serialize)]
-struct BuildOverride<'a> {
-    services: BTreeMap<&'a str, BuildServiceOverride<'a>>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    volumes: BTreeMap<&'a str, EmptyVolume>,
-}
-
-fn provisioned_volume_names(project: &ComposeProject) -> BTreeMap<&str, EmptyVolume> {
-    project
-        .services
-        .values()
-        .flat_map(|spec| spec.volumes())
-        .filter_map(|volume| {
-            let ployz_core::RawVolumeSource::Provisioned { name, .. } = volume.source.kind() else {
-                return None;
-            };
-            Some((name.as_str(), EmptyVolume {}))
-        })
-        .collect()
-}
-
-fn build_override(plan: &[BuildService], project: &ComposeProject) -> Result<String, ComposeError> {
+    let mut options = options.clone();
+    for argument in &mut options.build_args {
+        if !argument.contains('=') {
+            let value = project.environment.get(argument).ok_or_else(|| {
+                invalid_build("a build argument has no captured environment value")
+            })?;
+            *argument = format!("{argument}={value}");
+        }
+    }
     let services = plan
         .iter()
         .map(|service| {
@@ -152,11 +233,136 @@ fn build_override(plan: &[BuildService], project: &ComposeProject) -> Result<Str
             )
         })
         .collect();
-    serde_norway::to_string(&BuildOverride {
-        services,
-        volumes: provisioned_volume_names(project),
+    // Compose interpolates even normalized input. Escape dollars so captured values
+    // cannot pick up a later shell/.env value or lose a literal dollar.
+    let yaml = serde_norway::to_string(&BuildOverride { services, secrets })
+        .map_err(|error| ComposeError::Io(format!("encode captured build: {error}")))?
+        .replace('$', "$$");
+    Ok(CapturedBuild {
+        plan,
+        options,
+        project_name: project.name.clone(),
+        environment: project.environment.clone(),
+        compose: TemporaryComposeFile::new(&yaml)?,
+        _inputs: inputs,
     })
-    .map_err(|error| ComposeError::Io(format!("encode Compose build override: {error}")))
+}
+
+impl CapturedBuild {
+    /// Run Docker Compose against this capture without reading the original sources again.
+    ///
+    /// # Errors
+    /// Fails if Docker cannot start or reports a failed build.
+    pub fn execute(&self, docker: Option<&Path>) -> Result<(), ComposeError> {
+        if self.plan.is_empty() {
+            return Ok(());
+        }
+        let mut command = Command::new(docker.unwrap_or_else(|| Path::new("docker")));
+        command
+            .env_clear()
+            .envs(&self.environment)
+            .env("COMPOSE_DISABLE_ENV_FILE", "1")
+            .env_remove("COMPOSE_ENV_FILES");
+        command
+            .args(["compose", "--all-resources", "--project-name"])
+            .arg(&self.project_name)
+            .arg("--file")
+            .arg(&self.compose.path)
+            .arg("build");
+        for argument in &self.options.build_args {
+            command.arg("--build-arg").arg(argument);
+        }
+        for (enabled, flag) in [
+            (self.options.check, "--check"),
+            (self.options.no_cache, "--no-cache"),
+            (self.options.pull, "--pull"),
+            (self.options.push_registry, "--push"),
+        ] {
+            if enabled {
+                command.arg(flag);
+            }
+        }
+        command.args(self.plan.iter().map(|service| service.name.as_str()));
+        let status = command
+            .status()
+            .map_err(|error| ComposeError::Io(format!("run Docker Compose build: {error}")))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(ComposeError::Compose(format!(
+                "Docker Compose build exited with {status}"
+            )))
+        }
+    }
+}
+
+pub fn execute_build(
+    plan: &[BuildService],
+    options: &BuildOptions,
+    load: &LoadOptions,
+    project: &mut ComposeProject,
+) -> Result<(), ComposeError> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+    capture_build(plan, options, project)?.execute(load.docker.as_deref())
+}
+
+fn capture_context(
+    source: &str,
+    directory: &Path,
+    inputs: &mut BuildInputs,
+) -> Result<String, ComposeError> {
+    if source.starts_with("service:") {
+        return Ok(source.into());
+    }
+    if source.starts_with("docker-image://") && source.contains("@sha256:") {
+        return Ok(source.into());
+    }
+    if is_remote_context(source) {
+        // BuildKit fetches commit-pinned Git contexts without consulting a moving ref.
+        let revision = source
+            .split_once('#')
+            .map(|(_, reference)| reference.split(':').next().unwrap_or(""));
+        if revision.is_some_and(|revision| {
+            revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Ok(source.into());
+        }
+        return Err(invalid_build(
+            "remote build context must use an immutable Git commit or image digest",
+        ));
+    }
+    Ok(inputs
+        .capture(&directory.join(source))?
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn is_remote_context(source: &str) -> bool {
+    source.contains("://") || source.starts_with("git@") || source.starts_with("service:")
+}
+
+fn invalid_build(message: &str) -> ComposeError {
+    ComposeError::Invalid(message.into())
+}
+
+#[derive(Serialize)]
+struct BuildServiceOverride<'a> {
+    image: &'a str,
+    build: &'a Value,
+}
+
+#[derive(Serialize)]
+struct BuildSecret {
+    file: String,
+}
+
+#[derive(Serialize)]
+struct BuildOverride<'a> {
+    services: BTreeMap<&'a str, BuildServiceOverride<'a>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    secrets: BTreeMap<String, BuildSecret>,
 }
 
 fn include_service<'a>(

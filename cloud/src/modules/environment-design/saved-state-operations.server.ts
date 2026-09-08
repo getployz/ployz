@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { isDeepStrictEqual } from "node:util";
+import { reusePublication } from "@ployz/sdk/config";
 import { Effect, Schema } from "effect";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
@@ -127,18 +127,11 @@ export const publishEnvironmentSavedState = Effect.fn(
       ),
     });
 
-  if (
-    input.revisionPolicy === "reuse_latest_if_equivalent" &&
-    latest &&
-    isDeepStrictEqual(
-      canonicalizeSavedEnvironmentIntent(latest.intent),
-      canonical.intent,
-    ) &&
-    isDeepStrictEqual(
-      latest.volumeDeletionAuthorizations,
-      volumeDeletionAuthorizations,
-    )
-  ) {
+  if (latest && reusePublication({
+    policy: input.revisionPolicy,
+    current: { intent: canonical.intent, volumeDeletionAuthorizations },
+    latest: { intent: latest.intent, volumeDeletionAuthorizations: latest.volumeDeletionAuthorizations },
+  })) {
     return {
       ...canonical,
       savedStateSnapshotId: latest.id,

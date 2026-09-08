@@ -7,16 +7,12 @@ import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   getCanvasPositionsCollection,
   getDestructiveVolumeAttemptsCollection,
-  getEnvironmentNodeIntroductionsCollection,
+  getEnvironmentNodeIntroductionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemovalResultsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
   getRawEnvironmentResourcesCollection,
-  getRawServiceVariableGroupAttachmentsCollection,
   getRawServicesCollection,
-  getRawVariablesCollection,
   getResourceLineagesCollection,
-  getServiceVolumeAttachmentsCollection,
-  getVariableGroupsCollection,
 } from "#/electric/collections";
 import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
 import {
@@ -32,6 +28,8 @@ export const Route = createFileRoute(
     const baseUrl = context.tableSyncBaseUrl;
     const canvasReady = Promise.all([
       getProjectsCollection(organizationSlug, baseUrl).preload(),
+      getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
+      getVolumeRemovalResultsCollection(organizationSlug, baseUrl).preload(),
       getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
       getRawServicesCollection(organizationSlug, baseUrl).preload(),
       getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
@@ -40,16 +38,6 @@ export const Route = createFileRoute(
         baseUrl,
       ).preload(),
       getResourceLineagesCollection(organizationSlug, baseUrl).preload(),
-      getVariableGroupsCollection(organizationSlug, baseUrl).preload(),
-      getRawVariablesCollection(organizationSlug, baseUrl).preload(),
-      getRawServiceVariableGroupAttachmentsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
-      getServiceVolumeAttachmentsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
       getEnvironmentNodeIntroductionsCollection(
         organizationSlug,
         baseUrl,

@@ -49,9 +49,10 @@ describe("service schemas", () => {
   });
 
   it("requires a runtime-safe private DNS service ID", () => {
-    expect(decodeStrict(servicePrivateDnsSchema, "api_internal-1")).toBe(
-      "api_internal-1",
+    expect(decodeStrict(servicePrivateDnsSchema, "api-internal-1")).toBe(
+      "api-internal-1",
     );
+    expect(isValid(servicePrivateDnsSchema, "api_internal-1")).toBe(false);
     expect(isValid(servicePrivateDnsSchema, null)).toBe(false);
     expect(isValid(servicePrivateDnsSchema, "")).toBe(false);
     expect(isValid(servicePrivateDnsSchema, "api.internal")).toBe(false);
@@ -63,6 +64,7 @@ describe("service schemas", () => {
       organizationSlug: "org",
       environmentId: crypto.randomUUID(),
       serviceId: crypto.randomUUID(),
+      revision: crypto.randomUUID(),
       name: "api",
       source: createGitServiceSource({
         repository: "acme/api",
@@ -145,32 +147,7 @@ describe("service schemas", () => {
       projectId: crypto.randomUUID(),
       environmentId: crypto.randomUUID(),
       lineageId: crypto.randomUUID(),
-      name: "api",
-      slug: "api",
-      privateDns: "api",
-      sourceType: "git",
-      sourceConfig: {
-        version: 2,
-        type: "git",
-        repository: "acme/api",
-        repositoryId: 42,
-        installationId: 7,
-        rootDir: "/",
-        branch: {
-          type: "connected",
-          name: "main",
-        },
-        autoDeploy: true,
-        waitForCi: false,
-      },
-      preDeployCommand: null,
-      startCommand: "npm start",
-      healthcheck: {
-        type: "http",
-        path: "/health",
-        timeoutSeconds: 30,
-      },
-      restartPolicy: "unless-stopped",
+
     });
 
     expect(result).toBe(true);

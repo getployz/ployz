@@ -16,13 +16,21 @@
       "browser": "./browser.mjs"
     },
     "./package.json": "./package.json",
-    "./index.d.ts": "./index.d.ts"
+    "./index.d.ts": "./index.d.ts",
+    "./config": {
+      "types": "./config.d.ts",
+      "browser": "./config-browser.mjs",
+      "node": "./config.js"
+    }
   },
   "files": [
     "index.js",
     "index.d.ts",
     "browser.mjs",
-    "generated"
+    "generated",
+    "config.js",
+    "config.d.ts",
+    "config-browser.mjs"
   ],
   "engines": {
     "node": ">=18"

@@ -206,12 +206,13 @@ pub struct Placement {
 /// Docker's healthcheck disable token. Configured commands cannot begin with it.
 pub const HEALTHCHECK_DISABLE_SENTINEL: &str = "NONE";
 
-/// A present Healthcheck: explicitly disabled, or configured with a real command.
+/// A present Healthcheck: disabled, a Docker command, or a Machine-local HTTP probe.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum HealthcheckSpec {
     Disabled,
     Configured(ConfiguredHealthcheck),
+    Http(HttpHealthcheck),
 }
 
 impl HealthcheckSpec {
@@ -220,9 +221,43 @@ impl HealthcheckSpec {
     pub fn as_configured(&self) -> Option<&ConfiguredHealthcheck> {
         match self {
             Self::Configured(configured) => Some(configured),
-            Self::Disabled => None,
+            Self::Disabled | Self::Http(_) => None,
         }
     }
+}
+
+/// A bounded HTTP probe executed by the owning Machine, without image tooling.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct HttpHealthcheck {
+    #[serde(deserialize_with = "http_healthcheck_path")]
+    pub path: String,
+    pub port: NonZeroU16,
+    #[serde(deserialize_with = "http_healthcheck_timeout")]
+    pub timeout_seconds: u16,
+}
+
+fn http_healthcheck_path<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let path = String::deserialize(deserializer)?;
+    if !path.starts_with('/') || path.len() > 2000 || path.chars().any(char::is_control) {
+        return Err(serde::de::Error::custom(
+            "HTTP healthcheck requires an absolute URL path",
+        ));
+    }
+    Ok(path)
+}
+
+fn http_healthcheck_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u16, D::Error> {
+    let seconds = u16::deserialize(deserializer)?;
+    if !(1..=300).contains(&seconds) {
+        return Err(serde::de::Error::custom(
+            "HTTP healthcheck timeout must be 1–300 seconds",
+        ));
+    }
+    Ok(seconds)
 }
 
 /// A Healthcheck command that is non-empty and does not begin with Docker's disable sentinel.
@@ -750,53 +785,10 @@ impl ResolvedServiceSpec {
 mod serving_shape;
 pub use serving_shape::ServingShape;
 
-#[must_use]
-pub fn compare_specs(
-    current: &ResolvedServiceSpec,
-    requested: &RequestedServiceSpec,
-) -> SpecChange {
-    if requested.container.pull_policy == PullPolicy::Always
-        || current.serving_shape() != requested.serving_shape()
-    {
-        return SpecChange::NeedsRecreate;
-    }
-    resource_change(&current.container.resources, &requested.container.resources)
-}
-
-fn resource_change(current: &ContainerResources, requested: &ContainerResources) -> SpecChange {
-    let ContainerResources {
-        cpu_nanos: current_cpu_nanos,
-        memory_bytes: current_memory_bytes,
-        memory_reservation_bytes: current_memory_reservation_bytes,
-        shared_memory_bytes: current_shared_memory_bytes,
-        devices: current_devices,
-        device_reservations: current_device_reservations,
-        ulimits: current_ulimits,
-    } = current;
-    let ContainerResources {
-        cpu_nanos: requested_cpu_nanos,
-        memory_bytes: requested_memory_bytes,
-        memory_reservation_bytes: requested_memory_reservation_bytes,
-        shared_memory_bytes: requested_shared_memory_bytes,
-        devices: requested_devices,
-        device_reservations: requested_device_reservations,
-        ulimits: requested_ulimits,
-    } = requested;
-    if current_devices != requested_devices
-        || current_device_reservations != requested_device_reservations
-        || current_ulimits != requested_ulimits
-    {
-        return SpecChange::NeedsRecreate;
-    }
-    if current_cpu_nanos != requested_cpu_nanos
-        || current_memory_bytes != requested_memory_bytes
-        || current_memory_reservation_bytes != requested_memory_reservation_bytes
-        || current_shared_memory_bytes != requested_shared_memory_bytes
-    {
-        return SpecChange::NeedsUpdate;
-    }
-    SpecChange::UpToDate
-}
+mod comparison;
+pub use comparison::{
+    COMPARED_SERVICE_SETTINGS, SettingChange, SpecComparison, compare_specs, compare_specs_detailed,
+};
 
 #[cfg(test)]
 mod tests {

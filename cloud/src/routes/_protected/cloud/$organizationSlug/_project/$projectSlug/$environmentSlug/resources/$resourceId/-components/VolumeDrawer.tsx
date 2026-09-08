@@ -1,10 +1,11 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { getRawEnvironmentResourcesCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import { VolumeRemoveDataLossDialog } from "#/components/data-loss/data-loss-confirm-dialog";
 import {
   AlertDialog,
@@ -64,6 +65,11 @@ export function VolumeDrawer({
   const deleteVolume = useServerFn(deleteVolumeResourceServerFn);
   const updateVolume = useServerFn(updateVolumeResourceServerFn);
   const [isDeleting, setIsDeleting] = useState(false);
+  const document = useEnvironmentDocument(state.organizationSlug, state.environmentId);
+  function revision() {
+    if (!document) throw new Error("Environment is not loaded.");
+    return document.revision;
+  }
   const resourceId = state.resource.resource.id;
   const isDeleted = state.resource.resource.deletedAt != null;
   const mountedCount = state.attachments.filter(
@@ -82,10 +88,11 @@ export function VolumeDrawer({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
+          revision: revision(),
           resourceId,
         },
       });
-      await getRawEnvironmentResourcesCollection(
+      await getEnvironmentsCollection(
         state.organizationSlug,
       ).utils.awaitTxId(receipt.txid);
       await navigate({
@@ -121,10 +128,11 @@ export function VolumeDrawer({
             const receipt = await updateVolume({ data: {
               organizationSlug: state.organizationSlug,
               environmentId: state.environmentId,
+              revision: revision(),
               resourceId,
               name: value,
             } });
-            await getRawEnvironmentResourcesCollection(
+            await getEnvironmentsCollection(
               state.organizationSlug,
             ).utils.awaitTxId(receipt.txid);
           }}

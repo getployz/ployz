@@ -1,10 +1,10 @@
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
 import "@tanstack/react-start/server-only";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import {
   environmentResource as schemaEnvironmentResource,
-  environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
 } from "#/modules/environment-design/tables";
 import {
   destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
@@ -49,7 +49,7 @@ export const completeDestructiveVolumeAttempt = Effect.fn(
             resourceId: schemaEnvironmentResource.id,
             environmentId: schemaEnvironmentResource.environmentId,
             implementationType: schemaEnvironmentResource.implementationType,
-            deletedAt: schemaEnvironmentResource.deletedAt,
+            isAuthored: volumeIsAuthored,
             deploymentEnvironmentId: schemaEnvironmentDeployment.environmentId,
           })
           .from(schemaDestructiveVolumeAttempt)
@@ -77,51 +77,10 @@ export const completeDestructiveVolumeAttempt = Effect.fn(
           .limit(1);
         const hasExactAuthority =
           authority?.implementationType === "volume" &&
-          authority.deletedAt !== null &&
+          !authority.isAuthored &&
           authority.environmentId === authority.deploymentEnvironmentId &&
           getVolumePhysicalName(authority.resourceId) === attempt.target.volumeName;
-        const reconciled = hasExactAuthority
-          ? yield* database
-              .transaction(
-                Effect.gen(function* () {
-                  const savepoint = (yield* Database).drizzle;
-                  yield* savepoint
-                    .delete(schemaEnvironmentCanvasNodePosition)
-                    .where(
-                      and(
-                        eq(
-                          schemaEnvironmentCanvasNodePosition.environmentId,
-                          authority.environmentId,
-                        ),
-                        eq(
-                          schemaEnvironmentCanvasNodePosition.resourceType,
-                          "volume",
-                        ),
-                        eq(
-                          schemaEnvironmentCanvasNodePosition.resourceId,
-                          authority.resourceId,
-                        ),
-                      ),
-                    );
-                  const [deleted] = yield* savepoint
-                    .delete(schemaEnvironmentResource)
-                    .where(
-                      and(
-                        eq(schemaEnvironmentResource.id, authority.resourceId),
-                        eq(
-                          schemaEnvironmentResource.environmentId,
-                          authority.environmentId,
-                        ),
-                        eq(schemaEnvironmentResource.implementationType, "volume"),
-                        isNotNull(schemaEnvironmentResource.deletedAt),
-                      ),
-                    )
-                    .returning({ id: schemaEnvironmentResource.id });
-                  return Boolean(deleted);
-                }),
-              )
-              .pipe(Effect.catch(() => Effect.succeed(false)))
-          : false;
+        const reconciled = hasExactAuthority;
         return yield* recordDestructiveVolumeEvent({
           attemptId: input.attemptId,
           event: reconciled

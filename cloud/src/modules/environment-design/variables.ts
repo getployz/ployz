@@ -94,27 +94,16 @@ export const variableValueSchema = Schema.Union([
   variableSealedValueSchema,
 ]);
 
-const variableDbSelectSchema = createSelectSchema(variable, {
-  key: variableName,
-  description: nullableDescription,
-  valueKind: variableValueKindSchema,
-});
-
-const environmentVariableGroupDbSelectSchema = createSelectSchema(
-  environmentVariableGroup,
-  {
-    name: requiredTrimmedString,
-    slug: requiredTrimmedString,
-  },
-);
+const variableDbSelectSchema = createSelectSchema(variable);
+const environmentVariableGroupDbSelectSchema = createSelectSchema(environmentVariableGroup);
 
 export const environmentVariableGroupSelectSchema = Schema.Struct({
   id: environmentVariableGroupDbSelectSchema.fields.id,
   projectId: environmentVariableGroupDbSelectSchema.fields.projectId,
   environmentId: environmentVariableGroupDbSelectSchema.fields.environmentId,
   lineageId: environmentVariableGroupDbSelectSchema.fields.lineageId,
-  name: environmentVariableGroupDbSelectSchema.fields.name,
-  slug: environmentVariableGroupDbSelectSchema.fields.slug,
+  name: requiredTrimmedString,
+  slug: requiredTrimmedString,
   createdAt: environmentVariableGroupDbSelectSchema.fields.createdAt,
   updatedAt: environmentVariableGroupDbSelectSchema.fields.updatedAt,
 });
@@ -123,13 +112,12 @@ export const variableSelectSchema = Schema.Struct({
   id: variableDbSelectSchema.fields.id,
   serviceId: variableDbSelectSchema.fields.serviceId,
   variableGroupId: variableDbSelectSchema.fields.variableGroupId,
-  configKeyId: variableDbSelectSchema.fields.configKeyId,
-  key: variableDbSelectSchema.fields.key,
-  description: variableDbSelectSchema.fields.description,
-  exported: variableDbSelectSchema.fields.exported,
+  key: variableName,
+  description: nullableDescription,
+  exported: Schema.Boolean,
   value: variableValueSchema,
   createdAt: variableDbSelectSchema.fields.createdAt,
-  updatedAt: variableDbSelectSchema.fields.updatedAt,
+  updatedAt: Schema.Date,
 });
 
 const variableCreateFields = {
@@ -146,6 +134,7 @@ const variableCreateFields = {
 
 export const createServiceVariableSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   ...variableCreateFields,
@@ -153,6 +142,7 @@ export const createServiceVariableSchema = Schema.Struct({
 
 export const createVariableGroupVariableSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   variableGroupId: Uuid,
   ...variableCreateFields,
@@ -168,6 +158,7 @@ const variableUpdateFields = {
 
 export const updateServiceVariableSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   ...variableUpdateFields,
@@ -175,6 +166,7 @@ export const updateServiceVariableSchema = Schema.Struct({
 
 export const updateVariableGroupVariableSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   variableGroupId: Uuid,
   ...variableUpdateFields,
@@ -182,6 +174,7 @@ export const updateVariableGroupVariableSchema = Schema.Struct({
 
 export const updateVariableGroupVariableMetadataSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   variableGroupId: Uuid,
   variableId: Uuid,
@@ -191,6 +184,7 @@ export const updateVariableGroupVariableMetadataSchema = Schema.Struct({
 
 export const updateServiceVariableExportSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   variableId: Uuid,
@@ -199,6 +193,7 @@ export const updateServiceVariableExportSchema = Schema.Struct({
 
 export const deleteServiceVariableSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   variableId: Uuid,
@@ -206,6 +201,7 @@ export const deleteServiceVariableSchema = Schema.Struct({
 
 export const deleteVariableGroupVariableSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   variableGroupId: Uuid,
   variableId: Uuid,
@@ -213,6 +209,7 @@ export const deleteVariableGroupVariableSchema = Schema.Struct({
 
 export const attachServiceVariableGroupSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   variableGroupId: Uuid,
@@ -231,6 +228,7 @@ const bulkServiceVariableUpdateSchema = Schema.Struct({
 
 export const bulkUpdateServiceVariablesSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   creates: Schema.Array(bulkServiceVariableCreateSchema),

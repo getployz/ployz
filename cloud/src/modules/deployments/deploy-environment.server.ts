@@ -1,11 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
+import { resolveVariables, type VariableProducer } from "@ployz/sdk/config";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
-import {
-  resolveValueParts,
-  type ProducerLookup,
-} from "#/modules/environment-design/variable-resolution";
 import type { SecretEncryptionService } from "#/utils/encrypted-secret.server";
 import { Validation } from "#/server/public-error";
 
@@ -40,69 +37,28 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
     });
   }
 
-  const decryptedFrozenSecrets = new Map<string, string>();
+  const producers: VariableProducer[] = [];
   for (const producer of frozenProducers ?? []) {
-    if (producer.value.kind !== "secret") continue;
-    const encryptedValue = producer.value.encryptedValue;
-    const plaintext = yield* Effect.try({
-      try: () => encryption.decrypt(encryptedValue),
-      catch: (cause) =>
-        new Validation({
-          message:
-            cause instanceof Error
-              ? cause.message
-              : "Secret variable could not be decrypted.",
-        }),
+    const frozenValue = producer.value;
+    const value = frozenValue.kind === "secret"
+      ? {
+          kind: "secret" as const,
+          value: yield* Effect.try({
+            try: () => {
+              if (!frozenValue.encryptedValue) throw new Error("Frozen secret is missing.");
+              return encryption.decrypt(frozenValue.encryptedValue);
+            },
+            catch: () => new Validation({ message: "Secret variable could not be decrypted." }),
+          }),
+        }
+      : frozenValue;
+    producers.push({
+      ownerId: producer.ownerId,
+      owner: { scope: producer.ownerScope, lineageId: producer.ownerLineageId },
+      key: producer.key,
+      value,
     });
-    decryptedFrozenSecrets.set(
-      `${producer.ownerId}:${producer.key}`,
-      plaintext,
-    );
   }
-
-  const producersByOwner = new Map<
-    string,
-    Map<string, EnvironmentSnapshotVariableProducer>
-  >();
-  for (const producer of frozenProducers ?? []) {
-    const owner = producersByOwner.get(producer.ownerId) ?? new Map();
-    owner.set(producer.key, producer);
-    producersByOwner.set(producer.ownerId, owner);
-  }
-  const serviceIdByLineage = new Map(
-    (frozenProducers ?? []).flatMap((producer) =>
-      producer.ownerScope === "service"
-        ? [[producer.ownerLineageId, producer.ownerId] as const]
-        : [],
-    ),
-  );
-  const variableGroupIdByLineage = new Map(
-    (frozenProducers ?? []).flatMap((producer) =>
-      producer.ownerScope === "variable_group"
-        ? [[producer.ownerLineageId, producer.ownerId] as const]
-        : [],
-    ),
-  );
-  const lookup: ProducerLookup = ({ owner, selfOwnerId, key }) => {
-    const ownerId =
-      owner.scope === "self"
-        ? selfOwnerId
-        : owner.scope === "service"
-          ? serviceIdByLineage.get(owner.lineageId)
-          : variableGroupIdByLineage.get(owner.lineageId);
-    if (!ownerId) return null;
-    const frozen = producersByOwner.get(ownerId)?.get(key);
-    if (!frozen) return null;
-    if (frozen.value.kind === "secret") {
-      const plaintext = decryptedFrozenSecrets.get(`${ownerId}:${key}`);
-      if (plaintext === undefined) return null;
-      return {
-        ownerId,
-        producer: { kind: "secret" as const, value: plaintext },
-      };
-    }
-    return { ownerId, producer: frozen.value };
-  };
 
   for (const snapshot of snapshots) {
     const env = envByServiceId.get(snapshot.serviceId);
@@ -113,15 +69,15 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
     for (const [key, value] of Object.entries(snapshot.config.env)) {
       if (value.kind === "literal") {
         if (value.parts) {
-          const resolved = resolveValueParts({
-            parts: value.parts,
-            selfOwnerId: snapshot.serviceId,
-            lookup,
+          const parts = value.parts;
+          const resolved = yield* Effect.try({
+            try: () => resolveVariables({ parts, selfOwnerId: snapshot.serviceId, producers }),
+            catch: () => new Validation({ message: "Variable resolution inputs are invalid." }),
           });
-          if (Result.isFailure(resolved)) {
-            return yield* resolved.failure;
+          if (resolved.status === "cycle") {
+            return yield* new Validation({ message: `Circular variable reference: ${resolved.path.join(" -> ")}` });
           }
-          env[key] = resolved.success.value;
+          env[key] = resolved.value;
         } else {
           env[key] = value.value;
         }

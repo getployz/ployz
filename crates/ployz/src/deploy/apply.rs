@@ -4,7 +4,7 @@ use std::{
 };
 
 use ployz_core::{
-    DataLossConfirmation, DeployEvent, DeployIntent, OperationRow, PlanOptions, ProjectName,
+    DataLossConfirmation, DeployEvent, DeployIntent, OperationRow, ProjectName,
     RequestedServiceSpec, ServiceSelector,
 };
 use tokio_util::sync::CancellationToken;
@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    compose::{BuildService, ComposeProject},
+    compose::{BuildService, CapturedCompose},
     connect::Client,
     failure::Failure,
     project::ResolvedProject,
@@ -20,10 +20,7 @@ use crate::{
 
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
-    pipeline::{
-        PushOutcome, ReconciliationHints, plan_options, plan_project, plan_scale,
-        push_project_images,
-    },
+    pipeline::{PushOutcome, plan_options, plan_project, plan_scale, push_project_images},
     render,
     report::{self, Ink},
 };
@@ -156,10 +153,8 @@ pub(crate) struct ConfirmGate<'a> {
 
 pub(crate) async fn deploy_project(
     client: &mut Client,
-    project: &mut ComposeProject,
+    candidate: &CapturedCompose,
     builds: &[BuildService],
-    options: PlanOptions,
-    hints: ReconciliationHints,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
     let machines = client.machines().await?;
@@ -171,15 +166,8 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(
-        client,
-        project,
-        machines,
-        options,
-        &gate.project.name,
-        hints,
-    )
-    .await?;
+    let preview = plan_project(client, candidate, machines).await?;
+    println!("Captured candidate {}", candidate.id());
     print_warnings(&preview);
     confirm_and_execute(client, &preview, gate).await
 }

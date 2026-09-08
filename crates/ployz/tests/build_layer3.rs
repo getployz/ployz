@@ -57,7 +57,7 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
         docker: Some(docker),
         ..Default::default()
     };
-    let project = load_project(&load).unwrap();
+    let mut project = load_project(&load).unwrap();
     let options = BuildOptions {
         push_registry: true,
         ..Default::default()
@@ -81,7 +81,7 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
     );
     cleanup.images = plan.iter().map(|service| service.image.clone()).collect();
 
-    execute_build(&plan, &options, &load, &project).unwrap();
+    execute_build(&plan, &options, &load, &mut project).unwrap();
     for image in &cleanup.images {
         command(["image", "rm", image]);
         command(["pull", image]);

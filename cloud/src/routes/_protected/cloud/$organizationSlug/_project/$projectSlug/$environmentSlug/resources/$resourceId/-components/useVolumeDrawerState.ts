@@ -1,8 +1,8 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   useEnvironmentResourcesCollection,
-  useServiceVolumeAttachmentsCollection,
   useServicesCollection,
   useVolumeResourcesCollection,
 } from "#/modules/services/services.collection";
@@ -12,7 +12,6 @@ import {
   type VolumeResourceRecord,
 } from "#/modules/environment-design/resources";
 import {
-  environmentServiceVolumeAttachmentSchema,
   type EnvironmentServiceVolumeAttachment,
 } from "#/modules/environment-design/service-volume-attachments";
 import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/environment-node-names";
@@ -44,9 +43,6 @@ export function useVolumeDrawerState(
     params.organizationSlug,
   );
   const servicesCollection = useServicesCollection(params.organizationSlug);
-  const serviceVolumeAttachments = useServiceVolumeAttachmentsCollection(
-    params.organizationSlug,
-  );
   const { data: volumeRows } = useLiveSuspenseQuery({
     query: (q) =>
       q
@@ -77,24 +73,16 @@ export function useVolumeDrawerState(
         )
         .select(({ service }) => service),
   });
-  const { data: attachmentRows } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ attachment: serviceVolumeAttachments })
-        .select(({ attachment }) => attachment),
-  });
   const volumes = volumeRows.map((resource) =>
     parseLiveQueryRow(volumeResourceRecordSchema, resource),
   );
   const variableGroupResources = variableGroupResourceRows.map((resource) =>
     parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
-  const environmentAttachments = attachmentRows.map((attachment) =>
-    parseLiveQueryRow(environmentServiceVolumeAttachmentSchema, attachment),
-  );
-
   const resourceRow =
     volumes.find((item) => item.resource.id === params.resourceId) ?? null;
+
+  const document = useEnvironmentDocument(params.organizationSlug, resourceRow?.resource.environmentId ?? null);
 
   if (!resourceRow) {
     return null;
@@ -102,16 +90,8 @@ export function useVolumeDrawerState(
   const resource = resourceRow;
 
   const environmentId = resource.resource.environmentId;
-  const attachments = environmentAttachments.flatMap((attachment) =>
-    attachment.environmentId === environmentId
-      ? [{
-          environmentId: attachment.environmentId,
-          serviceId: attachment.serviceId,
-          volumeResourceId: attachment.volumeResourceId,
-          mountPath: attachment.mountPath,
-        }]
-      : [],
-  );
+  const attachments = document?.intent.services.flatMap((service) => service.volumeAttachments
+    .map((attachment) => ({ ...attachment, serviceId: service.id, environmentId }))) ?? [];
 
   return {
     organizationSlug: params.organizationSlug,

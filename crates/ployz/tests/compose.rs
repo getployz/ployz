@@ -25,6 +25,86 @@ mod support;
 use support::*;
 
 #[test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
+fn captured_compose_keeps_the_complete_unresolved_candidate() {
+    let directory = TestDir::new();
+    let project = parse_normalized(
+        r#"
+name: shop
+services:
+  web:
+    image: web:1
+    command: [serve]
+    build: {context: ., args: {FLAVOR: original}}
+    depends_on: [db]
+    environment: {TOKEN: 'secret://token'}
+  db: {image: postgres, profiles: [data]}
+secrets:
+  token: {x-command: 'touch provider-ran; printf secret'}
+"#,
+        &directory.path,
+    )
+    .unwrap();
+    let candidate = project.capture(
+        ProjectName::parse("shop").unwrap(),
+        PlanOptions {
+            selected: vec![ployz_core::ServiceAttempt {
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+            }],
+            ..Default::default()
+        },
+        vec!["data".into()],
+        Some(ployz_core::ComposePruneRefusal::GuessedProjectName),
+        vec![directory.path.join("compose.yaml")],
+    );
+    let serialized = serde_json::to_value(&candidate).unwrap();
+    let restored: ployz::compose::CapturedCompose =
+        serde_json::from_value(serialized.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&restored).unwrap(), serialized);
+    assert_eq!(restored.intent().project_name.as_str(), "shop");
+    assert_eq!(
+        serialized["intent"]["target"][1]["container"]["command"],
+        serde_json::json!(["serve"])
+    );
+    assert_eq!(
+        serialized["intent"]["dependencies"]["web"][0]["service"],
+        "db"
+    );
+    assert_eq!(
+        serialized["intent"]["service_profiles"]["db"],
+        serde_json::json!(["data"])
+    );
+    assert_eq!(
+        serialized["intent"]["requested_profiles"],
+        serde_json::json!(["data"])
+    );
+    assert_eq!(
+        serialized["intent"]["options"]["selected"][0]["name"],
+        "web"
+    );
+    assert_eq!(
+        restored.intent().prune_refusal(true),
+        Some(ployz_core::PruneRefusal::SelectedServices)
+    );
+    assert_eq!(
+        serialized["intent"]["compose_refusal"],
+        "guessed_project_name"
+    );
+    assert_eq!(
+        serialized["builds"]["web"]["raw"]["args"]["FLAVOR"],
+        "original"
+    );
+    assert_eq!(
+        serialized["secrets"]["token"]["Unresolved"]["Command"],
+        "touch provider-ran; printf secret"
+    );
+    assert!(!directory.path.join("provider-ran").exists());
+}
+
+#[test]
 fn normalized_surface_reaches_requested_specs() {
     let directory = TestDir::new();
     fs::write(

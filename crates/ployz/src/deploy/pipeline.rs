@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    compose::{BuildService, ComposeProject},
+    compose::{BuildService, CapturedCompose},
     connect::{Client, ConnectError},
     dns::{IngressDnsWarning, resolve_ingress_dns_warnings_for_ports},
     failure::Failure,
@@ -295,18 +295,12 @@ pub(super) async fn push_project_images(
 
 pub(super) async fn plan_project(
     client: &mut Client,
-    project: &mut ComposeProject,
+    candidate: &CapturedCompose,
     machines: Vec<MachineObservation>,
-    options: PlanOptions,
-    project_name: &ProjectName,
-    hints: ReconciliationHints,
 ) -> Result<DeployPlan, Failure> {
-    project.resolve_secrets()?;
-    let intent = super::compose_deploy_intent(project, project_name.clone(), options)
-        .with_requested_profiles(hints.requested_profiles)
-        .with_compose_refusal(hints.compose_refusal);
-    let (snapshot, warnings) = gather_deploy_snapshot(client, machines, &intent).await?;
-    Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
+    let intent = candidate.intent();
+    let (snapshot, warnings) = gather_deploy_snapshot(client, machines, intent).await?;
+    Ok(preview_gathered(client, snapshot, warnings, intent).await?)
 }
 
 pub(super) async fn plan_scale(

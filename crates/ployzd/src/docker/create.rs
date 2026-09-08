@@ -187,7 +187,7 @@ fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {
 
 pub(super) fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
     match spec {
-        HealthcheckSpec::Disabled => Ok(HealthConfig {
+        HealthcheckSpec::Disabled | HealthcheckSpec::Http(_) => Ok(HealthConfig {
             test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
             ..Default::default()
         }),

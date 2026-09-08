@@ -27,7 +27,7 @@ function plainVariable(
     id: "33333333-3333-4333-8333-333333333333",
     serviceId: "22222222-2222-4222-8222-222222222222",
     variableGroupId: null,
-    configKeyId: "44444444-4444-4444-8444-444444444444",
+
     key: "API_KEY",
     description: null,
     exported: false,

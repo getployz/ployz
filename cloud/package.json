@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "portless run vite dev",
-    "build": "vite build",
+    "build": "bash ../scripts/build-cloud-sdk.sh && vite build && node scripts/package-sdk.mjs",
     "start": "node scripts/start-with-inngest-sync.mjs",
     "preview": "vite preview",
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
@@ -34,7 +34,7 @@
     "@electric-sql/client": "^1.5.25",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
-    "@ployz/sdk": "0.1.2-beta.35",
+    "@ployz/sdk": "link:../crates/ployz-sdk",
     "@polar-sh/better-auth": "^1.8.4",
     "@polar-sh/checkout": "^0.3.0",
     "@polar-sh/sdk": "^0.48.1",
@@ -90,6 +90,7 @@
     "nitro": "3.0.260610-beta",
     "oxlint": "1.78.0",
     "oxlint-tsgolint": "0.24.0",
+    "portless": "^0.15.6",
     "typescript": "7.0.1-rc",
     "vite": "^8.0.9",
     "vitest": "^4.1.5"

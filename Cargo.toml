@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ployz-core", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployzd", "crates/ployz-testkit"]
+members = ["crates/ployz-core", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployzd", "crates/ployz-testkit"]
 default-members = ["crates/ployz-core", "crates/ployz", "crates/ployz-relay", "crates/ployz-sdk", "crates/ployzd"]
 resolver = "3"
 

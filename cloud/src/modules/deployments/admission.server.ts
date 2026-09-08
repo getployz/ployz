@@ -1,9 +1,11 @@
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
+import { not } from "drizzle-orm";
 import "@tanstack/react-start/server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { Effect, Schema } from "effect";
-import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
+import { environmentDeployment as schemaEnvironmentDeployment, environmentDeploymentSecret } from "#/modules/deployments/tables";
 import {
   environmentResource as schemaEnvironmentResource,
 } from "#/modules/environment-design/tables";
@@ -191,7 +193,7 @@ function actionableVolumeDeletionAuthorizations(
           and(
             eq(schemaEnvironmentResource.environmentId, environmentId),
             eq(schemaEnvironmentResource.implementationType, "volume"),
-            isNotNull(schemaEnvironmentResource.deletedAt),
+            not(volumeIsAuthored),
             inArray(schemaEnvironmentResource.id, resourceIds),
           ),
         ),
@@ -293,7 +295,7 @@ function stageDestructiveVolumeAttempt(input: {
             removalDeployment.environmentId,
           ),
           eq(schemaEnvironmentResource.implementationType, "volume"),
-          isNotNull(schemaEnvironmentResource.deletedAt),
+          not(volumeIsAuthored),
         ),
       );
     const [priorApplied] = yield* drizzle
@@ -451,6 +453,9 @@ function writeQueuedSavedTarget(
     if (deployment === undefined) {
       return yield* Effect.die("Deployment write returned no row.");
     }
+    yield* drizzle.insert(environmentDeploymentSecret)
+      .values({ environmentDeploymentId: deployment.id })
+      .onConflictDoNothing();
     if (queued !== undefined) {
       yield* drizzle
         .delete(schemaDestructiveVolumeAttempt)

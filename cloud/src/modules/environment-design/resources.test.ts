@@ -92,7 +92,7 @@ function variableGroupResourceRecord() {
         id: "88888888-8888-4888-8888-888888888888",
         serviceId: null,
         variableGroupId: "55555555-5555-4555-8555-555555555555",
-        configKeyId: "99999999-9999-4999-8999-999999999999",
+
         key: "DATABASE_URL",
         description: null,
         exported: true,

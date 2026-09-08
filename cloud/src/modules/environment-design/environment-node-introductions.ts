@@ -5,6 +5,7 @@ import { serviceDeploymentConfigSchema } from "#/modules/environment-design/serv
 import { Uuid } from "#/modules/environment-design/workspace-schemas";
 
 const introductionBaseFields = {
+  organizationId: Uuid,
   environmentId: Uuid,
   nodeId: Uuid,
   nodeLineageId: Uuid,
@@ -27,6 +28,7 @@ export const environmentNodeIntroductionSchema = Schema.Union([
   Schema.Struct({
     ...introductionBaseFields,
     nodeType: Schema.Literal("volume"),
+    configVersion: Schema.Literal(2),
     config: persistedVolumeConfigSchema,
   }),
 ]);

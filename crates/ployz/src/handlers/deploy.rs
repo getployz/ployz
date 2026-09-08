@@ -5,8 +5,9 @@ use ployz_core::{ComposePruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_identity,
-        execute_build, has_explicit_nondefault_compose_file, load_project, plan_build,
+        BuildOptions, BuildService, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
+        capture_build, compose_identity, has_explicit_nondefault_compose_file, load_project,
+        plan_build,
     },
     deploy::{
         ReconciliationHints, ServiceAttempt, deploy_project, deploy_scale, deploy_spec,
@@ -43,7 +44,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let load = deploy_load(matches);
     let resolved = resolve_from_compose_load(matches, &load)?;
-    let (mut project, builds, selected) = prepare_deploy(matches, &load)?;
+    let project = load_project(&load)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -54,16 +55,14 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
     let mut options = plan_options(force_recreate, skip_health_monitor);
-    options.selected = selected;
-    let hints = reconciliation_hints(&load, &resolved);
+    options.selected = selected_attempts(&project, &string_values(matches, "service"))?;
+    let (candidate, builds) = prepare_deploy(matches, &load, project, &resolved, options)?;
     runtime()?.block_on(async {
         let mut client = connect_client(root, context.as_deref()).await?;
         deploy_project(
             &mut client,
-            &mut project,
+            &candidate,
             &builds,
-            options,
-            hints,
             crate::deploy::ConfirmGate {
                 auto_confirm: yes,
                 context: context.as_deref().unwrap_or("default"),
@@ -72,6 +71,134 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
     })
+}
+
+/// Render the captured Compose candidate against fresh, read-only Cluster evidence.
+///
+/// # Errors
+/// Propagates source loading, selection, connection, comparison, and output encoding failures.
+pub(super) fn changes(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let load = deploy_load(matches);
+    let resolved = resolve_from_compose_load(matches, &load)?;
+    let project = load_project(&load)?;
+    let context = project
+        .selected_context(
+            matches.get_one::<String>("context").map(String::as_str),
+            matches.get_one::<String>("connect").map(String::as_str),
+        )
+        .map(str::to_owned);
+    for warning in &project.warnings {
+        eprintln!("WARNING: {warning}");
+    }
+    let options = ployz_core::PlanOptions {
+        selected: selected_attempts(&project, &string_values(matches, "service"))?,
+        ..Default::default()
+    };
+    let hints = reconciliation_hints(&load, &resolved);
+    let candidate = project.capture(
+        resolved.name,
+        options,
+        hints.requested_profiles,
+        hints.compose_refusal,
+        load.files,
+    );
+    let review = runtime()?.block_on(async {
+        let mut client = connect_client(root, context.as_deref()).await?;
+        Ok::<_, Error>(client.changes(&candidate).await?)
+    })?;
+    if matches.get_one::<String>("output").map(String::as_str) == Some("json") {
+        println!("{}", serde_json::to_string_pretty(&review)?);
+    } else {
+        println!(
+            "Project {} · candidate {} · observer {}",
+            review.project_name, review.candidate_id, review.observer_machine_id
+        );
+        println!(
+            "Review coverage: service settings, attachments, and redacted live environment. Attachment contents and credentials are redacted. Image tags are not content evidence. Live Observation is observer-relative."
+        );
+        if review.selection.is_empty() {
+            println!("Selection: Services enabled by the requested profiles");
+        } else {
+            println!(
+                "Selection: {} (including dependencies)",
+                review
+                    .selection
+                    .iter()
+                    .map(|selected| selected.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        for service in review.services {
+            println!(
+                "{} command: {}",
+                service.name,
+                serde_json::to_string(&service.command)?
+            );
+            if service.observations.is_empty() && service.missing_on.is_empty() {
+                println!("  No Container observation available");
+            }
+            for observed in service.observations {
+                print!(
+                    "  Machine {} Container {}: ",
+                    observed.machine_id, observed.container_id
+                );
+                if observed.changes.is_empty() {
+                    println!(
+                        "{} (compared settings unchanged)",
+                        serde_json::to_string(&observed.command)?
+                    );
+                } else {
+                    for change in observed.changes {
+                        let ployz_core::SettingChange {
+                            setting,
+                            before,
+                            after,
+                        } = change;
+                        println!(
+                            "{setting}: {} -> {}",
+                            serde_json::to_string(&before)?,
+                            serde_json::to_string(&after)?
+                        );
+                    }
+                }
+                if let Some(failure) = observed.environment_failure {
+                    println!("    environment observation failed ({failure:?})");
+                }
+                for row in observed.environment {
+                    println!(
+                        "    environment {}: {}",
+                        row.key,
+                        serde_json::to_string(&row.evidence)?
+                    );
+                }
+            }
+            for machine in service.missing_on {
+                println!("  Machine {machine}: no observed Container");
+            }
+        }
+        for service in review.would_remove {
+            if let Some(reason) = review.prune_refusal {
+                println!("{}: preserved. {reason}", service.name);
+            } else {
+                println!(
+                    "{}: remove observed Service (absent from captured target)",
+                    service.name
+                );
+            }
+        }
+        for failure in review.failures {
+            println!(
+                "Machine {}: observation failed ({:?})",
+                failure.machine_id, failure.error
+            );
+        }
+        for machine in review.omissions {
+            println!("Machine {machine}: observation omitted");
+        }
+    }
+    Ok(())
 }
 
 fn deploy_load(matches: &ArgMatches) -> LoadOptions {
@@ -127,9 +254,11 @@ fn resolve_from_compose_load(
 fn prepare_deploy(
     matches: &ArgMatches,
     load: &LoadOptions,
-) -> Result<(ComposeProject, Vec<BuildService>, Vec<ServiceAttempt>), Error> {
+    mut project: ComposeProject,
+    resolved: &ResolvedProject,
+    options: ployz_core::PlanOptions,
+) -> Result<(CapturedCompose, Vec<BuildService>), Error> {
     let selected = string_values(matches, "service");
-    let project = load_project(load)?;
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
@@ -147,13 +276,25 @@ fn prepare_deploy(
         ..Default::default()
     };
     let mut builds = plan_build(&project, &build_options)?;
-    if matches.get_flag("no-build") {
+    let captured_build = if matches.get_flag("no-build") {
         builds.clear();
+        None
     } else {
-        execute_build(&builds, &build_options, load, &project)?;
+        Some(capture_build(&builds, &build_options, &mut project)?)
+    };
+    project.resolve_secrets()?;
+    let hints = reconciliation_hints(load, resolved);
+    let candidate = project.capture(
+        resolved.name.clone(),
+        options,
+        hints.requested_profiles,
+        hints.compose_refusal,
+        load.files.clone(),
+    );
+    if let Some(build) = captured_build {
+        build.execute(load.docker.as_deref())?;
     }
-    let selected = selected_attempts(&project, &selected)?;
-    Ok((project, builds, selected))
+    Ok((candidate, builds))
 }
 
 fn selected_attempts(

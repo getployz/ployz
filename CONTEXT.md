@@ -122,6 +122,10 @@ _Avoid_: ComposeProject, Compose project, deployment resource
 The loaded Compose input for one command. It is not a Cluster-side Project.
 _Avoid_: Project
 
+**Compose Working State**:
+The user's local Compose sources as currently edited, independent of Git staging or commit status. It is authored and restored with the user's editor and version control, with no separate Ployz Save step.
+_Avoid_: Ployz-managed draft, Git index, Saved State
+
 **Direct Image Transfer**:
 A bounded operation that makes a local Docker image available on selected Machines without requiring an external registry. It preserves layer-aware transfer and may use a Machine that already holds the image as the source for other Machines.
 _Avoid_: Unregistry, image ingest as a product term

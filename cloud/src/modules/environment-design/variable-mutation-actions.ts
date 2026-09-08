@@ -1,13 +1,14 @@
+import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
+import type { SavedVariableIntent } from "./saved-intent";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { useServerFn } from "@tanstack/react-start";
-import { getRawVariablesCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import {
   bulkUpdateServiceVariablesServerFn,
   updateServiceVariableServerFn,
 } from "#/modules/environment-design/variable-functions";
 import {
   buildPlainServiceVariableRecord,
-  type OrganizationVariablesCollection,
 } from "#/modules/environment-design/variable-collections";
 import type {
   UpdateServiceVariableInput,
@@ -16,7 +17,6 @@ import type {
 import type { RawEditorDiff } from "#/modules/environment-design/variable-raw-editor";
 
 type UseApplyRawVariablesActionInput = {
-  collection: OrganizationVariablesCollection;
   organizationSlug: string;
   environmentId: string;
   serviceId: string;
@@ -36,9 +36,9 @@ export function buildSealServiceVariableUpdateInput({
   organizationSlug,
   environmentId,
   serviceId,
-  variable,
+  variable, revision,
 }: SealServiceVariableActionInput & {
-  variable: VariableRecord;
+  variable: VariableRecord; revision: string;
 }): UpdateServiceVariableInput {
   if (variable.value.type !== "plain") {
     throw new Error("Only plain variables can be sealed.");
@@ -48,6 +48,7 @@ export function buildSealServiceVariableUpdateInput({
     organizationSlug,
     environmentId,
     serviceId,
+    revision,
     variableId: variable.id,
     key: variable.key,
     description: variable.description,
@@ -64,57 +65,44 @@ export function useSealServiceVariableAction({
   environmentId,
   serviceId,
 }: SealServiceVariableActionInput) {
-  const rawVariables = getRawVariablesCollection(organizationSlug);
+  const environments = getEnvironmentsCollection(organizationSlug);
   const updateVariable = useServerFn(updateServiceVariableServerFn);
 
   return async (variable: PlainVariableRecord) => {
+    const document = environments.get(environmentId);
+    if (!document) throw new Error("Environment is not loaded.");
     const receipt = await updateVariable({
       data: buildSealServiceVariableUpdateInput({
         organizationSlug,
         environmentId,
         serviceId,
-        variable,
+        variable, revision: document.revision,
       }),
     });
-    await rawVariables.utils.awaitTxId(receipt.txid);
+    await environments.utils.awaitTxId(receipt.txid);
   };
 }
 
 export function useApplyRawVariablesAction({
-  collection,
   organizationSlug,
   environmentId,
   serviceId,
 }: UseApplyRawVariablesActionInput) {
-  const rawVariables = getRawVariablesCollection(organizationSlug);
+  const environments = getEnvironmentsCollection(organizationSlug);
   const bulkUpdate = useServerFn(bulkUpdateServiceVariablesServerFn);
 
-  return createOptimisticAction<RawEditorDiff>({
-    onMutate: (diff) => {
-      for (const id of diff.deletes) {
-        collection.delete(id);
-      }
-      for (const update of diff.updates) {
-        collection.update(update.variableId, (draft) => {
-          draft.key = update.key;
-          draft.value = { type: "plain", value: update.value };
-        });
-      }
-      for (const create of diff.creates) {
-        collection.insert(
-          buildPlainServiceVariableRecord({
-            id: create.id,
-            serviceId,
-            key: create.key,
-            value: create.value,
-          }),
-        );
-      }
+  const persist = createOptimisticAction<{ diff: RawEditorDiff; revision: string; variables: SavedVariableIntent[] }>({
+    onMutate: ({ variables }) => {
+      environments.update(environmentId, (draft) => {
+        const node = draft.intent.services.find((node) => node.id === serviceId);
+        if (!node) throw new Error("Service is not loaded.");
+        node.variables = variables;
+      });
     },
-    mutationFn: async (diff) => {
+    mutationFn: async ({ diff, revision }) => {
       const receipt = await bulkUpdate({
         data: {
-          organizationSlug,
+          organizationSlug, revision,
           environmentId,
           serviceId,
           creates: diff.creates.map((create) => ({
@@ -132,7 +120,20 @@ export function useApplyRawVariablesAction({
           deletes: diff.deletes,
         },
       });
-      await rawVariables.utils.awaitTxId(receipt.txid);
+      await environments.utils.awaitTxId(receipt.txid);
     },
   });
+  return (diff: RawEditorDiff) => ({ isPersisted: { promise: (async () => {
+    const document = environments.get(environmentId);
+    const node = document?.intent.services.find((node) => node.id === serviceId);
+    if (!document || !node) throw new Error("Service is not loaded.");
+    const remaining = node.variables.filter((variable) => !diff.deletes.includes(variable.id));
+    const variables = await Promise.all(remaining.map(async (variable) => {
+      const update = diff.updates.find((update) => update.variableId === variable.id);
+      return update ? plainVariableIntent({ ...variableDocumentRecord(variable, { serviceId, variableGroupId: null }, document.intent, document.updatedAt),
+        key: update.key, value: { type: "plain", value: update.value } }, document.intent) : variable;
+    }));
+    for (const create of diff.creates) variables.push(await plainVariableIntent(buildPlainServiceVariableRecord({ ...create, serviceId }), document.intent));
+    await persist({ diff, revision: document.revision, variables }).isPersisted.promise;
+  })() } });
 }

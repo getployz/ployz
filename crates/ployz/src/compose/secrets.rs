@@ -40,18 +40,7 @@ impl ComposeProject {
             })
             .collect::<Vec<_>>();
         for (_, _, name) in &references {
-            let Some(secret) = self.secrets.get_mut(name) else {
-                return Err(invalid(format!(
-                    "secret '{name}' referenced via '{SECRET_PREFIX}{name}' is not defined"
-                )));
-            };
-            let value = match secret {
-                ProjectSecret::Resolved(_) => continue,
-                ProjectSecret::Unresolved(source) => {
-                    resolve_secret(name, source, &self.working_dir, &self.environment)?
-                }
-            };
-            *secret = ProjectSecret::Resolved(value);
+            self.resolve_secret(name)?;
         }
         for (service, key, name) in references {
             let Some(ProjectSecret::Resolved(resolved)) = self.secrets.get(&name) else {
@@ -64,6 +53,29 @@ impl ComposeProject {
                 .clone_from(resolved);
         }
         Ok(())
+    }
+
+    /// Resolve a named provider once and reuse its captured value for sibling consumers.
+    ///
+    /// # Errors
+    /// Rejects undefined names or a provider that cannot produce a value.
+    pub(super) fn resolve_secret(&mut self, name: &str) -> Result<&str, ComposeError> {
+        let secret = self
+            .secrets
+            .get_mut(name)
+            .ok_or_else(|| invalid(format!("secret '{name}' is not defined")))?;
+        if let ProjectSecret::Unresolved(source) = secret {
+            *secret = ProjectSecret::Resolved(resolve_secret(
+                name,
+                source,
+                &self.working_dir,
+                &self.environment,
+            )?);
+        }
+        let ProjectSecret::Resolved(value) = secret else {
+            unreachable!("resolved above")
+        };
+        Ok(value)
     }
 }
 

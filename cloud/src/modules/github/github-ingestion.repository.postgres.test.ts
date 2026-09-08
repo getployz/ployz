@@ -46,7 +46,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       serviceId,
       lineageId: serviceLineageId,
     });
-    const { env: _env, mounts: _mounts, ...config } = node.config;
+    const { env: _env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...config } = node.config;
     void _env;
     void _mounts;
     const intent = {
@@ -88,13 +88,13 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
         'GitHub',
         'github'
       );
-      insert into environment (id, project_id, organization_id, name, namespace)
-      values (
+      insert into environment (id, project_id, organization_id, name, namespace, intent
+      ) values (
         '${environmentId}',
         '00000000-0000-4000-8000-000000000102',
         '00000000-0000-4000-8000-000000000101',
         'Production',
-        'production'
+        'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
       );
       insert into environment_saved_state_snapshot (
         id, organization_id, environment_id, actor_id, message,

@@ -1,242 +1,87 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
+import { captureEnvironmentNodeIntroduction } from "./environment-node-introduction.repository.server";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationReceipt } from "#/server/mutation-receipt.server";
-import { slugifySegment, allocateUnique } from "#/utils/slug";
-import {
-  getDuplicateEnvironmentNodeNameMessage,
-  isEnvironmentNodeNameTaken,
-  resolveUniqueEnvironmentNodeName,
-} from "./environment-node-names";
+import { slugifySegment } from "#/utils/slug";
+import { getDuplicateEnvironmentNodeNameMessage, isEnvironmentNodeNameTaken, resolveUniqueEnvironmentNodeName } from "./environment-node-names";
 import { environmentDesignFields } from "./fields";
-import {
-  listEnvironmentNodeNameIdentities,
-  requireEnvironmentForActorById,
-} from "./authoring-repository.server";
-import {
-  createVariableGroupAggregate,
-  createVolumeAggregate,
-  deleteVariableGroupAggregate,
-  getResourceIdentity,
-  getVariableGroupConsumerCount,
-  getVariableGroupResource,
-  getVolumeResource,
-  tombstoneVolume,
-  updateVariableGroupName,
-  updateVolumeName,
-  upsertResourceCanvasPosition,
-} from "./resource-repository.server";
-import type {
-  CreateVariableGroupResourceInput,
-  CreateVolumeResourceInput,
-  DeleteVariableGroupResourcePlanInput,
-  DeleteVolumeResourceInput,
-  UpdateEnvironmentResourceCanvasPositionInput,
-  UpdateVariableGroupResourceInput,
-  UpdateVolumeResourceInput,
-} from "./resources";
+import { listEnvironmentNodeNameIdentities, requireEnvironmentForActorById } from "./authoring-repository.server";
+import { createResourceIdentity, getResourceIdentity, getVariableGroupResource, getVolumeResource, upsertResourceCanvasPosition } from "./resource-repository.server";
+import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
+import type { CreateVariableGroupResourceInput, CreateVolumeResourceInput, DeleteVariableGroupResourcePlanInput, DeleteVolumeResourceInput, UpdateEnvironmentResourceCanvasPositionInput, UpdateVariableGroupResourceInput, UpdateVolumeResourceInput } from "./resources";
 import { Conflict, NotFound } from "#/server/public-error";
 
-function resourceSlug(type: "variable_group" | "volume", name: string) {
-  return slugifySegment(name) || (type === "volume" ? "volume" : "variable-group");
-}
-
 const createResource = Effect.fn("EnvironmentDesign.createResource")(
-  function* (
-    actor: Actor,
-    input:
-      | (CreateVariableGroupResourceInput & {
-          readonly type: "variable_group";
-        })
-      | (CreateVolumeResourceInput & { readonly type: "volume" }),
-  ) {
+  function* (actor: Actor, input: CreateVolumeResourceInput, type: "variable_group" | "volume") {
     const context = yield* requireEnvironmentForActorById(actor, input);
-    const attemptedNames = yield* listEnvironmentNodeNameIdentities(
-      input.environmentId,
-    );
-    return yield* withMutationReceipt(
-      allocateUnique({
-        tryAttempt: (attempt) =>
-          Effect.gen(function* () {
-            const name = resolveUniqueEnvironmentNodeName({
-              name: input.name,
-              nodes: attemptedNames,
-              schema: environmentDesignFields.resource.name,
-              maxLength: 64,
-            });
-            const values = {
-              projectId: context.project.id,
-              environmentId: input.environmentId,
-              name,
-              slug: resourceSlug(input.type, name),
-              x: input.x,
-              y: input.y,
-            };
-            const created =
-              input.type === "variable_group"
-                ? yield* createVariableGroupAggregate(values)
-                : yield* createVolumeAggregate(values);
-            if (created !== null) return created;
-            attemptedNames.push({
-              type: input.type,
-              id: `attempt-${attempt}`,
-              name,
-            });
-            return null;
-          }),
-        exhausted: new Conflict({
-          message: `Failed to create a unique ${input.type === "volume" ? "Volume" : "Variable Group"} resource name.`,
-        }),
-      }),
-    );
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const document = yield* loadEnvironmentDocument(input.environmentId, true);
+      const name = resolveUniqueEnvironmentNodeName({ name: input.name, nodes: yield* listEnvironmentNodeNameIdentities(input.environmentId), schema: environmentDesignFields.resource.name, maxLength: 64 });
+      const slug = slugifySegment(name) || (type === "volume" ? "volume" : "variable-group");
+      const { resource, group } = yield* createResourceIdentity({ ...input, projectId: context.project.id, name, slug, type });
+      if (group) document.intent.variableGroups.push({ resourceId: resource.id, resourceLineageId: resource.lineageId, variableGroupId: group.id, variableGroupLineageId: group.lineageId, name, slug, variables: [] });
+      else document.intent.volumes.push({ resourceId: resource.id, resourceLineageId: resource.lineageId, name });
+      yield* writeEnvironmentDocument(document, document.intent);
+      yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: type, nodeId: resource.id });
+      return resource.id;
+    }));
   },
 );
 
-export const createVariableGroupResource = Effect.fn(
-  "EnvironmentDesign.createVariableGroupResource",
-)(function* (actor: Actor, input: CreateVariableGroupResourceInput) {
-  const receipt = yield* createResource(actor, {
-    ...input,
-    type: "variable_group",
-  });
-  const record = yield* getVariableGroupResource(
-    input.environmentId,
-    receipt.data,
-  );
-  if (record === null) {
-    return yield* new NotFound({ message: "Variable group not found." });
-  }
-  return { ...receipt, data: record };
-});
+export const createVariableGroupResource = Effect.fn("EnvironmentDesign.createVariableGroupResource")(
+  function* (actor: Actor, input: CreateVariableGroupResourceInput) {
+    const receipt = yield* createResource(actor, input, "variable_group");
+    const data = yield* getVariableGroupResource(input.environmentId, receipt.data);
+    if (!data) return yield* new NotFound({ message: "Variable group not found." });
+    return { ...receipt, data };
+  },
+);
+export const createVolumeResource = Effect.fn("EnvironmentDesign.createVolumeResource")(
+  function* (actor: Actor, input: CreateVolumeResourceInput) {
+    const receipt = yield* createResource(actor, input, "volume");
+    const data = yield* getVolumeResource(input.environmentId, receipt.data);
+    if (!data) return yield* new NotFound({ message: "Volume not found." });
+    return { ...receipt, data };
+  },
+);
 
-export const createVolumeResource = Effect.fn(
-  "EnvironmentDesign.createVolumeResource",
-)(function* (actor: Actor, input: CreateVolumeResourceInput) {
-  const receipt = yield* createResource(actor, { ...input, type: "volume" });
-  const record = yield* getVolumeResource(input.environmentId, receipt.data);
-  if (record === null) {
-    return yield* new NotFound({ message: "Volume not found." });
-  }
-  return { ...receipt, data: record };
-});
+const editResource = Effect.fn("EnvironmentDesign.editResource")(
+  function* (actor: Actor, input: DeleteVolumeResourceInput & { name?: string }, type: "variable_group" | "volume") {
+    yield* requireEnvironmentForActorById(actor, input);
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const document = yield* loadEnvironmentDocument(input.environmentId, true);
+      yield* requireDocumentRevision(document, input.revision);
+      const node = (type === "volume" ? document.intent.volumes : document.intent.variableGroups).find((node) => node.resourceId === input.resourceId);
+      if (!node) return yield* new NotFound({ message: "Resource not found." });
+      if (input.name !== undefined) {
+        if (isEnvironmentNodeNameTaken(input.name, yield* listEnvironmentNodeNameIdentities(input.environmentId), { type, id: input.resourceId })) return yield* new Conflict({ message: getDuplicateEnvironmentNodeNameMessage(input.name) });
+        node.name = input.name;
+      } else if (type === "volume") {
+        document.intent.volumes = document.intent.volumes.filter((node) => node.resourceId !== input.resourceId);
+        for (const service of document.intent.services) service.volumeAttachments = service.volumeAttachments.filter((mount) => mount.volumeResourceId !== input.resourceId);
+      } else {
+        const group = document.intent.variableGroups.find((node) => node.resourceId === input.resourceId);
+        if (group && document.intent.services.some((service) => service.variableGroupAttachments.some((attachment) => attachment.variableGroupId === group.variableGroupId))) return yield* new Conflict({ message: "Variable Group has consumers and must be replaced or disconnected first." });
+        document.intent.variableGroups = document.intent.variableGroups.filter((node) => node.resourceId !== input.resourceId);
+      }
+      return yield* writeEnvironmentDocument(document, document.intent);
+    }));
+  },
+);
 
-const assertUniqueResourceName = Effect.fn(
-  "EnvironmentDesign.assertUniqueResourceName",
-)(function* (
-  environmentId: string,
-  name: string,
-  current: { readonly type: "variable_group" | "volume"; readonly id: string },
-) {
-  const identities = yield* listEnvironmentNodeNameIdentities(environmentId);
-  if (isEnvironmentNodeNameTaken(name, identities, current)) {
-    return yield* new Conflict({
-      message: getDuplicateEnvironmentNodeNameMessage(name),
-    });
-  }
-});
-
-export const updateVariableGroupResource = Effect.fn(
-  "EnvironmentDesign.updateVariableGroupResource",
-)(function* (actor: Actor, input: UpdateVariableGroupResourceInput) {
-  yield* requireEnvironmentForActorById(actor, input);
-  const current = yield* getVariableGroupResource(
-    input.environmentId,
-    input.resourceId,
-  );
-  if (current === null) {
-    return yield* new NotFound({ message: "Variable group not found." });
-  }
-  yield* assertUniqueResourceName(input.environmentId, input.name, {
-    type: "variable_group",
-    id: current.resource.id,
-  });
-  const receipt = yield* withMutationReceipt(
-    updateVariableGroupName(
-      current.resource.id,
-      current.variableGroup.id,
-      input.name,
-    ),
-  );
-  if (receipt.data === null) {
-    return yield* new NotFound({ message: "Variable group not found." });
-  }
-  const updated = yield* getVariableGroupResource(
-    input.environmentId,
-    input.resourceId,
-  );
-  if (updated === null) {
-    return yield* new NotFound({ message: "Variable group not found." });
-  }
-  return { ...receipt, data: updated };
-});
-
-export const deleteVariableGroupResource = Effect.fn(
-  "EnvironmentDesign.deleteVariableGroupResource",
-)(function* (actor: Actor, input: DeleteVariableGroupResourcePlanInput) {
-  yield* requireEnvironmentForActorById(actor, input);
-  const current = yield* getVariableGroupResource(
-    input.environmentId,
-    input.resourceId,
-  );
-  if (current === null) {
-    return yield* new NotFound({ message: "Variable group not found." });
-  }
-  const consumerCount = yield* getVariableGroupConsumerCount(
-    current.variableGroup.id,
-  );
-  if (consumerCount > 0) {
-    return yield* new Conflict({
-      message:
-        "Variable Group has consumers and must be replaced or disconnected first.",
-    });
-  }
-  return yield* withMutationReceipt(
-    deleteVariableGroupAggregate(
-      current.resource.id,
-      current.variableGroup.id,
-    ),
-  );
-});
-
-export const updateVolumeResource = Effect.fn(
-  "EnvironmentDesign.updateVolumeResource",
-)(function* (actor: Actor, input: UpdateVolumeResourceInput) {
-  yield* requireEnvironmentForActorById(actor, input);
-  const current = yield* getVolumeResource(input.environmentId, input.resourceId);
-  if (current === null) {
-    return yield* new NotFound({ message: "Volume not found." });
-  }
-  yield* assertUniqueResourceName(input.environmentId, input.name, {
-    type: "volume",
-    id: current.resource.id,
-  });
-  const receipt = yield* withMutationReceipt(
-    updateVolumeName(current.resource.id, input.name),
-  );
-  if (receipt.data === null) {
-    return yield* new NotFound({ message: "Volume not found." });
-  }
-  const updated = yield* getVolumeResource(input.environmentId, input.resourceId);
-  if (updated === null) {
-    return yield* new NotFound({ message: "Volume not found." });
-  }
-  return { ...receipt, data: updated };
-});
-
-export const deleteVolumeResource = Effect.fn(
-  "EnvironmentDesign.deleteVolumeResource",
-)(function* (actor: Actor, input: DeleteVolumeResourceInput) {
-  yield* requireEnvironmentForActorById(actor, input);
-  const current = yield* getVolumeResource(input.environmentId, input.resourceId);
-  if (current === null) {
-    return yield* new NotFound({ message: "Volume not found." });
-  }
-  const receipt = yield* withMutationReceipt(tombstoneVolume(input.resourceId));
-  if (receipt.data === null) {
-    return yield* new NotFound({ message: "Volume not found." });
-  }
-  return { ...receipt, data: { resourceId: input.resourceId } };
-});
+export const updateVariableGroupResource = Effect.fn("EnvironmentDesign.updateVariableGroupResource")(
+  (actor: Actor, input: UpdateVariableGroupResourceInput) => editResource(actor, input, "variable_group"),
+);
+export const deleteVariableGroupResource = Effect.fn("EnvironmentDesign.deleteVariableGroupResource")(
+  (actor: Actor, input: DeleteVariableGroupResourcePlanInput) => editResource(actor, input, "variable_group"),
+);
+export const updateVolumeResource = Effect.fn("EnvironmentDesign.updateVolumeResource")(
+  (actor: Actor, input: UpdateVolumeResourceInput) => editResource(actor, input, "volume"),
+);
+export const deleteVolumeResource = Effect.fn("EnvironmentDesign.deleteVolumeResource")(
+  (actor: Actor, input: DeleteVolumeResourceInput) => editResource(actor, input, "volume"),
+);
 
 export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   "EnvironmentDesign.updateEnvironmentResourceCanvasPosition",

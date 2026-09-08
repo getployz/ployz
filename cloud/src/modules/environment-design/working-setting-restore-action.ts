@@ -1,0 +1,43 @@
+import { createOptimisticAction, type Collection } from "@tanstack/react-db";
+import { restoreServiceSetting } from "@ployz/sdk/config";
+import { projectServiceDeploymentConfig, type ServiceDeploymentConfig } from "./services";
+import type { EnvironmentDocument } from "./working-state-repository.server";
+import type { RestoreWorkingDocumentInput } from "./working-document-restore";
+
+export function createWorkingSettingRestoreAction({ environments, environmentId, organizationSlug, restore, awaitTxId }: {
+  environments: Pick<Collection<EnvironmentDocument>, "get" | "update">;
+  environmentId: string;
+  organizationSlug: string;
+  restore: (input: { data: RestoreWorkingDocumentInput }) => Promise<{ txid: number }>;
+  awaitTxId: (txid: number) => Promise<void>;
+}) {
+  return createOptimisticAction<{
+    serviceId: string;
+    revision: string;
+    path: string;
+    baseline: ServiceDeploymentConfig;
+    snapshotSource: RestoreWorkingDocumentInput["snapshotSource"];
+  }>({
+    onMutate: ({ serviceId, path, baseline }) => {
+      const current = environments.get(environmentId)?.intent.services.find((node) => node.id === serviceId);
+      if (!current) throw new Error("Service is not loaded.");
+      const { env: _env, mounts: _mounts, variableGroupAttachments, ...config } = restoreServiceSetting(
+        { ...projectServiceDeploymentConfig(current.config), variableGroupAttachments: current.variableGroupAttachments }, baseline, path,
+      );
+      environments.update(environmentId, (draft) => {
+        const service = draft.intent.services.find((node) => node.id === serviceId);
+        if (!service) throw new Error("Service is not loaded.");
+        service.config = config;
+        service.variableGroupAttachments = variableGroupAttachments;
+      });
+    },
+    mutationFn: async ({ serviceId, revision, path, snapshotSource }) => {
+      const receipt = await restore({ data: {
+        organizationSlug: organizationSlug, environmentId, revision,
+        snapshotSource,
+        command: { kind: "node", nodeType: "service", nodeId: serviceId, path },
+      } });
+      await awaitTxId(receipt.txid);
+    },
+  });
+}

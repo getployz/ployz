@@ -1,5 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
+import { parseServiceConfig } from "@ployz/sdk/config";
+import { captureEnvironmentNodeIntroduction } from "./environment-node-introduction.repository.server";
+import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
 import {
   adjectives,
   animals,
@@ -12,7 +15,7 @@ import {
 } from "#/modules/billing/custom-domain-capability";
 import { withMutationReceipt } from "#/server/mutation-receipt.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
-import { slugifySegment, allocateUnique } from "#/utils/slug";
+import { slugifySegment } from "#/utils/slug";
 import {
   SecretEncryption,
 } from "#/utils/encrypted-secret.server";
@@ -30,19 +33,14 @@ import {
   resolveUniqueEnvironmentNodeName,
 } from "./environment-node-names";
 import {
-  deleteServiceRecords,
-  deleteServiceLineage,
   exposedRegistryCredentialUsername,
   getServiceForOrganizationById,
-  getServiceForUpdate,
   getStoredServiceCredential,
   insertCanvasPosition,
-  insertService,
+  insertServiceIdentity,
+  serviceDocumentRecord,
   listServicesForEnvironment,
   serviceExists,
-  setStoredServiceCredential,
-  updateServiceRecord,
-  updateServiceSource,
   upsertCanvasPosition,
 } from "./service-repository.server";
 import {
@@ -51,7 +49,6 @@ import {
   type ClearServiceRegistryCredentialInput,
   type CreateServiceInput,
   type RestoreServiceRegistryCredentialInput,
-  type ServiceSource,
   type SetServiceRegistryCredentialInput,
   type UpdateServiceInput,
 } from "./services";
@@ -115,248 +112,116 @@ export const getServiceById = Effect.fn("EnvironmentDesign.getServiceById")(
   },
 );
 
-const requireCredentialAccess = Effect.fn(
-  "EnvironmentDesign.requireServiceCredentialAccess",
-)(function* (
-  actor: Actor,
-  input: {
-    readonly organizationSlug: string;
-    readonly environmentId: string;
-    readonly serviceId: string;
+const loadServiceEdit = Effect.fn("EnvironmentDesign.loadServiceEdit")(
+  function* (input: { environmentId: string; serviceId: string; revision: string }) {
+    const document = yield* loadEnvironmentDocument(input.environmentId, true);
+    yield* requireDocumentRevision(document, input.revision);
+    const node = document.intent.services.find((node) => node.id === input.serviceId);
+    if (!node) return yield* new NotFound({ message: "Service not found." });
+    return { document, node };
   },
-) {
-  yield* requireEnvironmentForActorById(actor, input);
-  const service = yield* getStoredServiceCredential(
-    input.environmentId,
-    input.serviceId,
-  );
-  if (service === null) {
-    return yield* new NotFound({ message: "Service not found." });
-  }
-  return service;
-});
+);
 
-export const setServiceRegistryCredential = Effect.fn(
-  "EnvironmentDesign.setServiceRegistryCredential",
-)(function* (actor: Actor, input: SetServiceRegistryCredentialInput) {
-  const encryption = yield* SecretEncryption;
-  const service = yield* requireCredentialAccess(actor, input);
-  if (service.source.type !== "image") {
-    return yield* new Conflict({
-      message: "Service does not use a container image.",
-    });
-  }
-  const provider = detectRegistryCredentialProvider(service.source.image);
-  const existingUsername = exposedRegistryCredentialUsername(service, encryption);
-  const username = normalizeRegistryCredentialUsername({
-    provider,
-    username: input.username ?? existingUsername,
-  });
-  const revision = new Date().toISOString();
-  const encryptedRegistryUsername =
-    username === null ? null : encryption.encrypt(username);
-  const encryptedRegistrySecret = encryption.encrypt(input.secret.trim());
-  const source: ServiceSource = {
-    ...service.source,
-    credentials: { type: "configured", revision },
-  };
-  const receipt = yield* withMutationReceipt(
-    setStoredServiceCredential({
-      serviceId: service.id,
-      source,
-      encryptedRegistryUsername,
-      encryptedRegistrySecret,
-    }),
-  );
-  if (receipt.data === null) {
-    return yield* new NotFound({ message: "Service not found." });
-  }
-  return { ...receipt, data: receipt.data };
-});
+export const setServiceRegistryCredential = Effect.fn("EnvironmentDesign.setServiceRegistryCredential")(
+  function* (actor: Actor, input: SetServiceRegistryCredentialInput) {
+    yield* requireEnvironmentForActorById(actor, input);
+    const encryption = yield* SecretEncryption;
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const { document, node } = yield* loadServiceEdit(input);
+      if (node.config.source.type !== "image") return yield* new Conflict({ message: "Service does not use a container image." });
+      const stored = yield* getStoredServiceCredential(input.environmentId, input.serviceId);
+      const username = normalizeRegistryCredentialUsername({
+        provider: detectRegistryCredentialProvider(node.config.source.image),
+        username: input.username ?? (stored ? exposedRegistryCredentialUsername(stored, encryption) : null),
+      });
+      node.encryptedRegistryUsername = username === null ? null : encryption.encrypt(username);
+      node.encryptedRegistrySecret = encryption.encrypt(input.secret.trim());
+      node.config.source.credentials = { type: "configured", revision: new Date().toISOString() };
+      return yield* writeEnvironmentDocument(document, document.intent);
+    }));
+  },
+);
 
-export const clearServiceRegistryCredential = Effect.fn(
-  "EnvironmentDesign.clearServiceRegistryCredential",
-)(function* (actor: Actor, input: ClearServiceRegistryCredentialInput) {
-  const service = yield* requireCredentialAccess(actor, input);
-  const source: ServiceSource =
-    service.source.type === "image"
-      ? { ...service.source, credentials: { type: "none" } }
-      : service.source;
-  const receipt = yield* withMutationReceipt(
-    updateServiceSource(service.id, source),
-  );
-  if (receipt.data === null) {
-    return yield* new NotFound({ message: "Service not found." });
-  }
-  return { ...receipt, data: receipt.data };
-});
+export const clearServiceRegistryCredential = Effect.fn("EnvironmentDesign.clearServiceRegistryCredential")(
+  function* (actor: Actor, input: ClearServiceRegistryCredentialInput) {
+    yield* requireEnvironmentForActorById(actor, input);
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const { document, node } = yield* loadServiceEdit(input);
+      if (node.config.source.type === "image") node.config.source.credentials = { type: "none" };
+      return yield* writeEnvironmentDocument(document, document.intent);
+    }));
+  },
+);
 
-export const restoreServiceRegistryCredential = Effect.fn(
-  "EnvironmentDesign.restoreServiceRegistryCredential",
-)(function* (actor: Actor, input: RestoreServiceRegistryCredentialInput) {
-  const service = yield* requireCredentialAccess(actor, input);
-  if (service.source.type !== "image") {
-    return yield* new Conflict({
-      message: "Service does not use a container image.",
-    });
-  }
-  if (service.encryptedRegistrySecret === null) {
-    return yield* new Conflict({
-      message: "No saved registry credentials to restore.",
-    });
-  }
-  const source: ServiceSource = {
-    ...service.source,
-    credentials: { type: "configured", revision: new Date().toISOString() },
-  };
-  const receipt = yield* withMutationReceipt(
-    updateServiceSource(service.id, source),
-  );
-  if (receipt.data === null) {
-    return yield* new NotFound({ message: "Service not found." });
-  }
-  return { ...receipt, data: receipt.data };
-});
+export const restoreServiceRegistryCredential = Effect.fn("EnvironmentDesign.restoreServiceRegistryCredential")(
+  function* (actor: Actor, input: RestoreServiceRegistryCredentialInput) {
+    yield* requireEnvironmentForActorById(actor, input);
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const { document, node } = yield* loadServiceEdit(input);
+      if (node.config.source.type !== "image") return yield* new Conflict({ message: "Service does not use a container image." });
+      const stored = yield* getStoredServiceCredential(input.environmentId, input.serviceId);
+      if (!stored?.encryptedRegistrySecret) return yield* new Conflict({ message: "No saved registry credentials to restore." });
+      node.config.source.credentials = { type: "configured", revision: new Date().toISOString() };
+      return yield* writeEnvironmentDocument(document, document.intent);
+    }));
+  },
+);
 
 export const createService = Effect.fn("EnvironmentDesign.createService")(
   function* (actor: Actor, input: CreateServiceInput) {
     const context = yield* requireEnvironmentForActorById(actor, input);
-    const requestedName = resolveServiceName(input);
-    const attemptedNames = yield* listEnvironmentNodeNameIdentities(
-      input.environmentId,
-    );
-    return yield* withMutationReceipt(
-      allocateUnique({
-        tryAttempt: (attempt) =>
-          Effect.gen(function* () {
-            const name = resolveUniqueEnvironmentNodeName({
-              name: requestedName,
-              nodes: attemptedNames,
-              schema: environmentDesignFields.service.name,
-              maxLength: 64,
-            });
-            const slug = serviceBaseSlug(name);
-            const lineage = yield* createServiceLineage({
-              projectId: context.project.id,
-              name,
-              slug,
-            });
-            if (lineage === null) {
-              attemptedNames.push({
-                type: "service",
-                id: `attempt-${attempt}`,
-                name,
-              });
-              return null;
-            }
-            const service = yield* insertService({
-              projectId: context.project.id,
-              environmentId: input.environmentId,
-              lineageId: lineage.id,
-              name,
-              slug,
-              source: input.source,
-              preDeployCommand: input.preDeployCommand,
-              startCommand: input.startCommand,
-              healthcheck: input.healthcheck,
-              restartPolicy: input.restartPolicy,
-            });
-            if (service === null) {
-              yield* deleteServiceLineage(lineage.id);
-              attemptedNames.push({
-                type: "service",
-                id: `attempt-${attempt}`,
-                name,
-              });
-              return null;
-            }
-            const canvasPosition = yield* insertCanvasPosition({
-              environmentId: input.environmentId,
-              resourceId: service.id,
-              x: input.x,
-              y: input.y,
-            });
-            if (canvasPosition === null) {
-              return yield* Effect.die(
-                "PostgreSQL did not return the service canvas position.",
-              );
-            }
-            return {
-              service: {
-                ...service,
-                projectSlug: context.project.slug,
-                environmentSlug: context.environment.namespace,
-              },
-              canvasPosition,
-            };
-          }),
-        exhausted: new Conflict({
-          message: `Could not allocate a service name in ${input.environmentId}.`,
-        }),
-      }),
-    );
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const document = yield* loadEnvironmentDocument(input.environmentId, true);
+      const name = resolveUniqueEnvironmentNodeName({ name: resolveServiceName(input),
+        nodes: yield* listEnvironmentNodeNameIdentities(input.environmentId),
+        schema: environmentDesignFields.service.name, maxLength: 64 });
+      const slug = serviceBaseSlug(name);
+      const lineage = yield* createServiceLineage({ projectId: context.project.id, name, slug });
+      if (!lineage) return yield* new Conflict({ message: "Could not allocate a service lineage." });
+      const identity = yield* insertServiceIdentity({ projectId: context.project.id, environmentId: input.environmentId, lineageId: lineage.id });
+      const { env: _env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...config } = parseServiceConfig({ version: 2, name, source: input.source,
+        preDeployCommand: input.preDeployCommand, startCommand: input.startCommand,
+        healthcheck: input.healthcheck, restartPolicy: input.restartPolicy, privateDns: slug });
+      const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], variableGroupAttachments: [], volumeAttachments: [], encryptedRegistryUsername: null, encryptedRegistrySecret: null };
+      document.intent.services.push(node);
+      yield* writeEnvironmentDocument(document, document.intent);
+      yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: "service", nodeId: identity.id });
+      const canvasPosition = yield* insertCanvasPosition({ environmentId: input.environmentId, resourceId: identity.id, x: input.x, y: input.y });
+      return { service: { ...serviceDocumentRecord(identity, node), projectSlug: context.project.slug, environmentSlug: context.environment.namespace }, canvasPosition };
+    }));
   },
 );
 
 export const updateService = Effect.fn("EnvironmentDesign.updateService")(
   function* (actor: Actor, input: UpdateServiceInput) {
     const context = yield* requireEnvironmentForActorById(actor, input);
-    const current = yield* getServiceForUpdate(input.environmentId, input.serviceId);
-    if (current === null) {
-      return yield* new NotFound({ message: "Service not found." });
-    }
-    const nextRoutes = input.routes ?? current.record.routes;
-    if (routeMutationRequiresCustomDomainCapability(current.record.routes, nextRoutes)) {
-      const capability = yield* getCustomDomainCapability(
-        context.organization.id,
-      );
-      if (!capability.allowed) {
-        return yield* new Forbidden({ message: capability.reason });
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const { document, node } = yield* loadServiceEdit(input);
+      if (routeMutationRequiresCustomDomainCapability(node.config.routes, input.routes ?? node.config.routes)) {
+        const capability = yield* getCustomDomainCapability(context.organization.id);
+        if (!capability.allowed) return yield* new Forbidden({ message: capability.reason });
       }
-    }
-    const name = input.name ?? current.record.name;
-    const source = input.source ?? current.record.source;
-    const names = yield* listEnvironmentNodeNameIdentities(input.environmentId);
-    if (
-      isEnvironmentNodeNameTaken(name, names, {
-        type: "service",
-        id: current.record.id,
-      })
-    ) {
-      return yield* new Conflict({
-        message: getDuplicateEnvironmentNodeNameMessage(name),
-      });
-    }
-    const receipt = yield* withMutationReceipt(
-      updateServiceRecord(
-        current.record.id,
-        { ...input, name, source },
-        {
-          encryptedRegistryUsername: current.encryptedRegistryUsername,
-          encryptedRegistrySecret: current.encryptedRegistrySecret,
-        },
-      ),
-    );
-    if (receipt.data === null) {
-      return yield* new NotFound({ message: "Service not found." });
-    }
-    return { ...receipt, data: receipt.data };
+      const name = input.name ?? node.config.name;
+      if (isEnvironmentNodeNameTaken(name, yield* listEnvironmentNodeNameIdentities(input.environmentId), { type: "service", id: node.id })) {
+        return yield* new Conflict({ message: getDuplicateEnvironmentNodeNameMessage(name) });
+      }
+      const { organizationSlug: _organization, environmentId: _environment, serviceId: _service, revision: _revision, deletedAt, ...settings } = input;
+      if (deletedAt) document.intent.services = document.intent.services.filter((candidate) => candidate.id !== node.id);
+      else Object.assign(node.config, settings);
+      return yield* writeEnvironmentDocument(document, document.intent);
+    }));
   },
 );
 
 export const deleteServices = Effect.fn("EnvironmentDesign.deleteServices")(
-  function* (
-    actor: Actor,
-    input: {
-      readonly organizationSlug: string;
-      readonly environmentId: string;
-      readonly serviceIds: readonly string[];
-    },
-  ) {
+  function* (actor: Actor, input: { readonly organizationSlug: string; readonly environmentId: string; readonly revision: string; readonly serviceIds: readonly string[] }) {
     yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(
-      deleteServiceRecords(input.environmentId, input.serviceIds),
-    );
+    return yield* withMutationReceipt(Effect.gen(function* () {
+      const document = yield* loadEnvironmentDocument(input.environmentId, true);
+      yield* requireDocumentRevision(document, input.revision);
+      document.intent.services = document.intent.services.filter((node) => !input.serviceIds.includes(node.id));
+      return yield* writeEnvironmentDocument(document, document.intent);
+    }));
   },
 );
 

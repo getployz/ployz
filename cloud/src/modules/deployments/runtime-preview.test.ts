@@ -5,12 +5,9 @@ import type {
   MachineId,
   OperationRow,
 } from "@ployz/sdk";
-import { Effect, Exit } from "effect";
-import { UnsupportedDeploymentSourceError } from "#/modules/deployments/runtime-contract";
 import {
   compileSdkDeployIntent,
   parseSdkDeployPreview,
-  requireConfirmableSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
 import {
   deployEventForDeployment,
@@ -109,6 +106,10 @@ describe("compileSdkDeployIntent", () => {
 
     expect(intent).toEqual({
       project_name: "production",
+      dependencies: {},
+      service_profiles: {},
+      requested_profiles: [],
+      compose_refusal: null,
       target: [
         {
           name: "api",
@@ -211,57 +212,18 @@ describe("compileSdkDeployIntent", () => {
         ],
         volumes: [],
       }),
-    ).toThrow(UnsupportedDeploymentSourceError);
+    ).toThrow("missing a pullable image");
   });
 });
 
 describe("parseSdkDeployPreview", () => {
-  it("accepts older saved previews and rejects malformed volume creation details", () => {
-    expect(parseSdkDeployPreview({ ...rustPreview, storage: undefined }))
-      .not.toHaveProperty("storage");
-    expect(() => parseSdkDeployPreview({ ...rustPreview, storage: {} }))
-      .toThrow(/storage/);
-    expect(
-      parseSdkDeployPreview({ ...rustPreview, volumes_to_create: undefined }),
-    ).not.toHaveProperty("volumes_to_create");
-    expect(() =>
-      parseSdkDeployPreview({ ...rustPreview, volumes_to_create: {} }),
-    ).toThrow(/volumes_to_create/);
+  it("accepts current SDK previews and rejects malformed operation or volume details", () => {
+    expect(parseSdkDeployPreview(rustPreview)).toEqual(rustPreview);
+    expect(() => parseSdkDeployPreview({ ...rustPreview, storage: {} })).toThrow();
+    expect(() => parseSdkDeployPreview({ ...rustPreview, volumes_to_create: {} })).toThrow();
+    expect(() => parseSdkDeployPreview({ ...rustPreview, operations: [{ type: "unknown" }] })).toThrow();
   });
 
-  it("accepts rust operations and warnings and rejects leftover NATS plans", () => {
-    const preview = parseSdkDeployPreview(rustPreview);
-    expect(preview).toEqual(rustPreview);
-
-    expect(() =>
-      parseSdkDeployPreview({
-        version: 1,
-        coreDeployId: "local-preview:deployment-1",
-        phases: [],
-      }),
-    ).toThrow(/excess|operations/);
-  });
-
-  it("only confirms a planning row with a rust preview", () => {
-    expect(Exit.isSuccess(Effect.runSyncExit(
-      requireConfirmableSdkDeployPreview({
-        status: "planning",
-        preview: rustPreview,
-      }),
-    ))).toBe(true);
-    expect(Exit.isFailure(Effect.runSyncExit(
-      requireConfirmableSdkDeployPreview({
-        status: "queued",
-        preview: rustPreview,
-      }),
-    ))).toBe(true);
-    expect(Exit.isFailure(Effect.runSyncExit(
-      requireConfirmableSdkDeployPreview({
-        status: "planning",
-        preview: { version: 1, phases: [] },
-      }),
-    ))).toBe(true);
-  });
 });
 
 describe("stubPendingDeployProgress", () => {

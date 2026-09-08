@@ -340,12 +340,7 @@ export const environmentNodeIntroductionSecret = pgTable(
     environmentId: uuid("environment_id").notNull(),
     nodeType: text("node_type").notNull().$type<CanvasNodeType>(),
     nodeId: uuid("node_id").notNull(),
-    encryptedRegistryUsername: jsonb(
-      "encrypted_registry_username",
-    ).$type<EncryptedSecretValue | null>(),
-    encryptedRegistrySecret: jsonb("encrypted_registry_secret").$type<
-      EncryptedSecretValue | null
-    >(),
+    authoredIntent: jsonb("authored_intent").notNull().$type<import("@ployz/sdk/config").SavedEnvironmentIntent>(),
   },
   (table) => [
     primaryKey({ columns: [table.environmentId, table.nodeType, table.nodeId] }),
@@ -357,10 +352,6 @@ export const environmentNodeIntroductionSecret = pgTable(
         environmentNodeIntroduction.nodeId,
       ],
     }).onDelete("cascade"),
-    check(
-      "environment_node_introduction_secret_nonempty_check",
-      sql`num_nonnulls(${table.encryptedRegistryUsername}, ${table.encryptedRegistrySecret}) > 0`,
-    ),
   ],
 );
 

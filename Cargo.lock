@@ -2151,6 +2151,16 @@ dependencies = [
  "ts-rs",
  "unicode-segmentation",
  "unicode-width",
+ "uuid",
+]
+
+[[package]]
+name = "ployz-config-wasm"
+version = "0.1.2-beta.35"
+dependencies = [
+ "ployz-core",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

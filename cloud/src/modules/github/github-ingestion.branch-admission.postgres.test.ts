@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import { Effect, Result as EffectResult } from "effect";
@@ -26,7 +28,6 @@ const projectId = "00000000-0000-4000-8000-000000000103";
 const environmentId = "00000000-0000-4000-8000-000000000104";
 const lineageId = "00000000-0000-4000-8000-000000000105";
 const serviceId = "00000000-0000-4000-8000-000000000106";
-const configKeyId = "00000000-0000-4000-8000-000000000107";
 const variableId = "00000000-0000-4000-8000-000000000108";
 const savedStateSnapshotId = "00000000-0000-4000-8000-000000000109";
 const volumeLineageId = "00000000-0000-4000-8000-000000000110";
@@ -73,7 +74,7 @@ function savedIntent(
     version: 1,
     environmentSlug: "production",
     services: services.map(({ id, lineageId, config }) => {
-      const { env, mounts: _mounts, ...authoredConfig } = config;
+      const { env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...authoredConfig } = config;
       void _mounts;
       return {
         id,
@@ -140,48 +141,21 @@ describe("GitHub branch deployment admission", () => {
   });
 
   beforeEach(async () => {
+    const working = savedIntent([{ id: serviceId, lineageId, config: savedServiceConfig("Working API") }]);
+    const node = working.services[0];
+    if (!node) throw new Error("Working service missing.");
+    node.variables = [{ id: variableId, key: "WORKING_ONLY", description: null, exported: false, valueFingerprint: "unfinished", value: { kind: "literal", value: "unfinished" } }];
     await harness.pool.query(`
-      truncate table github_environment_trigger, github_branch_projection,
-        github_webhook_delivery, environment_saved_state_snapshot, variable,
-        config_key, service, service_lineage, environment, project, "user",
-        organization cascade;
-      insert into organization (id, name, slug)
-      values ('${organizationId}', 'Acceptance', 'acceptance');
-      insert into "user" (id, email, name)
-      values ('${userId}', 'owner@example.com', 'Owner');
-      insert into project (id, organization_id, name, slug)
-      values ('${projectId}', '${organizationId}', 'GitHub', 'github');
-      insert into environment (
-        id, project_id, organization_id, name, namespace
-      ) values (
-        '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production'
-      );
-      insert into service_lineage (
-        id, project_id, canonical_name, canonical_slug
-      ) values ('${lineageId}', '${projectId}', 'API', 'api');
-      insert into service (
-        id, project_id, environment_id, organization_id, lineage_id, name, slug,
-        source_type, source_config, private_dns
-      ) values (
-        '${serviceId}', '${projectId}', '${environmentId}', '${organizationId}',
-        '${lineageId}', 'Working API', 'api', 'git',
-        '${JSON.stringify(gitSource)}'::jsonb, 'api'
-      );
-      insert into config_key (
-        id, project_id, scope, service_lineage_id, canonical_name
-      ) values (
-        '${configKeyId}', '${projectId}', 'service_lineage', '${lineageId}',
-        'WORKING_ONLY'
-      );
-      insert into variable (
-        id, project_id, service_id, organization_id, config_key_id, key,
-        value_kind, value_parts, value_fingerprint
-      ) values (
-        '${variableId}', '${projectId}', '${serviceId}', '${organizationId}',
-        '${configKeyId}', 'WORKING_ONLY', 'plain',
-        '[{"kind":"text","value":"unfinished"}]'::jsonb, 'unfinished'
-      );
+      truncate table github_environment_trigger, github_branch_projection, github_webhook_delivery, organization, "user" cascade;
+      insert into organization (id, name, slug) values ('${organizationId}', 'Acceptance', 'acceptance');
+      insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
+      insert into project (id, organization_id, name, slug) values ('${projectId}', '${organizationId}', 'GitHub', 'github');
+      insert into environment (id, project_id, organization_id, name, namespace, intent)
+        values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'production', '${JSON.stringify(working)}');
+      insert into service_lineage (id, project_id, canonical_name, canonical_slug) values ('${lineageId}', '${projectId}', 'API', 'api');
+      insert into service (id, project_id, environment_id, organization_id, lineage_id)
+        values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}');
+      insert into variable (id, environment_id, service_id) values ('${variableId}', '${environmentId}', '${serviceId}');
     `);
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({
       id: savedStateSnapshotId,
@@ -265,9 +239,9 @@ describe("GitHub branch deployment admission", () => {
       cursor: null,
       beforeApply: async () => {
         await harness.db
-          .update(schema.service)
-          .set({ name: "Unsaved after candidate selection" })
-          .where(eq(schema.service.id, serviceId));
+          .update(schema.environment)
+          .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', '"Unsaved after candidate selection"')`, revision: randomUUID() })
+          .where(eq(schema.environment.id, environmentId));
       },
     });
 
@@ -393,6 +367,7 @@ describe("GitHub branch deployment admission", () => {
           organizationId,
           name: "Staging",
           namespace: "staging",
+          intent: emptyEnvironmentIntent("staging"),
         });
         await harness.db.insert(schema.environmentSavedStateSnapshot).values({
           organizationId,
@@ -503,9 +478,6 @@ describe("GitHub branch deployment admission", () => {
       environmentId,
       lineageId: volumeLineageId,
       implementationType: "volume",
-      name: "Applied volume",
-      slug: "applied-volume",
-      deletedAt: new Date(),
     });
     await harness.db.insert(schema.environmentDeployment).values({
       id: appliedDeploymentId,

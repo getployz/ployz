@@ -3,6 +3,7 @@ import { environmentNodeIntroductionSchema } from "#/modules/environment-design/
 import { decodeStrict } from "#/modules/environment-design/schema";
 
 const base = {
+  organizationId: crypto.randomUUID(),
   environmentId: crypto.randomUUID(),
   nodeId: crypto.randomUUID(),
   nodeLineageId: crypto.randomUUID(),
@@ -42,6 +43,7 @@ describe("environment node introductions", () => {
       decodeStrict(environmentNodeIntroductionSchema, {
         ...base,
         nodeType: "volume",
+        configVersion: 2,
         config: { version: 2, name: "Data" },
       }).nodeType,
     ).toBe("volume");

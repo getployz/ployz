@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 
+import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import type { DeployIntent, PreparedDeploy } from "@ployz/sdk";
-import { isDeepStrictEqual } from "node:util";
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Redacted, Schema } from "effect";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
 import { DeployImageNotPullableError } from "#/modules/deployments/deployment-errors";
 import { findUnpullableSdkDeployImages } from "#/modules/deployments/image-gate";
@@ -10,22 +10,21 @@ import {
   loadDeploymentContext,
   loadResolvedDeployEnv,
   persistSdkDeployPreview,
+  persistSdkDeployOutcome,
   type DeploymentContext,
 } from "#/modules/deployments/runtime-repository.server";
-import { UnsupportedDeploymentSourceError } from "#/modules/deployments/runtime-contract";
 import {
   compileSdkDeployIntent,
-  projectRuntimeDeployPreview,
-  runtimeDeployOutcomeSchema,
-  runtimeDeployPreviewSchema,
+  parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { strictParseOptions } from "#/modules/environment-design/schema";
 
-export type DeploymentRuntimeOutcome = typeof runtimeDeployOutcomeSchema.Type;
+export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof executeRuntimeIntent>>["outcome"];
 
 type SdkPreparedPreviewInput = {
   readonly project_name: PreparedDeploy["project_name"];
+  readonly storage?: PreparedDeploy["storage"];
+  readonly prune_refusal?: PreparedDeploy["prune_refusal"];
   readonly operations: PreparedDeploy["operations"];
   readonly warnings: PreparedDeploy["warnings"];
   readonly would_remove: PreparedDeploy["would_remove"];
@@ -54,8 +53,7 @@ export class DeploymentRuntimeInvalid extends Data.TaggedError(
   readonly failureCode:
     | "deploy_image_not_pullable"
     | "sdk_preview_invalid"
-    | "sdk_outcome_invalid"
-    | "sdk_preview_changed";
+    | "sdk_outcome_invalid";
   readonly message: string;
   readonly cause?: unknown;
 }> {
@@ -91,7 +89,6 @@ function compileRuntimeIntent(context: DeploymentContext) {
         }),
       catch: (cause) => {
         if (
-          cause instanceof UnsupportedDeploymentSourceError ||
           cause instanceof DeployImageNotPullableError
         ) {
           return new DeploymentRuntimeInvalid({
@@ -102,7 +99,7 @@ function compileRuntimeIntent(context: DeploymentContext) {
         }
         return new DeploymentRuntimeInvalid({
           failureCode: "sdk_preview_invalid",
-          message: "The immutable deployment target could not be compiled.",
+          message: cause instanceof Error ? cause.message : "The immutable deployment target could not be compiled.",
           cause,
         });
       },
@@ -138,27 +135,12 @@ function connectedRuntime(organizationId: string) {
 export const decodeSdkDeployPreview = Effect.fn(
   "Deployments.decodeSdkDeployPreview",
 )(function* (value: SdkDeployPreviewInput) {
-  const decoded = yield* Schema.decodeUnknownEffect(runtimeDeployPreviewSchema)(
-    value,
-    strictParseOptions,
-  ).pipe(
-    Effect.mapError(
-      (cause) =>
-        new DeploymentRuntimeInvalid({
-          failureCode: "sdk_preview_invalid",
-          message: "SDK deploy preview is invalid.",
-          cause,
-        }),
-    ),
-  );
-  const preview = projectRuntimeDeployPreview(decoded);
-  if (preview === null) {
-    return yield* new DeploymentRuntimeInvalid({
-      failureCode: "sdk_preview_invalid",
-      message: "SDK deploy preview is invalid.",
-    });
-  }
-  return preview;
+  return yield* Effect.try({
+    try: () => parseSdkDeployPreview(value),
+    catch: (cause) => new DeploymentRuntimeInvalid({
+      failureCode: "sdk_preview_invalid", message: "SDK deploy preview is invalid.", cause,
+    }),
+  });
 });
 
 export const previewRuntimeIntent = Effect.fn(
@@ -168,6 +150,8 @@ export const previewRuntimeIntent = Effect.fn(
     const prepared = yield* sdk.preview(intent);
     const previewWithoutNewVolumes = {
       project_name: prepared.project_name,
+      ...(prepared.storage === undefined ? {} : { storage: prepared.storage }),
+      ...(prepared.prune_refusal === undefined ? {} : { prune_refusal: prepared.prune_refusal }),
       operations: prepared.operations,
       warnings: prepared.warnings,
       would_remove: prepared.would_remove,
@@ -184,69 +168,38 @@ export const previewRuntimeIntent = Effect.fn(
     return { prepared, preview };
 });
 
-export const previewEnvironmentDeployment = Effect.fn(
-  "Deployments.previewEnvironmentDeployment",
-)(function* (context: DeploymentContext) {
-  const intent = yield* compileRuntimeIntent(context);
-  const { preview } = yield* previewRuntimeIntent(
-    context.organization.id,
-    intent,
-  );
-  yield* persistSdkDeployPreview({
-    environmentDeploymentId: context.deployment.id,
-    preview,
-  });
-  return preview satisfies EnvironmentDeploymentPreview;
-});
-
-export const confirmRuntimeIntent = Effect.fn(
-  "Deployments.confirmRuntimeIntent",
-)(function* (
-  organizationId: string,
-  intent: DeployIntent,
-  persisted: EnvironmentDeploymentPreview,
-) {
-  const { prepared, preview } = yield* previewRuntimeIntent(
-    organizationId,
-    intent,
-  );
-  if (!isDeepStrictEqual(preview, persisted)) {
-    return yield* new DeploymentRuntimeInvalid({
-      failureCode: "sdk_preview_changed",
-      message: "The runtime deploy preview changed. Preview again.",
-    });
-  }
+const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
+  function* ({ prepared, preview }: Effect.Success<ReturnType<typeof previewRuntimeIntent>>) {
   const outcome = yield* prepared.confirm();
-  return yield* Schema.decodeUnknownEffect(runtimeDeployOutcomeSchema)(outcome, {
-    onExcessProperty: "ignore",
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new DeploymentRuntimeInvalid({
-          failureCode: "sdk_outcome_invalid",
-          message: "SDK deploy outcome is invalid.",
-          cause,
-        }),
-    ),
-  );
+  const evidence = yield* Schema.decodeUnknownEffect(Schema.Json)({ version: 1, outcome });
+  const projected = yield* Effect.try({
+    try: () => projectRuntimeOutcome(preview, evidence),
+    catch: (cause) => new DeploymentRuntimeInvalid({
+      failureCode: "sdk_outcome_invalid", message: "Runtime returned an invalid outcome; effects are unknown.", cause,
+    }),
+  });
+  return { preview, outcome: projected.summary, evidence: Redacted.make(evidence) };
 });
 
-export const confirmEnvironmentDeployment = Effect.fn(
-  "Deployments.confirmEnvironmentDeployment",
+export const executeRuntimeIntent = Effect.fn("Deployments.executeRuntimeIntent")(
+  function* (organizationId: string, intent: DeployIntent) {
+    return yield* confirmRuntimeIntent(yield* previewRuntimeIntent(organizationId, intent));
+  },
+);
+
+export const executeEnvironmentDeployment = Effect.fn(
+  "Deployments.executeEnvironmentDeployment",
 )(function* (context: DeploymentContext) {
-  const persisted = yield* decodeSdkDeployPreview(
-    context.deployment.deployPreview ?? null,
-  );
   const intent = yield* compileRuntimeIntent(context);
-  return yield* confirmRuntimeIntent(
-    context.organization.id,
-    intent,
-    persisted,
-  );
+  const prepared = yield* previewRuntimeIntent(context.organization.id, intent);
+  yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, preview: prepared.preview });
+  const { outcome, evidence } = yield* confirmRuntimeIntent(prepared);
+  yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, outcome: evidence });
+  return outcome;
 });
 
-export const confirmLatestEnvironmentDeployment = Effect.fn(
-  "Deployments.confirmLatestEnvironmentDeployment",
+export const executeLatestEnvironmentDeployment = Effect.fn(
+  "Deployments.executeLatestEnvironmentDeployment",
 )(function* (environmentDeploymentId: string) {
   const context = yield* loadDeploymentContext(environmentDeploymentId);
   if (!context) {
@@ -255,5 +208,5 @@ export const confirmLatestEnvironmentDeployment = Effect.fn(
       message: "Environment deployment was not found.",
     });
   }
-  return yield* confirmEnvironmentDeployment(context);
+  return yield* executeEnvironmentDeployment(context);
 });

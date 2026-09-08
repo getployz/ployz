@@ -1,5 +1,6 @@
 //! Domain and wire contracts shared byte-for-byte by the Ployz CLI and daemon.
 
+pub mod config;
 mod container_metadata;
 pub mod domain;
 pub mod framing;
@@ -7,6 +8,7 @@ mod host_config;
 mod machine_telemetry;
 mod ports;
 pub mod project;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
 pub mod rpc;
 mod rpc_catalog;
@@ -22,6 +24,7 @@ pub use host_config::*;
 pub use machine_telemetry::*;
 pub use ports::*;
 pub use project::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub use routing::*;
 pub use rpc::*;
 pub use service::*;

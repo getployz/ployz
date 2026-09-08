@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { Effect, Exit } from "effect";
 import { Inngest } from "inngest";
 import { SqlError, SerializationError } from "effect/unstable/sql/SqlError";
@@ -38,7 +40,6 @@ const projectId = "00000000-0000-4000-8000-000000000103";
 const environmentId = "00000000-0000-4000-8000-000000000104";
 const lineageId = "00000000-0000-4000-8000-000000000105";
 const serviceId = "00000000-0000-4000-8000-000000000106";
-const configKeyId = "00000000-0000-4000-8000-000000000107";
 const variableId = "00000000-0000-4000-8000-000000000108";
 const volumeLineageId = "00000000-0000-4000-8000-000000000201";
 const volumeId = "00000000-0000-4000-8000-000000000202";
@@ -75,50 +76,29 @@ describe("manual environment saved-state persistence", () => {
   });
 
   beforeEach(async () => {
+    const { env: _env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...config } = parseServiceConfig({ version: 2, name: "API", source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: "api" });
+    const intent = { version: 1, environmentSlug: "production", variableGroups: [], volumes: [], services: [{
+      id: serviceId, lineageId, slug: "api", config, encryptedRegistryUsername: null, encryptedRegistrySecret: null,
+      variables: [{ id: variableId, key: "API_TOKEN", description: null, exported: false, valueFingerprint: "fingerprint", value: { kind: "secret", encryptedValue: null } }],
+      variableGroupAttachments: [], volumeAttachments: [],
+    }] };
     await harness.pool.query(`
-      truncate table environment_saved_state_snapshot, variable, config_key,
-        service, service_lineage, environment, project, "user", organization
-        cascade;
-      insert into organization (id, name, slug)
-      values ('${organizationId}', 'Acceptance', 'acceptance');
-      insert into "user" (id, email, name)
-      values ('${userId}', 'owner@example.com', 'Owner');
-      insert into project (id, organization_id, name, slug)
-      values ('${projectId}', '${organizationId}', 'Cloud', 'cloud');
-      insert into environment (
-        id, project_id, organization_id, name, namespace
-      ) values (
-        '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production'
-      );
-      insert into service_lineage (
-        id, project_id, canonical_name, canonical_slug
-      ) values ('${lineageId}', '${projectId}', 'API', 'api');
-      insert into service (
-        id, project_id, environment_id, organization_id, lineage_id, name, slug,
-        source_type, source_config, private_dns
-      ) values (
-        '${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}',
-        'API', 'api', 'empty', '{"version":1,"type":"empty","rootDir":"/"}',
-        'api'
-      );
+      truncate table organization, "user" cascade;
+      insert into organization (id, name, slug) values ('${organizationId}', 'Acceptance', 'acceptance');
+      insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
+      insert into project (id, organization_id, name, slug) values ('${projectId}', '${organizationId}', 'Cloud', 'cloud');
+      insert into environment (id, project_id, organization_id, name, namespace, intent)
+        values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'production', '${JSON.stringify(intent)}');
+      insert into service_lineage (id, project_id, canonical_name, canonical_slug)
+        values ('${lineageId}', '${projectId}', 'API', 'api');
+      insert into service (id, project_id, environment_id, organization_id, lineage_id)
+        values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}');
       insert into service_registry_credential (service_id, encrypted_registry_secret)
-      values ('${serviceId}', '${JSON.stringify(encrypted)}');
-      insert into config_key (
-        id, project_id, scope, service_lineage_id, canonical_name
-      ) values (
-        '${configKeyId}', '${projectId}', 'service_lineage', '${lineageId}',
-        'API_TOKEN'
-      );
-      insert into variable (
-        id, project_id, service_id, organization_id, config_key_id, key,
-        value_kind, value_fingerprint
-      ) values (
-        '${variableId}', '${projectId}', '${serviceId}', '${organizationId}',
-        '${configKeyId}', 'API_TOKEN', 'sealed', 'fingerprint'
-      );
-      insert into variable_secret (variable_id, encrypted_value)
-      values ('${variableId}', '${JSON.stringify(encrypted)}');
+        values ('${serviceId}', '${JSON.stringify(encrypted)}');
+      insert into variable (id, environment_id, service_id)
+        values ('${variableId}', '${environmentId}', '${serviceId}');
+      insert into variable_secret (environment_id, variable_id, encrypted_value)
+        values ('${environmentId}', '${variableId}', '${JSON.stringify(encrypted)}');
     `);
   });
 
@@ -221,7 +201,7 @@ describe("manual environment saved-state persistence", () => {
   });
 
   it("persists an empty-node saved state", async () => {
-    await harness.pool.query(`delete from service where id = '${serviceId}'`);
+    await harness.db.update(schema.environment).set({ intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] }, revision: randomUUID() }).where(eq(schema.environment.id, environmentId));
     await save(null);
     const [row] = await harness.db
       .select()
@@ -400,9 +380,9 @@ describe("manual environment saved-state persistence", () => {
     const savedStateBasis = await currentSavedStateBasis();
 
     await harness.db
-      .update(schema.service)
-      .set({ name: "Changed concurrently" })
-      .where(eq(schema.service.id, serviceId));
+      .update(schema.environment)
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed concurrently"}::text))`, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId));
 
     await expect(harness.runTransaction(() =>
       createManualEnvironmentDeployment(
@@ -435,9 +415,9 @@ describe("manual environment saved-state persistence", () => {
     const reviewedWorkingStateFingerprint = await reviewFingerprint();
     const savedStateBasis = await currentSavedStateBasis();
     await harness.db
-      .update(schema.service)
-      .set({ name: "Changed after Save review" })
-      .where(eq(schema.service.id, serviceId));
+      .update(schema.environment)
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed after Save review"}::text))`, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId));
 
     const result = await harness.runTransaction(() =>
       saveManualEnvironmentStateSnapshot(
@@ -478,9 +458,9 @@ describe("manual environment saved-state persistence", () => {
       ),
     );
     await harness.db
-      .update(schema.service)
-      .set({ deletedAt: new Date("2026-08-13T00:00:00.000Z") })
-      .where(eq(schema.service.id, serviceId));
+      .update(schema.environment)
+      .set({ intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] }, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId));
     const review = await publicationReview();
 
     const result = await harness.runTransaction(() =>
@@ -525,9 +505,9 @@ describe("manual environment saved-state persistence", () => {
               .pipe(
                 Effect.catch((cause) =>
                 harness.database.drizzle
-                    .update(schema.service)
-                    .set({ name: "Changed between retries" })
-                    .where(eq(schema.service.id, serviceId))
+                    .update(schema.environment)
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed between retries"}::text))`, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId))
                     .pipe(Effect.flatMap(() => Effect.fail(cause))),
                 ),
               );
@@ -578,9 +558,9 @@ describe("manual environment saved-state persistence", () => {
       );
 
     await harness.db
-      .update(schema.service)
-      .set({ name: "Changed target" })
-      .where(eq(schema.service.id, serviceId));
+      .update(schema.environment)
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed target"}::text))`, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId));
     const second = await deploy("Second target");
 
     const savedRows = await harness.db
@@ -627,9 +607,9 @@ describe("manual environment saved-state persistence", () => {
         eq(schema.environmentDeployment.id, running.environmentDeploymentId),
       );
     await harness.db
-      .update(schema.service)
-      .set({ name: "Later Working state" })
-      .where(eq(schema.service.id, serviceId));
+      .update(schema.environment)
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Later Working state"}::text))`, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId));
 
     const queued = await deploy("Later target");
     const targets = await harness.db
@@ -709,9 +689,6 @@ describe("manual environment saved-state persistence", () => {
       environmentId,
       lineageId: volumeLineageId,
       implementationType: "volume",
-      name: "Data",
-      slug: "data",
-      deletedAt: new Date("2026-08-13T00:00:00.000Z"),
     });
     await harness.db.insert(schema.environmentNodeConfigSnapshot).values({
       organizationId,

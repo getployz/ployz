@@ -1,345 +1,143 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
-import { Effect, Schema } from "effect";
-import {
-  variable as schemaVariable,
-  variableSecret as schemaVariableSecret,
-  service as schemaService,
-  serviceRegistryCredential as schemaServiceRegistryCredential,
-  environmentResource as schemaEnvironmentResource,
-  environmentVariableGroup as schemaEnvironmentVariableGroup,
-  serviceVariableGroupAttachment as schemaServiceVariableGroupAttachment,
-  serviceVolumeAttachment as schemaServiceVolumeAttachment,
-} from "#/modules/environment-design/tables";
-import { environment as schemaEnvironment } from "#/modules/project/tables";
+import { randomUUID } from "node:crypto";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { Effect } from "effect";
+import { canonicalizeEnvironmentIntent, parseEnvironmentIntent, redactEnvironmentIntent } from "@ployz/sdk/config";
+import { environment } from "#/modules/project/tables";
+import { service, serviceRegistryCredential, variable, variableSecret, environmentResource, environmentVariableGroup } from "./tables";
+import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import { Database } from "#/server/database.server";
-import { Conflict } from "#/server/public-error";
-import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
-import { projectServiceDeploymentConfig } from "#/modules/environment-design/services";
-import {
-  compileSavedEnvironmentIntent,
-  savedEnvironmentIntentSchema,
-  savedVariableIntent,
-  type SavedEnvironmentIntent,
-} from "#/modules/environment-design/saved-intent";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { Conflict, NotFound } from "#/server/public-error";
 
-export type CurrentEnvironmentSnapshotProjection = {
-  nodeSnapshots: ReturnType<
-    typeof compileSavedEnvironmentIntent
-  >["nodeSnapshots"];
-  variableProducers: EnvironmentSnapshotVariableProducer[];
-  tombstonedVolumeIds: string[];
-  revisionMarkers?: string[];
+export type EnvironmentDocument = typeof environment.$inferSelect;
+export type CurrentEnvironmentSnapshotProjection = ReturnType<typeof compileSavedEnvironmentIntent> & {
+  revisionMarkers: string[];
 };
 
-const snapshotVariableColumns = {
-  id: schemaVariable.id,
-  serviceId: schemaVariable.serviceId,
-  variableGroupId: schemaVariable.variableGroupId,
-  key: schemaVariable.key,
-  description: schemaVariable.description,
-  exported: schemaVariable.exported,
-  valueKind: schemaVariable.valueKind,
-  valueParts: schemaVariable.valueParts,
-  encryptedValue: schemaVariableSecret.encryptedValue,
-  valueFingerprint: schemaVariable.valueFingerprint,
-  updatedAt: schemaVariable.updatedAt,
-};
+export const decodeEnvironmentDocument = Effect.fn("EnvironmentDesign.decodeEnvironmentDocument")(
+  (value: SavedEnvironmentIntent) => Effect.try({
+    try: () => parseEnvironmentIntent(value),
+    catch: () => new Conflict({ message: "The authored Environment document is invalid." }),
+  }),
+);
 
-export const loadCurrentEnvironmentState = Effect.fn(
-  "EnvironmentDesign.loadCurrentEnvironmentState",
-)(function* (environmentId: string) {
-  const { drizzle } = yield* Database;
-  const [environment] = yield* drizzle
-    .select({ slug: schemaEnvironment.namespace })
-    .from(schemaEnvironment)
-    .where(eq(schemaEnvironment.id, environmentId));
-  if (!environment) return yield* new Conflict({
-    message: "Environment snapshot has no Environment.",
-  });
-
-  const services = yield* drizzle
-    .select({
-      id: schemaService.id,
-      environmentId: schemaService.environmentId,
-      lineageId: schemaService.lineageId,
-      slug: schemaService.slug,
-      name: schemaService.name,
-      source: schemaService.sourceConfig,
-      preDeployCommand: schemaService.preDeployCommand,
-      startCommand: schemaService.startCommand,
-      healthcheck: schemaService.healthcheck,
-      restartPolicy: schemaService.restartPolicy,
-      maxRetries: schemaService.maxRetries,
-      cron: schemaService.cron,
-      replicas: schemaService.replicas,
-      cpuLimit: schemaService.cpuLimit,
-      memLimit: schemaService.memLimit,
-      privateDns: schemaService.privateDns,
-      routes: schemaService.routes,
-      managedHostname: schemaService.managedHostname,
-      build: schemaService.build,
-      updatedAt: schemaService.updatedAt,
-      encryptedRegistryUsername:
-        schemaServiceRegistryCredential.encryptedRegistryUsername,
-      encryptedRegistrySecret:
-        schemaServiceRegistryCredential.encryptedRegistrySecret,
-    })
-    .from(schemaService)
-    .leftJoin(
-      schemaServiceRegistryCredential,
-      eq(schemaServiceRegistryCredential.serviceId, schemaService.id),
-    )
-    .where(
-      and(
-        eq(schemaService.environmentId, environmentId),
-        isNull(schemaService.deletedAt),
-      ),
-    );
-
-  const resources = yield* drizzle
-    .select({
-      id: schemaEnvironmentResource.id,
-      lineageId: schemaEnvironmentResource.lineageId,
-      implementationType: schemaEnvironmentResource.implementationType,
-      variableGroupId: schemaEnvironmentResource.variableGroupId,
-      name: schemaEnvironmentResource.name,
-      deletedAt: schemaEnvironmentResource.deletedAt,
-      updatedAt: schemaEnvironmentResource.updatedAt,
-    })
-    .from(schemaEnvironmentResource)
-    .where(eq(schemaEnvironmentResource.environmentId, environmentId));
-  const variableGroupIds = resources.flatMap((resource) =>
-    resource.implementationType === "variable_group" &&
-    resource.variableGroupId &&
-    resource.deletedAt === null
-      ? [resource.variableGroupId]
-      : [],
-  );
-  const serviceIds = services.map((service) => service.id);
-  const variables =
-    serviceIds.length > 0 || variableGroupIds.length > 0
-      ? yield* drizzle
-          .select(snapshotVariableColumns)
-          .from(schemaVariable)
-          .leftJoin(
-            schemaVariableSecret,
-            eq(schemaVariableSecret.variableId, schemaVariable.id),
-          )
-          .where(
-            or(
-              serviceIds.length > 0
-                ? inArray(schemaVariable.serviceId, serviceIds)
-                : undefined,
-              variableGroupIds.length > 0
-                ? inArray(schemaVariable.variableGroupId, variableGroupIds)
-                : undefined,
-            ),
-          )
-          .orderBy(schemaVariable.key)
-      : [];
-
-  const [variableGroups, variableGroupAttachments, volumeAttachments] =
-    yield* Effect.all([
-      variableGroupIds.length > 0
-        ? drizzle
-            .select({
-              id: schemaEnvironmentVariableGroup.id,
-              lineageId: schemaEnvironmentVariableGroup.lineageId,
-              slug: schemaEnvironmentVariableGroup.slug,
-              updatedAt: schemaEnvironmentVariableGroup.updatedAt,
-            })
-            .from(schemaEnvironmentVariableGroup)
-            .where(
-              inArray(schemaEnvironmentVariableGroup.id, variableGroupIds),
-            )
-        : Effect.succeed([]),
-      serviceIds.length > 0
-        ? drizzle
-            .select({
-              serviceId: schemaServiceVariableGroupAttachment.serviceId,
-              sortOrder: schemaServiceVariableGroupAttachment.sortOrder,
-              variableGroupId:
-                schemaServiceVariableGroupAttachment.variableGroupId,
-            })
-            .from(schemaServiceVariableGroupAttachment)
-            .where(
-              inArray(
-                schemaServiceVariableGroupAttachment.serviceId,
-                serviceIds,
-              ),
-            )
-            .orderBy(
-              schemaServiceVariableGroupAttachment.sortOrder,
-              schemaServiceVariableGroupAttachment.variableGroupId,
-            )
-        : Effect.succeed([]),
-      drizzle
-        .select({
-          serviceId: schemaServiceVolumeAttachment.serviceId,
-          volumeResourceId: schemaServiceVolumeAttachment.volumeResourceId,
-          mountPath: schemaServiceVolumeAttachment.mountPath,
-        })
-        .from(schemaServiceVolumeAttachment)
-        .where(eq(schemaServiceVolumeAttachment.environmentId, environmentId)),
-    ]);
-
-  const activeVolumes = resources.filter(
-    (resource) =>
-      resource.implementationType === "volume" && resource.deletedAt === null,
-  );
-  const activeVolumeIds = new Set(activeVolumes.map((volume) => volume.id));
-  const tombstonedVolumeIds = resources.flatMap((resource) =>
-    resource.implementationType === "volume" && resource.deletedAt !== null
-      ? [resource.id]
-      : [],
-  );
-  const variablesByGroupId = new Map<
-    string,
-    SavedEnvironmentIntent["variableGroups"][number]["variables"]
-  >();
-  const variablesByServiceId = new Map<
-    string,
-    SavedEnvironmentIntent["services"][number]["variables"]
-  >();
-  for (const variable of variables) {
-    const saved = savedVariableIntent(variable);
-    if (variable.variableGroupId) {
-      const grouped = variablesByGroupId.get(variable.variableGroupId) ?? [];
-      grouped.push(saved);
-      variablesByGroupId.set(variable.variableGroupId, grouped);
-    } else if (variable.serviceId) {
-      const grouped = variablesByServiceId.get(variable.serviceId) ?? [];
-      grouped.push(saved);
-      variablesByServiceId.set(variable.serviceId, grouped);
+export const loadEnvironmentDocument = Effect.fn("EnvironmentDesign.loadEnvironmentDocument")(
+  function* (environmentId: string, forUpdate = false) {
+    const { drizzle } = yield* Database;
+    const query = drizzle.select().from(environment).where(eq(environment.id, environmentId));
+    const [document] = yield* (forUpdate ? query.for("update") : query);
+    if (!document) return yield* new NotFound({ message: "Environment not found." });
+    const intent = yield* decodeEnvironmentDocument(document.intent);
+    if (intent.environmentSlug !== document.namespace) {
+      return yield* new Conflict({ message: "Environment identity does not match its document." });
     }
-  }
-  const variableGroupById = new Map(
-    variableGroups.map((group) => [group.id, group]),
-  );
-  const intent = yield* Schema.decodeUnknownEffect(savedEnvironmentIntentSchema)(
-    {
-    version: 1,
-    environmentSlug: environment.slug,
-    services: [...services]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((service) => {
-        const compiled = projectServiceDeploymentConfig({
-          ...service,
-          env: {},
-          mounts: [],
-        });
-        const { env: _env, mounts: _mounts, ...config } = compiled;
-        void _env;
-        void _mounts;
-        return {
-          id: service.id,
-          lineageId: service.lineageId,
-          slug: service.slug,
-          config,
-          variables: variablesByServiceId.get(service.id) ?? [],
-          variableGroupAttachments: variableGroupAttachments
-            .filter(
-              (attachment) =>
-                attachment.serviceId === service.id &&
-                variableGroupById.has(attachment.variableGroupId),
-            )
-            .map(({ variableGroupId, sortOrder }) => ({
-              variableGroupId,
-              sortOrder,
-            })),
-          volumeAttachments: volumeAttachments
-            .filter(
-              (attachment) =>
-                attachment.serviceId === service.id &&
-                activeVolumeIds.has(attachment.volumeResourceId),
-            )
-            .map(({ volumeResourceId, mountPath }) => ({
-              volumeResourceId,
-              mountPath,
-            }))
-            .sort(
-              (left, right) =>
-                left.volumeResourceId.localeCompare(right.volumeResourceId) ||
-                left.mountPath.localeCompare(right.mountPath),
-            ),
-          encryptedRegistryUsername: service.encryptedRegistryUsername,
-          encryptedRegistrySecret: service.encryptedRegistrySecret,
-        };
-      }),
-    variableGroups: [...resources]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .flatMap((resource) => {
-        if (
-          resource.implementationType !== "variable_group" ||
-          !resource.variableGroupId ||
-          resource.deletedAt !== null
-        )
-          return [];
-        const group = variableGroupById.get(resource.variableGroupId);
-        if (!group) return [];
-        return [
-          {
-            resourceId: resource.id,
-            resourceLineageId: resource.lineageId,
-            variableGroupId: group.id,
-            variableGroupLineageId: group.lineageId,
-            slug: group.slug,
-            name: resource.name,
-            variables: variablesByGroupId.get(group.id) ?? [],
-          },
-        ];
-      }),
-    volumes: [...activeVolumes]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((volume) => ({
-        resourceId: volume.id,
-        resourceLineageId: volume.lineageId,
-        name: volume.name,
-      })),
-    },
-    strictParseOptions,
-  ).pipe(
-    Effect.mapError(
-      () =>
-        new Conflict({
-          message:
-            "Working State contains relationships to nodes that are not being saved.",
-        }),
-    ),
-  );
+    return { ...document, intent };
+  },
+);
 
-  const revisionMarkers = [
-    ...services.map(
-      (service) => `service:${service.id}:${service.updatedAt.toISOString()}`,
-    ),
-    ...resources.map(
-      (resource) =>
-        `resource:${resource.id}:${resource.updatedAt.toISOString()}`,
-    ),
-    ...variableGroups.map(
-      (group) => `variable-group:${group.id}:${group.updatedAt.toISOString()}`,
-    ),
-    ...variables.map(
-      (variable) =>
-        `variable:${variable.id}:${variable.updatedAt.toISOString()}`,
-    ),
-  ];
+export const requireDocumentRevision = Effect.fn("EnvironmentDesign.requireDocumentRevision")(
+  function* (document: Pick<EnvironmentDocument, "revision">, revision: string) {
+    if (document.revision !== revision) return yield* new Conflict({
+      message: "Working State changed while this edit was being saved. Review the latest values and try again.",
+    });
+  },
+);
 
-  return {
-    intent,
-    projection: {
-      ...compileSavedEnvironmentIntent({ environmentId, intent }),
-      tombstonedVolumeIds,
-      revisionMarkers,
-    } satisfies CurrentEnvironmentSnapshotProjection,
-  };
-});
+/** One authored write. Call inside the actor's mutation transaction. */
+export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnvironmentDocument")(
+  function* (document: EnvironmentDocument, candidate: SavedEnvironmentIntent) {
+    const { drizzle } = yield* Database;
+    const intent = canonicalizeEnvironmentIntent(yield* decodeEnvironmentDocument(candidate));
+    if (intent.environmentSlug !== document.namespace) {
+      return yield* new Conflict({ message: "An edit cannot change the Environment identity." });
+    }
+    // Identity rows scope private values and history; they contain no authored settings.
+    const identities = yield* drizzle.select().from(service).where(eq(service.environmentId, document.id));
+    if (intent.services.some((node) => !identities.some((identity) => identity.id === node.id && identity.lineageId === node.lineageId))) {
+      return yield* new Conflict({ message: "A service does not belong to this Environment." });
+    }
+    const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, document.id));
+    const groups = yield* drizzle.select().from(environmentVariableGroup).where(eq(environmentVariableGroup.environmentId, document.id));
+    if (intent.volumes.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "volume")) ||
+      intent.variableGroups.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "variable_group" && identity.variableGroupId === node.variableGroupId) || !groups.some((identity) => identity.id === node.variableGroupId && identity.lineageId === node.variableGroupLineageId))) {
+      return yield* new Conflict({ message: "A resource does not belong to this Environment." });
+    }
+    const variableOwners = [
+      ...intent.services.flatMap((node) => node.variables.map((value) => ({ id: value.id, environmentId: document.id, serviceId: node.id, variableGroupId: null }))),
+      ...intent.variableGroups.flatMap((node) => node.variables.map((value) => ({ id: value.id, environmentId: document.id, serviceId: null, variableGroupId: node.variableGroupId }))),
+    ];
+    if (variableOwners.length) {
+      yield* drizzle.insert(variable).values(variableOwners).onConflictDoNothing();
+      const storedOwners = yield* drizzle.select().from(variable).where(and(eq(variable.environmentId, document.id), inArray(variable.id, variableOwners.map((owner) => owner.id))));
+      if (variableOwners.some((owner) => !storedOwners.some((stored) => stored.id === owner.id && stored.serviceId === owner.serviceId && stored.variableGroupId === owner.variableGroupId))) {
+        return yield* new Conflict({ message: "A variable identity belongs to a different owner." });
+      }
+    }
+    const secrets = [...intent.services.flatMap((node) => node.variables), ...intent.variableGroups.flatMap((node) => node.variables)]
+      .flatMap((variable) => variable.value.kind === "secret" && variable.value.encryptedValue
+        ? [{ environmentId: document.id, variableId: variable.id, encryptedValue: variable.value.encryptedValue }]
+        : []);
+    if (secrets.length) yield* drizzle.insert(variableSecret).values(secrets).onConflictDoUpdate({
+      target: variableSecret.variableId,
+      set: { encryptedValue: sql`excluded.encrypted_value` },
+      setWhere: eq(variableSecret.environmentId, document.id),
+    });
+    const credentials = intent.services.flatMap((node) => node.encryptedRegistrySecret
+      ? [{ serviceId: node.id, encryptedRegistryUsername: node.encryptedRegistryUsername, encryptedRegistrySecret: node.encryptedRegistrySecret }]
+      : []);
+    if (credentials.length) {
+      yield* drizzle.insert(serviceRegistryCredential).values(credentials).onConflictDoUpdate({
+        target: serviceRegistryCredential.serviceId,
+        set: { encryptedRegistryUsername: sql`excluded.encrypted_registry_username`, encryptedRegistrySecret: sql`excluded.encrypted_registry_secret` },
+      });
+      yield* drizzle.update(service).set({ hasRegistryCredential: true })
+        .where(and(eq(service.environmentId, document.id), inArray(service.id, credentials.map((credential) => credential.serviceId))));
+    }
+    const [written] = yield* drizzle.update(environment).set({
+      intent: redactEnvironmentIntent(intent), revision: randomUUID(), updatedAt: new Date(),
+    }).where(and(eq(environment.id, document.id), eq(environment.revision, document.revision))).returning();
+    if (!written) return yield* new Conflict({ message: "Working State changed while this edit was being saved." });
+    return written;
+  },
+);
 
-export const loadCurrentEnvironmentSnapshotProjection = Effect.fn(
-  "EnvironmentDesign.loadCurrentEnvironmentSnapshotProjection",
-)(function* (environmentId: string) {
-  return (yield* loadCurrentEnvironmentState(environmentId)).projection;
-});
+/** Ciphertext is private storage, captured into Saved; it is never an editable browser document. */
+export const loadCurrentEnvironmentState = Effect.fn("EnvironmentDesign.loadCurrentEnvironmentState")(
+  function* (environmentId: string) {
+    const { drizzle } = yield* Database;
+    const document = yield* loadEnvironmentDocument(environmentId);
+    const intent = structuredClone(document.intent);
+    const variables = [...intent.services.flatMap((node) => node.variables), ...intent.variableGroups.flatMap((node) => node.variables)];
+    const secretIds = variables.filter((variable) => variable.value.kind === "secret").map((variable) => variable.id);
+    const secrets = secretIds.length ? yield* drizzle.select().from(variableSecret)
+      .where(and(eq(variableSecret.environmentId, environmentId), inArray(variableSecret.variableId, secretIds))) : [];
+    const byId = new Map(secrets.map((secret) => [secret.variableId, secret.encryptedValue]));
+    for (const variable of variables) {
+      if (variable.value.kind !== "secret") continue;
+      const encryptedValue = byId.get(variable.id);
+      if (!encryptedValue) return yield* new Conflict({ message: "A sealed variable has no private value." });
+      variable.value.encryptedValue = encryptedValue;
+    }
+    const credentials = intent.services.length ? yield* drizzle.select({ credential: serviceRegistryCredential }).from(serviceRegistryCredential)
+      .innerJoin(service, eq(service.id, serviceRegistryCredential.serviceId))
+      .where(and(eq(service.environmentId, environmentId), inArray(service.id, intent.services.map((node) => node.id)))) : [];
+    for (const node of intent.services) {
+      const credential = credentials.find((row) => row.credential.serviceId === node.id)?.credential;
+      node.encryptedRegistryUsername = credential?.encryptedRegistryUsername ?? null;
+      node.encryptedRegistrySecret = credential?.encryptedRegistrySecret ?? null;
+    }
+    return {
+      document,
+      intent,
+      projection: {
+        ...compileSavedEnvironmentIntent({ environmentId, intent }),
+        revisionMarkers: [`environment:${environmentId}:${document.revision}`],
+      } satisfies CurrentEnvironmentSnapshotProjection,
+    };
+  },
+);
+
+export const loadCurrentEnvironmentSnapshotProjection = Effect.fn("EnvironmentDesign.loadCurrentEnvironmentSnapshotProjection")(
+  function* (environmentId: string) { return (yield* loadCurrentEnvironmentState(environmentId)).projection; },
+);

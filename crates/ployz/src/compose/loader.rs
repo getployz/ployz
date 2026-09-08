@@ -137,49 +137,6 @@ pub(super) fn helper<T: serde::de::DeserializeOwned>(
     }
 }
 
-pub(super) fn compose_command(
-    docker: &Path,
-    options: &LoadOptions,
-    override_file: Option<&TemporaryComposeFile>,
-) -> Result<Command, ComposeError> {
-    let mut command = Command::new(docker);
-    command.args(["compose", "--all-resources"]);
-    for file in &options.files {
-        command.arg("--file").arg(file);
-    }
-    if let Some(override_file) = override_file {
-        if options.files.is_empty() {
-            if let Some(mut files) = std::env::var_os(crate::cli::env::COMPOSE_FILE) {
-                files.push(compose_path_separator());
-                files.push(&override_file.path);
-                command.env(crate::cli::env::COMPOSE_FILE, files);
-            } else {
-                command
-                    .arg("--file")
-                    .arg(discover_default_compose_file(options)?)
-                    .arg("--file")
-                    .arg(&override_file.path);
-            }
-        } else {
-            command.arg("--file").arg(&override_file.path);
-        }
-    }
-    for profile in &options.profiles {
-        command.arg("--profile").arg(profile);
-    }
-    if options.all_profiles {
-        command.args(["--profile", "*"]);
-    }
-    if let Some(directory) = &options.working_dir {
-        command.current_dir(directory);
-    }
-    Ok(command)
-}
-
-pub(super) fn first_compose_file_from_environment() -> Option<PathBuf> {
-    compose_files_from_environment().into_iter().next()
-}
-
 fn compose_input_files(options: &LoadOptions) -> Vec<PathBuf> {
     if !options.files.is_empty() {
         return options.files.clone();

@@ -102,7 +102,7 @@ export function runtimeWatchVolumeFixture(
 
 export function resolvedServiceSpecFixture(): ResolvedServiceSpec {
   return {
-    service_id: "api" as ServiceId,
+    service_id: "a".repeat(32) as ServiceId,
     name: "api",
     mode: { mode: "replicated", replicas: 1 },
     placement: { machines: [] },

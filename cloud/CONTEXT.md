@@ -69,15 +69,15 @@ Cloud's role after bootstrap is to observe, display, and request operations agai
 _Avoid_: Cloud control plane, cloud authority, hosted source of truth
 
 **Cloud Deployment Attempt**:
-The cohesive user-visible attempt to turn one frozen Attempt Target into runtime state through queueing, planning, building, and authoritative deploy. It remains one Environment-level attempt even when successful Environment Nodes apply and failed nodes remain pending independently.
+The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into runtime state through queueing, planning, building, and authoritative deploy. It remains one Environment-level attempt even when successful Environment Nodes apply and failed nodes remain pending independently.
 _Avoid_: Prepared snapshot, build workflow, Core Deploy
 
 **Working State**:
-The normalized TanStack DB-backed environment records currently being edited. Forms keep unconfirmed input locally and write confirmed ownership units into Working State.
-_Avoid_: Draft snapshot, pending config, client diff ledger
+The mutable Environment configuration currently being edited, also called the draft. Preserving edits does not publish them or make them eligible for deployment.
+_Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
-The latest explicitly persisted canonical authoring graph copied from Working State. It contains Service-owned settings, Variables, Environment Resources, and attachment edges; its revision envelope also owns reviewed destructive authority for Volumes absent from that graph. Compiler-derived Service environment values, mounts, or producer indexes are never Saved authority. Saving publishes authored intent as safe for the next manual or automated deployment; it does not claim the configuration has reached runtime.
+The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save publishes without starting a deployment; Deploy publishes the exact reviewed configuration and starts an attempt against that revision, while later Working State edits remain unpublished.
 _Avoid_: Applied state, frozen attempt target, unsaved draft
 
 **Environment Publication Review**:

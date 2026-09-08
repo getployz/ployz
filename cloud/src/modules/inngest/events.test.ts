@@ -1,7 +1,6 @@
 import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
-  createEnvironmentDeployConfirmedEvent,
   createEnvironmentDeployRequestedEvent,
   createMachineRemoveRequestedEvent,
   createGithubCheckSuiteReceivedEvent,
@@ -89,18 +88,6 @@ describe("Inngest events", () => {
       id: "teardown-attempt-1",
       name: "cloud/teardown.requested",
       data: { attemptId: "attempt-1" },
-    });
-  });
-
-  it("creates deterministic environment deploy confirmed events", () => {
-    expect(
-      createEnvironmentDeployConfirmedEvent({
-        environmentDeploymentId: "deployment-1",
-      }),
-    ).toEqual({
-      id: "environment-deploy-confirmed-deployment-1",
-      name: "environment/deploy.confirmed",
-      data: { environmentDeploymentId: "deployment-1" },
     });
   });
 

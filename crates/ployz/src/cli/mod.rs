@@ -22,6 +22,7 @@ pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
         .subcommand(build())
+        .subcommand(changes())
         .subcommand(ingress())
         .subcommand(ctx())
         .subcommand(deploy())
@@ -166,6 +167,18 @@ fn deploy() -> Command {
         .arg(switch("skip-health", None))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
         .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
+}
+
+fn changes() -> Command {
+    base(
+        "changes",
+        "Review captured Compose settings against live observations (command only)",
+    )
+    .arg(many("file", Some('f')).default_value("compose.yaml"))
+    .arg(many("profile", None))
+    .arg(project_name(Some('p')))
+    .arg(json_output())
+    .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
 }
 
 fn ingress() -> Command {

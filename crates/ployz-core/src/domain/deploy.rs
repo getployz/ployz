@@ -1,7 +1,7 @@
 //! Deploy Intent, Plan Options, Preview, and Outcome shared by the CLI planner and `@ployz/sdk`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::{self, Display, Formatter},
 };
 use ts_rs::TS;
@@ -51,14 +51,13 @@ pub struct DeployIntent {
     pub target: Vec<RequestedServiceSpec>,
     /// Planner knobs for this Deploy, including the selected Service list.
     pub options: PlanOptions,
-    // ponytail: planner graph, not wire. Split if Cloud ever sends depends_on.
-    #[serde(default, skip)]
+    #[serde(default)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
-    #[serde(default, skip)]
+    #[serde(default)]
     service_profiles: BTreeMap<ServiceName, Vec<String>>,
-    #[serde(default, skip)]
+    #[serde(default)]
     requested_profiles: Vec<String>,
-    #[serde(default, skip)]
+    #[serde(default)]
     compose_refusal: Option<ComposePruneRefusal>,
 }
 
@@ -172,6 +171,45 @@ impl DeployIntent {
         &self.dependencies
     }
 
+    /// Service Names this command applies, including explicitly selected dependencies.
+    #[must_use]
+    pub fn applied_names(&self) -> BTreeSet<&ServiceName> {
+        if self.options.selected.is_empty() {
+            return self
+                .target
+                .iter()
+                .filter(|spec| self.service_starts(&spec.name))
+                .map(|spec| &spec.name)
+                .collect();
+        }
+        let present = self
+            .target
+            .iter()
+            .map(|spec| &spec.name)
+            .collect::<BTreeSet<_>>();
+        let mut included = BTreeSet::new();
+        let mut pending = self
+            .options
+            .selected
+            .iter()
+            .map(|attempt| &attempt.name)
+            .filter(|name| present.contains(name))
+            .collect::<Vec<_>>();
+        while let Some(name) = pending.pop() {
+            if included.insert(name) {
+                pending.extend(
+                    self.dependencies
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(|dependency| &dependency.service)
+                        .filter(|dependency| present.contains(dependency)),
+                );
+            }
+        }
+        included
+    }
+
     /// Whether `name` starts given the requested profile list.
     #[must_use]
     pub fn service_starts(&self, name: &ServiceName) -> bool {
@@ -198,7 +236,7 @@ impl DeployIntent {
 }
 
 /// Compose condition on one Service dependency edge.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DependencyCondition {
     /// Preserve dependency ordering only.
@@ -208,7 +246,7 @@ pub enum DependencyCondition {
 }
 
 /// One parsed dependency edge used by Deploy planning.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceDependency {
     /// Service that the dependent Service requires.
     pub service: ServiceName,
@@ -467,7 +505,8 @@ pub struct PreservedVolume {
 }
 
 /// Why a loaded Compose Project is incomplete for reconciliation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
 pub enum ComposePruneRefusal {
     /// Profiled Services were removed before planning.
     FilteredProfiles,

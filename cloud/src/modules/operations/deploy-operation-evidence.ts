@@ -1,8 +1,7 @@
-import { Data, Effect, Schema } from "effect";
+import { Schema } from "effect";
 import { strictParseOptions } from "#/modules/environment-design/schema";
 
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const operationIdPayload = { operationId: Schema.String };
 const automaticHostnameCollisionEvidenceSchema = Schema.Struct({
   kind: Schema.Literal("automatic_hostname_collision"),
@@ -102,30 +101,6 @@ const failureSchema = Schema.Union([
   typedDeployFailureEvidenceSchema,
   Schema.Struct({ kind: Schema.String }),
 ]);
-const phaseFailureSchema = Schema.Union([
-  typedDeployFailureEvidenceSchema,
-  Schema.Struct({ kind: NonEmptyString }),
-]);
-const runtimePhaseServiceSchema = Schema.Union([
-  Schema.Struct({
-    result: Schema.Literal("failed"),
-    serviceId: NonEmptyString,
-    failure: phaseFailureSchema,
-  }),
-  Schema.Struct({
-    result: Schema.Literals(["completed", "skipped", "unchanged", "removed"]),
-    serviceId: NonEmptyString,
-  }),
-]);
-const deployPhaseFinishedEvidenceSchema = Schema.Struct({
-  eventType: Schema.Literal("deploy_phase_finished"),
-  payload: Schema.Struct({
-    operationId: NonEmptyString,
-    phase: NonnegativeInt,
-    outcome: NonEmptyString,
-    services: Schema.Array(runtimePhaseServiceSchema),
-  }),
-});
 const deployOperationEvidenceSchema = Schema.Union([
   Schema.Struct({
     eventType: Schema.Literal("deploy_submitted"),
@@ -198,7 +173,6 @@ const deployOperationEvidenceSchema = Schema.Union([
       serviceIds: Schema.Array(Schema.String),
     }),
   }),
-  deployPhaseFinishedEvidenceSchema,
   Schema.Struct({
     eventType: Schema.Literal("deploy_cleanup_finished"),
     payload: Schema.Struct({
@@ -234,16 +208,6 @@ const deployOperationEvidenceSchema = Schema.Union([
 ]);
 
 export type TypedDeployFailureEvidence = typeof typedDeployFailureEvidenceSchema.Type;
-export type RuntimePhaseService = typeof runtimePhaseServiceSchema.Type;
-export type RuntimePhaseEvidenceInput = {
-  readonly eventType: string;
-  readonly payload: object;
-};
-
-export class RuntimePhaseEvidenceInvalid extends Data.TaggedError(
-  "RuntimePhaseEvidenceInvalid",
-)<{ readonly message: string; readonly cause: unknown }> {}
-
 export function parseDeployOperationEvidence(input: {
   eventType: string;
   payload: unknown;
@@ -261,20 +225,5 @@ export function parseTypedDeployFailureEvidence<T>(input: T) {
   return Schema.decodeUnknownResult(typedDeployFailureEvidenceSchema)(
     input,
     strictParseOptions,
-  );
-}
-
-export function decodeRuntimePhaseEvidence(value: RuntimePhaseEvidenceInput) {
-  return Schema.decodeUnknownEffect(deployPhaseFinishedEvidenceSchema)(
-    value,
-    strictParseOptions,
-  ).pipe(
-    Effect.mapError(
-      (cause) =>
-        new RuntimePhaseEvidenceInvalid({
-          message: "Persisted runtime phase evidence is invalid.",
-          cause,
-        }),
-    ),
   );
 }

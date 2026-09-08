@@ -1,11 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import {
-  environmentResource,
   resourceLineage,
-  service,
   serviceLineage,
   variableGroupLineage,
 } from "#/modules/environment-design/tables";
@@ -15,6 +13,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import type { EnvironmentNodeNameIdentity } from "./environment-node-names";
+import { loadEnvironmentDocument } from "./working-state-repository.server";
 import {
   getEnvironmentForProjectByNamespace,
   getOrganizationForUserBySlug,
@@ -116,37 +115,11 @@ export const requireEnvironmentForActorById = Effect.fn(
 export const listEnvironmentNodeNameIdentities = Effect.fn(
   "EnvironmentDesign.listEnvironmentNodeNameIdentities",
 )(function* (environmentId: string) {
-  const database = yield* Database;
-  const [services, resources] = yield* Effect.all(
-    [
-      database.drizzle
-        .select({ id: service.id, name: service.name })
-        .from(service)
-        .where(
-          and(eq(service.environmentId, environmentId), isNull(service.deletedAt)),
-        ),
-      database.drizzle
-        .select({
-          id: environmentResource.id,
-          name: environmentResource.name,
-          implementationType: environmentResource.implementationType,
-        })
-        .from(environmentResource)
-        .where(eq(environmentResource.environmentId, environmentId)),
-    ],
-    { concurrency: "unbounded" },
-  );
+  const { intent } = yield* loadEnvironmentDocument(environmentId);
   return [
-    ...services.map((row) => ({
-      type: "service" as const,
-      id: row.id,
-      name: row.name,
-    })),
-    ...resources.map((row) => ({
-      type: row.implementationType,
-      id: row.id,
-      name: row.name,
-    })),
+    ...intent.services.map((node) => ({ type: "service" as const, id: node.id, name: node.config.name })),
+    ...intent.variableGroups.map((node) => ({ type: "variable_group" as const, id: node.resourceId, name: node.name })),
+    ...intent.volumes.map((node) => ({ type: "volume" as const, id: node.resourceId, name: node.name })),
   ] satisfies EnvironmentNodeNameIdentity[];
 });
 

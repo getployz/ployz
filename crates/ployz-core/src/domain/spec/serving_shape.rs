@@ -20,6 +20,11 @@ impl ServingShape {
     /// Shape of one observed Resolved Service Spec.
     #[must_use]
     pub fn of_resolved(spec: &ResolvedServiceSpec) -> Self {
+        Self::from_fields(&Self::fields_of_resolved(spec))
+    }
+
+    /// Canonical observed fields shared by serving identity and setting comparison.
+    pub(super) fn fields_of_resolved(spec: &ResolvedServiceSpec) -> serde_json::Value {
         let ResolvedServiceSpec {
             service_id: _,
             name,
@@ -32,7 +37,7 @@ impl ServingShape {
             ingress_proxy_fragment,
             update: _,
         } = spec;
-        Self::of_recreate(
+        Self::recreate_fields(
             name,
             mode,
             container,
@@ -49,6 +54,11 @@ impl ServingShape {
     /// Shape of one requested spec. Comparable with [`Self::of_resolved`].
     #[must_use]
     pub fn of_requested(spec: &RequestedServiceSpec) -> Self {
+        Self::from_fields(&Self::fields_of_requested(spec))
+    }
+
+    /// Canonical requested fields shared by serving identity and setting comparison.
+    pub(super) fn fields_of_requested(spec: &RequestedServiceSpec) -> serde_json::Value {
         let RequestedServiceSpec {
             name,
             mode,
@@ -60,7 +70,7 @@ impl ServingShape {
             ingress_proxy_fragment,
             update: _,
         } = spec;
-        Self::of_recreate(
+        Self::recreate_fields(
             name,
             mode,
             container,
@@ -84,7 +94,7 @@ impl ServingShape {
         clippy::too_many_arguments,
         reason = "one argument per hashed recreate field family"
     )]
-    fn of_recreate(
+    fn recreate_fields(
         name: &ServiceName,
         mode: &ServiceMode,
         container: &ServiceContainerSpec,
@@ -95,7 +105,7 @@ impl ServingShape {
         configs: &[ConfigSpec],
         config_mounts: &[ConfigMount],
         ingress_proxy_fragment: Option<&IngressProxyFragment>,
-    ) -> Self {
+    ) -> serde_json::Value {
         let ServiceContainerSpec {
             image,
             command,
@@ -153,7 +163,11 @@ impl ServingShape {
             "config_mounts": sorted_json(config_mounts),
             "ingress_proxy_fragment": ingress_proxy_fragment,
         });
-        let bytes = serde_json::to_vec(&payload).expect("serving shape JSON is serializable");
+        payload
+    }
+
+    fn from_fields(payload: &serde_json::Value) -> Self {
+        let bytes = serde_json::to_vec(payload).expect("serving shape JSON is serializable");
         Self(fnv1a64(&bytes))
     }
 }

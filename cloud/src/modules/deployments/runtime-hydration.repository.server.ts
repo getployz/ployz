@@ -1,3 +1,4 @@
+import { loadEnvironmentSavedIntentById } from "#/modules/environment-design/saved-state-repository.server";
 import "@tanstack/react-start/server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { Effect, Result, Schema } from "effect";
@@ -66,13 +67,14 @@ export const loadDeploymentContext = Effect.fn(
       .limit(1);
 
     if (!record) return null;
+    const saved = yield* loadEnvironmentSavedIntentById({ environmentId: record.environment.id, savedStateSnapshotId: record.deployment.savedStateSnapshotId });
+    if (!saved) throw new Error("Deployment authored intent is missing.");
 
     const [snapshotRows, volumeSnapshotRows, appliedProjection] =
       yield* Effect.all([
         database.drizzle
           .select({
             serviceId: schemaEnvironmentNodeConfigSnapshot.nodeId,
-            serviceSlug: schemaService.slug,
             config: schemaEnvironmentNodeConfigSnapshot.config,
           })
           .from(schemaEnvironmentNodeConfigSnapshot)
@@ -112,7 +114,7 @@ export const loadDeploymentContext = Effect.fn(
       ]);
     const snapshots = snapshotRows.map((snapshot) => ({
       serviceId: snapshot.serviceId,
-      serviceSlug: snapshot.serviceSlug,
+      serviceSlug: saved.intent.services.find((node) => node.id === snapshot.serviceId)?.slug ?? snapshot.serviceId,
       config: decodeStrict(serviceDeploymentConfigSchema, snapshot.config),
     }));
     const resolvedEnvByServiceId = yield* getResolvedDeployEnvBySnapshotConfig(

@@ -1,25 +1,25 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use ployz_core::{RequestedServiceSpec, ServiceDependency};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_norway::Value;
 use thiserror::Error;
 
 /// A Compose build held as the raw spec. Additional contexts are read from `raw`.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BuildSpec {
     pub raw: Value,
 }
 
 /// A project secret after validate: one source, or the resolved value.
-#[derive(Clone, Debug, Eq, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
 pub(crate) enum ProjectSecret {
     Unresolved(SecretSource),
     Resolved(String),
 }
 
 /// How an unresolved project secret is obtained.
-#[derive(Clone, Debug, Eq, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
 pub(crate) enum SecretSource {
     File(String),
     Environment(String),

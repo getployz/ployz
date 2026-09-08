@@ -259,14 +259,14 @@ x-volumes:
         docker: Some(docker),
         ..Default::default()
     };
-    let project = load_project(&load).unwrap();
+    let mut project = load_project(&load).unwrap();
     let options = BuildOptions {
         check: true,
         services: vec!["api".into()],
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
-    let result = execute_build(&plan, &options, &load, &project);
+    let result = execute_build(&plan, &options, &load, &mut project);
     let _ = Command::new("/usr/bin/docker")
         .args(["image", "rm", "-f", &image])
         .status();

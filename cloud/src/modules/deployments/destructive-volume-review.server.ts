@@ -1,5 +1,7 @@
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
+import { not } from "drizzle-orm";
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import {
   environmentResource as schemaEnvironmentResource,
@@ -33,7 +35,7 @@ export const gatherExactTombstonedVolumeReviews = Effect.fn(
           and(
             eq(schemaEnvironmentResource.environmentId, input.environmentId),
             eq(schemaEnvironmentResource.implementationType, "volume"),
-            isNotNull(schemaEnvironmentResource.deletedAt),
+            not(volumeIsAuthored),
             inArray(schemaEnvironmentResource.id, resourceIds),
           ),
         );

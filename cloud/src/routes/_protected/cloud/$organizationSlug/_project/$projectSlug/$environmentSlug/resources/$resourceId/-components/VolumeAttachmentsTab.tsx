@@ -1,8 +1,9 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useReducer } from "react";
 import { HardDriveIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { getServiceVolumeAttachmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import {
   Empty,
   EmptyDescription,
@@ -100,10 +101,15 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
   const attachVolume = useServerFn(attachServiceVolumeServerFn);
   const detachVolume = useServerFn(detachServiceVolumeServerFn);
   const updateMountPath = useServerFn(updateServiceVolumeMountPathServerFn);
-  const attachmentsCollection = getServiceVolumeAttachmentsCollection(
+  const attachmentsCollection = getEnvironmentsCollection(
     state.organizationSlug,
   );
 
+  const document = useEnvironmentDocument(state.organizationSlug, state.environmentId);
+  function revision() {
+    if (!document) throw new Error("Environment is not loaded.");
+    return document.revision;
+  }
   const volumeResourceId = state.resource.resource.id;
   const isDeleted = state.resource.resource.deletedAt != null;
   const serviceNameById = new Map(
@@ -174,6 +180,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
+          revision: revision(),
           serviceId: mountState.addServiceId,
           volumeResourceId,
           mountPath: parsed.success,
@@ -230,6 +237,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
+          revision: revision(),
           serviceId,
           volumeResourceId,
           mountPath: parsed.success,
@@ -259,6 +267,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
+          revision: revision(),
           serviceId,
           volumeResourceId,
         },

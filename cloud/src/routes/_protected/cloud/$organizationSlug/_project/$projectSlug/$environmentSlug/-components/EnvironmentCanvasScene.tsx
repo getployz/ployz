@@ -1,3 +1,4 @@
+import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { Suspense } from "react";
 import {
   Background,
@@ -12,8 +13,6 @@ import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   buildEnvironmentServicesViewQuery,
   normalizeEnvironmentServicesViewRecord,
-  projectServiceViewsWithBoundEnv,
-  projectServiceViewsWithBoundMounts,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
 import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collections";
@@ -23,15 +22,10 @@ import {
   variableGroupResourceRecordSchema,
   volumeResourceRecordSchema,
 } from "#/modules/environment-design/resources";
-import { environmentServiceVolumeAttachmentSchema } from "#/modules/environment-design/service-volume-attachments";
-import { environmentServiceVariableGroupAttachmentSchema } from "#/modules/environment-design/variables";
 import {
   useCanvasPositionsCollection,
   useEnvironmentResourcesCollection,
-  useServiceVariableGroupAttachmentsCollection,
-  useServiceVolumeAttachmentsCollection,
   useServicesCollection,
-  useVariablesCollection,
   useVolumeResourcesCollection,
 } from "#/modules/services/services.collection";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
@@ -81,14 +75,11 @@ function CanvasWithData() {
   const canvasPositionsCollection = useCanvasPositionsCollection(
     params.organizationSlug,
   );
-  const serviceVariableGroupAttachmentsCollection =
-    useServiceVariableGroupAttachmentsCollection(params.organizationSlug);
   const volumeResourcesCollection = useVolumeResourcesCollection(
     params.organizationSlug,
   );
-  const serviceVolumeAttachmentsCollection =
-    useServiceVolumeAttachmentsCollection(params.organizationSlug);
-  const variablesCollection = useVariablesCollection(params.organizationSlug);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug);
+  const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   const nodeIntroductionsCollection = getEnvironmentNodeIntroductionsCollection(
     params.organizationSlug,
   );
@@ -102,7 +93,7 @@ function CanvasWithData() {
       buildEnvironmentServicesViewQuery(q, params, {
         services: servicesCollection,
         canvasPositions: canvasPositionsCollection,
-        variables: variablesCollection,
+        documents,
       }),
   });
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
@@ -133,15 +124,6 @@ function CanvasWithData() {
           updatedAt: canvasPosition["updatedAt"],
         })),
   });
-  const { data: serviceVariableGroupAttachmentRows } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ attachment: serviceVariableGroupAttachmentsCollection })
-        .where(({ attachment }) =>
-          eq(attachment["environmentId"], environmentId),
-        )
-        .select(({ attachment }) => attachment),
-  });
   const { data: volumeResourceRows } = useLiveSuspenseQuery({
     query: (q) =>
       q
@@ -151,15 +133,6 @@ function CanvasWithData() {
           eq(resource.environmentSlug, params.environmentSlug),
         )
         .select(({ resource }) => resource),
-  });
-  const { data: serviceVolumeAttachmentRows } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ attachment: serviceVolumeAttachmentsCollection })
-        .where(({ attachment }) =>
-          eq(attachment["environmentId"], environmentId),
-        )
-        .select(({ attachment }) => attachment),
   });
   const { data: nodeIntroductionRows } = useLiveSuspenseQuery({
     query: (q) =>
@@ -191,28 +164,11 @@ function CanvasWithData() {
   const canvasPositions = canvasPositionRows.map((position) =>
     parseLiveQueryRow(environmentResourceCanvasPositionSchema, position),
   );
-  const normalizedServices = services.map(
-    normalizeEnvironmentServicesViewRecord,
-  );
-  const serviceVariableGroupAttachments =
-    serviceVariableGroupAttachmentRows.map((attachment) =>
-      parseLiveQueryRow(
-        environmentServiceVariableGroupAttachmentSchema,
-        attachment,
-      ),
-    );
-  const serviceVolumeAttachments = serviceVolumeAttachmentRows.map((attachment) =>
-    parseLiveQueryRow(environmentServiceVolumeAttachmentSchema, attachment),
-  );
-  const servicesWithBoundEnv = projectServiceViewsWithBoundMounts({
-    services: projectServiceViewsWithBoundEnv({
-      services: normalizedServices,
-      environmentResources,
-      attachments: serviceVariableGroupAttachments,
-    }),
-    volumeResources,
-    attachments: serviceVolumeAttachments,
-  });
+  const servicesWithBoundEnv = services.map(normalizeEnvironmentServicesViewRecord);
+  const serviceVariableGroupAttachments = document?.intent.services.flatMap((service) =>
+    service.variableGroupAttachments.map((attachment) => ({ ...attachment, serviceId: service.id, environmentId }))) ?? [];
+  const serviceVolumeAttachments = document?.intent.services.flatMap((service) =>
+    service.volumeAttachments.map((attachment) => ({ ...attachment, serviceId: service.id, environmentId }))) ?? [];
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );

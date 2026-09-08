@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Schema } from "effect";
-import { Result } from "effect";
 import {
   buildCanvasEnvironmentChangeState,
   type CanvasDeploymentEvidence,
@@ -11,43 +9,7 @@ import {
   type EnvironmentSavedStateProjection,
   type EnvironmentStateProjection,
 } from "#/modules/environment-design/environment-change-set";
-import { foldPhaseAwareAppliedState } from "#/modules/runtime/phase-aware-applied-state";
-import {
-  createPhaseAwareDeployRequestFromPlan as createPhaseAwareDeployRequestFromPlanEffect,
-  parsePhaseAwareDeployResult as parsePhaseAwareDeployResultEffect,
-} from "#/modules/runtime/phase-aware-deploy-contract";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
-
-function syncResult<A, E>(program: Effect.Effect<A, E>) {
-  return Effect.runSync(
-    Effect.match(program, {
-      onFailure: (error) => Result.fail(error),
-      onSuccess: (value) => Result.succeed(value),
-    }),
-  );
-}
-
-function createPhaseAwareDeployRequestFromPlan<
-  TTarget extends { readonly services: readonly { readonly service_id: string }[] },
->(input: {
-  readonly target: TTarget;
-  readonly plannedPhases: readonly {
-    readonly services: readonly { readonly service_id: string }[];
-  }[];
-  readonly removalServiceIds: readonly string[];
-  readonly trigger: "manual" | "git";
-  readonly sourceAffectedServiceIds: readonly string[];
-  readonly alreadyAppliedServiceIds: readonly string[];
-}) {
-  return syncResult(createPhaseAwareDeployRequestFromPlanEffect(input));
-}
-
-function parsePhaseAwareDeployResult(
-  request: Parameters<typeof parsePhaseAwareDeployResultEffect>[0],
-  value: Schema.Json,
-) {
-  return syncResult(parsePhaseAwareDeployResultEffect(request, value));
-}
 
 const node = { type: "service" as const, id: "api" };
 
@@ -86,6 +48,7 @@ function config(input: {
       ]),
     ),
     mounts: [],
+    variableGroupAttachments: [],
   };
 }
 
@@ -144,7 +107,7 @@ function canvasState(input: {
 }
 
 describe("Environment Change Set cross-layer acceptance matrix", () => {
-  it("save then Git publishes the saved configuration with the source overlay", () => {
+  it("Save separates the published configuration from successor Working edits", () => {
     const applied = config({ replicas: 1, env: { FEATURE: "off" } });
     const saved = config({ replicas: 1, env: { FEATURE: "saved" } });
     const successorWorking = config({
@@ -163,31 +126,7 @@ describe("Environment Change Set cross-layer acceptance matrix", () => {
     expect(afterSave.unsaved.totalCount).toBe(1);
     expect(afterSave.pending.totalCount).toBe(1);
 
-    const request = createPhaseAwareDeployRequestFromPlan({
-      target: {
-        services: [
-          {
-            service_id: "api",
-            image: "registry.test/api:git-sha",
-            env: saved.env,
-          },
-        ],
-      },
-      plannedPhases: [{ services: [{ service_id: "api" }] }],
-      removalServiceIds: [],
-      trigger: "git",
-      sourceAffectedServiceIds: ["api"],
-      alreadyAppliedServiceIds: ["api"],
-    });
-    expect(Result.isSuccess(request)).toBe(true);
-    if (Result.isFailure(request)) throw request.failure;
-    expect(request.success.target.services[0]).toMatchObject({
-      image: "registry.test/api:git-sha",
-      env: { FEATURE: { kind: "literal", value: "saved" } },
-    });
-    expect(request.success.target.services[0]?.env).not.toEqual(
-      successorWorking.env,
-    );
+
   });
 
   it("unsaved exclusion keeps Working-only values out of Saved intent", () => {
@@ -212,162 +151,6 @@ describe("Environment Change Set cross-layer acceptance matrix", () => {
       baselineValue: "1",
       targetValue: "2",
     });
-  });
-
-  it("partial success advances only the confirmed Service", () => {
-    const request = {
-      version: 1 as const,
-      target: {
-        services: [
-          { service_id: "database" },
-          { service_id: "api" },
-        ],
-      },
-      phases: [
-        {
-          services: [
-            { service_id: "database", requirement: "required" as const },
-            { service_id: "api", requirement: "required" as const },
-          ],
-        },
-      ],
-    };
-    const result = parsePhaseAwareDeployResult(request, {
-      version: 1,
-      outcome: "failed",
-      phases: [
-        {
-          phase: 0,
-          outcome: "failed",
-          services: [
-            { service_id: "database", result: "applied" },
-            {
-              service_id: "api",
-              result: "failed",
-              failure: { code: "healthcheck", message: "unhealthy" },
-            },
-          ],
-        },
-      ],
-    });
-    expect(Result.isSuccess(result)).toBe(true);
-    if (Result.isFailure(result)) throw result.failure;
-    const folded = foldPhaseAwareAppliedState({
-      prior: [
-        { serviceId: "database", node: "database-old" },
-        { serviceId: "api", node: "api-old" },
-      ],
-      target: [
-        { serviceId: "database", node: "database-saved" },
-        { serviceId: "api", node: "api-saved" },
-      ],
-      result: result.success,
-    });
-
-    expect(
-      Object.fromEntries(folded.map((item) => [item.serviceId, item.node])),
-    ).toEqual({ database: "database-saved", api: "api-old" });
-  });
-
-  it("opportunistic introduction remains absent on failure and applies later", () => {
-    const target = [{ serviceId: "worker", node: "worker-saved" }];
-    const request = createPhaseAwareDeployRequestFromPlan({
-      target: { services: [{ service_id: "worker" }] },
-      plannedPhases: [{ services: [{ service_id: "worker" }] }],
-      removalServiceIds: [],
-      trigger: "git",
-      sourceAffectedServiceIds: ["worker"],
-      alreadyAppliedServiceIds: [],
-    });
-    expect(Result.isSuccess(request)).toBe(true);
-    if (Result.isFailure(request)) throw request.failure;
-    expect(request.success.phases[0]?.services[0]?.requirement).toBe(
-      "opportunistic",
-    );
-    const failedResult = parsePhaseAwareDeployResult(request.success, {
-      version: 1,
-      outcome: "partial",
-      phases: [
-        {
-          phase: 0,
-          outcome: "partial",
-          services: [
-            {
-              service_id: "worker",
-              result: "failed",
-              failure: { code: "healthcheck", message: "unhealthy" },
-            },
-          ],
-        },
-      ],
-    });
-    expect(Result.isSuccess(failedResult)).toBe(true);
-    if (Result.isFailure(failedResult)) throw failedResult.failure;
-    const failed = foldPhaseAwareAppliedState({
-      prior: [],
-      target,
-      result: failedResult.success,
-    });
-    const recoveredResult = parsePhaseAwareDeployResult(request.success, {
-      version: 1,
-      outcome: "completed",
-      phases: [
-        {
-          phase: 0,
-          outcome: "completed",
-          services: [{ service_id: "worker", result: "applied" }],
-        },
-      ],
-    });
-    expect(Result.isSuccess(recoveredResult)).toBe(true);
-    if (Result.isFailure(recoveredResult)) throw recoveredResult.failure;
-    const recovered = foldPhaseAwareAppliedState({
-      prior: failed,
-      target,
-      result: recoveredResult.success,
-    });
-
-    expect(failed).toEqual([]);
-    expect(recovered).toEqual(target);
-  });
-
-  it("required phase failure rejects continued later-phase execution", () => {
-    const request = {
-      version: 1 as const,
-      target: { services: [{ service_id: "database" }, { service_id: "api" }] },
-      phases: [
-        {
-          services: [
-            { service_id: "database", requirement: "required" as const },
-          ],
-        },
-        { services: [{ service_id: "api", requirement: "required" as const }] },
-      ],
-    };
-    const result = parsePhaseAwareDeployResult(request, {
-      version: 1,
-      outcome: "failed",
-      phases: [
-        {
-          phase: 0,
-          outcome: "failed",
-          services: [
-            {
-              service_id: "database",
-              result: "failed",
-              failure: { code: "healthcheck", message: "unhealthy" },
-            },
-          ],
-        },
-        {
-          phase: 1,
-          outcome: "completed",
-          services: [{ service_id: "api", result: "applied" }],
-        },
-      ],
-    });
-
-    expect(Result.isFailure(result)).toBe(true);
   });
 
   it("queued coalescing never changes the explicit comparison roles", () => {

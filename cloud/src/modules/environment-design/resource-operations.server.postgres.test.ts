@@ -1,3 +1,5 @@
+import { loadEnvironmentDocument } from "./working-state-repository.server";
+import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
@@ -95,6 +97,7 @@ it.live(
             projectId: projectRecord.id,
             name: "Production",
             namespace: "api-production",
+            intent: emptyEnvironmentIntent("api-production"),
           })
           .returning({ id: environment.id });
         const environmentRecord = environments[0];
@@ -172,27 +175,19 @@ it.live(
         );
 
         const renamed = yield* updateVariableGroupResource(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           resourceId: group.data.resource.id,
           name: "Runtime config",
         });
+        assert.strictEqual(renamed.data.intent.variableGroups[0]?.name, "Runtime config");
         const renamedRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`
-            select xmin::text as txid from environment_resource
-            where id = ${group.data.resource.id}
-            union all
-            select xmin::text as txid from environment_variable_group
-            where id = ${group.data.variableGroup.id}
-          `,
-          "objects",
-        );
-        assert.deepStrictEqual(
-          renamedRows.map((row) => Number(row.txid)),
-          [renamed.txid, renamed.txid],
-        );
+          sql`select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
+        assert.strictEqual(Number(renamedRows[0]?.txid), renamed.txid);
 
         const mounted = yield* attachServiceVolume(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId: service.data.service.id,
@@ -200,9 +195,7 @@ it.live(
           mountPath: "/data",
         });
         const mountRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`select xmin::text as txid from service_volume_attachment
-              where service_id = ${service.data.service.id}
-                and volume_resource_id = ${volume.data.resource.id}`,
+          sql`select xmin::text as txid from environment where id = ${environmentRecord.id}`,
           "objects",
         );
         assert.deepStrictEqual(
@@ -210,13 +203,14 @@ it.live(
           [mounted.txid],
         );
         const updatedMount = yield* updateServiceVolumeMountPath(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId: service.data.service.id,
           volumeResourceId: volume.data.resource.id,
           mountPath: "/var/data",
         });
-        assert.strictEqual(updatedMount.data.mountPath, "/var/data");
+        assert.strictEqual(updatedMount.data.intent.services[0]?.volumeAttachments[0]?.mountPath, "/var/data");
 
         const moved = yield* updateEnvironmentResourceCanvasPosition(actor, {
           organizationSlug: "acme",
@@ -240,6 +234,7 @@ it.live(
 
         const invalidTarget = yield* Effect.flip(
           attachServiceVolume(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
             organizationSlug: "acme",
             environmentId: environmentRecord.id,
             serviceId: service.data.service.id,
@@ -247,24 +242,19 @@ it.live(
             mountPath: "/config",
           }),
         );
-        assert.strictEqual(invalidTarget._tag, "Validation");
+        assert.strictEqual(invalidTarget._tag, "NotFound");
 
         const deleted = yield* deleteVolumeResource(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           resourceId: volume.data.resource.id,
         });
-        const deletedRows = yield* database.drizzle.execute<{
-          txid: string;
-          deleted: boolean;
-        }>(
-          sql`select xmin::text as txid, deleted_at is not null as deleted
-              from environment_resource where id = ${volume.data.resource.id}`,
-          "objects",
-        );
-        assert.deepStrictEqual(deletedRows, [
-          { txid: String(deleted.txid), deleted: true },
-        ]);
+        assert.deepStrictEqual(deleted.data.intent.volumes, []);
+        assert.deepStrictEqual(deleted.data.intent.services[0]?.volumeAttachments, []);
+        const deletedRows = yield* database.drizzle.execute<{ count: string }>(
+          sql`select count(*)::text as count from environment_resource where id = ${volume.data.resource.id}`, "objects");
+        assert.strictEqual(deletedRows[0]?.count, "1");
 
       }).pipe(Effect.provide(layer));
     }),

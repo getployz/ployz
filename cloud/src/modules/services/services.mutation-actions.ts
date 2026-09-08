@@ -1,12 +1,10 @@
 import { createOptimisticAction } from "@tanstack/react-db";
-import { useServerFn } from "@tanstack/react-start";
 import {
   clearServiceRegistryCredentialServerFn,
   restoreServiceRegistryCredentialServerFn,
   setServiceRegistryCredentialServerFn,
 } from "#/modules/environment-design/service-functions";
-import { getRawServicesCollection } from "#/electric/collections";
-import { useServicesCollection } from "#/modules/services/services.collection";
+import { getEnvironmentsCollection } from "#/electric/collections";
 
 type UseServiceRegistryCredentialActionsInput = {
   organizationSlug: string;
@@ -16,106 +14,37 @@ type UseServiceRegistryCredentialActionsInput = {
 };
 
 export function useServiceRegistryCredentialActions({
-  organizationSlug,
-  environmentId,
-  serviceId,
-  onSuccess,
+  organizationSlug, environmentId, serviceId, onSuccess,
 }: UseServiceRegistryCredentialActionsInput) {
-  const collection = useServicesCollection(organizationSlug);
-  const rawServices = getRawServicesCollection(organizationSlug);
-  const setRegistryCredential = useServerFn(
-    setServiceRegistryCredentialServerFn,
-  );
-  const clearRegistryCredential = useServerFn(
-    clearServiceRegistryCredentialServerFn,
-  );
-  const restoreRegistryCredential = useServerFn(
-    restoreServiceRegistryCredentialServerFn,
-  );
-
-  const setCredentialAction = createOptimisticAction<{
-    username: string | null;
-    secret: string;
-  }>({
-    onMutate: ({ username }) => {
-      const revision = new Date().toISOString();
-
-      collection.update(serviceId, (draft) => {
-        if (draft.source.type !== "image") {
-          return;
-        }
-
-        draft.source.credentials = {
-          type: "configured",
-          revision,
-        };
-        draft.registryCredentialUsername = username;
-        draft.hasStoredRegistryCredential = true;
+  const environments = getEnvironmentsCollection(organizationSlug);
+  type CredentialAction = { kind: "clear" | "restore" } | { kind: "set"; username: string | null; secret: string };
+  const persist = createOptimisticAction<{ action: CredentialAction; revision: string }>({
+    onMutate: ({ action }) => {
+      environments.update(environmentId, (draft) => {
+        const node = draft.intent.services.find((node) => node.id === serviceId);
+        if (!node || node.config.source.type !== "image") throw new Error("Service does not use a container image.");
+        node.config.source.credentials = action.kind === "clear"
+          ? { type: "none" } : { type: "configured", revision: new Date().toISOString() };
       });
     },
-    mutationFn: async ({ username, secret }) => {
-      const receipt = await setRegistryCredential({
-        data: {
-          organizationSlug,
-          environmentId,
-          serviceId,
-          username: username ?? undefined,
-          secret,
-        },
-      });
-      await rawServices.utils.awaitTxId(receipt.txid);
+    mutationFn: async ({ action, revision }) => {
+      const data = { organizationSlug, environmentId, serviceId, revision };
+      const receipt = action.kind === "set"
+        ? await setServiceRegistryCredentialServerFn({ data: { ...data, username: action.username ?? undefined, secret: action.secret } })
+        : action.kind === "clear" ? await clearServiceRegistryCredentialServerFn({ data })
+          : await restoreServiceRegistryCredentialServerFn({ data });
+      await environments.utils.awaitTxId(receipt.txid);
       onSuccess?.();
     },
   });
-
-  const clearCredentialAction = createOptimisticAction<void>({
-    onMutate: () => {
-      collection.update(serviceId, (draft) => {
-        if (draft.source.type !== "image") {
-          return;
-        }
-
-        draft.source.credentials = {
-          type: "none",
-        };
-      });
-    },
-    mutationFn: async () => {
-      const receipt = await clearRegistryCredential({
-        data: { organizationSlug, environmentId, serviceId },
-      });
-      await rawServices.utils.awaitTxId(receipt.txid);
-      onSuccess?.();
-    },
-  });
-
-  const restoreCredentialAction = createOptimisticAction<void>({
-    onMutate: () => {
-      const revision = new Date().toISOString();
-
-      collection.update(serviceId, (draft) => {
-        if (draft.source.type !== "image") {
-          return;
-        }
-
-        draft.source.credentials = {
-          type: "configured",
-          revision,
-        };
-      });
-    },
-    mutationFn: async () => {
-      const receipt = await restoreRegistryCredential({
-        data: { organizationSlug, environmentId, serviceId },
-      });
-      await rawServices.utils.awaitTxId(receipt.txid);
-      onSuccess?.();
-    },
-  });
-
+  function edit(action: CredentialAction) {
+    const document = environments.get(environmentId);
+    if (!document) throw new Error("Environment is not loaded.");
+    return persist({ action, revision: document.revision });
+  }
   return {
-    setCredentialAction,
-    clearCredentialAction,
-    restoreCredentialAction,
+    setCredentialAction: (input: { username: string | null; secret: string }) => edit({ kind: "set", ...input }),
+    clearCredentialAction: () => edit({ kind: "clear" }),
+    restoreCredentialAction: () => edit({ kind: "restore" }),
   };
 }

@@ -30,6 +30,7 @@ function config(replicas: number): ServiceDeploymentConfig {
     build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
     env: {},
     mounts: [],
+    variableGroupAttachments: [],
   };
 }
 
@@ -53,7 +54,7 @@ describe("service drawer Working comparison", () => {
     const working = config(3);
     const diff = getServiceDeploymentDiffState({
       service: { id: "service-1", ...working },
-      comparison: resolveEnvironmentWorkingComparison(input),
+      comparison: resolveEnvironmentWorkingComparison({ saved: input.saved, applied: input.applied, introduction: input.introduction }),
     });
 
     expect(diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.replicas)).toMatchObject({

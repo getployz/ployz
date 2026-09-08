@@ -44,6 +44,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cloud-sdk
+
       - run: pnpm pr:check
         env:
           PLOYZ_TEST_ENV_FILE: .env.test

@@ -1,3 +1,4 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useServerFn } from "@tanstack/react-start";
@@ -7,14 +8,13 @@ import { Button } from "#/components/ui/button";
 import { Empty, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
-import { getRawServiceVariableGroupAttachmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   attachServiceVariableGroupServerFn,
   detachServiceVariableGroupServerFn,
 } from "#/modules/environment-design/variable-functions";
 import {
-  environmentServiceVariableGroupAttachmentSchema,
   type EnvironmentVariableGroupRecord,
 } from "#/modules/environment-design/variables";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
@@ -23,7 +23,6 @@ import {
 } from "#/modules/environment-design/service-variable-group-attachments";
 import {
   useEnvironmentResourcesCollection,
-  useServiceVariableGroupAttachmentsCollection,
 } from "#/modules/services/services.collection";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 
@@ -82,24 +81,18 @@ export function ServiceVariableGroupAttachmentsPanel({
 }) {
   const attachVariableGroup = useServerFn(attachServiceVariableGroupServerFn);
   const detachVariableGroup = useServerFn(detachServiceVariableGroupServerFn);
-  const rawAttachments = getRawServiceVariableGroupAttachmentsCollection(
+  const rawAttachments = getEnvironmentsCollection(
     state.organizationSlug,
   );
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
   );
-  const serviceVariableGroupAttachments =
-    useServiceVariableGroupAttachmentsCollection(state.organizationSlug);
   const [pendingAttachment, setPendingAttachment] =
     useState<PendingAttachment | null>(null);
 
-  const { data: attachmentRows } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ attachment: serviceVariableGroupAttachments })
-        .where(({ attachment }) => eq(attachment["serviceId"], state.service.id))
-        .select(({ attachment }) => attachment),
-  });
+  const document = useEnvironmentDocument(state.organizationSlug, state.service.environmentId);
+  const attachments = document?.intent.services.find((node) => node.id === state.service.id)?.variableGroupAttachments
+    .map((attachment) => ({ ...attachment, serviceId: state.service.id, environmentId: state.service.environmentId })) ?? [];
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
     query: (q) =>
       q
@@ -113,9 +106,6 @@ export function ServiceVariableGroupAttachmentsPanel({
   const pendingKey = pendingAttachment
     ? pendingAttachmentKey(pendingAttachment)
     : null;
-  const attachments = attachmentRows.map((attachment) =>
-    parseLiveQueryRow(environmentServiceVariableGroupAttachmentSchema, attachment),
-  );
   const environmentResources = environmentResourceRows.map((resource) =>
     parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
@@ -128,7 +118,9 @@ export function ServiceVariableGroupAttachmentsPanel({
   async function runAttachmentAction(attachment: PendingAttachment) {
     setPendingAttachment(attachment);
     try {
+      if (!document) throw new Error("Environment is not loaded.");
       const data = {
+        revision: document.revision,
         organizationSlug: state.organizationSlug,
         environmentId: state.service.environmentId,
         serviceId: state.service.id,

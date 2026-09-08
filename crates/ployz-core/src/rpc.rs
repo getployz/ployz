@@ -100,10 +100,12 @@ pub struct OpaquePayload {
 }
 
 /// Generated tonic client and server for the shared Machine service.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod transport {
     include!(concat!(env!("OUT_DIR"), "/ployz.rpc.v1.MachineRpc.rs"));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use transport::{
     machine_rpc_client::MachineRpcClient, machine_rpc_server::MachineRpc,
     machine_rpc_server::MachineRpcServer,
@@ -649,6 +651,8 @@ pub struct ContainerList {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContainerDetails {
     pub container: ContainerObservation,
+    /// Fresh Docker Config.Env; never copied into replicated observations.
+    pub environment: Option<BTreeMap<String, String>>,
 }
 
 /// Complete replicated observation map; `None` means the row is absent.

@@ -19,6 +19,15 @@ pub fn package_name() -> &'static str {
     "@ployz/sdk"
 }
 
+/// Pure authored configuration parsing, comparison, and restore.
+///
+/// # Errors
+/// Rejects invalid requests or configuration through the shared configuration error boundary.
+#[napi]
+pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value> {
+    ployz_core::config::config_request(input).map_err(|error| Error::from_reason(error.to_string()))
+}
+
 /// Dial Credential, Pairing Credential, and selected entry Machine for a
 /// Relay-only session.
 #[napi(object)]

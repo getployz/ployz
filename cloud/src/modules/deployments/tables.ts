@@ -155,9 +155,7 @@ export const environmentDeploymentSecret = pgTable(
     environmentDeploymentId: uuid("environment_deployment_id")
       .primaryKey()
       .references(() => environmentDeployment.id, { onDelete: "cascade" }),
-    encryptedFrozenDeployInput: jsonb("encrypted_frozen_deploy_input")
-      .notNull()
-      .$type<EncryptedSecretValue>(),
+    encryptedRuntimeOutcome: jsonb("encrypted_runtime_outcome").$type<EncryptedSecretValue>(),
   },
 );
 

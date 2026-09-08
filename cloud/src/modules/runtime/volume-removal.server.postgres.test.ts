@@ -84,17 +84,17 @@ describe("direct volume removal durable state", () => {
       values (gen_random_uuid(), '${organizationId}', '${userId}', 'owner', now());
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'Runtime', 'runtime');
-      insert into environment (id, project_id, organization_id, name, namespace)
-      values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'runtime-production');
+      insert into environment (id, project_id, organization_id, name, namespace, intent)
+      values ('${environmentId}', '${projectId}', '${organizationId}',  'Production', 'runtime-production', '{"version":1,"environmentSlug":"runtime-production","services":[],"variableGroups":[],"volumes":[]}');
       insert into resource_lineage (
         id, organization_id, project_id, canonical_name, canonical_slug
       ) values ('${lineageId}', '${organizationId}', '${projectId}', 'Data', 'data');
       insert into environment_resource (
         id, organization_id, project_id, environment_id, lineage_id,
-        implementation_type, name, slug, deleted_at
+        implementation_type
       ) values (
         '${resourceId}', '${organizationId}', '${projectId}', '${environmentId}',
-        '${lineageId}', 'volume', 'Data', 'data', now()
+        '${lineageId}', 'volume'
       );
     `);
   });
@@ -192,7 +192,7 @@ describe("direct volume removal durable state", () => {
       "select id from environment_resource where id = $1",
       [resourceId],
     );
-    expect(resource.rowCount).toBe(0);
+    expect(resource.rows).toEqual([{ id: resourceId }]);
   });
 
   it("terminalizes cancellation by exact Inngest run identity", async () => {

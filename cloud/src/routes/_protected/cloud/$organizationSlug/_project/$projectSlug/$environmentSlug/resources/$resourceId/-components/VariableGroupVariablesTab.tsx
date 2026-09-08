@@ -1,7 +1,6 @@
-import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getRawVariablesCollection } from "#/electric/collections";
-import { parseLiveQueryRow } from "#/lib/tanstack-db";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import {
   VariablesPanel,
   type VariableAddInput,
@@ -15,13 +14,11 @@ import {
   updateVariableGroupVariableServerFn,
 } from "#/modules/environment-design/variable-functions";
 import {
-  variableSelectSchema,
   type VariableRecord,
 } from "#/modules/environment-design/variables";
 import type { PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
 import {
   useVariableWriter,
-  useVariablesCollection,
 } from "#/modules/services/services.collection";
 import type { VariableGroupDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/useVariableGroupDrawerState";
 
@@ -35,23 +32,17 @@ export function VariableGroupVariablesTab({
   const updateVariableMetadata = useServerFn(
     updateVariableGroupVariableMetadataServerFn,
   );
-  const variablesCollection = useVariablesCollection(state.organizationSlug);
   const variableWriter = useVariableWriter(state.organizationSlug);
   const { organizationSlug } = state;
   const { environmentId } = state.resource.resource;
   const variableGroupId = state.resource.variableGroup.id;
 
-  const { data: rawVariables } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ variable: variablesCollection })
-        .where(({ variable }) => eq(variable.variableGroupId, variableGroupId))
-        .orderBy(({ variable }) => variable.key)
-        .select(({ variable }) => variable),
-  });
-  const variables = rawVariables.map((row) =>
-    parseLiveQueryRow(variableSelectSchema, row),
-  );
+  const document = useEnvironmentDocument(organizationSlug, environmentId);
+  const variables = [...state.resource.variables].sort((a, b) => a.key.localeCompare(b.key));
+  function revision() {
+    if (!document) throw new Error("Environment is not loaded.");
+    return document.revision;
+  }
 
   const valueTargets = useReferenceTargets({
     organizationSlug,
@@ -66,6 +57,7 @@ export function VariableGroupVariablesTab({
       const receipt = await createVariable({
         data: {
           organizationSlug,
+          revision: revision(),
           environmentId,
           variableGroupId,
           key: input.key,
@@ -74,7 +66,7 @@ export function VariableGroupVariablesTab({
           value: { type: "sealed", value: input.value },
         },
       });
-      await getRawVariablesCollection(organizationSlug).utils.awaitTxId(
+      await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
         receipt.txid,
       );
     } else {
@@ -91,6 +83,7 @@ export function VariableGroupVariablesTab({
     const receipt = await updateVariable({
       data: {
         organizationSlug,
+        revision: revision(),
         environmentId,
         variableGroupId,
         variableId: variable.id,
@@ -100,7 +93,7 @@ export function VariableGroupVariablesTab({
         value: { type: "sealed", value: variable.value.value },
       },
     });
-    await getRawVariablesCollection(organizationSlug).utils.awaitTxId(
+    await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
       receipt.txid,
     );
   }
@@ -112,6 +105,7 @@ export function VariableGroupVariablesTab({
     const receipt = await updateVariableMetadata({
       data: {
         organizationSlug,
+        revision: revision(),
         environmentId,
         variableGroupId,
         variableId: variable.id,
@@ -119,7 +113,7 @@ export function VariableGroupVariablesTab({
         exported: patch.exported ?? variable.exported,
       },
     });
-    await getRawVariablesCollection(organizationSlug).utils.awaitTxId(
+    await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
       receipt.txid,
     );
   }

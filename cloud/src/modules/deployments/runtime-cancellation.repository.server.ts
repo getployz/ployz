@@ -16,7 +16,7 @@ import { Database } from "#/server/database.server";
 
 export const markCancelledByInngestRunId = Effect.fn(
   "Deployments.markCancelledByInngestRunId",
-)(function* (runId: string) {
+)(function* (runId: string, message = "Cancelled in Inngest.") {
   const database = yield* Database;
   const [record] = yield* database.drizzle
     .select({
@@ -48,7 +48,7 @@ export const markCancelledByInngestRunId = Effect.fn(
         .set({
           status: "cancelled",
           cancellationRequestedAt: updatedAt,
-          failureMessage: "Cancelled in Inngest.",
+          failureMessage: message,
           finishedAt: updatedAt,
           updatedAt,
         })

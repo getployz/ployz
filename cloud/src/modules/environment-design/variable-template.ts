@@ -1,3 +1,4 @@
+import { renderVariableParts } from "@ployz/sdk/config";
 import type { ValuePart, ValuePartRefOwner } from "#/modules/environment-design/tables";
 
 /**
@@ -100,26 +101,8 @@ export function partsToLiteralString(parts: ValuePart[]): string | null {
   return parts.map((part) => (part.kind === "text" ? part.value : "")).join("");
 }
 
-function escapeLiteral(value: string): string {
-  // Escape any literal `${{` so it round-trips back to a text part. A function
-  // replacer avoids `$$` being treated as a special replacement pattern.
-  return value.replaceAll("${{", () => "$${{");
-}
-
 /** Slug rendered for a ref whose owning producer no longer exists in the env. */
 export const DELETED_OWNER_SENTINEL = "<deleted>";
-
-function renderRef(
-  owner: ValuePartRefOwner,
-  key: string,
-  lookupSlug: LookupSlug,
-): string {
-  if (owner.scope === "self") {
-    return `\${{ ${key} }}`;
-  }
-  const slug = lookupSlug(owner.lineageId);
-  return `\${{ ${slug ?? DELETED_OWNER_SENTINEL}.${key} }}`;
-}
 
 /** Whether a rendered display value references a producer that was deleted. */
 export function referencesDeletedOwner(displayValue: string): boolean {
@@ -131,13 +114,13 @@ export function partsToDisplay(
   parts: ValuePart[],
   lookupSlug: LookupSlug,
 ): string {
-  return parts
-    .map((part) =>
-      part.kind === "text"
-        ? escapeLiteral(part.value)
-        : renderRef(part.owner, part.key, lookupSlug),
-    )
-    .join("");
+  const slugs: Record<string, string> = {};
+  for (const part of parts) {
+    if (part.kind !== "ref" || part.owner.scope === "self") continue;
+    const slug = lookupSlug(part.owner.lineageId);
+    if (slug !== null) slugs[part.owner.lineageId] = slug;
+  }
+  return renderVariableParts(parts, slugs);
 }
 
 /**

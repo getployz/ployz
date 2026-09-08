@@ -9,13 +9,208 @@ use std::{num::NonZeroU64, process::Stdio, sync::atomic::Ordering, time::Duratio
 
 use ployz::deploy::{
     DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
-    ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
+    ExecutionError, FailedOperation, OperationStatus, PlanError, PlanOptions, PruneRefusal,
+    VolumeFate,
 };
 use ployz_core::{
     ContainerId, MachineId, MachineStorageObservation, OperationPhase, ProjectName,
     ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
+
+#[tokio::test]
+async fn changes_review_reports_removed_services_and_the_planners_prune_refusals() {
+    for (selected, refusal, incomplete, expected) in [
+        (false, None, false, None),
+        (true, None, false, Some(PruneRefusal::SelectedServices)),
+        (
+            false,
+            Some(ployz_core::ComposePruneRefusal::FilteredProfiles),
+            false,
+            Some(PruneRefusal::FilteredProfiles),
+        ),
+        (
+            false,
+            Some(ployz_core::ComposePruneRefusal::GuessedProjectName),
+            false,
+            Some(PruneRefusal::GuessedProjectName),
+        ),
+        (false, None, true, Some(PruneRefusal::IncompleteSnapshot)),
+    ] {
+        let one = machine('a', "one");
+        let two = machine('b', "two");
+        let mut service =
+            DeployService::new(one.clone()).with_machines(vec![one.clone(), two.clone()]);
+        if incomplete {
+            service = service.fail_container_listing(two.machine.id);
+        }
+        let mutations = service.mutating_rpcs();
+        let mut foreign = running_container(&one, &spec("foreign")).into_parts();
+        foreign.project_name = ProjectName::parse("elsewhere").unwrap();
+        let mut profiled = running_container(&one, &spec("profiled")).into_parts();
+        profiled.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+        foreign.container_id = ContainerId::parse("3".repeat(64)).unwrap();
+        *service.listed_containers().lock().unwrap() = vec![
+            running_container(&one, &spec("removed")),
+            profiled.try_into().unwrap(),
+            foreign.try_into().unwrap(),
+        ];
+        let project = ployz::compose::parse_normalized(
+            "services: {web: {image: nginx}, profiled: {image: nginx, profiles: [optional]}}",
+            std::env::temp_dir(),
+        )
+        .unwrap();
+        let candidate = project.capture(
+            ProjectName::parse("app").unwrap(),
+            PlanOptions {
+                selected: if selected {
+                    vec![ployz_core::ServiceAttempt {
+                        name: spec("web").name,
+                    }]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+            vec![],
+            refusal,
+            vec![],
+        );
+        let (mut client, server) = connected(service).await;
+        let review = client.changes(&candidate).await.unwrap();
+        assert_eq!(
+            review.would_remove,
+            [QualifiedService::new(
+                ProjectName::parse("app").unwrap(),
+                spec("removed").name
+            )]
+        );
+        assert_eq!(review.prune_refusal, expected);
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn changes_review_uses_the_capture_and_fresh_mixed_evidence_without_mutations() {
+    let one = machine('a', "one");
+    let two = machine('b', "two");
+    let mut omitted = machine('c', "omitted");
+    omitted.membership = ployz_core::MembershipObservation::Down;
+    let failed = machine('d', "failed");
+    let service = DeployService::new(one.clone())
+        .with_machines(vec![
+            one.clone(),
+            two.clone(),
+            omitted.clone(),
+            failed.clone(),
+        ])
+        .fail_container_listing(failed.machine.id);
+    let mutations = service.mutating_rpcs();
+    let listed = service.listed_containers();
+    let mut old = spec("web");
+    old.container.command = vec!["old".into()];
+    old.container
+        .environment
+        .insert("PLAIN".into(), "stale-metadata".into());
+    let mut newer = old.clone();
+    newer.container.command = vec!["captured".into()];
+    *listed.lock().unwrap() = vec![
+        running_container(&one, &old),
+        running_container(&two, &newer),
+    ];
+    let directory = std::env::temp_dir().join(format!("ployz-capture-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("compose.yaml");
+    let yaml = "services: {web: {image: web, command: [captured], environment: {TOKEN: 'secret://token', PLAIN: from-docker}}, absent: {image: alpine}}\nsecrets: {token: {x-command: 'exit 99'}}";
+    std::fs::write(&source, yaml).unwrap();
+    let project = ployz::compose::load_project(&ployz::compose::LoadOptions {
+        files: vec![source.clone()],
+        working_dir: Some(directory.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let candidate = project.capture(
+        ProjectName::parse("app").unwrap(),
+        Default::default(),
+        vec![],
+        None,
+        vec![source.clone()],
+    );
+    std::fs::write(&source, yaml.replace("[captured]", "[later-edit]")).unwrap();
+    let (mut client, server) = connected(service).await;
+    let first = client.changes(&candidate).await.unwrap();
+    assert_eq!(first.candidate_id, candidate.id());
+    assert_eq!(first.observer_machine_id, one.machine.id);
+    assert_eq!(
+        first.compared_settings,
+        ployz_core::COMPARED_SERVICE_SETTINGS
+    );
+    assert_eq!(first.omissions, [omitted.machine.id]);
+    assert_eq!(first.failures.len(), 1);
+    assert_eq!(
+        first.failures.first().unwrap().machine_id,
+        failed.machine.id
+    );
+    assert_eq!(
+        first.failures.first().unwrap().error,
+        ployz_core::RpcErrorCode::Unavailable
+    );
+    let web = first
+        .services
+        .iter()
+        .find(|row| row.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(web.command, ["captured"]);
+    assert_eq!(web.observations.len(), 2);
+    assert_eq!(
+        web.observations
+            .iter()
+            .filter(|row| row.changes.iter().any(|change| change.setting == "command"))
+            .count(),
+        1
+    );
+    let absent = first
+        .services
+        .iter()
+        .find(|row| row.name.as_str() == "absent")
+        .unwrap();
+    assert!(absent.observations.is_empty());
+    assert_eq!(absent.missing_on, [one.machine.id, two.machine.id]);
+    let json = serde_json::to_string(&first).unwrap();
+    assert!(!json.contains("secret://token"));
+    assert!(!json.contains("live-only-sentinel"));
+    assert!(!json.contains("stale-metadata"));
+    assert!(web.observations.iter().all(|observation| {
+        observation.environment.iter().any(|row| {
+            row.key == "PLAIN" && row.evidence == ployz_core::config::EnvironmentEvidence::Same
+        })
+    }));
+    assert!(
+        web.observations
+            .iter()
+            .all(
+                |observation| observation.environment.iter().any(|row| row.key == "TOKEN"
+                    && matches!(
+                        row.evidence,
+                        ployz_core::config::EnvironmentEvidence::NotChecked { .. }
+                    ))
+            )
+    );
+    assert!(!json.contains("exit 99"));
+    assert!(!json.contains("later-edit"));
+    listed.lock().unwrap().clear();
+    let second = client.changes(&candidate).await.unwrap();
+    assert!(
+        second
+            .services
+            .iter()
+            .all(|row| row.observations.is_empty())
+    );
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
 
 #[tokio::test]
 async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
@@ -48,6 +243,97 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
     assert_eq!(status.code(), Some(17));
     drop(terminal_stdin);
     server.abort();
+}
+
+#[tokio::test]
+async fn captured_a_deploys_while_edited_b_is_reviewed_and_cancellation_retains_unattempted_work() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone()).hold_health();
+    let created = service.created_specs();
+    let listed = service.listed_containers();
+    let (mut deploy_client, deploy_server) = connected(service.clone()).await;
+    let (mut review_client, review_server) = connected(service).await;
+    let root =
+        std::env::temp_dir().join(format!("ployz-edit-during-deploy-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("compose.yaml");
+    let yaml = "services:\n  web:\n    image: nginx\n    command: [A]\n    healthcheck: {test: [CMD, 'true']}\n  tail:\n    image: nginx\n    depends_on: [web]\n";
+    std::fs::write(&path, yaml).unwrap();
+    let capture = || {
+        ployz::compose::load_project(&ployz::compose::LoadOptions {
+            files: vec![path.clone()],
+            working_dir: Some(root.clone()),
+            ..Default::default()
+        })
+        .unwrap()
+        .capture(
+            ProjectName::parse("app").unwrap(),
+            Default::default(),
+            vec![],
+            None,
+            vec![path.clone()],
+        )
+    };
+    let a = capture();
+    let plan = deploy_client.preview(a.intent().clone()).await.unwrap();
+    let cancel = CancellationToken::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let running = deploy_client.confirm(&plan, &cancel, Some(tx));
+    tokio::pin!(running);
+    let mut b = None;
+    let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    if b.is_none() && matches!(event, Some(DeployEvent::Progress { ref rows, .. }) if rows.iter().any(|row| matches!(row.status, OperationStatus::Running { phase: OperationPhase::WaitingForHealth { .. } }))) {
+                        let observed = created.lock().unwrap().first().unwrap().to_requested();
+                        assert_eq!(observed.container.command, ["A"]);
+                        *listed.lock().unwrap() = vec![running_container(&machine, &observed)];
+                        std::fs::write(&path, yaml.replace("[A]", "[B]")).unwrap();
+                        let candidate = capture();
+                        let review = review_client.changes(&candidate).await.unwrap();
+                        let web = review.services.iter().find(|service| service.name.as_str() == "web").unwrap();
+                        assert!(web.observations.iter().any(|observation| observation.changes.iter().any(|change| change.setting == "command" && change.before == serde_json::json!(["A"]) && change.after == serde_json::json!(["B"]))));
+                        b = Some(candidate);
+                        cancel.cancel();
+                    }
+                }
+                outcome = &mut running => break outcome,
+            }
+        }
+    }).await.unwrap();
+    let DeployOutcome::Failed {
+        failed, unexecuted, ..
+    } = outcome
+    else {
+        panic!("expected cancellation")
+    };
+    assert!(matches!(
+        failed,
+        FailedOperation::Operation {
+            error: ExecutionError::Cancelled | ExecutionError::Health { .. },
+            ..
+        }
+    ));
+    assert!(!unexecuted.is_empty());
+    assert!(
+        created
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|spec| spec.container.command == ["A"])
+    );
+    listed.lock().unwrap().clear();
+    let after = review_client.changes(b.as_ref().unwrap()).await.unwrap();
+    assert!(
+        after
+            .services
+            .iter()
+            .all(|service| service.observations.is_empty())
+    );
+    deploy_server.abort();
+    review_server.abort();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

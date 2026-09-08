@@ -118,7 +118,7 @@ pub struct ContainerObservationParts {
     pub project_name: ProjectName,
     pub kind: ContainerKind,
     pub runtime: ContainerRuntimeObservation,
-    /// Effective Docker health check, including image-inherited configuration.
+    /// Effective Docker check (including image inheritance), or the Machine HTTP probe.
     #[serde(default)]
     pub effective_healthcheck: Option<HealthcheckSpec>,
     /// Historical spec used to create this container; not a current Service spec.

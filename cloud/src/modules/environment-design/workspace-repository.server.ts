@@ -8,6 +8,7 @@ import { organizationIdForProject } from "#/db/scope-values.server";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
+import { emptyEnvironmentIntent } from "./saved-intent";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
 import {
   projectBaseSlug,
@@ -218,7 +219,7 @@ export const createEnvironmentRecord = Effect.fn(
   const database = yield* Database;
   const rows = yield* database.drizzle
     .insert(environment)
-    .values(input)
+    .values({ ...input, intent: emptyEnvironmentIntent(input.namespace) })
     .returning(environmentColumns);
   const created = rows[0];
   if (created === undefined) {

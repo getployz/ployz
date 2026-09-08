@@ -1,5 +1,6 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getRawEnvironmentResourcesCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import {
   Tabs,
   TabsContent,
@@ -27,6 +28,11 @@ export function VariableGroupDrawer({
   state: VariableGroupDrawerState;
 }) {
   const updateVariableGroup = useServerFn(updateVariableGroupResourceServerFn);
+  const document = useEnvironmentDocument(state.organizationSlug, state.resource.resource.environmentId);
+  function revision() {
+    if (!document) throw new Error("Environment is not loaded.");
+    return document.revision;
+  }
   const resourceId = state.resource.resource.id;
   const nameSchema = createEnvironmentNodeNameSchema({
     schema: resourceNameSchema,
@@ -50,10 +56,11 @@ export function VariableGroupDrawer({
             const receipt = await updateVariableGroup({ data: {
               organizationSlug: state.organizationSlug,
               environmentId: state.resource.resource.environmentId,
+              revision: revision(),
               resourceId,
               name: value,
             } });
-            await getRawEnvironmentResourcesCollection(
+            await getEnvironmentsCollection(
               state.organizationSlug,
             ).utils.awaitTxId(receipt.txid);
           }}

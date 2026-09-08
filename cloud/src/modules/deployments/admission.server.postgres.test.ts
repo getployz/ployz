@@ -82,10 +82,10 @@ describe("Saved deployment admission", () => {
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'Cloud', 'cloud');
       insert into environment (
-        id, project_id, organization_id, name, namespace
+        id, project_id, organization_id, name, namespace, intent
       ) values (
         '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production'
+        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
       );
     `);
   });

@@ -40,6 +40,7 @@ function serviceConfig(
     build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
     env: {},
     mounts: [],
+    variableGroupAttachments: [],
     ...overrides,
   };
 }

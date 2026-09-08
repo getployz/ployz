@@ -628,7 +628,10 @@ impl MachineRpc for JoinDaemon {
             .find(|container| container.container_id == inspect.container_id)
             .cloned()
             .ok_or_else(|| Status::not_found("container not found"))?;
-        rpc_ok(ContainerDetails { container })
+        rpc_ok(ContainerDetails {
+            container,
+            environment: None,
+        })
     }
     async fn get_container_observations(
         &self,

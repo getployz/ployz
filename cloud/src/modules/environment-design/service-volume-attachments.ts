@@ -123,6 +123,7 @@ export function getAttachmentTargetError(input: {
 
 export const attachServiceVolumeSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   volumeResourceId: Uuid,
@@ -131,6 +132,7 @@ export const attachServiceVolumeSchema = Schema.Struct({
 
 export const detachServiceVolumeSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
+  revision: Uuid,
   environmentId: Uuid,
   serviceId: Uuid,
   volumeResourceId: Uuid,

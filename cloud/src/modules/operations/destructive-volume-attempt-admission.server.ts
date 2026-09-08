@@ -1,5 +1,7 @@
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
+import { not } from "drizzle-orm";
 import "@tanstack/react-start/server-only";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import {
@@ -222,7 +224,7 @@ export const retryDestructiveVolumeAttempt = Effect.fn(
                     row.deploymentEnvironmentId,
                   ),
                   eq(schemaEnvironmentResource.implementationType, "volume"),
-                  isNotNull(schemaEnvironmentResource.deletedAt),
+                  not(volumeIsAuthored),
                 ),
               )
           : [];

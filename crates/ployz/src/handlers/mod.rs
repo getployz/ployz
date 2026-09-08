@@ -241,6 +241,7 @@ fn handler_for(path: &str) -> Option<Handler> {
             )
         },
         "deploy" => deploy::deploy,
+        "changes" => deploy::changes,
         "dns release" => dns::release,
         "dns reserve" => dns::reserve,
         "dns show" => dns::show,

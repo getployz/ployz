@@ -32,13 +32,6 @@ export const ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES =
     "deploying",
   ]);
 
-export class UnsupportedDeploymentSourceError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UnsupportedDeploymentSourceError";
-  }
-}
-
 export function getResolvedHealthcheckPort(values: Record<string, string> | undefined) {
   const port = Number(values?.["PORT"]);
   return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;

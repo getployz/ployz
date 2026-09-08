@@ -228,6 +228,7 @@ async function connect(options) {
 }
 
 module.exports = {
+  configRequest: native.configRequest,
   connect,
   listHeld: (...args) => withRpcError(native.listHeld(...args)),
   register: (...args) => withRpcError(native.register(...args)),

@@ -40,6 +40,7 @@ function serviceConfig(replicas: number): ServiceDeploymentConfig {
     build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
     env: {},
     mounts: [],
+    variableGroupAttachments: [],
   };
 }
 

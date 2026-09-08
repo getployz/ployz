@@ -53,21 +53,5 @@ export function deployEventForDeployment(
       ),
     };
   }
-  if (status === "failed") {
-    return {
-      ...pending,
-      rows: pending.rows.map((row) =>
-        overlayRowStatus(row, { type: "failed", error: { type: "cancelled" } }),
-      ),
-    };
-  }
-  if (status === "cancelled") {
-    return {
-      ...pending,
-      rows: pending.rows.map((row) =>
-        overlayRowStatus(row, { type: "unexecuted" }),
-      ),
-    };
-  }
   return pending;
 }

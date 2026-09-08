@@ -153,6 +153,7 @@ from_error!(
     ContainerSelectorError,
     PlanError,
     ComposeError,
+    crate::changes::ChangesError,
     MachineUpdateError,
     DomainRequired,
     IngressLabelTooLong,

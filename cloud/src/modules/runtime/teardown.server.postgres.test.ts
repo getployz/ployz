@@ -83,8 +83,9 @@ describe("teardown durable state", () => {
       values (gen_random_uuid(), '${organizationId}', '${userId}', 'owner', now());
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'App', 'app');
-      insert into environment (id, project_id, organization_id, name, namespace)
-      values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'app-production');
+      insert into environment (id, project_id, organization_id, name, namespace, intent
+      ) values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'app-production', '{"version":1,"environmentSlug":"app-production","services":[],"variableGroups":[],"volumes":[]}'
+      );
     `);
   });
 

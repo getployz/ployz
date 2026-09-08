@@ -30,11 +30,11 @@ pub(crate) use apply::{
 };
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
-pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
     DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
     preview_deploy,
 };
+pub(crate) use planning::{capacity::endpoint_capacity_error, obsolete_services};
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
@@ -579,20 +579,6 @@ impl fmt::Display for MachineNames<'_> {
     }
 }
 
-fn compose_deploy_intent(
-    project: &ComposeProject,
-    project_name: ProjectName,
-    options: PlanOptions,
-) -> DeployIntent {
-    DeployIntent::from_named_specs(
-        project_name,
-        &project.services,
-        &project.dependencies,
-        options,
-    )
-    .with_service_profiles(project.service_profiles())
-}
-
 /// Plan a Compose project.
 ///
 /// # Errors
@@ -604,7 +590,7 @@ pub fn plan_compose(
     snapshot: &DeploySnapshot,
     project_name: ProjectName,
 ) -> Result<DeployPreview, PlanError> {
-    let intent = compose_deploy_intent(project, project_name, PlanOptions::default());
+    let intent = project.deploy_intent(project_name, PlanOptions::default());
     preview_deploy(&intent, snapshot, IngressContext::default())
 }
 

@@ -1,3 +1,5 @@
+import { loadEnvironmentDocument, loadCurrentEnvironmentState } from "./working-state-repository.server";
+import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
@@ -100,6 +102,7 @@ it.live(
             projectId: projectRecord.id,
             name: "Production",
             namespace: "api-production",
+            intent: emptyEnvironmentIntent("api-production"),
           })
           .returning({ id: environment.id });
         const environmentRecord = environments[0];
@@ -140,8 +143,11 @@ it.live(
           environmentId: environmentRecord.id,
           serviceId: created.data.service.id,
           name: "Registry API",
+          managedHostname: { prefix: "public-api", targetPort: 4000 },
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
         });
-        assert.strictEqual(updated.data.name, "Registry API");
+        assert.strictEqual(updated.data.intent.services[0]?.config.name, "Registry API");
+        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.config.managedHostname, { prefix: "public-api", targetPort: 4000 });
 
         yield* updateServiceCanvasPosition(actor, {
           organizationSlug: "acme",
@@ -151,6 +157,7 @@ it.live(
           y: 40.8,
         });
         yield* setServiceRegistryCredential(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId: created.data.service.id,
@@ -158,11 +165,13 @@ it.live(
           secret: "secret-token",
         });
         yield* clearServiceRegistryCredential(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId: created.data.service.id,
         });
         yield* restoreServiceRegistryCredential(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId: created.data.service.id,

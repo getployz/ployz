@@ -1,5 +1,4 @@
 import { useReducer, useRef } from "react";
-import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Result } from "effect";
 import { toast } from "sonner";
 import {
@@ -9,10 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
-import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import { variableSelectSchema } from "#/modules/environment-design/variables";
-import type { OrganizationVariablesCollection } from "#/modules/environment-design/variable-collections";
+import type { VariableRecord } from "#/modules/environment-design/variables";
 import { useApplyRawVariablesAction } from "#/modules/environment-design/variable-mutation-actions";
 import {
   diffVariables,
@@ -89,7 +86,7 @@ export function ServiceVariablesRawEditor({
   organizationSlug,
   environmentId,
   serviceId,
-  collection,
+  variables,
   valueTargets = EMPTY_REFERENCE_TARGETS,
 }: {
   open: boolean;
@@ -97,20 +94,9 @@ export function ServiceVariablesRawEditor({
   organizationSlug: string;
   environmentId: string;
   serviceId: string;
-  collection: OrganizationVariablesCollection;
+  variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
 }) {
-  const { data: rawVariables } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ variable: collection })
-        .where(({ variable }) => eq(variable.serviceId, serviceId))
-        .orderBy(({ variable }) => variable.key)
-        .select(({ variable }) => variable),
-  });
-  const variables = rawVariables.map((row) =>
-    parseLiveQueryRow(variableSelectSchema, row),
-  );
   const sealedVariables = variables.filter(
     (variable) => variable.value.type === "sealed",
   );
@@ -120,7 +106,6 @@ export function ServiceVariablesRawEditor({
   const sealedCount = sealedVariables.length;
 
   const applyRawVariables = useApplyRawVariablesAction({
-    collection,
     organizationSlug,
     environmentId,
     serviceId,

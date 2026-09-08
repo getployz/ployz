@@ -5,7 +5,6 @@ import { Database } from "#/server/database.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { NonRetriableError, serializeError, StepError } from "inngest";
-import { environmentDeployConfirmedEventType } from "#/modules/inngest/events";
 import {
   DEPLOY_ADMISSION_POLL_INTERVAL,
   type EnvironmentDeployEventData,
@@ -63,8 +62,7 @@ const mocks = {
   markDeploymentStatus: vi.fn(),
   beginEnvironmentDeploymentPlanning: vi.fn(),
   markCancelledByInngestRunId: vi.fn(),
-  previewEnvironmentDeployment: vi.fn(),
-  confirmEnvironmentDeployment: vi.fn(),
+  executeEnvironmentDeployment: vi.fn(),
 };
 
 function runtimeFailure(
@@ -126,39 +124,22 @@ vi.spyOn(
 vi.spyOn(
   runtimeCancellation,
   "markCancelledByInngestRunId",
-).mockImplementation((runId) =>
-  Effect.promise(() => mocks.markCancelledByInngestRunId(runId)),
-);
-vi.spyOn(runtimeActivities, "previewEnvironmentDeployment").mockImplementation(
-  (context) =>
-    Effect.tryPromise({
-      try: () => mocks.previewEnvironmentDeployment(context),
-      catch: (cause) => runtimeFailure("preview", cause),
-    }),
+).mockImplementation((runId, message) =>
+  Effect.promise(() => message === undefined ? mocks.markCancelledByInngestRunId(runId) : mocks.markCancelledByInngestRunId(runId, message)),
 );
 vi.spyOn(
   runtimeActivities,
-  "confirmLatestEnvironmentDeployment",
+  "executeLatestEnvironmentDeployment",
 ).mockImplementation(() =>
   Effect.tryPromise({
-    try: () => mocks.confirmEnvironmentDeployment(),
+    try: () => mocks.executeEnvironmentDeployment(),
     catch: (cause) => runtimeFailure("confirm", cause),
   }),
 );
 
 function createStepTools({
   wrapErrors = false,
-  confirmation = {
-    name: "environment/deploy.confirmed",
-    data: { environmentDeploymentId: "deployment-1" },
-  },
-}: {
-  wrapErrors?: boolean;
-  confirmation?: {
-    name?: string;
-    data?: { environmentDeploymentId?: string };
-  } | null;
-} = {}): EnvironmentDeploymentStepTools {
+}: { wrapErrors?: boolean } = {}): EnvironmentDeploymentStepTools {
   const run: EnvironmentDeploymentStepTools["run"] = async (
     id,
     operation,
@@ -175,14 +156,10 @@ function createStepTools({
       );
     }
   };
-  const waitForEvent: EnvironmentDeploymentStepTools["waitForEvent"] = vi.fn(
-    async () => JSON.parse(JSON.stringify(confirmation)),
-  );
   return {
     run,
     sleep: vi.fn(async () => undefined),
     sendEvent: vi.fn(async () => ({ ids: [] })),
-    waitForEvent,
   };
 }
 
@@ -273,11 +250,10 @@ describe("process environment deployment", () => {
     mocks.beginEnvironmentDeploymentPlanning.mockResolvedValue({
       state: "started",
     });
-    mocks.previewEnvironmentDeployment.mockResolvedValue(sdkPreview);
-    mocks.confirmEnvironmentDeployment.mockResolvedValue({ type: "success" });
+    mocks.executeEnvironmentDeployment.mockResolvedValue({ type: "success", completed: 0 });
   });
 
-  it("previews, confirms that plan, and writes Applied from success", async () => {
+  it("executes the admitted plan and writes Applied from success", async () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
     const step = createStepTools();
     const result = await runDeploy({
@@ -285,14 +261,8 @@ describe("process environment deployment", () => {
       step,
     });
 
-    expect(mocks.previewEnvironmentDeployment).toHaveBeenCalledTimes(1);
-    expect(mocks.confirmEnvironmentDeployment).toHaveBeenCalledTimes(1);
+    expect(mocks.executeEnvironmentDeployment).toHaveBeenCalledTimes(1);
     expect(mocks.loadDeploymentContext).toHaveBeenCalledTimes(1);
-    expect(step.waitForEvent).toHaveBeenCalledWith("wait-for-deploy-confirm", {
-      event: environmentDeployConfirmedEventType,
-      timeout: "1h",
-      match: "data.environmentDeploymentId",
-    });
     expect(mocks.persistDeployApplyResult).toHaveBeenCalledWith({
       environmentDeploymentId: "deployment-1",
       result: { coreDeployId: null },
@@ -305,7 +275,7 @@ describe("process environment deployment", () => {
 
   it("fails preview with SdkSurfaceNotShipped without writing Applied", async () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    mocks.previewEnvironmentDeployment.mockRejectedValue(
+    mocks.executeEnvironmentDeployment.mockRejectedValue(
       new SdkSurfaceNotShipped({
         surface: "preview",
         ticket: "getployz/ployz2#253",
@@ -327,7 +297,7 @@ describe("process environment deployment", () => {
 
   it("does not write Applied from a failed DeployOutcome", async () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    mocks.confirmEnvironmentDeployment.mockResolvedValue({ type: "failed" });
+    mocks.executeEnvironmentDeployment.mockResolvedValue({ type: "failed", completed: 1, unexecuted: 2, reason: "machine" });
 
     await expect(
       runDeploy({
@@ -335,46 +305,15 @@ describe("process environment deployment", () => {
       }),
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
-  });
-
-  it("does not write Applied when confirm wait times out", async () => {
-    mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    await expect(
-      runDeploy({
-        event: { data: { environmentDeploymentId: "deployment-1" } },
-        step: createStepTools({ confirmation: null }),
-      }),
-    ).rejects.toBeInstanceOf(NonRetriableError);
-    expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
-    expect(mocks.previewEnvironmentDeployment).toHaveBeenCalledTimes(1);
-    expect(mocks.confirmEnvironmentDeployment).not.toHaveBeenCalled();
-  });
-
-  it("fails confirm with SdkSurfaceNotShipped without writing Applied", async () => {
-    mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    mocks.confirmEnvironmentDeployment.mockRejectedValue(
-      new SdkSurfaceNotShipped({
-        surface: "preview",
-        ticket: "getployz/ployz2#253",
-      }),
-    );
-
-    await expect(
-      runDeploy({
-        event: { data: { environmentDeploymentId: "deployment-1" } },
-      }),
-    ).rejects.toBeInstanceOf(NonRetriableError);
-    expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
-    expect(mocks.markDeploymentFailedIfOwned).toHaveBeenCalledWith(
-      expect.objectContaining({
-        failureCode: "sdk_surface_not_shipped",
-      }),
-    );
+    expect(mocks.markDeploymentFailedIfOwned).toHaveBeenCalledWith(expect.objectContaining({
+      failureCode: "sdk_deploy_failed",
+      message: "Deployment stopped (machine): 1 operations completed; 2 not attempted. The failed operation may have additional effects.",
+    }));
   });
 
   it("terminalizes a non-retriable typed activity failure", async () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    mocks.previewEnvironmentDeployment.mockRejectedValue(
+    mocks.executeEnvironmentDeployment.mockRejectedValue(
       new DeploymentRuntimeInvalid({
         failureCode: "deploy_image_not_pullable",
         message: "Git sources are not pullable.",
@@ -386,13 +325,24 @@ describe("process environment deployment", () => {
         event: { data: { environmentDeploymentId: "deployment-1" } },
       }),
     ).rejects.toBeInstanceOf(NonRetriableError);
-    expect(mocks.confirmEnvironmentDeployment).not.toHaveBeenCalled();
     expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
     expect(mocks.markDeploymentFailedIfOwned).toHaveBeenCalledWith(
       expect.objectContaining({
         failureCode: "deploy_image_not_pullable",
       }),
     );
+  });
+
+  it("records a cancelled runtime outcome with its partial counts", async () => {
+    mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
+    mocks.executeEnvironmentDeployment.mockResolvedValue({
+      type: "failed", completed: 1, unexecuted: 2, reason: "cancelled",
+    });
+    mocks.markCancelledByInngestRunId.mockResolvedValue(true);
+    const result = await runDeploy({ event: { data: { environmentDeploymentId: "deployment-1" } } });
+    expect(result).toEqual({ environmentDeploymentId: "deployment-1", status: "cancelled" });
+    expect(mocks.markCancelledByInngestRunId).toHaveBeenCalledWith("run-1", expect.stringContaining("1 operations completed; 2 not attempted"));
+    expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
   });
 
   it("skips a terminal deployment", async () => {
@@ -407,7 +357,7 @@ describe("process environment deployment", () => {
       status: "applied",
       skipped: true,
     });
-    expect(mocks.previewEnvironmentDeployment).not.toHaveBeenCalled();
+    expect(mocks.executeEnvironmentDeployment).not.toHaveBeenCalled();
   });
 
   it("skips a run owned elsewhere", async () => {
@@ -439,8 +389,11 @@ describe("process environment deployment", () => {
     );
   });
 
-  it("does not write Applied from onFailure", async () => {
-    const context = createDeploymentContext("planning");
+  it.each([
+    { status: "planning" as const, message: "retry budget exhausted", failureCode: undefined },
+    { status: "deploying" as const, message: "Runtime execution ended without a complete outcome; effects are unknown.", failureCode: "sdk_deploy_outcome_unknown" },
+  ])("onFailure reports $status without writing Applied", async ({ status, message, failureCode }) => {
+    const context = createDeploymentContext(status);
     context.deployment.inngestRunId = "run-1";
     mocks.loadDeploymentContext.mockResolvedValue(context);
     await executeProcessEnvironmentDeploymentOnFailure(
@@ -471,8 +424,8 @@ describe("process environment deployment", () => {
     expect(mocks.markDeploymentFailedIfOwned).toHaveBeenCalledWith({
       environmentDeploymentId: "deployment-1",
       expectedInngestRunId: "run-1",
-      message: "retry budget exhausted",
-      failureCode: undefined,
+      message,
+      failureCode,
     });
   });
 

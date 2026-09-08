@@ -4,10 +4,6 @@ import type { MachineId } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import {
-  service as schemaService,
-  environmentResource as schemaEnvironmentResource,
-} from "#/modules/environment-design/tables";
-import {
   project as schemaProject,
   environment as schemaEnvironment,
 } from "#/modules/project/tables";
@@ -218,24 +214,10 @@ const loadCatalog = Effect.fn("Teardown.loadCatalog")(function* (
 ) {
   if (environmentIds.length === 0) return { services: [], volumes: [] };
   const database = yield* Database;
-  const [services, volumes] = yield* Effect.all([
-    database.drizzle
-      .select({ environmentId: schemaService.environmentId, name: schemaService.name })
-      .from(schemaService)
-      .where(inArray(schemaService.environmentId, [...environmentIds])),
-    database.drizzle
-      .select({
-        environmentId: schemaEnvironmentResource.environmentId,
-        name: schemaEnvironmentResource.name,
-      })
-      .from(schemaEnvironmentResource)
-      .where(
-        and(
-          inArray(schemaEnvironmentResource.environmentId, [...environmentIds]),
-          eq(schemaEnvironmentResource.implementationType, "volume"),
-        ),
-      ),
-  ]);
+  const documents = yield* database.drizzle.select({ id: schemaEnvironment.id, intent: schemaEnvironment.intent })
+    .from(schemaEnvironment).where(inArray(schemaEnvironment.id, [...environmentIds]));
+  const services = documents.flatMap((document) => document.intent.services.map((node) => ({ environmentId: document.id, name: node.config.name })));
+  const volumes = documents.flatMap((document) => document.intent.volumes.map((node) => ({ environmentId: document.id, name: node.name })));
   return { services, volumes };
 });
 

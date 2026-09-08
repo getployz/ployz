@@ -30,8 +30,8 @@ importers:
         specifier: ^5.2.8
         version: 5.2.8
       '@ployz/sdk':
-        specifier: 0.1.2-beta.35
-        version: 0.1.2-beta.35
+        specifier: link:../crates/ployz-sdk
+        version: link:../crates/ployz-sdk
       '@polar-sh/better-auth':
         specifier: ^1.8.4
         version: 1.8.4(99b2e7f0411d51510a6643c2380a4f96)
@@ -192,6 +192,9 @@ importers:
       oxlint-tsgolint:
         specifier: 0.24.0
         version: 0.24.0
+      portless:
+        specifier: ^0.15.6
+        version: 0.15.6
       typescript:
         specifier: 7.0.1-rc
         version: 7.0.1-rc
@@ -2139,10 +2142,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
-
-  '@ployz/sdk@0.1.2-beta.35':
-    resolution: {integrity: sha512-2b5tgZQVbZJ6/EzAV0u6yjHlMmJPdOzbxIrbZjVMUQrBXFvX4kUSFLy5yOKd8o75FiWwA0pq7fZEFe37LM5eTg==}
-    engines: {node: '>=18'}
 
   '@polar-sh/better-auth@1.8.4':
     resolution: {integrity: sha512-BgWCcBQDRYwQn2NEYYzGSEfnrmBJHaDTvYBXGE2V3mmGPKspUDS8+p1LzbNY0Sw681LT8HB5w5Q81Ysc46CVSQ==}
@@ -5676,6 +5675,12 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
+  portless@0.15.6:
+    resolution: {integrity: sha512-uOAwWLF32rmyEGFASzSO0VOaqb/AQxFCCzyZbPGd82UNNOfIEvc09zy92nroNibE5HNfzV4oVB0ObKbPXgkM9A==}
+    engines: {node: '>=24'}
+    os: [darwin, linux, win32]
+    hasBin: true
+
   postcss-selector-parser@6.0.10:
     resolution: {integrity: sha512-IQ7TZdoaqbT+LCpShg46jnZVlhWD2w6iQYAcYXfHARZ7X1t/UGhhceQDs5X0cGqKvYlHNOuv7Oa1xmb0oQuA3w==}
     engines: {node: '>=4'}
@@ -8734,13 +8739,6 @@ snapshots:
 
   '@ployz/sdk-linux-x64@0.1.2-beta.35':
     optional: true
-
-  '@ployz/sdk@0.1.2-beta.35':
-    optionalDependencies:
-      '@ployz/sdk-darwin-arm64': 0.1.2-beta.35
-      '@ployz/sdk-darwin-x64': 0.1.2-beta.35
-      '@ployz/sdk-linux-arm64': 0.1.2-beta.35
-      '@ployz/sdk-linux-x64': 0.1.2-beta.35
 
   '@polar-sh/better-auth@1.8.4(99b2e7f0411d51510a6643c2380a4f96)':
     dependencies:
@@ -12474,6 +12472,8 @@ snapshots:
   picomatch@4.0.4: {}
 
   pkce-challenge@5.0.1: {}
+
+  portless@0.15.6: {}
 
   postcss-selector-parser@6.0.10:
     dependencies:

@@ -18,12 +18,10 @@ import type {
 } from "#/modules/environment-design/environment-change-set";
 import { buildEnvironmentChangeSet } from "#/modules/environment-design/environment-change-set";
 import {
-  getCanvasNodeDiffGroupCanDiscard,
   type CanvasNodeDiffGroup,
 } from "#/modules/environment-design/canvas-node-diff";
 import type {
   EnvironmentSavedStateDiscardCommand,
-  EnvironmentSavedStateDiscardOperation,
 } from "#/modules/environment-design/saved-state";
 
 export type CanvasDeploymentEvidence = {
@@ -82,85 +80,6 @@ export function toCanvasWorkingNodeDiscardPlan(
   plan: EnvironmentNodeDiscardPlan,
 ): CanvasWorkingNodeDiscardPlan {
   return { kind: plan.kind, target: "working", node: plan.node };
-}
-
-function toCanvasSavedNodeDiscardPlan(
-  plan: EnvironmentNodeDiscardPlan | null | undefined,
-): CanvasSavedNodeDiscardPlan | null {
-  if (!plan || plan.target !== "saved") return null;
-  return plan;
-}
-
-function toSavedNodeDiscardOperation(
-  plan: CanvasSavedNodeDiscardPlan,
-): EnvironmentSavedStateDiscardOperation {
-  return {
-    kind: "node",
-    nodeType: plan.node.type,
-    nodeId: plan.node.id,
-  };
-}
-
-function buildCanvasDiscardAllPlan(input: {
-  unsaved: CanvasEnvironmentChangeSlice;
-  pending: CanvasEnvironmentChangeSlice;
-}): CanvasDiscardAllPlan {
-  const unsavedByNode = new Map(
-    input.unsaved.groups
-      .filter(getCanvasNodeDiffGroupCanDiscard)
-      .map((group) => [`${group.nodeType}:${group.nodeId}`, group]),
-  );
-  const pendingByNode = new Map(
-    input.pending.groups
-      .filter(getCanvasNodeDiffGroupCanDiscard)
-      .map((group) => [`${group.nodeType}:${group.nodeId}`, group]),
-  );
-  const keys = [...new Set([...unsavedByNode.keys(), ...pendingByNode.keys()])]
-    .sort((left, right) => {
-      const rank = (key: string) => key.startsWith("service:") ? 1 : 0;
-      return rank(left) - rank(right) || left.localeCompare(right);
-    });
-
-  const nodes = keys.flatMap((key) => {
-    const pending = pendingByNode.get(key);
-    const unsaved = unsavedByNode.get(key);
-    const savedPlan = pending?.projectedChange.discardPlan;
-    const finalPlan = savedPlan ?? unsaved?.projectedChange.discardPlan;
-    if (!finalPlan) return [];
-    return [
-      {
-        node: finalPlan.node,
-        working: toCanvasWorkingNodeDiscardPlan(finalPlan),
-      },
-    ];
-  });
-  const savedPlans = keys.flatMap((key) => {
-    const saved = toCanvasSavedNodeDiscardPlan(
-      pendingByNode.get(key)?.projectedChange.discardPlan,
-    );
-    return saved ? [saved] : [];
-  });
-  const basis = savedPlans[0]?.basis ?? null;
-  if (
-    basis &&
-    savedPlans.some(
-      (plan) =>
-        plan.basis.savedStateSnapshotId !== basis.savedStateSnapshotId,
-    )
-  ) {
-    throw new Error("Discard All plans must share one Saved State basis.");
-  }
-
-  return {
-    nodes,
-    savedCommand: basis
-      ? {
-          kind: "discard",
-          basis,
-          operations: savedPlans.map(toSavedNodeDiscardOperation),
-        }
-      : null,
-  };
 }
 
 export function buildCanvasRuntimeObservations(input: {
@@ -372,7 +291,7 @@ export function buildCanvasEnvironmentChangeState(input: {
 
   return {
     slices: { unsaved, pending, drift },
-    discardAllPlan: buildCanvasDiscardAllPlan({ unsaved, pending }),
+    discardAllPlan: changeSet.discardAllPlan,
     totalCount:
       unsaved.totalCount + pending.totalCount + drift.totalCount,
     canDeploy: input.runtimeObserved !== null,

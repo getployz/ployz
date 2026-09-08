@@ -57,6 +57,7 @@ export type ServiceDeploymentFieldSelection = Pick<
     deletedAt?: Date | null;
     env?: ServiceDeployEnv;
     mounts?: ServiceDeployMount[];
+    variableGroupAttachments?: ServiceDeploymentConfig["variableGroupAttachments"];
   };
 
 type ServiceDeploymentConfigProjection = Omit<
@@ -324,6 +325,7 @@ export function projectServiceDeploymentConfig(
     privateDns: service.privateDns,
     env: service.env ?? {},
     mounts: service.mounts ?? [],
+    variableGroupAttachments: service.variableGroupAttachments ?? [],
   };
   if (service.maxRetries !== undefined) config.maxRetries = service.maxRetries;
   if (service.cron !== undefined) config.cron = service.cron;

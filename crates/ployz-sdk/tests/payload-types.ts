@@ -98,6 +98,10 @@ const web: RequestedServiceSpec = {
   update: { order: null, monitor_millis: null },
 };
 const intent: DeployIntent = {
+  dependencies: {},
+  service_profiles: {},
+  requested_profiles: [],
+  compose_refusal: null,
   project_name: "app" as ProjectName,
   target: [web],
   options: {

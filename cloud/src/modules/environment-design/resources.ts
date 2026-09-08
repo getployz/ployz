@@ -9,9 +9,6 @@ import {
   ENVIRONMENT_RESOURCE_TYPES,
 } from "#/modules/environment-design/environment-resource-types";
 import {
-  environmentSnapshotSourceSchema,
-} from "#/modules/environment-design/environment-snapshot-source";
-import {
   environmentVariableGroupSelectSchema,
   variableSelectSchema,
 } from "#/modules/environment-design/variables";
@@ -40,8 +37,6 @@ const resourceLineageDbSelectSchema = createSelectSchema(resourceLineage, {
 const environmentResourceDbSelectSchema = createSelectSchema(
   environmentResource,
   {
-    name: resourceName,
-    slug: requiredTrimmedString,
     implementationType: environmentResourceTypeSchema,
   },
 );
@@ -63,9 +58,9 @@ export const environmentResourceSelectSchema = Schema.Struct({
   implementationType:
     environmentResourceDbSelectSchema.fields.implementationType,
   variableGroupId: environmentResourceDbSelectSchema.fields.variableGroupId,
-  name: environmentResourceDbSelectSchema.fields.name,
-  slug: environmentResourceDbSelectSchema.fields.slug,
-  deletedAt: environmentResourceDbSelectSchema.fields.deletedAt,
+  name: resourceName,
+  slug: requiredTrimmedString,
+  deletedAt: Schema.NullOr(Schema.Date),
   createdAt: environmentResourceDbSelectSchema.fields.createdAt,
   updatedAt: environmentResourceDbSelectSchema.fields.updatedAt,
 });
@@ -144,6 +139,7 @@ export const createVariableGroupResourceSchema = Schema.Struct({
 });
 
 export const updateVariableGroupResourceSchema = Schema.Struct({
+  revision: Uuid,
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
   resourceId: Uuid,
@@ -151,6 +147,7 @@ export const updateVariableGroupResourceSchema = Schema.Struct({
 });
 
 export const deleteVariableGroupResourcePlanSchema = Schema.Struct({
+  revision: Uuid,
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
   resourceId: Uuid,
@@ -164,13 +161,6 @@ export const updateEnvironmentResourceCanvasPositionSchema = Schema.Struct({
   y: Schema.Finite,
 });
 
-export const restoreVariableGroupResourceSnapshotSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  resourceId: Uuid,
-  snapshotSource: environmentSnapshotSourceSchema,
-});
-
 export const createVolumeResourceSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
@@ -179,6 +169,7 @@ export const createVolumeResourceSchema = Schema.Struct({
 });
 
 export const updateVolumeResourceSchema = Schema.Struct({
+  revision: Uuid,
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
   resourceId: Uuid,
@@ -186,16 +177,10 @@ export const updateVolumeResourceSchema = Schema.Struct({
 });
 
 export const deleteVolumeResourceSchema = Schema.Struct({
+  revision: Uuid,
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
   resourceId: Uuid,
-});
-
-export const discardVolumeResourceSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  resourceId: Uuid,
-  snapshotSource: Schema.NullOr(environmentSnapshotSourceSchema),
 });
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
@@ -216,10 +201,6 @@ export type DeleteVariableGroupResourcePlanInput =
   typeof deleteVariableGroupResourcePlanSchema.Type;
 export type UpdateEnvironmentResourceCanvasPositionInput =
   typeof updateEnvironmentResourceCanvasPositionSchema.Type;
-export type RestoreVariableGroupResourceSnapshotInput =
-  typeof restoreVariableGroupResourceSnapshotSchema.Type;
 export type CreateVolumeResourceInput = typeof createVolumeResourceSchema.Type;
 export type UpdateVolumeResourceInput = typeof updateVolumeResourceSchema.Type;
 export type DeleteVolumeResourceInput = typeof deleteVolumeResourceSchema.Type;
-export type DiscardVolumeResourceInput =
-  typeof discardVolumeResourceSchema.Type;

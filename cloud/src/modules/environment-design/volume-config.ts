@@ -1,11 +1,10 @@
+import { parseResourceConfig } from "@ployz/sdk/config";
+import { sharedSchema } from "#/modules/environment-design/service-config";
 import { Schema, SchemaGetter } from "effect";
 import { decodeStrict } from "#/modules/environment-design/schema";
-import type { DiffRow } from "#/modules/services/service-deployment-diff/fields";
+import { getResourceDeploymentDiffRows, type DiffRow } from "#/modules/services/service-deployment-diff/fields";
 
-export const volumeConfigSchema = Schema.Struct({
-  version: Schema.Literal(2),
-  name: Schema.String,
-}).pipe(Schema.brand("VolumeConfig"));
+export const volumeConfigSchema = sharedSchema((value) => parseResourceConfig("volume", value));
 
 export type VolumeConfig = typeof volumeConfigSchema.Type;
 
@@ -61,31 +60,5 @@ export function getVolumeConfigDiffRows(input: {
   current: VolumeConfig;
   baseline: VolumeConfig | null;
 }): DiffRow[] {
-  if (!input.baseline) {
-    return [
-      {
-        changeKey: `${input.nodeId}:node`,
-        label: "Volume",
-        kind: "add",
-        path: "node",
-        currentValue: "",
-        newValue: input.current.name,
-        canDiscard: true,
-      },
-    ];
-  }
-
-  if (input.current.name === input.baseline.name) return [];
-
-  return [
-    {
-      changeKey: `${input.nodeId}:name`,
-      label: "Name",
-      kind: "update",
-      path: "name",
-      currentValue: input.baseline.name,
-      newValue: input.current.name,
-      canDiscard: false,
-    },
-  ];
+  return getResourceDeploymentDiffRows("volume", input);
 }

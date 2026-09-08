@@ -3,8 +3,9 @@ import { createdAt, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 
 import { organization } from "#/modules/organization/tables";
+import type { SavedEnvironmentIntent } from "@ployz/sdk/config";
 
-import { foreignKey, index, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { foreignKey, index, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -37,6 +38,9 @@ export const environment = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     namespace: text("namespace").notNull(),
+    intent: jsonb("intent").notNull().$type<SavedEnvironmentIntent>(),
+    revision: uuid("revision").defaultRandom().notNull(),
+    updatedAt,
     createdAt,
   },
   (table) => [

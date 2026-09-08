@@ -1,4 +1,5 @@
 mod create;
+mod http_health;
 mod lifecycle;
 mod managed_service;
 mod observe;
@@ -27,6 +28,7 @@ use bollard::{
     models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
     query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
 };
+use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
@@ -39,6 +41,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use lifecycle::{
@@ -179,8 +182,16 @@ impl ContainerRuntime {
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
-        for container_id in self.docker.managed_container_ids().await? {
-            match self.inspect_managed(&container_id, machine_id).await {
+        let mut inspected = futures_util::stream::iter(self.docker.managed_container_ids().await?)
+            .map(|container_id| async move {
+                (
+                    container_id,
+                    self.inspect_managed(&container_id, machine_id).await,
+                )
+            })
+            .buffered(8);
+        while let Some((container_id, result)) = inspected.next().await {
+            match result {
                 Ok(observation) => observations.push(observation),
                 Err(error) if malformed_container(&error) => {
                     eprintln!("ignoring malformed managed container {container_id}: {error}");
@@ -214,6 +225,21 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         machine_id: &MachineId,
     ) -> Result<ContainerObservation, Error> {
+        Ok(self
+            .inspect_managed_details(container_id, machine_id)
+            .await?
+            .container)
+    }
+
+    /// Inspect managed identity, current health, and live environment from Docker.
+    ///
+    /// # Errors
+    /// Rejects Docker failures, malformed metadata, and Containers not managed by Ployz.
+    pub async fn inspect_managed_details(
+        &self,
+        container_id: &ContainerId,
+        machine_id: &MachineId,
+    ) -> Result<ployz_core::ContainerDetails, Error> {
         let inspected = decode_raw_inspect(
             self.docker
                 .client
@@ -233,24 +259,41 @@ impl ContainerRuntime {
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
 
-        Ok(ployz_core::ContainerObservation::try_from(
-            ployz_core::ContainerObservationParts {
+        let environment = inspected.config.as_ref().and_then(inspected_environment);
+        let address = container_address(&inspected);
+        let mut runtime = runtime_observation(inspected.state.as_ref());
+        let mut effective_check = effective_healthcheck(inspected.config.as_ref());
+        if kind == ContainerKind::ServiceContainer
+            && let Some(HealthcheckSpec::Http(check)) = &resolved_spec.container.healthcheck
+        {
+            effective_check = Some(HealthcheckSpec::Http(check.clone()));
+            if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+                runtime = ContainerRuntimeObservation::Running {
+                    health: http_health_probe(address, check).await,
+                };
+            }
+        }
+        let container =
+            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id: *container_id,
                 display_name: display_name(inspected.name.as_deref()),
                 created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
                 machine_id: *machine_id,
                 project_name: identity.project,
                 kind,
-                runtime: runtime_observation(inspected.state.as_ref()),
-                effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
+                runtime,
+                effective_healthcheck: effective_check,
                 resolved_spec,
-                address: container_address(&inspected),
+                address,
                 labels: labels
                     .iter()
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
-            },
-        )?)
+            })?;
+        Ok(ployz_core::ContainerDetails {
+            container,
+            environment,
+        })
     }
 }
 
@@ -360,8 +403,26 @@ impl RawContainerInspect {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct RawContainerConfig {
+    env: Option<Vec<String>>,
     labels: Option<HashMap<String, String>>,
     healthcheck: Option<HealthConfig>,
+}
+
+fn inspected_environment(
+    config: &RawContainerConfig,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    config
+        .env
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| {
+            entry
+                .split_once('=')
+                .filter(|(key, _)| !key.is_empty())
+                .map(|(key, value)| (key.into(), value.into()))
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -1671,4 +1732,19 @@ mod tests {
         .unwrap();
         assert_eq!(projected(&inspected), expected_typed_projection());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn inspection_environment_reads_docker_values_and_rejects_malformed_entries() {
+    let config: RawContainerConfig = serde_json::from_value(serde_json::json!({
+        "Env": ["TOKEN=private-live-value", "WITH_EQUALS=a=b"]
+    }))
+    .unwrap();
+    let environment = inspected_environment(&config).unwrap();
+    assert_eq!(environment.get("TOKEN").unwrap(), "private-live-value");
+    assert_eq!(environment.get("WITH_EQUALS").unwrap(), "a=b");
+    let malformed: RawContainerConfig =
+        serde_json::from_value(serde_json::json!({"Env": ["INVALID"]})).unwrap();
+    assert!(inspected_environment(&malformed).is_none());
 }

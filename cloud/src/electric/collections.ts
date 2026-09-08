@@ -6,8 +6,6 @@ import {
 import {
   BasicIndex,
   createCollection,
-  createLiveQueryCollection,
-  eq,
 } from "@tanstack/react-db";
 
 import { tableSyncUrl } from "#/electric/table-sync-url";
@@ -20,11 +18,7 @@ import {
   service as schemaService,
   environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
   resourceLineage as schemaResourceLineage,
-  environmentVariableGroup as schemaEnvironmentVariableGroup,
   environmentResource as schemaEnvironmentResource,
-  variable as schemaVariable,
-  serviceVariableGroupAttachment as schemaServiceVariableGroupAttachment,
-  serviceVolumeAttachment as schemaServiceVolumeAttachment,
 } from "#/modules/environment-design/tables";
 import {
   destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
@@ -36,6 +30,7 @@ import {
 import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
+  volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 
 type ProjectRow = typeof schemaProject.$inferSelect;
@@ -43,13 +38,7 @@ type EnvironmentRow = typeof schemaEnvironment.$inferSelect;
 type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
-type VariableGroupRow = typeof schemaEnvironmentVariableGroup.$inferSelect;
 type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
-type VariableRow = typeof schemaVariable.$inferSelect;
-type ServiceVariableGroupAttachmentRow =
-  typeof schemaServiceVariableGroupAttachment.$inferSelect;
-type ServiceVolumeAttachmentRow =
-  typeof schemaServiceVolumeAttachment.$inferSelect;
 type EnvironmentDeploymentRow = typeof schemaEnvironmentDeployment.$inferSelect;
 type EnvironmentSavedStateRevisionRow = Pick<
   typeof schemaEnvironmentSavedStateSnapshot.$inferSelect,
@@ -160,16 +149,6 @@ export const getResourceLineagesCollection = cachedByOrganization(
     }),
 );
 
-export const getVariableGroupsCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<VariableGroupRow>({
-      table: "environment_variable_group",
-      organizationSlug,
-      baseUrl,
-      getKey: (row) => row.id,
-    }),
-);
-
 export const getRawEnvironmentResourcesCollection = cachedByOrganization(
   (organizationSlug, baseUrl) =>
     makeOrganizationCollection<EnvironmentResourceRow>({
@@ -177,60 +156,6 @@ export const getRawEnvironmentResourcesCollection = cachedByOrganization(
       organizationSlug,
       baseUrl,
       getKey: (row) => row.id,
-    }),
-);
-
-export const getRawVariablesCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<VariableRow>({
-      table: "variable",
-      organizationSlug,
-      baseUrl,
-      getKey: (row) => row.id,
-    }),
-);
-
-export const getRawServiceVariableGroupAttachmentsCollection =
-  cachedByOrganization((organizationSlug, baseUrl) =>
-    makeOrganizationCollection<ServiceVariableGroupAttachmentRow>({
-      table: "service_variable_group_attachment",
-      organizationSlug,
-      baseUrl,
-      getKey: (row) => `${row.serviceId}:${row.variableGroupId}`,
-    }),
-  );
-
-export const getServiceVariableGroupAttachmentsCollection =
-  cachedByOrganization((organizationSlug, baseUrl) => {
-    const attachments =
-      getRawServiceVariableGroupAttachmentsCollection(
-        organizationSlug,
-        baseUrl,
-      );
-    const services = getRawServicesCollection(organizationSlug, baseUrl);
-    return createLiveQueryCollection({
-      id: `electric:${organizationSlug}:service-variable-group-relationships`,
-      startSync: true,
-      query: (q) => q
-        .from({ variableGroupAttachment: attachments })
-        .innerJoin({ attachmentService: services }, ({ variableGroupAttachment, attachmentService }) =>
-          eq(variableGroupAttachment.serviceId, attachmentService.id))
-        .select(({ variableGroupAttachment, attachmentService }) => ({
-          environmentId: attachmentService.environmentId,
-          serviceId: variableGroupAttachment.serviceId,
-          variableGroupId: variableGroupAttachment.variableGroupId,
-          sortOrder: variableGroupAttachment.sortOrder,
-        })),
-    });
-  });
-
-export const getServiceVolumeAttachmentsCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<ServiceVolumeAttachmentRow>({
-      table: "service_volume_attachment",
-      organizationSlug,
-      baseUrl,
-      getKey: (row) => `${row.serviceId}:${row.volumeResourceId}`,
     }),
 );
 
@@ -283,3 +208,8 @@ export const getDestructiveVolumeAttemptsCollection = cachedByOrganization(
       getKey: (row) => row.id,
     }),
 );
+
+export const getVolumeRemovalResultsCollection = cachedByOrganization((organizationSlug, baseUrl) =>
+  makeOrganizationCollection<Pick<typeof schemaVolumeRemoveAttempt.$inferSelect, "id" | "organizationId" | "environmentId" | "environmentResourceId" | "status" | "terminalAt">>({
+    table: "volume_remove_attempt", organizationSlug, baseUrl, getKey: (row) => row.id,
+  }));

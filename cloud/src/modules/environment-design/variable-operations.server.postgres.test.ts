@@ -1,15 +1,15 @@
+import { loadEnvironmentDocument } from "./working-state-repository.server";
+import { emptyEnvironmentIntent } from "./saved-intent";
+import { createVariableGroupResource } from "./resource-operations.server";
 import { assert, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
 import {
   environment,
-  environmentVariableGroup,
   member,
   organization,
   project,
-  serviceVariableGroupAttachment,
   user,
-  variableGroupLineage,
 } from "#/db/schema";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -100,6 +100,7 @@ it.live(
             projectId: projectRecord.id,
             name: "Production",
             namespace: "api-production",
+            intent: emptyEnvironmentIntent("api-production"),
           })
           .returning({ id: environment.id });
         const environmentRecord = environments[0];
@@ -120,35 +121,11 @@ it.live(
           restartPolicy: "unless-stopped",
         });
         const serviceId = createdService.data.service.id;
-        const lineages = yield* database.drizzle
-          .insert(variableGroupLineage)
-          .values({
-            projectId: projectRecord.id,
-            canonicalName: "Shared",
-            canonicalSlug: "shared-lineage",
-          })
-          .returning({ id: variableGroupLineage.id });
-        const lineage = lineages[0];
-        if (lineage === undefined) {
-          return yield* Effect.die("PostgreSQL did not return the group lineage.");
-        }
-        const groups = yield* database.drizzle
-          .insert(environmentVariableGroup)
-          .values({
-            organizationId: organizationRecord.id,
-            projectId: projectRecord.id,
-            environmentId: environmentRecord.id,
-            lineageId: lineage.id,
-            name: "Shared",
-            slug: "shared",
-          })
-          .returning({ id: environmentVariableGroup.id });
-        const group = groups[0];
-        if (group === undefined) {
-          return yield* Effect.die("PostgreSQL did not return the variable group.");
-        }
+        const createdGroup = yield* createVariableGroupResource(actor, { organizationSlug: "acme", environmentId: environmentRecord.id, name: "Shared", x: 0, y: 0 });
+        const group = createdGroup.data.variableGroup;
 
         const plain = yield* createServiceVariable(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId,
@@ -157,24 +134,15 @@ it.live(
           exported: false,
           value: { type: "plain", value: "localhost" },
         });
+        const plainId = plain.data.intent.services[0]?.variables[0]?.id;
+        if (!plainId) return yield* Effect.die("Plain variable missing.");
         const plainRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`
-            select xmin::text as txid from variable where id = ${plain.data.id}
-            union all
-            select xmin::text as txid from config_key where id = ${plain.data.configKeyId}
-            union all
-            select xmin::text as txid from config_value
-            where config_key_id = ${plain.data.configKeyId}
-              and environment_id = ${environmentRecord.id}
-          `,
-          "objects",
-        );
-        assert.deepStrictEqual(
-          plainRows.map((row) => Number(row.txid)),
-          [plain.txid, plain.txid, plain.txid],
-        );
+          sql`select xmin::text as txid from variable where id = ${plainId}
+              union all select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
+        assert.deepStrictEqual(plainRows.map((row) => Number(row.txid)), [plain.txid, plain.txid]);
 
         const sealed = yield* createVariableGroupVariable(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           variableGroupId: group.id,
@@ -183,34 +151,24 @@ it.live(
           exported: true,
           value: { type: "sealed", value: "never-return-this" },
         });
-        assert.strictEqual(sealed.data.value.type, "sealed");
-        assert.strictEqual("value" in sealed.data.value, false);
+        const sealedVariable = sealed.data.intent.variableGroups[0]?.variables[0];
+        if (!sealedVariable) return yield* Effect.die("Secret variable missing.");
+        assert.strictEqual(sealedVariable.value.kind, "secret");
+        assert.ok(!JSON.stringify(sealed.data).includes("never-return-this"));
+        assert.ok(!JSON.stringify(sealed.data).includes("ciphertext"));
         const secretRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`
-            select xmin::text as txid from variable where id = ${sealed.data.id}
-            union all
-            select xmin::text as txid from variable_secret
-            where variable_id = ${sealed.data.id}
-            union all
-            select xmin::text as txid from config_key where id = ${sealed.data.configKeyId}
-            union all
-            select xmin::text as txid from config_value
-            where config_key_id = ${sealed.data.configKeyId}
-              and environment_id = ${environmentRecord.id}
-          `,
-          "objects",
-        );
-        assert.deepStrictEqual(
-          secretRows.map((row) => Number(row.txid)),
-          [sealed.txid, sealed.txid, sealed.txid, sealed.txid],
-        );
+          sql`select xmin::text as txid from variable where id = ${sealedVariable.id}
+              union all select xmin::text as txid from variable_secret where variable_id = ${sealedVariable.id}
+              union all select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
+        assert.deepStrictEqual(secretRows.map((row) => Number(row.txid)), [sealed.txid, sealed.txid, sealed.txid]);
 
         const invalidTransition = yield* Effect.flip(
           updateVariableGroupVariable(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
             organizationSlug: "acme",
             environmentId: environmentRecord.id,
             variableGroupId: group.id,
-            variableId: sealed.data.id,
+            variableId: sealedVariable.id,
             key: "TOKEN",
             description: "private",
             exported: true,
@@ -220,21 +178,15 @@ it.live(
         assert.strictEqual(invalidTransition._tag, "Validation");
 
         const attachment = yield* attachServiceVariableGroup(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId,
           variableGroupId: group.id,
         });
-        const attachmentRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`select xmin::text as txid from service_variable_group_attachment
-              where service_id = ${serviceId} and variable_group_id = ${group.id}`,
-          "objects",
-        );
-        assert.deepStrictEqual(
-          attachmentRows.map((row) => Number(row.txid)),
-          [attachment.txid],
-        );
+        assert.strictEqual(attachment.data.intent.services[0]?.variableGroupAttachments[0]?.variableGroupId, group.id);
         const bulk = yield* bulkUpdateServiceVariables(actor, {
+          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId,
@@ -248,27 +200,19 @@ it.live(
           ],
           updates: [
             {
-              variableId: plain.data.id,
+              variableId: plainId,
               key: "HOST",
               value: { type: "plain", value: "127.0.0.1" },
             },
           ],
           deletes: [],
         });
+        assert.deepStrictEqual(bulk.data.intent.services[0]?.variables.map((variable) => [variable.key, variable.value]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), [
+          ["HOST", { kind: "literal", value: "127.0.0.1" }], ["PORT", { kind: "literal", value: "3000" }],
+        ]);
         const bulkRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`select xmin::text as txid from variable
-              where service_id = ${serviceId} order by key`,
-          "objects",
-        );
-        assert.deepStrictEqual(
-          bulkRows.map((row) => Number(row.txid)),
-          [bulk.txid, bulk.txid],
-        );
-
-        const storedAttachment = yield* database.drizzle
-          .select({ serviceId: serviceVariableGroupAttachment.serviceId })
-          .from(serviceVariableGroupAttachment);
-        assert.deepStrictEqual(storedAttachment, [{ serviceId }]);
+          sql`select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
+        assert.strictEqual(Number(bulkRows[0]?.txid), bulk.txid);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -321,7 +321,7 @@ fn plan_operations(
 }
 
 fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundIntent, PlanError> {
-    let specs = order_included(intent, &names_to_plan(intent))?;
+    let specs = order_included(intent, &intent.applied_names())?;
     let target: Vec<_> = intent
         .target
         .iter()
@@ -470,7 +470,9 @@ fn reject_hostname_conflicts(
     Ok(())
 }
 
-fn obsolete_services(
+/// Find observed Services absent from the full target, excluding reserved projects.
+/// The caller must apply the intent's prune refusal before deleting them.
+pub(crate) fn obsolete_services(
     intent: &DeployIntent,
     services: &[ServiceObservation],
 ) -> Vec<QualifiedService> {
@@ -506,49 +508,6 @@ fn removal_operations(
             }
         })
         .collect()
-}
-
-fn names_to_plan(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
-    if intent.options.selected.is_empty() {
-        intent
-            .target
-            .iter()
-            .filter(|spec| intent.service_starts(&spec.name))
-            .map(|spec| &spec.name)
-            .collect()
-    } else {
-        expand_selected(intent)
-    }
-}
-
-fn expand_selected(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
-    let present = intent
-        .target
-        .iter()
-        .map(|spec| &spec.name)
-        .collect::<BTreeSet<_>>();
-    let mut included = BTreeSet::new();
-    let mut pending = intent
-        .options
-        .selected
-        .iter()
-        .map(|attempt| &attempt.name)
-        .filter(|name| present.contains(name))
-        .collect::<Vec<_>>();
-    while let Some(name) = pending.pop() {
-        if included.insert(name) {
-            pending.extend(
-                intent
-                    .dependencies()
-                    .get(name)
-                    .into_iter()
-                    .flatten()
-                    .map(|dependency| &dependency.service)
-                    .filter(|dependency| present.contains(dependency)),
-            );
-        }
-    }
-    included
 }
 
 fn order_included<'intent>(

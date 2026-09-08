@@ -79,7 +79,7 @@ describe("Inngest function policies", () => {
       { id: "process-github-push-received", retries: 5, concurrency: [{ key: "event.data.branchKey", limit: 1 }] },
       { id: "process-github-check-suite-received", retries: 5, concurrency: [{ key: "event.data.checkSuiteKey", limit: 1 }] },
       { id: "sweep-github-ingestion-outboxes", retries: 5, concurrency: [{ limit: 1 }] },
-      { id: "process-environment-deployment", retries: 3, concurrency: [{ key: "event.data.environmentId", limit: 1 }] },
+      { id: "process-environment-deployment", retries: 0, concurrency: [{ key: "event.data.environmentId", limit: 1 }] },
       { id: "mark-cancelled-row-backed-workflow", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "process-machine-remove", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-machine-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },

@@ -1,8 +1,6 @@
 import { NonRetriableError } from "inngest";
 import { Effect, Option, Schema } from "effect";
 import {
-  environmentDeployConfirmedEvent,
-  environmentDeployConfirmedEventType,
   environmentDeployRequestedEvent,
   environmentDeployRequestedEventType,
   inngestEventEnvelopeFields,
@@ -24,8 +22,7 @@ import { parseErrorEvidence } from "#/lib/error-evidence";
 import { TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/runtime-contract";
 import { DeploymentExecutionError } from "#/modules/deployments/execution-error";
 import {
-  confirmLatestEnvironmentDeployment,
-  previewEnvironmentDeployment,
+  executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.repository.server";
@@ -51,11 +48,6 @@ const EnvironmentDeployRequestedEnvelope = Schema.Struct({
     environmentId: NonEmptyString,
   }),
 });
-const EnvironmentDeployConfirmedEnvelope = Schema.Struct({
-  ...inngestEventEnvelopeFields,
-  name: Schema.Literal(environmentDeployConfirmedEvent),
-  data: Schema.Struct({ environmentDeploymentId: NonEmptyString }),
-});
 const EnvironmentDeployFailureEnvelope = inngestFunctionFailedEnvelopeSchema(
   EnvironmentDeployRequestedEnvelope,
 );
@@ -75,7 +67,6 @@ function decodeEnvironmentDeployFailureEnvelope(
 }
 
 export const DEPLOY_ADMISSION_POLL_INTERVAL = "15s";
-export const DEPLOY_CONFIRM_TIMEOUT = "1h";
 
 function deploymentContext<T>(value: T): DeploymentContext | null {
   // SAFETY: Inngest Jsonify-wraps step.run results; loaders return DeploymentContext | null.
@@ -136,7 +127,7 @@ export const PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY = [
 
 export type EnvironmentDeploymentStepTools = Pick<
   PloyzStepTools,
-  "run" | "sleep" | "sendEvent" | "waitForEvent"
+  "run" | "sleep" | "sendEvent"
 >;
 
 export type EnvironmentDeployEventData =
@@ -174,7 +165,12 @@ export async function executeProcessEnvironmentDeploymentOnFailure(
     {
       environmentDeploymentId,
       expectedInngestRunId: failedRunId,
-      error,
+      error: context.deployment.status === "deploying" && !deployFailureEvidence(error).failureCode
+        ? new DeploymentExecutionError({
+            failureCode: "sdk_deploy_outcome_unknown",
+            message: "Runtime execution ended without a complete outcome; effects are unknown.",
+          })
+        : error,
     },
     runEffect,
   );
@@ -227,7 +223,7 @@ export async function executeProcessEnvironmentDeployment(
     }),
   );
   if (!loadedContext) throw new Error("Deployment context was not decoded.");
-  let context: DeploymentContext = loadedContext;
+  const context: DeploymentContext = loadedContext;
 
   if (isTerminalEnvironmentDeployment(context)) {
     return {
@@ -238,7 +234,6 @@ export async function executeProcessEnvironmentDeployment(
   }
 
   try {
-    let waitedForActiveDeployment = false;
     while (true) {
       const planning = await step.run(
         "mark-deployment-planning",
@@ -250,7 +245,6 @@ export async function executeProcessEnvironmentDeployment(
           ),
       );
       if (planning.state === "blocked") {
-        waitedForActiveDeployment = true;
         await step.sleep(
           "wait-for-active-deployment",
           DEPLOY_ADMISSION_POLL_INTERVAL,
@@ -271,62 +265,6 @@ export async function executeProcessEnvironmentDeployment(
       }
       break;
     }
-
-    if (waitedForActiveDeployment) {
-      const reloadedContext = deploymentContext(
-        await step.run("reload-deployment-context-after-wait", async () => {
-          const loaded = await runEffect(
-            loadDeploymentContext(environmentDeploymentId),
-          );
-          if (!loaded) {
-            throw new NonRetriableError(
-              "Environment deployment was not found.",
-            );
-          }
-          return loaded;
-        }),
-      );
-      if (!reloadedContext) {
-        throw new Error("Deployment context was not decoded.");
-      }
-      context = reloadedContext;
-    }
-
-    await step.run("preview-sdk-deploy", () =>
-      runEffect(Effect.scoped(previewEnvironmentDeployment(context))),
-    );
-
-    const confirmation = await step.waitForEvent("wait-for-deploy-confirm", {
-      event: environmentDeployConfirmedEventType,
-      timeout: DEPLOY_CONFIRM_TIMEOUT,
-      match: "data.environmentDeploymentId",
-    });
-    await step.run("validate-deploy-confirmation", () => {
-      if (!confirmation) {
-        return runEffect(
-          Effect.fail(
-            new DeploymentExecutionError({
-              message: "Deploy confirmation timed out. Preview again.",
-              failureCode: "deploy_confirm_timeout",
-            }),
-          ),
-        );
-      }
-      const decoded = decodeInngestEnvelope(EnvironmentDeployConfirmedEnvelope)(
-        confirmation,
-      );
-      if (decoded.data.environmentDeploymentId !== environmentDeploymentId) {
-        return runEffect(
-          Effect.fail(
-            new DeploymentExecutionError({
-              message: "Deploy confirmation did not match the deployment.",
-              failureCode: "deploy_confirm_mismatch",
-            }),
-          ),
-        );
-      }
-      return true;
-    });
 
     const deploying = await step.run("mark-deployment-deploying", () =>
       runEffect(
@@ -349,24 +287,25 @@ export async function executeProcessEnvironmentDeployment(
       };
     }
 
-    await step.run("confirm-sdk-deploy", async () => {
-      const confirmed = await runEffect(
-        Effect.scoped(
-          confirmLatestEnvironmentDeployment(environmentDeploymentId),
-        ),
-      );
-      if (confirmed.type !== "success") {
-        await runEffect(
-          Effect.fail(
-            new DeploymentExecutionError({
-              message: "SDK deploy failed.",
-              failureCode: "sdk_deploy_failed",
-            }),
-          ),
+    const outcome = await step.run("execute-sdk-deploy", () =>
+      runEffect(Effect.scoped(executeLatestEnvironmentDeployment(environmentDeploymentId))),
+    );
+    if (outcome.type === "failed") {
+      const message = `Deployment stopped (${outcome.reason}): ${outcome.completed} operations completed; ${outcome.unexecuted} not attempted. The failed operation may have additional effects.`;
+      if (outcome.reason === "cancelled") {
+        const cancelled = await step.run("mark-runtime-deployment-cancelled", () =>
+          runEffect(markCancelledByInngestRunId(runId, message)),
         );
+        if (!cancelled) {
+          const latest = deploymentContext(await step.run("reload-runtime-cancellation-race", () =>
+            runEffect(loadDeploymentContext(environmentDeploymentId)),
+          ));
+          return { environmentDeploymentId, status: latest?.deployment.status ?? "missing", skipped: true };
+        }
+        return { environmentDeploymentId, status: "cancelled" };
       }
-      return confirmed;
-    });
+      throw new DeploymentExecutionError({ message, failureCode: "sdk_deploy_failed" });
+    }
 
     const applied = await step.run("persist-deploy-apply-result", () =>
       runEffect(
@@ -478,7 +417,8 @@ export const createProcessEnvironmentDeployment = (
   inngest.createFunction(
   {
     id: PROCESS_ENVIRONMENT_DEPLOYMENT_FUNCTION_ID,
-    retries: 3,
+    // A lost execution may have mutated Machines. A new attempt must be explicit.
+    retries: 0,
     triggers: [{ event: environmentDeployRequestedEventType }],
     concurrency: [...PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY],
     onFailure: async ({ event, error }) =>

@@ -32,7 +32,9 @@ const config = defineConfig({
     devtools(),
     tailwindcss(),
     tanstackStart({ client: { entry: './client.tsx' } }),
-    nitro(),
+    nitro({
+      rollupConfig: { external: [/^@ployz\/sdk(?:\/|$)/] },
+    }),
     viteReact(),
   ],
 })

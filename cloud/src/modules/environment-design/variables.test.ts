@@ -7,6 +7,7 @@ import {
 } from "#/modules/environment-design/variables";
 
 const baseInput = {
+  revision: "00000000-0000-4000-8000-000000000099",
   organizationSlug: "acme",
   environmentId: "11111111-1111-4111-8111-111111111111",
   serviceId: "22222222-2222-4222-8222-222222222222",

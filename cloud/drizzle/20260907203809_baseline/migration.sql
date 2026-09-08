@@ -81,6 +81,9 @@ CREATE TABLE "environment" (
 	"organization_id" uuid NOT NULL,
 	"name" text NOT NULL,
 	"namespace" text NOT NULL,
+	"intent" jsonb NOT NULL,
+	"revision" uuid DEFAULT gen_random_uuid() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_project_id_name_unique" UNIQUE("project_id","name"),
 	CONSTRAINT "environment_project_id_id_unique" UNIQUE("project_id","id"),
@@ -108,32 +111,6 @@ CREATE TABLE "user_project_preference" (
 	CONSTRAINT "user_project_preference_user_id_project_id_unique" UNIQUE("user_id","project_id")
 );
 --> statement-breakpoint
-CREATE TABLE "config_key" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"project_id" uuid NOT NULL,
-	"scope" text NOT NULL,
-	"service_lineage_id" uuid,
-	"variable_group_lineage_id" uuid,
-	"canonical_name" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "config_key_project_id_id_unique" UNIQUE("project_id","id"),
-	CONSTRAINT "config_key_scope_owner_check" CHECK ((
-        ("scope" = 'service_lineage' and "service_lineage_id" is not null and "variable_group_lineage_id" is null) or
-        ("scope" = 'variable_group_lineage' and "service_lineage_id" is null and "variable_group_lineage_id" is not null)
-      ))
-);
---> statement-breakpoint
-CREATE TABLE "config_value" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"project_id" uuid NOT NULL,
-	"config_key_id" uuid NOT NULL,
-	"environment_id" uuid NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "config_value_config_key_id_environment_id_unique" UNIQUE("config_key_id","environment_id")
-);
---> statement-breakpoint
 CREATE TABLE "environment_canvas_node_position" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"organization_id" uuid NOT NULL,
@@ -155,13 +132,11 @@ CREATE TABLE "environment_resource" (
 	"lineage_id" uuid NOT NULL,
 	"implementation_type" text NOT NULL,
 	"variable_group_id" uuid,
-	"name" text NOT NULL,
-	"slug" text NOT NULL,
-	"deleted_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_resource_project_id_id_unique" UNIQUE("project_id","id"),
 	CONSTRAINT "environment_resource_environment_id_id_unique" UNIQUE("environment_id","id"),
+	CONSTRAINT "environment_resource_environment_id_lineage_id_unique" UNIQUE("environment_id","lineage_id"),
 	CONSTRAINT "environment_resource_implementation_type_check" CHECK ("implementation_type" in ('variable_group', 'volume')),
 	CONSTRAINT "environment_resource_variable_group_reference_check" CHECK (("implementation_type" != 'variable_group' or "variable_group_id" is not null)),
 	CONSTRAINT "environment_resource_volume_no_variable_group_check" CHECK (("implementation_type" != 'volume' or "variable_group_id" is null))
@@ -173,12 +148,10 @@ CREATE TABLE "environment_variable_group" (
 	"project_id" uuid NOT NULL,
 	"environment_id" uuid NOT NULL,
 	"lineage_id" uuid NOT NULL,
-	"name" text NOT NULL,
-	"slug" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_variable_group_project_id_id_unique" UNIQUE("project_id","id"),
-	CONSTRAINT "environment_variable_group_environment_id_slug_unique" UNIQUE("environment_id","slug"),
+	CONSTRAINT "environment_variable_group_environment_id_id_unique" UNIQUE("environment_id","id"),
 	CONSTRAINT "environment_variable_group_environment_id_lineage_id_unique" UNIQUE("environment_id","lineage_id")
 );
 --> statement-breakpoint
@@ -200,30 +173,13 @@ CREATE TABLE "service" (
 	"project_id" uuid NOT NULL,
 	"environment_id" uuid NOT NULL,
 	"lineage_id" uuid NOT NULL,
-	"name" text NOT NULL,
-	"slug" text NOT NULL,
-	"source_type" text NOT NULL,
-	"source_config" jsonb NOT NULL,
-	"pre_deploy_command" text,
-	"start_command" text,
-	"healthcheck" jsonb DEFAULT '{"type":"none"}' NOT NULL,
-	"restart_policy" jsonb DEFAULT '"unless-stopped"' NOT NULL,
-	"max_retries" integer DEFAULT 10 NOT NULL,
-	"cron" text,
-	"replicas" integer DEFAULT 1 NOT NULL,
-	"cpu_limit" double precision,
-	"mem_limit" double precision,
-	"private_dns" text NOT NULL,
-	"routes" jsonb DEFAULT '[]' NOT NULL,
-	"managed_hostname" jsonb,
-	"build" jsonb DEFAULT '{"builder":"auto","dockerfilePath":null,"watchPaths":[]}' NOT NULL,
 	"has_registry_credential" boolean DEFAULT false NOT NULL,
 	"first_deployed_at" timestamp with time zone,
-	"deleted_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "service_project_id_id_unique" UNIQUE("project_id","id"),
-	CONSTRAINT "service_environment_id_id_unique" UNIQUE("environment_id","id")
+	CONSTRAINT "service_environment_id_id_unique" UNIQUE("environment_id","id"),
+	CONSTRAINT "service_environment_id_lineage_id_unique" UNIQUE("environment_id","lineage_id")
 );
 --> statement-breakpoint
 CREATE TABLE "service_lineage" (
@@ -244,50 +200,14 @@ CREATE TABLE "service_registry_credential" (
 	CONSTRAINT "service_registry_credential_nonempty_check" CHECK (num_nonnulls("encrypted_registry_username", "encrypted_registry_secret") > 0)
 );
 --> statement-breakpoint
-CREATE TABLE "service_variable_group_attachment" (
-	"organization_id" uuid NOT NULL,
-	"service_id" uuid,
-	"variable_group_id" uuid,
-	"sort_order" integer DEFAULT 0 NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "service_variable_group_attachment_pkey" PRIMARY KEY("service_id","variable_group_id")
-);
---> statement-breakpoint
-CREATE TABLE "service_volume_attachment" (
-	"organization_id" uuid NOT NULL,
-	"project_id" uuid NOT NULL,
-	"environment_id" uuid NOT NULL,
-	"service_id" uuid,
-	"volume_resource_id" uuid,
-	"mount_path" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "service_volume_attachment_pkey" PRIMARY KEY("service_id","volume_resource_id"),
-	CONSTRAINT "service_volume_attachment_service_id_mount_path_unique" UNIQUE("service_id","mount_path")
-);
---> statement-breakpoint
 CREATE TABLE "variable" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"organization_id" uuid NOT NULL,
-	"project_id" uuid NOT NULL,
+	"environment_id" uuid NOT NULL,
 	"service_id" uuid,
 	"variable_group_id" uuid,
-	"config_key_id" uuid NOT NULL,
-	"key" text NOT NULL,
-	"description" text,
-	"exported" boolean DEFAULT false NOT NULL,
-	"value_kind" text NOT NULL,
-	"value_parts" jsonb,
-	"value_fingerprint" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "variable_service_id_key_unique" UNIQUE("service_id","key"),
-	CONSTRAINT "variable_variable_group_id_key_unique" UNIQUE("variable_group_id","key"),
-	CONSTRAINT "variable_owner_check" CHECK (num_nonnulls("service_id", "variable_group_id") = 1),
-	CONSTRAINT "variable_value_kind_check" CHECK ((
-        ("value_kind" = 'plain' and "value_parts" is not null) or
-        ("value_kind" = 'sealed' and "value_parts" is null)
-      ))
+	CONSTRAINT "variable_environment_id_id_unique" UNIQUE("environment_id","id"),
+	CONSTRAINT "variable_owner_check" CHECK (num_nonnulls("service_id", "variable_group_id") = 1)
 );
 --> statement-breakpoint
 CREATE TABLE "variable_group_lineage" (
@@ -303,6 +223,7 @@ CREATE TABLE "variable_group_lineage" (
 --> statement-breakpoint
 CREATE TABLE "variable_secret" (
 	"variable_id" uuid PRIMARY KEY,
+	"environment_id" uuid NOT NULL,
 	"encrypted_value" jsonb NOT NULL
 );
 --> statement-breakpoint
@@ -337,7 +258,7 @@ CREATE TABLE "environment_deployment" (
 --> statement-breakpoint
 CREATE TABLE "environment_deployment_secret" (
 	"environment_deployment_id" uuid PRIMARY KEY,
-	"encrypted_frozen_deploy_input" jsonb NOT NULL
+	"encrypted_runtime_outcome" jsonb
 );
 --> statement-breakpoint
 CREATE TABLE "environment_saved_state_snapshot" (
@@ -491,10 +412,8 @@ CREATE TABLE "environment_node_introduction_secret" (
 	"environment_id" uuid,
 	"node_type" text,
 	"node_id" uuid,
-	"encrypted_registry_username" jsonb,
-	"encrypted_registry_secret" jsonb,
-	CONSTRAINT "environment_node_introduction_secret_pkey" PRIMARY KEY("environment_id","node_type","node_id"),
-	CONSTRAINT "environment_node_introduction_secret_nonempty_check" CHECK (num_nonnulls("encrypted_registry_username", "encrypted_registry_secret") > 0)
+	"authored_intent" jsonb NOT NULL,
+	CONSTRAINT "environment_node_introduction_secret_pkey" PRIMARY KEY("environment_id","node_type","node_id")
 );
 --> statement-breakpoint
 CREATE TABLE "organization_pairing" (
@@ -911,18 +830,9 @@ CREATE INDEX "verification_identifier_idx" ON "verification" ("identifier");--> 
 CREATE INDEX "user_project_preference_user_idx" ON "user_project_preference" ("user_id");--> statement-breakpoint
 CREATE INDEX "user_project_preference_organization_idx" ON "user_project_preference" ("organization_id");--> statement-breakpoint
 CREATE INDEX "user_project_preference_project_idx" ON "user_project_preference" ("project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "config_key_service_lineage_canonical_name_unique" ON "config_key" ("project_id","service_lineage_id","canonical_name") WHERE "scope" = 'service_lineage';--> statement-breakpoint
-CREATE UNIQUE INDEX "config_key_variable_group_lineage_canonical_name_unique" ON "config_key" ("project_id","variable_group_lineage_id","canonical_name") WHERE "scope" = 'variable_group_lineage';--> statement-breakpoint
-CREATE INDEX "config_key_project_id_idx" ON "config_key" ("project_id");--> statement-breakpoint
-CREATE INDEX "config_key_service_lineage_id_idx" ON "config_key" ("service_lineage_id");--> statement-breakpoint
-CREATE INDEX "config_key_variable_group_lineage_id_idx" ON "config_key" ("variable_group_lineage_id");--> statement-breakpoint
-CREATE INDEX "config_value_project_id_idx" ON "config_value" ("project_id");--> statement-breakpoint
-CREATE INDEX "config_value_environment_id_idx" ON "config_value" ("environment_id");--> statement-breakpoint
 CREATE INDEX "environment_canvas_node_position_environment_id_idx" ON "environment_canvas_node_position" ("environment_id");--> statement-breakpoint
 CREATE INDEX "environment_canvas_node_position_organization_id_idx" ON "environment_canvas_node_position" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_canvas_node_position_resource_lookup_idx" ON "environment_canvas_node_position" ("resource_type","resource_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "environment_resource_environment_slug_unique" ON "environment_resource" ("environment_id","slug") WHERE "deleted_at" is null;--> statement-breakpoint
-CREATE UNIQUE INDEX "environment_resource_environment_lineage_unique" ON "environment_resource" ("environment_id","lineage_id") WHERE "deleted_at" is null;--> statement-breakpoint
 CREATE UNIQUE INDEX "environment_resource_variable_group_variable_group_unique" ON "environment_resource" ("variable_group_id") WHERE "implementation_type" = 'variable_group';--> statement-breakpoint
 CREATE INDEX "environment_resource_project_id_idx" ON "environment_resource" ("project_id");--> statement-breakpoint
 CREATE INDEX "environment_resource_organization_id_idx" ON "environment_resource" ("organization_id");--> statement-breakpoint
@@ -935,29 +845,11 @@ CREATE INDEX "environment_variable_group_environment_id_idx" ON "environment_var
 CREATE INDEX "environment_variable_group_lineage_id_idx" ON "environment_variable_group" ("lineage_id");--> statement-breakpoint
 CREATE INDEX "resource_lineage_project_id_idx" ON "resource_lineage" ("project_id");--> statement-breakpoint
 CREATE INDEX "resource_lineage_organization_id_idx" ON "resource_lineage" ("organization_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "service_environment_slug_unique" ON "service" ("environment_id","slug") WHERE "deleted_at" is null;--> statement-breakpoint
-CREATE UNIQUE INDEX "service_environment_lineage_unique" ON "service" ("environment_id","lineage_id") WHERE "deleted_at" is null;--> statement-breakpoint
 CREATE INDEX "service_project_id_idx" ON "service" ("project_id");--> statement-breakpoint
 CREATE INDEX "service_organization_id_idx" ON "service" ("organization_id");--> statement-breakpoint
 CREATE INDEX "service_environment_id_idx" ON "service" ("environment_id");--> statement-breakpoint
 CREATE INDEX "service_lineage_id_idx" ON "service" ("lineage_id");--> statement-breakpoint
 CREATE INDEX "service_lineage_project_id_idx" ON "service_lineage" ("project_id");--> statement-breakpoint
-CREATE INDEX "service_variable_group_attachment_service_id_idx" ON "service_variable_group_attachment" ("service_id");--> statement-breakpoint
-CREATE INDEX "service_variable_group_attachment_organization_id_idx" ON "service_variable_group_attachment" ("organization_id");--> statement-breakpoint
-CREATE INDEX "service_variable_group_attachment_set_id_idx" ON "service_variable_group_attachment" ("variable_group_id");--> statement-breakpoint
-CREATE INDEX "service_volume_attachment_service_id_idx" ON "service_volume_attachment" ("service_id");--> statement-breakpoint
-CREATE INDEX "service_volume_attachment_volume_resource_id_idx" ON "service_volume_attachment" ("volume_resource_id");--> statement-breakpoint
-CREATE INDEX "service_volume_attachment_project_id_idx" ON "service_volume_attachment" ("project_id");--> statement-breakpoint
-CREATE INDEX "service_volume_attachment_organization_id_idx" ON "service_volume_attachment" ("organization_id");--> statement-breakpoint
-CREATE INDEX "service_volume_attachment_environment_id_idx" ON "service_volume_attachment" ("environment_id");--> statement-breakpoint
-CREATE INDEX "variable_project_id_idx" ON "variable" ("project_id");--> statement-breakpoint
-CREATE INDEX "variable_organization_id_idx" ON "variable" ("organization_id");--> statement-breakpoint
-CREATE INDEX "variable_service_id_idx" ON "variable" ("service_id");--> statement-breakpoint
-CREATE INDEX "variable_variable_group_id_idx" ON "variable" ("variable_group_id");--> statement-breakpoint
-CREATE INDEX "variable_config_key_id_idx" ON "variable" ("config_key_id");--> statement-breakpoint
-CREATE INDEX "variable_exported_idx" ON "variable" ("exported");--> statement-breakpoint
-CREATE UNIQUE INDEX "variable_service_config_key_unique" ON "variable" ("service_id","config_key_id") WHERE "service_id" is not null;--> statement-breakpoint
-CREATE UNIQUE INDEX "variable_group_config_key_unique" ON "variable" ("variable_group_id","config_key_id") WHERE "variable_group_id" is not null;--> statement-breakpoint
 CREATE INDEX "variable_group_lineage_project_id_idx" ON "variable_group_lineage" ("project_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_organization_id_idx" ON "environment_deployment" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_environment_id_idx" ON "environment_deployment" ("environment_id");--> statement-breakpoint
@@ -1035,16 +927,6 @@ ALTER TABLE "user_project_preference" ADD CONSTRAINT "user_project_preference_or
 ALTER TABLE "user_project_preference" ADD CONSTRAINT "user_project_preference_user_id_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "user_project_preference" ADD CONSTRAINT "user_project_preference_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "user_project_preference" ADD CONSTRAINT "user_project_preference_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_key" ADD CONSTRAINT "config_key_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_key" ADD CONSTRAINT "config_key_service_lineage_id_service_lineage_id_fkey" FOREIGN KEY ("service_lineage_id") REFERENCES "service_lineage"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_key" ADD CONSTRAINT "config_key_Z9IFDoZl4bce_fkey" FOREIGN KEY ("variable_group_lineage_id") REFERENCES "variable_group_lineage"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_key" ADD CONSTRAINT "config_key_5VUyMPmokT4w_fkey" FOREIGN KEY ("project_id","service_lineage_id") REFERENCES "service_lineage"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_key" ADD CONSTRAINT "config_key_XJjCzTc9crVY_fkey" FOREIGN KEY ("project_id","variable_group_lineage_id") REFERENCES "variable_group_lineage"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_value" ADD CONSTRAINT "config_value_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_value" ADD CONSTRAINT "config_value_config_key_id_config_key_id_fkey" FOREIGN KEY ("config_key_id") REFERENCES "config_key"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_value" ADD CONSTRAINT "config_value_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_value" ADD CONSTRAINT "config_value_PIOwCmc9UgtM_fkey" FOREIGN KEY ("project_id","config_key_id") REFERENCES "config_key"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "config_value" ADD CONSTRAINT "config_value_rxYFy3WfPQlC_fkey" FOREIGN KEY ("project_id","environment_id") REFERENCES "environment"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_canvas_node_position" ADD CONSTRAINT "environment_canvas_node_position_4ir4xbHMhQ0b_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_canvas_node_position" ADD CONSTRAINT "environment_canvas_node_position_DP4bUoilqg6D_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
@@ -1071,24 +953,14 @@ ALTER TABLE "service" ADD CONSTRAINT "service_bvUAv6STak07_fkey" FOREIGN KEY ("p
 ALTER TABLE "service" ADD CONSTRAINT "service_1xRYD1MXFhcT_fkey" FOREIGN KEY ("project_id","lineage_id") REFERENCES "service_lineage"("project_id","id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "service_lineage" ADD CONSTRAINT "service_lineage_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "service_registry_credential" ADD CONSTRAINT "service_registry_credential_service_id_service_id_fkey" FOREIGN KEY ("service_id") REFERENCES "service"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_variable_group_attachment" ADD CONSTRAINT "service_variable_group_attachment_NYXbiK6fRK1W_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_variable_group_attachment" ADD CONSTRAINT "service_variable_group_attachment_service_id_service_id_fkey" FOREIGN KEY ("service_id") REFERENCES "service"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_variable_group_attachment" ADD CONSTRAINT "service_variable_group_attachment_9dQ3j1TvmUKG_fkey" FOREIGN KEY ("variable_group_id") REFERENCES "environment_variable_group"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_volume_attachment" ADD CONSTRAINT "service_volume_attachment_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_volume_attachment" ADD CONSTRAINT "service_volume_attachment_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_volume_attachment" ADD CONSTRAINT "service_volume_attachment_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_volume_attachment" ADD CONSTRAINT "service_volume_attachment_kFuCCx6h3Bu6_fkey" FOREIGN KEY ("environment_id","service_id") REFERENCES "service"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "service_volume_attachment" ADD CONSTRAINT "service_volume_attachment_x8hGiuXiEjZ1_fkey" FOREIGN KEY ("environment_id","volume_resource_id") REFERENCES "environment_resource"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable" ADD CONSTRAINT "variable_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_service_id_service_id_fkey" FOREIGN KEY ("service_id") REFERENCES "service"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_variable_group_id_environment_variable_group_id_fkey" FOREIGN KEY ("variable_group_id") REFERENCES "environment_variable_group"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_config_key_id_config_key_id_fkey" FOREIGN KEY ("config_key_id") REFERENCES "config_key"("id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_project_id_config_key_id_config_key_project_id_id_fkey" FOREIGN KEY ("project_id","config_key_id") REFERENCES "config_key"("project_id","id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_project_id_service_id_service_project_id_id_fkey" FOREIGN KEY ("project_id","service_id") REFERENCES "service"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_OCJdPfzRCIC2_fkey" FOREIGN KEY ("project_id","variable_group_id") REFERENCES "environment_variable_group"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable" ADD CONSTRAINT "variable_dFGv8UXjv6eg_fkey" FOREIGN KEY ("environment_id","service_id") REFERENCES "service"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable" ADD CONSTRAINT "variable_AmBxCm84j9h8_fkey" FOREIGN KEY ("environment_id","variable_group_id") REFERENCES "environment_variable_group"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable_group_lineage" ADD CONSTRAINT "variable_group_lineage_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable_secret" ADD CONSTRAINT "variable_secret_variable_id_variable_id_fkey" FOREIGN KEY ("variable_id") REFERENCES "variable"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable_secret" ADD CONSTRAINT "variable_secret_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable_secret" ADD CONSTRAINT "variable_secret_fgbg4UfEzo6H_fkey" FOREIGN KEY ("environment_id","variable_id") REFERENCES "variable"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_Lofdv4M9OTIQ_fkey" FOREIGN KEY ("retry_of_deployment_id") REFERENCES "environment_deployment"("id");--> statement-breakpoint
@@ -1145,16 +1017,16 @@ ALTER TABLE "environment_deployment" REPLICA IDENTITY FULL;
 ALTER TABLE "environment_node_config_snapshot" REPLICA IDENTITY FULL;
 
 --> statement-breakpoint
+ALTER TABLE "environment_node_introduction" REPLICA IDENTITY FULL;
+
+--> statement-breakpoint
 ALTER TABLE "environment_resource" REPLICA IDENTITY FULL;
 
 --> statement-breakpoint
-ALTER TABLE "environment_variable_group" REPLICA IDENTITY FULL;
+ALTER TABLE "environment_saved_state_snapshot" REPLICA IDENTITY FULL;
 
 --> statement-breakpoint
 ALTER TABLE "github_repository_cache" REPLICA IDENTITY FULL;
-
---> statement-breakpoint
-ALTER TABLE "organization" REPLICA IDENTITY FULL;
 
 --> statement-breakpoint
 ALTER TABLE "project" REPLICA IDENTITY FULL;
@@ -1166,19 +1038,4 @@ ALTER TABLE "resource_lineage" REPLICA IDENTITY FULL;
 ALTER TABLE "service" REPLICA IDENTITY FULL;
 
 --> statement-breakpoint
-ALTER TABLE "service_variable_group_attachment" REPLICA IDENTITY FULL;
-
---> statement-breakpoint
-ALTER TABLE "service_volume_attachment" REPLICA IDENTITY FULL;
-
---> statement-breakpoint
-ALTER TABLE "user_project_preference" REPLICA IDENTITY FULL;
-
---> statement-breakpoint
-ALTER TABLE "variable" REPLICA IDENTITY FULL;
-
---> statement-breakpoint
-ALTER TABLE "environment_node_introduction" REPLICA IDENTITY FULL;
-
---> statement-breakpoint
-ALTER TABLE "environment_saved_state_snapshot" REPLICA IDENTITY FULL;
+ALTER TABLE "volume_remove_attempt" REPLICA IDENTITY FULL;

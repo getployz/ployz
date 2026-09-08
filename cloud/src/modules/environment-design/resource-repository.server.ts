@@ -1,66 +1,16 @@
+import { environmentNodeConfigSnapshot, volumeRemoveAttempt } from "#/modules/runtime/tables";
+import { destructiveVolumeAttempt } from "#/modules/operations/tables";
+import { variableGroupDocumentRecord, volumeDocumentRecord } from "./resource-document";
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { Effect } from "effect";
-import {
-  environmentCanvasNodePosition,
-  environmentResource,
-  environmentVariableGroup,
-  resourceLineage,
-  serviceVariableGroupAttachment,
-  serviceVolumeAttachment,
-  variableGroupLineage,
-} from "#/modules/environment-design/tables";
-import { environment, project } from "#/modules/project/tables";
-import {
-  organizationIdForEnvironment,
-  organizationIdForProject,
-} from "#/db/scope-values.server";
+import { environmentCanvasNodePosition, environmentResource, environmentVariableGroup, resourceLineage } from "./tables";
+import { project } from "#/modules/project/tables";
+import { organizationIdForEnvironment, organizationIdForProject } from "#/db/scope-values.server";
 import { Database } from "#/server/database.server";
-import {
-  createResourceLineage,
-  createVariableGroupLineage,
-} from "./authoring-repository.server";
-import { decodeStrict } from "./schema";
-import {
-  variableGroupResourceRecordSchema,
-  volumeResourceRecordSchema,
-  type VolumeAttachmentSummary,
-} from "./resources";
-import { listVariablesForGroups } from "./variable-repository.server";
-
-const resourceColumns = {
-  id: environmentResource.id,
-  projectId: environmentResource.projectId,
-  environmentId: environmentResource.environmentId,
-  lineageId: environmentResource.lineageId,
-  implementationType: environmentResource.implementationType,
-  variableGroupId: environmentResource.variableGroupId,
-  name: environmentResource.name,
-  slug: environmentResource.slug,
-  deletedAt: environmentResource.deletedAt,
-  createdAt: environmentResource.createdAt,
-  updatedAt: environmentResource.updatedAt,
-};
-
-const resourceLineageColumns = {
-  id: resourceLineage.id,
-  projectId: resourceLineage.projectId,
-  canonicalName: resourceLineage.canonicalName,
-  canonicalSlug: resourceLineage.canonicalSlug,
-  createdAt: resourceLineage.createdAt,
-  updatedAt: resourceLineage.updatedAt,
-};
-
-const variableGroupColumns = {
-  id: environmentVariableGroup.id,
-  projectId: environmentVariableGroup.projectId,
-  environmentId: environmentVariableGroup.environmentId,
-  lineageId: environmentVariableGroup.lineageId,
-  name: environmentVariableGroup.name,
-  slug: environmentVariableGroup.slug,
-  createdAt: environmentVariableGroup.createdAt,
-  updatedAt: environmentVariableGroup.updatedAt,
-};
+import { Conflict } from "#/server/public-error";
+import { createResourceLineage, createVariableGroupLineage } from "./authoring-repository.server";
+import { loadEnvironmentDocument } from "./working-state-repository.server";
 
 const canvasPositionColumns = {
   id: environmentCanvasNodePosition.id,
@@ -73,431 +23,78 @@ const canvasPositionColumns = {
   updatedAt: environmentCanvasNodePosition.updatedAt,
 };
 
-type VariableGroupRow = {
-  readonly resource: Omit<
-    typeof environmentResource.$inferSelect,
-    "organizationId"
-  >;
-  readonly lineage: Omit<typeof resourceLineage.$inferSelect, "organizationId">;
-  readonly variableGroup: Omit<
-    typeof environmentVariableGroup.$inferSelect,
-    "organizationId"
-  >;
-  readonly canvasPosition: Omit<
-    typeof environmentCanvasNodePosition.$inferSelect,
-    "organizationId"
-  > | null;
-  readonly projectSlug: string;
-  readonly environmentSlug: string;
-};
 
-type VolumeRow = Omit<VariableGroupRow, "variableGroup">;
-
-const loadVariableGroupConsumerCounts = Effect.fn(
-  "EnvironmentDesign.loadVariableGroupConsumerCounts",
-)(function* (variableGroupIds: readonly string[]) {
-  if (variableGroupIds.length === 0) return new Map<string, number>();
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .select({
-      variableGroupId: serviceVariableGroupAttachment.variableGroupId,
-      serviceId: serviceVariableGroupAttachment.serviceId,
-    })
-    .from(serviceVariableGroupAttachment)
-    .where(
-      inArray(serviceVariableGroupAttachment.variableGroupId, [
-        ...variableGroupIds,
-      ]),
-    );
-  const servicesByGroup = new Map<string, Set<string>>();
-  for (const row of rows) {
-    const services = servicesByGroup.get(row.variableGroupId) ?? new Set();
-    services.add(row.serviceId);
-    servicesByGroup.set(row.variableGroupId, services);
-  }
-  return new Map(
-    [...servicesByGroup].map(([variableGroupId, services]) => [
-      variableGroupId,
-      services.size,
-    ]),
-  );
-});
-
-const projectVariableGroupRows = Effect.fn(
-  "EnvironmentDesign.projectVariableGroupRows",
-)(function* (rows: readonly VariableGroupRow[]) {
-  const variableGroupIds = rows.map((row) => row.variableGroup.id);
-  const [variablesByGroup, consumersByGroup] = yield* Effect.all(
-    [
-      listVariablesForGroups(variableGroupIds),
-      loadVariableGroupConsumerCounts(variableGroupIds),
-    ],
-    { concurrency: "unbounded" },
-  );
-  return rows.map((row) => {
-    const variables = variablesByGroup.get(row.variableGroup.id) ?? [];
-    return decodeStrict(variableGroupResourceRecordSchema, {
-      ...row,
-      variables,
-      exports: variables.flatMap((variable) =>
-        variable.exported
-          ? [{ key: variable.key, value: variable.value, variableId: variable.id }]
-          : [],
-      ),
-      consumerCount: consumersByGroup.get(row.variableGroup.id) ?? 0,
-    });
-  });
-});
-
-const baseVariableGroupQuery = Effect.fn(
-  "EnvironmentDesign.baseVariableGroupQuery",
-)(function* () {
-  const database = yield* Database;
-  return database.drizzle
-    .select({
-      resource: resourceColumns,
-      lineage: resourceLineageColumns,
-      variableGroup: variableGroupColumns,
-      canvasPosition: canvasPositionColumns,
-      projectSlug: project.slug,
-      environmentSlug: environment.namespace,
-    })
-    .from(environmentResource)
-    .innerJoin(environment, eq(environmentResource.environmentId, environment.id))
-    .innerJoin(project, eq(environment.projectId, project.id))
-    .innerJoin(resourceLineage, eq(environmentResource.lineageId, resourceLineage.id))
-    .innerJoin(
-      environmentVariableGroup,
-      eq(environmentResource.variableGroupId, environmentVariableGroup.id),
-    )
-    .leftJoin(
-      environmentCanvasNodePosition,
-      and(
-        eq(environmentCanvasNodePosition.resourceType, "variable_group"),
-        eq(environmentCanvasNodePosition.resourceId, environmentResource.id),
-      ),
-    );
-});
-
-export const getVariableGroupResource = Effect.fn(
-  "EnvironmentDesign.getVariableGroupResource",
-)(function* (environmentId: string, resourceId: string) {
-  const query = yield* baseVariableGroupQuery();
-  const rows = yield* query
-    .where(
-      and(
-        eq(environmentResource.environmentId, environmentId),
-        eq(environmentResource.id, resourceId),
-        eq(environmentResource.implementationType, "variable_group"),
-      ),
-    )
-    .limit(1);
-  const records = yield* projectVariableGroupRows(rows);
-  return records[0] ?? null;
-});
-
-export const getVariableGroupConsumerCount = Effect.fn(
-  "EnvironmentDesign.getVariableGroupConsumerCount",
-)(function* (variableGroupId: string) {
-  const counts = yield* loadVariableGroupConsumerCounts([variableGroupId]);
-  return counts.get(variableGroupId) ?? 0;
-});
-
-export const getResourceIdentity = Effect.fn(
-  "EnvironmentDesign.getResourceIdentity",
-)(function* (environmentId: string, resourceId: string) {
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .select({
-      id: environmentResource.id,
-      implementationType: environmentResource.implementationType,
-    })
-    .from(environmentResource)
-    .where(
-      and(
-        eq(environmentResource.environmentId, environmentId),
-        eq(environmentResource.id, resourceId),
-      ),
-    )
-    .limit(1);
-  return rows[0] ?? null;
-});
-
-const deleteResourceLineage = Effect.fn(
-  "EnvironmentDesign.deleteResourceLineage",
-)(function* (lineageId: string) {
-  const database = yield* Database;
-  yield* database.drizzle
-    .delete(resourceLineage)
-    .where(eq(resourceLineage.id, lineageId));
-});
-
-const deleteVariableGroupLineage = Effect.fn(
-  "EnvironmentDesign.deleteVariableGroupLineage",
-)(function* (lineageId: string) {
-  const database = yield* Database;
-  yield* database.drizzle
-    .delete(variableGroupLineage)
-    .where(eq(variableGroupLineage.id, lineageId));
-});
-
-export const createVariableGroupAggregate = Effect.fn(
-  "EnvironmentDesign.createVariableGroupAggregate",
-)(function* (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly name: string;
-  readonly slug: string;
-  readonly x: number;
-  readonly y: number;
-}) {
-  const database = yield* Database;
-  const resourceIdentity = yield* createResourceLineage(input);
-  const groupIdentity = yield* createVariableGroupLineage(input);
-  if (resourceIdentity === null || groupIdentity === null) {
-    if (resourceIdentity !== null) yield* deleteResourceLineage(resourceIdentity.id);
-    if (groupIdentity !== null) yield* deleteVariableGroupLineage(groupIdentity.id);
-    return null;
-  }
-  const groups = yield* database.drizzle
-    .insert(environmentVariableGroup)
-    .values({
-      organizationId: organizationIdForProject(input.projectId),
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-      lineageId: groupIdentity.id,
-      name: input.name,
-      slug: input.slug,
-    })
-    .onConflictDoNothing()
-    .returning(variableGroupColumns);
-  const group = groups[0];
-  if (group === undefined) {
-    yield* deleteResourceLineage(resourceIdentity.id);
-    yield* deleteVariableGroupLineage(groupIdentity.id);
-    return null;
-  }
-  const resources = yield* database.drizzle
-    .insert(environmentResource)
-    .values({
-      organizationId: organizationIdForProject(input.projectId),
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-      lineageId: resourceIdentity.id,
-      implementationType: "variable_group",
-      variableGroupId: group.id,
-      name: input.name,
-      slug: input.slug,
-    })
-    .onConflictDoNothing()
-    .returning(resourceColumns);
-  const resource = resources[0];
-  if (resource === undefined) {
-    yield* database.drizzle
-      .delete(environmentVariableGroup)
-      .where(eq(environmentVariableGroup.id, group.id));
-    yield* deleteResourceLineage(resourceIdentity.id);
-    yield* deleteVariableGroupLineage(groupIdentity.id);
-    return null;
-  }
-  yield* database.drizzle.insert(environmentCanvasNodePosition).values({
-    organizationId: organizationIdForEnvironment(input.environmentId),
-    environmentId: input.environmentId,
-    resourceType: "variable_group",
-    resourceId: resource.id,
-    x: Math.round(input.x),
-    y: Math.round(input.y),
-  });
-  return resource.id;
-});
-
-export const updateVariableGroupName = Effect.fn(
-  "EnvironmentDesign.updateVariableGroupName",
-)(function* (resourceId: string, variableGroupId: string, name: string) {
-  const database = yield* Database;
-  const resources = yield* database.drizzle
-    .update(environmentResource)
-    .set({ name, updatedAt: new Date() })
-    .where(eq(environmentResource.id, resourceId))
-    .returning({ id: environmentResource.id });
-  if (resources[0] === undefined) return null;
-  yield* database.drizzle
-    .update(environmentVariableGroup)
-    .set({ name, updatedAt: new Date() })
-    .where(eq(environmentVariableGroup.id, variableGroupId));
-  return resources[0];
-});
-
-export const deleteVariableGroupAggregate = Effect.fn(
-  "EnvironmentDesign.deleteVariableGroupAggregate",
-)(function* (resourceId: string, variableGroupId: string) {
-  const database = yield* Database;
-  yield* database.drizzle
-    .delete(environmentCanvasNodePosition)
-    .where(
-      and(
-        eq(environmentCanvasNodePosition.resourceType, "variable_group"),
-        eq(environmentCanvasNodePosition.resourceId, resourceId),
-      ),
-    );
-  yield* database.drizzle
-    .delete(environmentResource)
-    .where(eq(environmentResource.id, resourceId));
-  yield* database.drizzle
-    .delete(environmentVariableGroup)
-    .where(eq(environmentVariableGroup.id, variableGroupId));
-  return { deletedId: resourceId };
-});
-
-const loadVolumeAttachments = Effect.fn(
-  "EnvironmentDesign.loadVolumeAttachments",
-)(function* (resourceIds: readonly string[]) {
-  if (resourceIds.length === 0) {
-    return new Map<string, VolumeAttachmentSummary[]>();
-  }
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .select({
-      volumeResourceId: serviceVolumeAttachment.volumeResourceId,
-      serviceId: serviceVolumeAttachment.serviceId,
-      mountPath: serviceVolumeAttachment.mountPath,
-    })
-    .from(serviceVolumeAttachment)
-    .where(inArray(serviceVolumeAttachment.volumeResourceId, [...resourceIds]));
-  const byResource = new Map<string, VolumeAttachmentSummary[]>();
-  for (const row of rows) {
-    const attachments = byResource.get(row.volumeResourceId) ?? [];
-    attachments.push({ serviceId: row.serviceId, mountPath: row.mountPath });
-    byResource.set(row.volumeResourceId, attachments);
-  }
-  return byResource;
-});
-
-const projectVolumeRows = Effect.fn("EnvironmentDesign.projectVolumeRows")(
-  function* (rows: readonly VolumeRow[]) {
-    const attachments = yield* loadVolumeAttachments(
-      rows.map((row) => row.resource.id),
-    );
-    return rows.map((row) => {
-      const resourceAttachments = [
-        ...(attachments.get(row.resource.id) ?? []),
-      ].sort((left, right) => left.mountPath.localeCompare(right.mountPath));
-      return decodeStrict(volumeResourceRecordSchema, {
-        ...row,
-        attachments: resourceAttachments,
-        consumerCount: resourceAttachments.length,
-        runtimeStatus: null,
-      });
-    });
+const loadResourceRecord = Effect.fn("EnvironmentDesign.loadResourceRecord")(
+  function* (environmentId: string, resourceId: string) {
+    const { drizzle } = yield* Database;
+    const document = yield* loadEnvironmentDocument(environmentId);
+    const [row] = yield* drizzle.select({ resource: environmentResource, lineage: resourceLineage, canvasPosition: canvasPositionColumns, projectSlug: project.slug })
+      .from(environmentResource).innerJoin(resourceLineage, eq(resourceLineage.id, environmentResource.lineageId))
+      .innerJoin(project, eq(project.id, environmentResource.projectId))
+      .leftJoin(environmentCanvasNodePosition, and(eq(environmentCanvasNodePosition.environmentId, environmentId), eq(environmentCanvasNodePosition.resourceId, resourceId), eq(environmentCanvasNodePosition.resourceType, environmentResource.implementationType)))
+      .where(and(eq(environmentResource.environmentId, environmentId), eq(environmentResource.id, resourceId)));
+    if (!row) return null;
+    const { organizationId: _organization, ...resource } = row.resource;
+    const { organizationId: _lineageOrganization, ...lineage } = row.lineage;
+    return { document, resource, lineage, canvasPosition: row.canvasPosition, projectSlug: row.projectSlug, environmentSlug: document.namespace };
   },
 );
 
-const baseVolumeQuery = Effect.fn("EnvironmentDesign.baseVolumeQuery")(
-  function* () {
-    const database = yield* Database;
-    return database.drizzle
-      .select({
-        resource: resourceColumns,
-        lineage: resourceLineageColumns,
-        canvasPosition: canvasPositionColumns,
-        projectSlug: project.slug,
-        environmentSlug: environment.namespace,
-      })
-      .from(environmentResource)
-      .innerJoin(environment, eq(environmentResource.environmentId, environment.id))
-      .innerJoin(project, eq(environment.projectId, project.id))
-      .innerJoin(resourceLineage, eq(environmentResource.lineageId, resourceLineage.id))
-      .leftJoin(
-        environmentCanvasNodePosition,
-        and(
-          eq(environmentCanvasNodePosition.resourceType, "volume"),
-          eq(environmentCanvasNodePosition.resourceId, environmentResource.id),
-        ),
-      );
+export const getVariableGroupResource = Effect.fn("EnvironmentDesign.getVariableGroupResource")(
+  function* (environmentId: string, resourceId: string) {
+    const row = yield* loadResourceRecord(environmentId, resourceId);
+    if (!row) return null;
+    return variableGroupDocumentRecord(row);
   },
 );
 
-export const getVolumeResource = Effect.fn(
-  "EnvironmentDesign.getVolumeResource",
-)(function* (environmentId: string, resourceId: string) {
-  const query = yield* baseVolumeQuery();
-  const rows = yield* query
-    .where(
-      and(
-        eq(environmentResource.environmentId, environmentId),
-        eq(environmentResource.id, resourceId),
-        eq(environmentResource.implementationType, "volume"),
-      ),
-    )
-    .limit(1);
-  const records = yield* projectVolumeRows(rows);
-  return records[0] ?? null;
-});
+export const getVolumeResource = Effect.fn("EnvironmentDesign.getVolumeResource")(
+  function* (environmentId: string, resourceId: string) {
+    const row = yield* loadResourceRecord(environmentId, resourceId);
+    if (!row || row.resource.implementationType !== "volume") return null;
+    const { drizzle } = yield* Database;
+    const [snapshots, direct, destructive] = yield* Effect.all([
+      drizzle.select({ config: environmentNodeConfigSnapshot.config, createdAt: environmentNodeConfigSnapshot.createdAt })
+        .from(environmentNodeConfigSnapshot).where(and(eq(environmentNodeConfigSnapshot.environmentId, environmentId), eq(environmentNodeConfigSnapshot.nodeType, "volume"), eq(environmentNodeConfigSnapshot.nodeId, resourceId), isNotNull(environmentNodeConfigSnapshot.config)))
+        .orderBy(desc(environmentNodeConfigSnapshot.createdAt)).limit(1),
+      drizzle.select({ terminalAt: volumeRemoveAttempt.terminalAt }).from(volumeRemoveAttempt)
+        .where(and(eq(volumeRemoveAttempt.environmentId, environmentId), eq(volumeRemoveAttempt.environmentResourceId, resourceId), eq(volumeRemoveAttempt.status, "completed")))
+        .orderBy(desc(volumeRemoveAttempt.terminalAt)).limit(1),
+      drizzle.select({ terminalAt: destructiveVolumeAttempt.terminalAt }).from(destructiveVolumeAttempt)
+        .where(and(eq(destructiveVolumeAttempt.environmentResourceId, resourceId), eq(destructiveVolumeAttempt.disposition, "completed")))
+        .orderBy(desc(destructiveVolumeAttempt.terminalAt)).limit(1),
+    ]);
+    const dates = [...direct, ...destructive].flatMap((row) => row.terminalAt ? [row.terminalAt.getTime()] : []);
+    return volumeDocumentRecord(row, { snapshot: snapshots[0] ?? null, removedAt: dates.length ? new Date(Math.max(...dates)) : null });
+  },
+);
 
-export const createVolumeAggregate = Effect.fn(
-  "EnvironmentDesign.createVolumeAggregate",
-)(function* (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly name: string;
-  readonly slug: string;
-  readonly x: number;
-  readonly y: number;
-}) {
-  const database = yield* Database;
-  const identity = yield* createResourceLineage(input);
-  if (identity === null) return null;
-  const resources = yield* database.drizzle
-    .insert(environmentResource)
-    .values({
-      organizationId: organizationIdForProject(input.projectId),
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-      lineageId: identity.id,
-      implementationType: "volume",
-      variableGroupId: null,
-      name: input.name,
-      slug: input.slug,
-    })
-    .onConflictDoNothing()
-    .returning({ id: environmentResource.id });
-  const resource = resources[0];
-  if (resource === undefined) {
-    yield* deleteResourceLineage(identity.id);
+export const getResourceIdentity = Effect.fn("EnvironmentDesign.getResourceIdentity")(
+  function* (environmentId: string, resourceId: string) {
+    const { intent } = yield* loadEnvironmentDocument(environmentId);
+    if (intent.variableGroups.some((node) => node.resourceId === resourceId)) return { id: resourceId, implementationType: "variable_group" as const };
+    if (intent.volumes.some((node) => node.resourceId === resourceId)) return { id: resourceId, implementationType: "volume" as const };
     return null;
-  }
-  yield* database.drizzle.insert(environmentCanvasNodePosition).values({
-    organizationId: organizationIdForEnvironment(input.environmentId),
-    environmentId: input.environmentId,
-    resourceType: "volume",
-    resourceId: resource.id,
-    x: Math.round(input.x),
-    y: Math.round(input.y),
-  });
-  return resource.id;
-});
-
-export const updateVolumeName = Effect.fn("EnvironmentDesign.updateVolumeName")(
-  function* (resourceId: string, name: string) {
-    const database = yield* Database;
-    const rows = yield* database.drizzle
-      .update(environmentResource)
-      .set({ name, updatedAt: new Date() })
-      .where(eq(environmentResource.id, resourceId))
-      .returning({ id: environmentResource.id });
-    return rows[0] ?? null;
   },
 );
 
-export const tombstoneVolume = Effect.fn("EnvironmentDesign.tombstoneVolume")(
-  function* (resourceId: string) {
-    const database = yield* Database;
-    const rows = yield* database.drizzle
-      .update(environmentResource)
-      .set({ deletedAt: new Date(), updatedAt: new Date() })
-      .where(eq(environmentResource.id, resourceId))
-      .returning({ resourceId: environmentResource.id });
-    return rows[0] ?? null;
+export const createResourceIdentity = Effect.fn("EnvironmentDesign.createResourceIdentity")(
+  function* (input: { projectId: string; environmentId: string; name: string; slug: string; type: "volume" | "variable_group"; x: number; y: number }) {
+    const { drizzle } = yield* Database;
+    const lineage = yield* createResourceLineage(input);
+    if (!lineage) return yield* new Conflict({ message: "Could not allocate resource lineage." });
+    let group = null;
+    if (input.type === "variable_group") {
+      const groupLineage = yield* createVariableGroupLineage(input);
+      if (!groupLineage) return yield* new Conflict({ message: "Could not allocate variable group lineage." });
+      const [created] = yield* drizzle.insert(environmentVariableGroup).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: groupLineage.id }).returning();
+      if (!created) return yield* Effect.die("PostgreSQL did not return variable group identity.");
+      group = created;
+    }
+    const [resource] = yield* drizzle.insert(environmentResource).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: lineage.id, implementationType: input.type, variableGroupId: group?.id ?? null }).returning();
+    if (!resource) return yield* Effect.die("PostgreSQL did not return resource identity.");
+    yield* upsertResourceCanvasPosition({ ...input, resourceId: resource.id, resourceType: input.type });
+    return { resource, group };
   },
 );
 

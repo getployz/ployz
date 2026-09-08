@@ -1,6 +1,7 @@
-import type { Client, DeployIntent, PreparedDeploy } from "@ployz/sdk";
+import type { Client, ContainerId, DeployIntent, DeployOutcome, ExecutionError, PreparedDeploy } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Effect, Fiber, Layer } from "effect";
+import { Effect, Fiber, Layer, Redacted } from "effect";
+import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { asTestDouble } from "#/lib/test-double";
 import type { DeploymentContext } from "#/modules/deployments/runtime-repository.server";
 import {
@@ -16,12 +17,14 @@ import {
   PloyzProviderError,
 } from "#/modules/runtime/ployz.server";
 import {
-  confirmRuntimeIntent,
+  executeRuntimeIntent,
   previewRuntimeIntent,
 } from "./runtime-activities.server";
 import { compileSdkDeployIntent } from "./runtime-preview";
 
 const preview = {
+  storage: [],
+  prune_refusal: null,
   project_name: "production",
   operations: [],
   warnings: [],
@@ -137,31 +140,43 @@ it.effect("closes the session when preview fails with a typed provider error", (
   }),
 );
 
-it.effect("closes the confirmation watch and session after its outcome", () =>
+it.effect("prepares once and executes that handle before closing the session", () =>
   Effect.gen(function* () {
     let closed = 0;
+    let preparedCount = 0;
+    let executedCount = 0;
     const outcome = { type: "success" as const, completed: [] };
     const prepared = asTestDouble<PreparedDeploy>()({
       ...preview,
       noop: false,
-      confirm: () => ({
+      confirm: () => {
+        assert.strictEqual(closed, 0);
+        executedCount += 1;
+        return ({
         abort: () => undefined,
         finished: Promise.resolve(outcome),
         async *[Symbol.asyncIterator]() {
           yield { type: "outcome" as const, outcome };
         },
-      }),
+      });
+      },
     });
     const client = asTestDouble<Client>()({
-      preview: async () => prepared,
+      preview: async () => {
+        preparedCount += 1;
+        return prepared;
+      },
       close: async () => undefined,
     });
 
     const result = yield* Effect.scoped(
-      confirmRuntimeIntent("organization-1", intent(), preview),
+      executeRuntimeIntent("organization-1", intent()),
     ).pipe(Effect.provide(runtimeLayer(client, () => (closed += 1))));
 
-    assert.deepStrictEqual(result, { type: "success" });
+    assert.deepStrictEqual(result.outcome, { type: "success", completed: 0 });
+    assert.deepStrictEqual(result.preview, preview);
+    assert.strictEqual(preparedCount, 1);
+    assert.strictEqual(executedCount, 1);
     assert.strictEqual(closed, 1);
   }),
 );
@@ -194,7 +209,7 @@ it.effect("aborts an interrupted confirmation watch before closing the session",
       close: async () => undefined,
     });
     const program = Effect.scoped(
-      confirmRuntimeIntent("organization-1", intent(), preview),
+      executeRuntimeIntent("organization-1", intent()),
     ).pipe(Effect.provide(runtimeLayer(client, () => (closed += 1))));
     const fiber = yield* program.pipe(Effect.forkChild);
 
@@ -203,5 +218,55 @@ it.effect("aborts an interrupted confirmation watch before closing the session",
 
     assert.strictEqual(aborted, 1);
     assert.strictEqual(closed, 1);
+  }),
+);
+
+it.effect("retains complete partial evidence privately without exposing operation inputs", () =>
+  Effect.gen(function* () {
+    let preparations = 0;
+    let executions = 0;
+    const spec = resolvedServiceSpecFixture();
+    spec.container.environment = { PASSWORD: "never-publish" };
+    const machineId = (id: string) => runtimeWatchMachineFixture(id.repeat(32), id).id;
+    const operation = { type: "run_container" as const, machine_id: machineId("a"), spec, skip_health_monitor: false };
+    const outcome: DeployOutcome<ExecutionError> = {
+      type: "failed" as const,
+      completed: [operation],
+      failed: {
+        type: "replacement_health",
+        operation: { machine_id: machineId("b"), old_container_id: "b".repeat(64) as ContainerId, spec, skip_health_monitor: false },
+        error: { type: "cancelled" },
+        compensation: { type: "stop_first", stop_new_container: { type: "stopped" }, restart_old_container: { type: "restarted" } },
+      },
+      unexecuted: [{ ...operation, machine_id: machineId("c") }, { ...operation, machine_id: machineId("d") }],
+    };
+    const failedOperation = { type: "replace_container" as const, ...outcome.failed.operation };
+    const operations = [operation, failedOperation, ...outcome.unexecuted];
+    const prepared = asTestDouble<PreparedDeploy>()({
+      ...preview,
+      operations: operations.map((operation, index) => ({
+        index, operation, machine_id: operation.type === "remove_volume" ? operation.id.machine_id : operation.machine_id, service_name: spec.name, machine_name: null, display_name: null,
+        status: { type: "pending" as const },
+      })),
+      confirm: () => {
+        executions += 1;
+        return {
+          abort: () => undefined,
+          finished: Promise.resolve(outcome),
+          async *[Symbol.asyncIterator]() { yield { type: "outcome", outcome }; },
+        };
+      },
+    });
+    const client = asTestDouble<Client>()({
+      preview: async () => { preparations += 1; return prepared; },
+      close: async () => undefined,
+    });
+    const result = yield* Effect.scoped(executeRuntimeIntent("organization-1", intent()))
+      .pipe(Effect.provide(runtimeLayer(client, () => undefined)));
+    assert.deepStrictEqual(result.outcome, { type: "failed", completed: 1, unexecuted: 2, reason: "cancelled" });
+    assert.deepStrictEqual(Redacted.value(result.evidence), { version: 1, outcome });
+    assert.strictEqual(preparations, 1);
+    assert.strictEqual(executions, 1);
+    assert.isFalse(JSON.stringify(result).includes("never-publish"));
   }),
 );

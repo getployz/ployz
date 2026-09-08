@@ -8,11 +8,11 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged, ContainerDetails,
-    ContainerList, ContainerObservationMap, ContractDescription, Domain, DomainRecords,
-    ImageIngestReason, ImagePulled, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineId, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
+    CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged, ContainerList,
+    ContainerObservationMap, ContractDescription, Domain, DomainRecords, ImageIngestReason,
+    ImagePulled, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin, MachineId,
+    MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::{sync::watch, time::Instant};
@@ -385,12 +385,10 @@ impl MachineRpc for MachineService {
         };
         let machine_id = self.local_record()?.id();
         match containers
-            .inspect_managed(&request.container_id, &machine_id)
+            .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
-            Ok(observation) => respond(ContainerDetails {
-                container: observation,
-            }),
+            Ok(details) => respond(details),
             Err(error) => respond(RpcError::from(&error)),
         }
     }

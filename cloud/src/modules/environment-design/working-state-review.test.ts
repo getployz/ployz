@@ -80,7 +80,6 @@ describe("reviewed Environment Working State", () => {
         },
       ],
       revisionMarkers: ["service:1"],
-      tombstonedVolumeIds: [],
     };
     const reviewedNode = state.nodeSnapshots[0];
     if (!reviewedNode) throw new Error("Expected reviewed Service node.");
@@ -152,12 +151,10 @@ describe("reviewed Environment Working State", () => {
     const forward = await fingerprintReviewedEnvironmentWorkingState({
       nodeSnapshots: nodes,
       revisionMarkers: ["é-marker", "a-marker"],
-      tombstonedVolumeIds: [],
     });
     const reversed = await fingerprintReviewedEnvironmentWorkingState({
       nodeSnapshots: [...nodes].reverse(),
       revisionMarkers: ["a-marker", "é-marker"],
-      tombstonedVolumeIds: [],
     });
 
     expect(reversed).toBe(forward);

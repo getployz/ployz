@@ -1,3 +1,4 @@
+import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { redirect, useMatch } from "@tanstack/react-router";
 import {
@@ -15,13 +16,10 @@ import {
   type ServiceWriter,
   type EnvironmentServiceViewRecord,
   normalizeEnvironmentServicesViewRecord,
-  projectServiceViewsWithBoundEnv,
   useCanvasPositionsCollection,
   useEnvironmentResourcesCollection,
-  useServiceVariableGroupAttachmentsCollection,
   useServicesCollection,
   useServiceWriter,
-  useVariablesCollection,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
 import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/environment-node-names";
@@ -30,7 +28,6 @@ import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collection
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
-import { environmentServiceVariableGroupAttachmentSchema } from "#/modules/environment-design/variables";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
 import {
   useRuntimePublicUrl,
@@ -86,10 +83,8 @@ export function useServiceDrawerState(
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     params.organizationSlug,
   );
-  const serviceVariableGroupAttachmentsCollection =
-    useServiceVariableGroupAttachmentsCollection(params.organizationSlug);
   const canvasPositions = useCanvasPositionsCollection(params.organizationSlug);
-  const variables = useVariablesCollection(params.organizationSlug);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug);
   const nodeIntroductions = getEnvironmentNodeIntroductionsCollection(
     params.organizationSlug,
   );
@@ -110,14 +105,14 @@ export function useServiceDrawerState(
       buildEnvironmentServicesViewQuery(q, params, {
         services: collection,
         canvasPositions,
-        variables,
+        documents,
       }),
     [
       canvasPositions,
       collection,
       params.environmentSlug,
       params.projectSlug,
-      variables,
+      documents,
     ],
   );
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
@@ -129,15 +124,6 @@ export function useServiceDrawerState(
           eq(resource.environmentSlug, params.environmentSlug),
         )
         .select(({ resource }) => resource),
-  });
-  const { data: serviceVariableGroupAttachmentRows } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ attachment: serviceVariableGroupAttachmentsCollection })
-        .where(({ attachment }) =>
-          eq(attachment["environmentId"], environmentId ?? ""),
-        )
-        .select(({ attachment }) => attachment),
   });
   const { data: serviceIntroductionRows } = useLiveSuspenseQuery({
     query: (q) =>
@@ -157,16 +143,7 @@ export function useServiceDrawerState(
     parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
 
-  const services = projectServiceViewsWithBoundEnv({
-    services: rawServices.map(normalizeEnvironmentServicesViewRecord),
-    environmentResources,
-    attachments: serviceVariableGroupAttachmentRows.map((attachment) =>
-      parseLiveQueryRow(
-        environmentServiceVariableGroupAttachmentSchema,
-        attachment,
-      ),
-    ),
-  });
+  const services = rawServices.map(normalizeEnvironmentServicesViewRecord);
   const serviceView = services.find(
     (item) => item.service.id === params.serviceId,
   );

@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import { Effect, Option } from "effect";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
@@ -6,10 +7,6 @@ import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
   environmentDeploymentSecret as schemaEnvironmentDeploymentSecret,
 } from "#/modules/deployments/tables";
-import {
-  coreOperationWatch as schemaCoreOperationWatch,
-  coreOperationEvent as schemaCoreOperationEvent,
-} from "#/modules/operations/tables";
 import {
   environment as schemaEnvironment,
   project as schemaProject,
@@ -22,20 +19,10 @@ import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { EncryptedSecretValue, JsonObject } from "#/db/tables";
 import type {
-  EnvironmentDeploymentPreview,
   EnvironmentDeploymentStatus,
 } from "#/modules/deployments/tables";
 import { asRecord, asString } from "#/lib/json";
-import { foldPhaseAwareAppliedState } from "#/modules/runtime/phase-aware-applied-state";
-import {
-  toPhaseAwareCurrentRuntimeServiceResult,
-} from "#/modules/runtime/phase-aware-deploy-current-runtime-adapter";
-import { decodeFrozenDeployInput } from "#/modules/deployments/frozen-input.server";
-import {
-  parsePhaseAwareDeployResultFromPhaseEvidence,
-} from "#/modules/runtime/phase-aware-deploy-contract";
 import { decodePersistedSavedEnvironmentState } from "#/modules/environment-design/saved-intent";
-import { decodeRuntimePhaseEvidence } from "#/modules/operations/deploy-operation-evidence";
 
 const ACTIVE_DEPLOYMENT_STATUSES = [
   "queued",
@@ -106,18 +93,6 @@ type LoadedNode = {
   snapshotCreatedAt: Date;
 };
 
-type PartialPhaseEvent = {
-  operationId: string;
-  sequence: string;
-  eventType: string;
-  payload: JsonObject;
-};
-
-type PartialFrozenInput = {
-  environmentDeploymentId: string;
-  encryptedFrozenDeployInput: EncryptedSecretValue;
-};
-
 function nodeKey(nodeType: string, nodeId: string) {
   return `${nodeType}:${nodeId}`;
 }
@@ -140,7 +115,6 @@ const DEPLOYMENT_HEAD_COLUMNS = {
   savedStateSnapshotId: schemaEnvironmentDeployment.savedStateSnapshotId,
   status: schemaEnvironmentDeployment.status,
   createdAt: schemaEnvironmentDeployment.createdAt,
-  coreDeployId: schemaEnvironmentDeployment.coreDeployId,
   deployPreview: schemaEnvironmentDeployment.deployPreview,
 };
 
@@ -370,64 +344,18 @@ function projectSnapshotHeads(scope: SnapshotScope) {
   const appliedIds = appliedHeads.map((head) => head.id);
   const partialIds = partialHeads.map((head) => head.id);
   const liveCandidateIds = [...new Set([...appliedIds, ...partialIds])];
-  const partialOperationIds = partialHeads.flatMap((head) =>
-    head.coreDeployId ? [head.coreDeployId] : [],
-  );
-  const [
-    deploymentNodes,
-    liveCandidateNodes,
-    partialEvents,
-    partialFrozenInputs,
-  ] =
-    yield* Effect.all([
-      loadNodeConfigSnapshots(deploymentIds),
-      loadNodeConfigSnapshots(liveCandidateIds),
-      partialOperationIds.length === 0
-        ? Effect.succeed([])
-        : drizzle
-            .select({
-              operationId: schemaCoreOperationWatch.operationId,
-              sequence: schemaCoreOperationEvent.sequence,
-              eventType: schemaCoreOperationEvent.eventType,
-              payload: schemaCoreOperationEvent.payload,
-            })
-            .from(schemaCoreOperationEvent)
-            .innerJoin(
-              schemaCoreOperationWatch,
-              eq(
-                schemaCoreOperationEvent.watchId,
-                schemaCoreOperationWatch.id,
-              ),
-            )
-            .where(
-              and(
-                inArray(
-                  schemaCoreOperationWatch.operationId,
-                  partialOperationIds,
-                ),
-                eq(
-                  schemaCoreOperationEvent.eventType,
-                  "deploy_phase_finished",
-                ),
-              ),
-            ),
-      partialIds.length === 0
-        ? Effect.succeed<PartialFrozenInput[]>([])
-        : drizzle
-            .select({
-              environmentDeploymentId:
-                schemaEnvironmentDeploymentSecret.environmentDeploymentId,
-              encryptedFrozenDeployInput:
-                schemaEnvironmentDeploymentSecret.encryptedFrozenDeployInput,
-            })
-            .from(schemaEnvironmentDeploymentSecret)
-            .where(
-              inArray(
-                schemaEnvironmentDeploymentSecret.environmentDeploymentId,
-                partialIds,
-              ),
-            ),
-    ]);
+  const [deploymentNodes, liveCandidateNodes, privateOutcomes] = yield* Effect.all([
+    loadNodeConfigSnapshots(deploymentIds),
+    loadNodeConfigSnapshots(liveCandidateIds),
+    partialIds.length === 0
+      ? Effect.succeed([])
+      : drizzle.select({
+          environmentDeploymentId: schemaEnvironmentDeploymentSecret.environmentDeploymentId,
+          encryptedRuntimeOutcome: schemaEnvironmentDeploymentSecret.encryptedRuntimeOutcome,
+        }).from(schemaEnvironmentDeploymentSecret).where(inArray(
+          schemaEnvironmentDeploymentSecret.environmentDeploymentId, partialIds,
+        )),
+  ]);
 
   const candidateNodesByDeploymentId = new Map<string, LoadedNode[]>();
   for (const node of liveCandidateNodes) {
@@ -438,22 +366,6 @@ function projectSnapshotHeads(scope: SnapshotScope) {
     else candidateNodesByDeploymentId.set(node.environmentDeploymentId, [node]);
   }
 
-  const previewRevision = (
-    preview: EnvironmentDeploymentPreview | null,
-    runtimeServiceId: string,
-  ) => {
-    const commits = asRecord(asRecord(preview)?.["projection"])?.[
-      "serving_target_commits"
-    ];
-    if (!Array.isArray(commits)) return null;
-    for (const entry of commits) {
-      const record = asRecord(entry);
-      if (asString(record?.["service_id"]) === runtimeServiceId) {
-        return asString(record?.["namespace_revision_entry_id"]) ?? null;
-      }
-    }
-    return null;
-  };
   const runtimeServiceId = (node: LoadedNode) => {
     if (node.nodeType !== "service") return null;
     const privateDns = asString(asRecord(node.config)?.["privateDns"]);
@@ -461,113 +373,47 @@ function projectSnapshotHeads(scope: SnapshotScope) {
   };
 
   const liveNodesByKey = new Map<string, LoadedNode>();
-  const liveRevisionByNodeKey = new Map<string, string | null>();
   const appliedCreatedAtByEnvironment = new Map<string, Date>();
   for (const head of appliedHeads) {
     appliedCreatedAtByEnvironment.set(head.environmentId, head.createdAt);
     for (const node of candidateNodesByDeploymentId.get(head.id) ?? []) {
       const key = nodeKey(node.nodeType, node.nodeId);
       liveNodesByKey.set(key, node);
-      const serviceId = runtimeServiceId(node);
-      liveRevisionByNodeKey.set(
-        key,
-        serviceId ? previewRevision(head.deployPreview, serviceId) : null,
-      );
+
     }
   }
 
-  const eventsByOperationId = new Map<string, PartialPhaseEvent[]>();
-  for (const event of partialEvents) {
-    const events = eventsByOperationId.get(event.operationId);
-    if (events) events.push(event);
-    else eventsByOperationId.set(event.operationId, [event]);
-  }
-  const frozenByDeploymentId = new Map(
-    partialFrozenInputs.map((frozen) => [
-      frozen.environmentDeploymentId,
-      frozen.encryptedFrozenDeployInput,
-    ]),
-  );
+  const outcomeByDeploymentId = new Map(privateOutcomes.map(row => [row.environmentDeploymentId, row.encryptedRuntimeOutcome]));
   for (const head of partialHeads) {
     const appliedAt = appliedCreatedAtByEnvironment.get(head.environmentId);
     if (appliedAt && head.createdAt <= appliedAt) continue;
+    const encrypted = outcomeByDeploymentId.get(head.id);
+    if (!encrypted || !head.deployPreview) continue;
+    const projected = yield* Effect.try({
+      try: () => projectRuntimeOutcome(head.deployPreview, JSON.parse(encryption.decrypt(encrypted))),
+      catch: () => new Error("Invalid persisted SDK outcome"),
+    }).pipe(Effect.option);
+    if (Option.isNone(projected)) continue;
     const nodes = candidateNodesByDeploymentId.get(head.id) ?? [];
-    const target = nodes.flatMap((node) => {
-      const serviceId = runtimeServiceId(node);
-      return serviceId ? [{ serviceId, node }] : [];
-    });
-    const targetByRuntimeServiceId = new Map(
-      target.map((binding) => [binding.serviceId, binding] as const),
-    );
-    const prior = [...liveNodesByKey.values()].flatMap((node) => {
-      if (node.environmentId !== head.environmentId) return [];
-      const serviceId = runtimeServiceId(node);
-      return serviceId ? [{ serviceId, node }] : [];
-    });
-    const priorRevisionByNodeKey = new Map(
-      prior.map(({ node }) => [
-        nodeKey(node.nodeType, node.nodeId),
-        liveRevisionByNodeKey.get(nodeKey(node.nodeType, node.nodeId)) ?? null,
-      ]),
-    );
-    const frozenSecret = frozenByDeploymentId.get(head.id);
-    if (!frozenSecret) continue;
-    const frozen = yield* decodeFrozenDeployInput(
-      encryption,
-      frozenSecret,
-    ).pipe(Effect.option);
-    if (Option.isNone(frozen) || !frozen.value) continue;
-    const phases = [];
-    const events = [
-      ...(eventsByOperationId.get(head.coreDeployId ?? "") ?? []),
-    ].sort((left, right) => {
-      const leftSequence = BigInt(left.sequence);
-      const rightSequence = BigInt(right.sequence);
-      return leftSequence === rightSequence
-        ? 0
-        : leftSequence < rightSequence
-          ? -1
-          : 1;
-    });
-    for (const event of events) {
-      const decoded = yield* decodeRuntimePhaseEvidence({
-          eventType: event.eventType,
-          payload: event.payload,
-        }).pipe(Effect.option);
-      if (Option.isSome(decoded)) {
-        phases.push({
-          phase: decoded.value.payload.phase,
-          services: decoded.value.payload.services.map(
-            toPhaseAwareCurrentRuntimeServiceResult,
-          ),
-        });
+    const confirmed = new Set(projected.value.confirmedServices);
+    const complete = projected.value.summary.type === "success";
+    const targetByKey = new Map(nodes.map(node => [nodeKey(node.nodeType, node.nodeId), node]));
+    const prior = [...liveNodesByKey.values()].filter(node => node.environmentId === head.environmentId);
+    const priorByKey = new Map(prior.map(node => [nodeKey(node.nodeType, node.nodeId), node]));
+    for (const node of prior) {
+      const key = nodeKey(node.nodeType, node.nodeId);
+      if (!targetByKey.has(key) && (complete || confirmed.has(runtimeServiceId(node) ?? ""))) {
+        liveNodesByKey.delete(key);
       }
     }
-    const validated = yield* parsePhaseAwareDeployResultFromPhaseEvidence(
-        frozen.value.request,
-        phases,
-      ).pipe(Effect.option);
-    if (Option.isNone(validated)) continue;
-    const folded = foldPhaseAwareAppliedState({
-      prior,
-      target,
-      result: validated.value,
-    });
-    for (const { node } of prior) {
+    for (const node of nodes) {
       const key = nodeKey(node.nodeType, node.nodeId);
-      liveNodesByKey.delete(key);
-      liveRevisionByNodeKey.delete(key);
-    }
-    for (const binding of folded) {
-      const { node } = binding;
-      const key = nodeKey(node.nodeType, node.nodeId);
+      const serviceId = runtimeServiceId(node);
+      const previous = priorByKey.get(key);
+      const previousServiceId = previous ? runtimeServiceId(previous) : null;
+      if (!complete && (!serviceId || !confirmed.has(serviceId)
+          || (previousServiceId && previousServiceId !== serviceId && !confirmed.has(previousServiceId)))) continue;
       liveNodesByKey.set(key, node);
-      liveRevisionByNodeKey.set(
-        key,
-        targetByRuntimeServiceId.get(binding.serviceId)?.node === node
-          ? previewRevision(head.deployPreview, binding.serviceId)
-          : (priorRevisionByNodeKey.get(key) ?? null),
-      );
     }
   }
 
@@ -612,16 +458,12 @@ function projectSnapshotHeads(scope: SnapshotScope) {
       );
       const evidenceNodes: EnvironmentExplicitStateProjectionNode[] = [
         ...targetNodes.map((node) => {
-          const serviceId = runtimeServiceId(node);
           return {
             nodeType: node.nodeType,
             nodeId: node.nodeId,
             nodeLineageId: node.nodeLineageId,
             config: node.config,
-            revisionId:
-              serviceId && activeDeployment
-                ? previewRevision(activeDeployment.deployPreview, serviceId)
-                : null,
+            revisionId: null,
           };
         }),
         ...appliedEntries.flatMap(([key, node]) =>
@@ -663,9 +505,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
             nodeId: node.nodeId,
             nodeLineageId: node.nodeLineageId,
             config: node.config,
-            revisionId:
-              liveRevisionByNodeKey.get(nodeKey(node.nodeType, node.nodeId)) ??
-              null,
+            revisionId: null,
           })),
         },
         deploymentEvidence: activeDeployment

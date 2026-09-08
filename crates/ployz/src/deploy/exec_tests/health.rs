@@ -445,3 +445,25 @@ async fn health_monitor_does_not_inherit_when_spec_disables_the_check() {
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn http_health_monitor_waits_for_a_successful_machine_probe() {
+    let machine = machine('1');
+    let new = container('a');
+    let http = ployz_core::HealthcheckSpec::Http(ployz_core::HttpHealthcheck {
+        path: "/ready".into(),
+        port: 8080.try_into().unwrap(),
+        timeout_seconds: 10,
+    });
+    let plan = vec![run(&machine, spec(Some(0), Some(http), None), false)];
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), unhealthy()),
+        observed(Call::Inspect(machine, new), healthy()),
+        serving(new),
+    ]);
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    client.assert_done();
+}

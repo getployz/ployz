@@ -12,6 +12,7 @@ export {
   ownsDeploymentRun,
   persistDeployApplyResult,
   persistSdkDeployPreview,
+  persistSdkDeployOutcome,
   recordInngestRun,
 } from "./runtime-lifecycle.repository.server";
 export {

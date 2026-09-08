@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "605f11c3-00b1-4250-8749-401ede1e9830",
+  "id": "b2a70431-3047-4ee2-92e2-58db71000844",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -68,18 +68,6 @@
     },
     {
       "isRlsEnabled": false,
-      "name": "config_key",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "config_value",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
       "name": "environment_canvas_node_position",
       "entityType": "tables",
       "schema": "public"
@@ -117,18 +105,6 @@
     {
       "isRlsEnabled": false,
       "name": "service_registry_credential",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "service_variable_group_attachment",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "service_volume_attachment",
       "entityType": "tables",
       "schema": "public"
     },
@@ -1075,6 +1051,45 @@
       "table": "environment"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "intent",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -1242,188 +1257,6 @@
       "entityType": "columns",
       "schema": "public",
       "table": "user_project_preference"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "project_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "scope",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "service_lineage_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "variable_group_lineage_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "canonical_name",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "updated_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "project_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "config_key_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "environment_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "updated_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "config_value"
     },
     {
       "type": "uuid",
@@ -1634,45 +1467,6 @@
       "table": "environment_resource"
     },
     {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "name",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_resource"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "slug",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_resource"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "deleted_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_resource"
-    },
-    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -1759,32 +1553,6 @@
       "generated": null,
       "identity": null,
       "name": "lineage_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_variable_group"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "name",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_variable_group"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "slug",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_variable_group"
@@ -1972,227 +1740,6 @@
       "table": "service"
     },
     {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "name",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "slug",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "source_type",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "source_config",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "pre_deploy_command",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "start_command",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'{\"type\":\"none\"}'",
-      "generated": null,
-      "identity": null,
-      "name": "healthcheck",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'\"unless-stopped\"'",
-      "generated": null,
-      "identity": null,
-      "name": "restart_policy",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "10",
-      "generated": null,
-      "identity": null,
-      "name": "max_retries",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "cron",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "1",
-      "generated": null,
-      "identity": null,
-      "name": "replicas",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "double precision",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "cpu_limit",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "double precision",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "mem_limit",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "private_dns",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'[]'",
-      "generated": null,
-      "identity": null,
-      "name": "routes",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "managed_hostname",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'{\"builder\":\"auto\",\"dockerfilePath\":null,\"watchPaths\":[]}'",
-      "generated": null,
-      "identity": null,
-      "name": "build",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
       "type": "boolean",
       "typeSchema": null,
       "notNull": true,
@@ -2214,19 +1761,6 @@
       "generated": null,
       "identity": null,
       "name": "first_deployed_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "deleted_at",
       "entityType": "columns",
       "schema": "public",
       "table": "service"
@@ -2379,175 +1913,6 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "organization_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "service_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "variable_group_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "sort_order",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "organization_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "project_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "environment_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "service_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "volume_resource_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "mount_path",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "updated_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
       "default": "gen_random_uuid()",
       "generated": null,
       "identity": null,
@@ -2564,20 +1929,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "organization_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "project_id",
+      "name": "environment_id",
       "entityType": "columns",
       "schema": "public",
       "table": "variable"
@@ -2609,97 +1961,6 @@
       "table": "variable"
     },
     {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "config_key_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "key",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "description",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "boolean",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "false",
-      "generated": null,
-      "identity": null,
-      "name": "exported",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "value_kind",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "value_parts",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "value_fingerprint",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -2708,19 +1969,6 @@
       "generated": null,
       "identity": null,
       "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "updated_at",
       "entityType": "columns",
       "schema": "public",
       "table": "variable"
@@ -2812,6 +2060,19 @@
       "generated": null,
       "identity": null,
       "name": "variable_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "variable_secret"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_id",
       "entityType": "columns",
       "schema": "public",
       "table": "variable_secret"
@@ -3131,12 +2392,12 @@
     {
       "type": "jsonb",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "encrypted_frozen_deploy_input",
+      "name": "encrypted_runtime_outcome",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment_secret"
@@ -4119,25 +3380,12 @@
     {
       "type": "jsonb",
       "typeSchema": null,
-      "notNull": false,
+      "notNull": true,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "encrypted_registry_username",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_node_introduction_secret"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "encrypted_registry_secret",
+      "name": "authored_intent",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_node_introduction_secret"
@@ -6409,181 +5657,6 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "project_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "service_lineage_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "canonical_name",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"scope\" = 'service_lineage'",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_key_service_lineage_canonical_name_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "project_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "variable_group_lineage_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "canonical_name",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"scope\" = 'variable_group_lineage'",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_key_variable_group_lineage_canonical_name_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "project_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_key_project_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "service_lineage_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_key_service_lineage_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "variable_group_lineage_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_key_variable_group_lineage_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "project_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_value_project_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "config_value_environment_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
           "value": "environment_id",
           "isExpression": false,
           "asc": true,
@@ -6649,62 +5722,6 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "environment_canvas_node_position"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "slug",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"deleted_at\" is null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "environment_resource_environment_slug_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "environment_resource"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lineage_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"deleted_at\" is null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "environment_resource_environment_lineage_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "environment_resource"
     },
     {
       "nameExplicit": true,
@@ -6962,62 +5979,6 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "environment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "slug",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"deleted_at\" is null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_environment_slug_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lineage_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"deleted_at\" is null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_environment_lineage_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
           "value": "project_id",
           "isExpression": false,
           "asc": true,
@@ -7118,356 +6079,6 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "service_lineage"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "service_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_variable_group_attachment_service_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "organization_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_variable_group_attachment_organization_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "variable_group_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_variable_group_attachment_set_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "service_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_volume_attachment_service_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "volume_resource_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_volume_attachment_volume_resource_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "project_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_volume_attachment_project_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "organization_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_volume_attachment_organization_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "environment_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "service_volume_attachment_environment_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "project_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_project_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "organization_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_organization_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "service_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_service_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "variable_group_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_variable_group_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "config_key_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_config_key_id_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "exported",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_exported_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "service_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "config_key_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"service_id\" is not null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_service_config_key_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "variable_group_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "config_key_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"variable_group_id\" is not null",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "variable_group_config_key_unique",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "variable"
     },
     {
       "nameExplicit": true,
@@ -9014,184 +7625,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "project_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "project",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_key_project_id_project_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "service_lineage_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "service_lineage",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_key_service_lineage_id_service_lineage_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "variable_group_lineage_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "variable_group_lineage",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_key_Z9IFDoZl4bce_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id",
-        "service_lineage_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "service_lineage",
-      "columnsTo": [
-        "project_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_key_5VUyMPmokT4w_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id",
-        "variable_group_lineage_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "variable_group_lineage",
-      "columnsTo": [
-        "project_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_key_XJjCzTc9crVY_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "project",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_value_project_id_project_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "config_key_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "config_key",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_value_config_key_id_config_key_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "environment_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "environment",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_value_environment_id_environment_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id",
-        "config_key_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "config_key",
-      "columnsTo": [
-        "project_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_value_PIOwCmc9UgtM_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id",
-        "environment_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "environment",
-      "columnsTo": [
-        "project_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "config_value_rxYFy3WfPQlC_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "organization_id"
       ],
       "schemaTo": "public",
@@ -9648,91 +8081,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "organization_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "organization",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_variable_group_attachment_NYXbiK6fRK1W_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "service_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "service",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_variable_group_attachment_service_id_service_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "variable_group_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "environment_variable_group",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_variable_group_attachment_9dQ3j1TvmUKG_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "organization_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "organization",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_volume_attachment_organization_id_organization_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "project",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_volume_attachment_project_id_project_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "environment_id"
       ],
       "schemaTo": "public",
@@ -9742,79 +8090,7 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "service_volume_attachment_environment_id_environment_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "environment_id",
-        "service_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "service",
-      "columnsTo": [
-        "environment_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_volume_attachment_kFuCCx6h3Bu6_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "environment_id",
-        "volume_resource_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "environment_resource",
-      "columnsTo": [
-        "environment_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "service_volume_attachment_x8hGiuXiEjZ1_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "organization_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "organization",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "variable_organization_id_organization_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "project",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "variable_project_id_project_id_fkey",
+      "name": "variable_environment_id_environment_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "variable"
@@ -9856,54 +8132,18 @@
     {
       "nameExplicit": false,
       "columns": [
-        "config_key_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "config_key",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "RESTRICT",
-      "name": "variable_config_key_id_config_key_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id",
-        "config_key_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "config_key",
-      "columnsTo": [
-        "project_id",
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "RESTRICT",
-      "name": "variable_project_id_config_key_id_config_key_project_id_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "project_id",
+        "environment_id",
         "service_id"
       ],
       "schemaTo": "public",
       "tableTo": "service",
       "columnsTo": [
-        "project_id",
+        "environment_id",
         "id"
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "variable_project_id_service_id_service_project_id_id_fkey",
+      "name": "variable_dFGv8UXjv6eg_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "variable"
@@ -9911,18 +8151,18 @@
     {
       "nameExplicit": false,
       "columns": [
-        "project_id",
+        "environment_id",
         "variable_group_id"
       ],
       "schemaTo": "public",
       "tableTo": "environment_variable_group",
       "columnsTo": [
-        "project_id",
+        "environment_id",
         "id"
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "variable_OCJdPfzRCIC2_fkey",
+      "name": "variable_AmBxCm84j9h8_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "variable"
@@ -9947,16 +8187,35 @@
     {
       "nameExplicit": false,
       "columns": [
-        "variable_id"
+        "environment_id"
       ],
       "schemaTo": "public",
-      "tableTo": "variable",
+      "tableTo": "environment",
       "columnsTo": [
         "id"
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "variable_secret_variable_id_variable_id_fkey",
+      "name": "variable_secret_environment_id_environment_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "variable_secret"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "environment_id",
+        "variable_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "variable",
+      "columnsTo": [
+        "environment_id",
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "variable_secret_fgbg4UfEzo6H_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "variable_secret"
@@ -10638,28 +8897,6 @@
     },
     {
       "columns": [
-        "service_id",
-        "variable_group_id"
-      ],
-      "nameExplicit": false,
-      "name": "service_variable_group_attachment_pkey",
-      "entityType": "pks",
-      "schema": "public",
-      "table": "service_variable_group_attachment"
-    },
-    {
-      "columns": [
-        "service_id",
-        "volume_resource_id"
-      ],
-      "nameExplicit": false,
-      "name": "service_volume_attachment_pkey",
-      "entityType": "pks",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "columns": [
         "environment_id",
         "node_type",
         "node_id"
@@ -10827,26 +9064,6 @@
       "name": "user_project_preference_pkey",
       "schema": "public",
       "table": "user_project_preference",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "config_key_pkey",
-      "schema": "public",
-      "table": "config_key",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "config_value_pkey",
-      "schema": "public",
-      "table": "config_value",
       "entityType": "pks"
     },
     {
@@ -11249,30 +9466,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "project_id",
-        "id"
-      ],
-      "nullsNotDistinct": false,
-      "name": "config_key_project_id_id_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "config_key_id",
-        "environment_id"
-      ],
-      "nullsNotDistinct": false,
-      "name": "config_value_config_key_id_environment_id_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "config_value"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "environment_id",
         "resource_type",
         "resource_id"
@@ -11310,6 +9503,18 @@
     {
       "nameExplicit": false,
       "columns": [
+        "environment_id",
+        "lineage_id"
+      ],
+      "nullsNotDistinct": false,
+      "name": "environment_resource_environment_id_lineage_id_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "environment_resource"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "project_id",
         "id"
       ],
@@ -11323,10 +9528,10 @@
       "nameExplicit": false,
       "columns": [
         "environment_id",
-        "slug"
+        "id"
       ],
       "nullsNotDistinct": false,
-      "name": "environment_variable_group_environment_id_slug_unique",
+      "name": "environment_variable_group_environment_id_id_unique",
       "entityType": "uniques",
       "schema": "public",
       "table": "environment_variable_group"
@@ -11394,6 +9599,18 @@
     {
       "nameExplicit": false,
       "columns": [
+        "environment_id",
+        "lineage_id"
+      ],
+      "nullsNotDistinct": false,
+      "name": "service_environment_id_lineage_id_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "service"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "project_id",
         "canonical_slug"
       ],
@@ -11418,35 +9635,11 @@
     {
       "nameExplicit": false,
       "columns": [
-        "service_id",
-        "mount_path"
+        "environment_id",
+        "id"
       ],
       "nullsNotDistinct": false,
-      "name": "service_volume_attachment_service_id_mount_path_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "service_volume_attachment"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "service_id",
-        "key"
-      ],
-      "nullsNotDistinct": false,
-      "name": "variable_service_id_key_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "variable_group_id",
-        "key"
-      ],
-      "nullsNotDistinct": false,
-      "name": "variable_variable_group_id_key_unique",
+      "name": "variable_environment_id_id_unique",
       "entityType": "uniques",
       "schema": "public",
       "table": "variable"
@@ -11586,13 +9779,6 @@
       "entityType": "uniques"
     },
     {
-      "value": "(\n        (\"scope\" = 'service_lineage' and \"service_lineage_id\" is not null and \"variable_group_lineage_id\" is null) or\n        (\"scope\" = 'variable_group_lineage' and \"service_lineage_id\" is null and \"variable_group_lineage_id\" is not null)\n      )",
-      "name": "config_key_scope_owner_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "config_key"
-    },
-    {
       "value": "\"implementation_type\" in ('variable_group', 'volume')",
       "name": "environment_resource_implementation_type_check",
       "entityType": "checks",
@@ -11623,13 +9809,6 @@
     {
       "value": "num_nonnulls(\"service_id\", \"variable_group_id\") = 1",
       "name": "variable_owner_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "variable"
-    },
-    {
-      "value": "(\n        (\"value_kind\" = 'plain' and \"value_parts\" is not null) or\n        (\"value_kind\" = 'sealed' and \"value_parts\" is null)\n      )",
-      "name": "variable_value_kind_check",
       "entityType": "checks",
       "schema": "public",
       "table": "variable"
@@ -11717,13 +9896,6 @@
       "entityType": "checks",
       "schema": "public",
       "table": "environment_node_introduction"
-    },
-    {
-      "value": "num_nonnulls(\"encrypted_registry_username\", \"encrypted_registry_secret\") > 0",
-      "name": "environment_node_introduction_secret_nonempty_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "environment_node_introduction_secret"
     },
     {
       "value": "\"founder_public_key\" is not null or \"founder_machine_id\" is not null",

@@ -629,6 +629,9 @@ printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","private":true,"main":"ind
 printf 'js\n' > "$sdk_src/index.js"
 printf 'dts\n' > "$sdk_src/index.d.ts"
 printf 'browser\n' > "$sdk_src/browser.mjs"
+printf 'config\n' > "$sdk_src/config.js"
+printf 'config-types\n' > "$sdk_src/config.d.ts"
+printf 'config-browser\n' > "$sdk_src/config-browser.mjs"
 mkdir -p "$sdk_src/generated"
 printf 'gen\n' > "$sdk_src/generated/payloads.d.ts"
 sdk_bindings=$(mktemp -d)
@@ -659,6 +662,8 @@ assert.deepEqual(darwin.cpu, ["arm64"]);
 assert.equal(linux.name, "@ployz/sdk-linux-x64");
 NODE
 assert_eq "$(cat "$sdk_dest/browser.mjs")" browser
+assert_eq "$(cat "$sdk_dest/config.js")" config
+assert_eq "$(cat "$sdk_dest/config-browser.mjs")" config-browser
 if [ -e "$sdk_dest/ployz-sdk.node" ]; then
     echo "the js package still ships a native binding" >&2
     exit 1

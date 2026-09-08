@@ -1,3 +1,5 @@
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { useState } from "react";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useServerFn } from "@tanstack/react-start";
@@ -42,13 +44,11 @@ import {
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import { getRawVariablesCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/electric/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
 import {
-  environmentServiceVariableGroupAttachmentSchema,
-  variableSelectSchema,
   variableValueSchema,
   type EnvironmentServiceVariableGroupAttachment,
   type VariableRecord,
@@ -59,9 +59,7 @@ import { updateServiceVariableExportServerFn } from "#/modules/environment-desig
 import { insertPlainServiceVariable } from "#/modules/environment-design/variable-collections";
 import {
   useEnvironmentResourcesCollection,
-  useServiceVariableGroupAttachmentsCollection,
   useVariableWriter,
-  useVariablesCollection,
 } from "#/modules/services/services.collection";
 import { ServiceVariableGroupAttachmentsPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariableGroupAttachmentsPanel";
 import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditor";
@@ -76,32 +74,16 @@ export function ServiceVariablesTab({
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
   );
-  const serviceVariableGroupAttachments =
-    useServiceVariableGroupAttachmentsCollection(state.organizationSlug);
-  const variablesCollection = useVariablesCollection(state.organizationSlug);
   const variableWriter = useVariableWriter(state.organizationSlug);
   const updateExport = useServerFn(updateServiceVariableExportServerFn);
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
 
-  const { data: rawVariables } = useLiveSuspenseQuery({
-    query: (q) =>
-      q
-        .from({ variable: variablesCollection })
-        .where(({ variable }) => eq(variable.serviceId, state.service.id))
-        .orderBy(({ variable }) => variable.key)
-        .select(({ variable }) => variable),
-  });
-  const variables = rawVariables.map((row) =>
-    parseLiveQueryRow(variableSelectSchema, row),
-  );
-  const { data: rawAttachmentRows } =
-    useLiveSuspenseQuery({
-      query: (q) =>
-        q
-          .from({ attachment: serviceVariableGroupAttachments })
-          .where(({ attachment }) => eq(attachment["serviceId"], state.service.id))
-          .select(({ attachment }) => attachment),
-    });
+  const document = useEnvironmentDocument(state.organizationSlug, state.service.environmentId);
+  const node = document?.intent.services.find((node) => node.id === state.service.id);
+  const variables = document && node ? node.variables.map((variable) => variableDocumentRecord(variable,
+    { serviceId: node.id, variableGroupId: null }, document.intent, document.updatedAt)).sort((a, b) => a.key.localeCompare(b.key)) : [];
+  const attachments = node?.variableGroupAttachments.map((attachment) => ({ ...attachment,
+    serviceId: node.id, environmentId: state.service.environmentId })) ?? [];
   const { data: environmentResourceRows } =
     useLiveSuspenseQuery({
       query: (q) =>
@@ -112,9 +94,6 @@ export function ServiceVariablesTab({
           )
           .select(({ resource }) => resource),
     });
-  const attachments = rawAttachmentRows.map((row) =>
-    parseLiveQueryRow(environmentServiceVariableGroupAttachmentSchema, row),
-  );
   const environmentResources = environmentResourceRows.map((row) =>
     parseLiveQueryRow(variableGroupResourceRecordSchema, row),
   );
@@ -187,16 +166,18 @@ export function ServiceVariablesTab({
     variable: VariableRecord,
     patch: VariableMetadataPatch,
   ) {
+    if (!document) throw new Error("Environment is not loaded.");
     const receipt = await updateExport({
       data: {
         organizationSlug: state.organizationSlug,
+        revision: document.revision,
         environmentId: state.service.environmentId,
         serviceId: state.service.id,
         variableId: variable.id,
         exported: patch.exported ?? variable.exported,
       },
     });
-    await getRawVariablesCollection(state.organizationSlug).utils.awaitTxId(
+    await getEnvironmentsCollection(state.organizationSlug).utils.awaitTxId(
       receipt.txid,
     );
   }
@@ -342,7 +323,7 @@ export function ServiceVariablesTab({
         organizationSlug={state.organizationSlug}
         environmentId={state.service.environmentId}
         serviceId={state.service.id}
-        collection={variablesCollection}
+        variables={variables}
         valueTargets={valueTargets}
       />
     </TabsContent>

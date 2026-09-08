@@ -308,3 +308,69 @@ fn run_rejects_cpu_overflow_and_preserves_fractional_quantities() {
         Some(&serde_json::json!(9_223_372_036_854_775_807_i64))
     );
 }
+
+#[test]
+fn deploy_preparation_captures_resolved_input_and_selection_before_planning() {
+    let directory = std::env::temp_dir().join(format!("ployz-prepare-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(
+        directory.join("provider.sh"),
+        "printf x >> calls; printf resolved",
+    )
+    .unwrap();
+    let source = directory.join("chosen.yaml");
+    let yaml = "services: {web: {image: nginx, command: [captured], depends_on: [db], environment: {A: 'secret://token', B: 'secret://token'}}, db: {image: postgres, profiles: [data]}}\nsecrets: {token: {x-command: '/bin/sh provider.sh'}}";
+    std::fs::write(&source, yaml).unwrap();
+    let project = crate::compose::parse_normalized(yaml, &directory).unwrap();
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "--no-build", "web"])
+        .unwrap();
+    let matches = leaf_matches(&root);
+    let load = LoadOptions {
+        files: vec![source.clone()],
+        working_dir: Some(directory.clone()),
+        profiles: vec!["data".into()],
+        all_profiles: true,
+        ..Default::default()
+    };
+    let resolved = ResolvedProject {
+        name: ployz_core::ProjectName::parse("shop").unwrap(),
+        source: ProjectNameSource::CommandLine,
+    };
+    let options = ployz_core::PlanOptions {
+        selected: selected_attempts(&project, &["web".into()]).unwrap(),
+        ..Default::default()
+    };
+    std::fs::write(&source, yaml.replace("captured", "later-edit")).unwrap();
+    let (candidate, builds) = prepare_deploy(matches, &load, project, &resolved, options).unwrap();
+    assert!(builds.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(directory.join("calls")).unwrap(),
+        "x"
+    );
+    assert_eq!(candidate.source().requested_files, [source]);
+    assert_eq!(candidate.intent().project_name, resolved.name);
+    assert_eq!(
+        candidate.intent().prune_refusal(true),
+        Some(ployz_core::PruneRefusal::SelectedServices)
+    );
+    assert_eq!(
+        candidate
+            .intent()
+            .applied_names()
+            .into_iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>(),
+        ["db", "web"]
+    );
+    let web = candidate
+        .intent()
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(web.container.command, ["captured"]);
+    assert_eq!(web.container.environment.get("A").unwrap(), "resolved");
+    assert_eq!(web.container.environment.get("B").unwrap(), "resolved");
+    std::fs::remove_dir_all(directory).unwrap();
+}

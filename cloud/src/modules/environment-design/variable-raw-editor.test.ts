@@ -44,7 +44,7 @@ function plain(key: string, value: string, id = `id-${key}`): VariableRecord {
     id,
     serviceId: "service-1",
     variableGroupId: null,
-    configKeyId: `key-${id}`,
+
     key,
     description: null,
     exported: false,
@@ -59,7 +59,7 @@ function sealed(key: string, id = `id-${key}`): VariableRecord {
     id,
     serviceId: "service-1",
     variableGroupId: null,
-    configKeyId: `key-${id}`,
+
     key,
     description: null,
     exported: false,

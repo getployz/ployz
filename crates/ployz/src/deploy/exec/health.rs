@@ -82,7 +82,14 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
             let deadline = match classify_health(
                 &observed.runtime,
                 now,
-                monitor_deadline,
+                if matches!(
+                    observed.resolved_spec.container.healthcheck,
+                    Some(HealthcheckSpec::Http(_))
+                ) {
+                    health_deadline.unwrap_or(monitor_deadline)
+                } else {
+                    monitor_deadline
+                },
                 health_deadline,
                 HealthExpectation::Healthy,
             ) {
@@ -145,13 +152,12 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         .monitor_millis
         .map_or_else(default_health_monitor, Duration::from_millis);
     let started = Instant::now();
-    let deadline_ms = healthcheck_timeout(
-        spec.container
-            .healthcheck
-            .as_ref()
-            .and_then(HealthcheckSpec::as_configured),
-    )
-    .as_millis() as u64;
+    let deadline_ms = match spec.container.healthcheck.as_ref() {
+        Some(HealthcheckSpec::Http(check)) => u64::from(check.timeout_seconds) * 1_000,
+        other => {
+            healthcheck_timeout(other.and_then(HealthcheckSpec::as_configured)).as_millis() as u64
+        }
+    };
     progress.set_running(
         index,
         OperationPhase::WaitingForHealth {
@@ -164,7 +170,7 @@ pub(super) async fn monitor_container<C: MachineOperations>(
 
     if !matches!(
         spec.container.healthcheck,
-        Some(HealthcheckSpec::Configured(_))
+        Some(HealthcheckSpec::Configured(_) | HealthcheckSpec::Http(_))
     ) && !monitor.is_zero()
     {
         let deadline = started + monitor;
@@ -220,7 +226,11 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         let wake_deadline = match classify_health(
             &observed.runtime,
             now,
-            monitor_deadline,
+            if matches!(spec.container.healthcheck, Some(HealthcheckSpec::Http(_))) {
+                health_deadline.unwrap_or(monitor_deadline)
+            } else {
+                monitor_deadline
+            },
             health_deadline,
             HealthExpectation::ContainerReady,
         ) {
@@ -339,6 +349,9 @@ fn health_deadline_for(
     match spec {
         Some(HealthcheckSpec::Configured(configured)) => {
             Some(started + healthcheck_timeout(Some(configured)))
+        }
+        Some(HealthcheckSpec::Http(check)) => {
+            Some(started + Duration::from_secs(u64::from(check.timeout_seconds)))
         }
         Some(HealthcheckSpec::Disabled) => None,
         None => observed

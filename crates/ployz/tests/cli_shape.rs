@@ -8,6 +8,7 @@ use clap_complete::{Shell, generate};
 #[test]
 fn listing_json_output_accepts_only_json_in_long_and_short_forms() {
     let paths: &[&[&str]] = &[
+        &["changes"],
         &["ls"],
         &["ps"],
         &["service", "ls"],

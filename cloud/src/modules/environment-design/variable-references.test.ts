@@ -10,7 +10,7 @@ function plain(id: string, key: string, value: string): VariableRecord {
     id,
     serviceId: "svc",
     variableGroupId: null,
-    configKeyId: "ck",
+
     key,
     description: null,
     exported: false,

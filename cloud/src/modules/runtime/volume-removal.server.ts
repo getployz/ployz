@@ -1,3 +1,5 @@
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
+import { getVolumeResource } from "#/modules/environment-design/resource-repository.server";
 import "@tanstack/react-start/server-only";
 
 import type { MachineId } from "@ployz/sdk";
@@ -61,7 +63,7 @@ type EnvironmentAccess = {
 type VolumeResource = EnvironmentAccess & {
   readonly resourceId: string;
   readonly resourceName: string;
-  readonly deletedAt: Date | null;
+  readonly isAuthored: boolean;
 };
 
 const requireEnvironmentAccess = Effect.fn("VolumeRemoval.requireEnvironment")(
@@ -100,36 +102,10 @@ const requireEnvironmentAccess = Effect.fn("VolumeRemoval.requireEnvironment")(
 const requireTombstonedVolume = Effect.fn("VolumeRemoval.requireVolume")(
   function* (actor: Actor, input: VolumeResourceInput) {
     const access = yield* requireEnvironmentAccess(actor, input);
-    const database = yield* Database;
-    const rows = yield* database.drizzle
-      .select({
-        resourceId: schemaEnvironmentResource.id,
-        resourceName: schemaEnvironmentResource.name,
-        deletedAt: schemaEnvironmentResource.deletedAt,
-      })
-      .from(schemaEnvironmentResource)
-      .where(
-        and(
-          eq(schemaEnvironmentResource.id, input.resourceId),
-          eq(schemaEnvironmentResource.environmentId, access.environmentId),
-          eq(schemaEnvironmentResource.organizationId, access.organizationId),
-          eq(schemaEnvironmentResource.implementationType, "volume"),
-        ),
-      )
-      .limit(1);
-    const resource = rows[0];
-    if (resource === undefined) {
-      return yield* new NotFound({
-        message: "The volume was not found.",
-      });
-    }
-    if (resource.deletedAt === null) {
-      return yield* new Validation({
-        field: "resourceId",
-        message: "Stage deletion before removing volume data.",
-      });
-    }
-    return { ...access, ...resource } satisfies VolumeResource;
+    const view = yield* getVolumeResource(access.environmentId, input.resourceId);
+    if (!view) return yield* new NotFound({ message: "The volume was not found." });
+    if (!view.resource.deletedAt) return yield* new Validation({ field: "resourceId", message: "Stage deletion before removing volume data." });
+    return { ...access, resourceId: input.resourceId, resourceName: view.resource.name, isAuthored: false } satisfies VolumeResource;
   },
 );
 
@@ -346,7 +322,7 @@ export const reconcileVolumeRemoveTombstoneActivity = Effect.fn(
           resourceId: schemaEnvironmentResource.id,
           environmentId: schemaEnvironmentResource.environmentId,
           implementationType: schemaEnvironmentResource.implementationType,
-          deletedAt: schemaEnvironmentResource.deletedAt,
+          isAuthored: volumeIsAuthored,
         })
         .from(schemaEnvironmentResource)
         .where(
@@ -360,7 +336,7 @@ export const reconcileVolumeRemoveTombstoneActivity = Effect.fn(
       if (
         authority === undefined ||
         authority.implementationType !== "volume" ||
-        authority.deletedAt === null
+        authority.isAuthored
       ) {
         return;
       }
@@ -379,15 +355,7 @@ export const reconcileVolumeRemoveTombstoneActivity = Effect.fn(
             ),
           ),
         );
-      yield* transaction.drizzle
-        .delete(schemaEnvironmentResource)
-        .where(
-          and(
-            eq(schemaEnvironmentResource.id, authority.resourceId),
-            eq(schemaEnvironmentResource.environmentId, authority.environmentId),
-            eq(schemaEnvironmentResource.implementationType, "volume"),
-          ),
-        );
+
     }),
   );
 });

@@ -1,11 +1,16 @@
 mod build;
+mod build_inputs;
+mod capture;
 mod convert;
 mod loader;
 mod model;
 mod ports;
 mod secrets;
 
-pub use build::{BuildOptions, BuildService, execute_build, plan_build};
+pub use build::{
+    BuildOptions, BuildService, CapturedBuild, capture_build, execute_build, plan_build,
+};
+pub use capture::{CapturedCompose, ComposeSource};
 pub(crate) use convert::duration_millis;
 pub use loader::parse_normalized;
 pub use loader::{LoadOptions, load_project};
