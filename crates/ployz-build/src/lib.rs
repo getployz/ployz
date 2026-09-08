@@ -483,7 +483,13 @@ impl<'a> Docker<'a> {
             return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         };
         if !status.success() {
-            let diagnostic = std::fs::read_to_string(&diagnosis).unwrap_or_default();
+            // Only a captured command has a diagnosis this side can read back.
+            // Inherited output already reached the operator, and the file
+            // still holds whatever the previous captured command wrote.
+            let diagnostic = match streams {
+                Streams::Captured => std::fs::read_to_string(&diagnosis).unwrap_or_default(),
+                Streams::Inherited => String::new(),
+            };
             let diagnostic = diagnostic.trim();
             return Err(BuildError::Docker {
                 action,
@@ -532,6 +538,66 @@ fn wait_bounded(child: &mut Child, budget: Duration) -> std::io::Result<Option<E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write an executable stand-in and wait until it can be executed. A
+    /// concurrently forked process can briefly hold a just-written program
+    /// open, which makes the exec fail until that fork execs or exits.
+    pub(crate) fn executable(path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for _ in 0..100 {
+            match Command::new(path).arg("--ready").status() {
+                Ok(_) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("stand-in {}: {error}", path.display()),
+            }
+        }
+        panic!("stand-in {} never became executable", path.display());
+    }
+
+    #[test]
+    fn a_failed_build_is_not_blamed_on_an_earlier_command() {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-diagnosis-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let program = directory.join("docker");
+        executable(
+            &program,
+            "#!/bin/sh\ncase \"$1\" in\n  --ready) exit 0 ;;\n  captured) printf 'the earlier command failed\\n' >&2; exit 1 ;;\nesac\nexit 3\n",
+        );
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: &directory,
+            deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
+        };
+
+        // A captured command carries its own diagnosis.
+        let captured = match docker.run("an earlier step", &["captured"], Streams::Captured) {
+            Ok(output) => panic!("the stand-in reported success: {output}"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            captured.contains("the earlier command failed"),
+            "{captured}"
+        );
+
+        // The build's own output already reached the operator, so its failure
+        // reports its status rather than the earlier command's diagnosis.
+        let build = match docker.run("the build", &["build"], Streams::Inherited) {
+            Ok(output) => panic!("the stand-in reported success: {output}"),
+            Err(error) => error.to_string(),
+        };
+        assert!(build.contains("exited with"), "{build}");
+        assert!(!build.contains("the earlier command failed"), "{build}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     fn target(name: &str, platform: Option<&str>) -> Target {
         Target {
