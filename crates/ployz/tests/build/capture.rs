@@ -156,7 +156,7 @@ fn resolved_file_credentials_stay_private_across_captures() {
 }
 
 #[test]
-fn builds_use_captured_explicit_registry_credentials() {
+fn builds_use_captured_explicit_registry_credentials_and_proxies() {
     let root = std::env::temp_dir().join(format!("ployz-build-auth-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("auth")).unwrap();
@@ -172,7 +172,7 @@ fn builds_use_captured_explicit_registry_credentials() {
         format!("DOCKER_CONFIG={}\n", root.join("auth").display()),
     )
     .unwrap();
-    let credentials = r#"{"auths":{"example.test":{"auth":"cHJpdmF0ZTp0b2tlbg=="}}}"#;
+    let credentials = r#"{"auths":{"example.test":{"auth":"cHJpdmF0ZTp0b2tlbg=="}},"proxies":{"default":{"httpProxy":"http://proxy.test:3128","noProxy":"localhost"},"ssh://builder@host":{"httpsProxy":"http://private:token@proxy.test:3128"}}}"#;
     fs::write(root.join("auth/config.json"), credentials).unwrap();
     let mut project = load_project(&LoadOptions {
         working_dir: Some(root.clone()),
@@ -464,6 +464,50 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
             config["services"]["api"]["build"]["platforms"][0].as_str(),
             Some(expected)
         );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ssh_docker_hosts_keep_the_captured_agent_socket() {
+    let root = std::env::temp_dir().join(format!("ployz-build-agent-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        "services: {api: {build: ./src}}\n",
+    )
+    .unwrap();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    let options = BuildOptions {
+        output: Output::Validate,
+        ..Default::default()
+    };
+    // Process environment takes precedence over the project's .env file.
+    let socket =
+        std::env::var("SSH_AUTH_SOCK").unwrap_or_else(|_| "/tmp/captured-agent.sock".into());
+    for (host, expected) in [
+        ("ssh://builder@host", socket.as_str()),
+        ("unix:///var/run/docker.sock", ""),
+    ] {
+        fs::write(
+            root.join(".env"),
+            format!("DOCKER_HOST={host}\nSSH_AUTH_SOCK=/tmp/captured-agent.sock\n"),
+        )
+        .unwrap();
+        let mut project = load_project(&LoadOptions {
+            working_dir: Some(root.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let plan = plan_build(&project, &options).unwrap();
+        let build = capture_build(&plan, &options, &mut project).unwrap();
+        fs::write(root.join(".env"), "SSH_AUTH_SOCK=/tmp/changed-agent.sock\n").unwrap();
+        build.execute(Some(&docker)).unwrap();
+        let environment = fs::read_to_string(root.join("docker-environment")).unwrap();
+        assert_eq!(environment.lines().nth(2), Some(expected), "{host}");
     }
     fs::remove_dir_all(root).unwrap();
 }

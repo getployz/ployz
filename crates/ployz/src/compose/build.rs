@@ -318,7 +318,11 @@ pub fn capture_build(
                         | "no_proxy"
                         | "TERM"
                         | "NO_COLOR"
-                )
+                ) || (key.as_str() == "SSH_AUTH_SOCK"
+                    && project
+                        .environment
+                        .get("DOCKER_HOST")
+                        .is_some_and(|host| host.starts_with("ssh://")))
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
@@ -520,11 +524,11 @@ fn refuse_unpassable_settings(
                 .split(',')
                 .find_map(|field| field.trim().strip_prefix("type="))
                 .map(|kind| kind.trim_end_matches('\\'));
-            if kind.is_some_and(|kind| kind != "registry")
+            if kind.is_some_and(|kind| !matches!(kind, "registry" | "inline"))
                 || (kind.is_none() && entry.contains('='))
             {
                 return Err(invalid_build(&format!(
-                    "service '{service}' sets host-specific build.{setting}; use an explicit registry cache"
+                    "service '{service}' sets host-specific build.{setting}; use a registry or inline cache"
                 )));
             }
         }

@@ -259,7 +259,7 @@ impl BuildInputs {
         Ok(path)
     }
 
-    /// Snapshot only explicitly supplied registry auth. Never consult the host's
+    /// Snapshot explicitly supplied registry auth and proxies. Never consult the host's
     /// default Docker login, credential helpers, contexts, or plugin settings.
     ///
     /// # Errors
@@ -270,7 +270,7 @@ impl BuildInputs {
         environment: &BTreeMap<String, String>,
         directory: &Path,
     ) -> Result<(), ComposeError> {
-        let mut config = serde_json::json!({});
+        let mut config = serde_json::Map::new();
         if let Some(path) = environment
             .get("DOCKER_CONFIG")
             .filter(|path| !path.is_empty())
@@ -292,8 +292,10 @@ impl BuildInputs {
             {
                 return Err(ComposeError::Invalid("DOCKER_CONFIG credential helpers are host-specific; supply explicit registry auths".into()));
             }
-            if let Some(auths) = supplied.get("auths") {
-                config = serde_json::json!({"auths": auths});
+            for key in ["auths", "proxies"] {
+                if let Some(value) = supplied.get(key) {
+                    config.insert(key.into(), value.clone());
+                }
             }
         }
         let directory = self.root.join("private/docker");

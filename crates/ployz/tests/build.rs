@@ -478,13 +478,13 @@ fn content_holding_several_platforms_is_refused_however_it_was_requested() {
 }
 
 #[test]
-fn a_registry_cache_still_reaches_buildkit() {
+fn registry_and_inline_caches_still_reach_buildkit() {
     let root = std::env::temp_dir().join(format!("ployz-build-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
     let mut project = parse_normalized(
-        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache']}}}\n",
+        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache'], cache_to: ['type=inline']}}}\n",
         &root,
     )
     .unwrap();
