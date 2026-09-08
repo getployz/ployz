@@ -278,11 +278,14 @@ impl BuildInputs {
             .filter(|path| !path.is_empty())
         {
             let path = directory.join(path).join("config.json");
-            let captured = self.private_file(&path)?;
-            let supplied: serde_json::Value = serde_json::from_slice(
-                &fs::read(captured).map_err(input_error)?,
-            )
-            .map_err(|_| ComposeError::Invalid("DOCKER_CONFIG/config.json is invalid".into()))?;
+            let supplied: serde_json::Value = if path.try_exists().map_err(input_error)? {
+                let captured = self.private_file(&path)?;
+                serde_json::from_slice(&fs::read(captured).map_err(input_error)?).map_err(|_| {
+                    ComposeError::Invalid("DOCKER_CONFIG/config.json is invalid".into())
+                })?
+            } else {
+                serde_json::json!({})
+            };
             if supplied
                 .get("currentContext")
                 .and_then(serde_json::Value::as_str)
@@ -623,7 +626,10 @@ mod tests {
             r#"{"cliPluginsExtraDirs":["extra-plugins"]}"#,
         )
         .unwrap();
-        for explicit in [false, true] {
+        for (explicit, present) in [(false, true), (true, true), (true, false)] {
+            if !present {
+                fs::remove_file(fixture.root.join("config.json")).unwrap();
+            }
             let mut environment =
                 BTreeMap::from([("HOME".into(), fixture.root.to_string_lossy().into_owned())]);
             if explicit {
@@ -638,11 +644,13 @@ mod tests {
                 &fs::read(inputs.root.join("private/docker/config.json")).unwrap(),
             )
             .unwrap();
-            let expected = if explicit {
+            let expected = if explicit && present {
                 vec![
                     fixture.root.join("extra-plugins"),
                     fixture.root.join("cli-plugins"),
                 ]
+            } else if explicit {
+                vec![fixture.root.join("cli-plugins")]
             } else {
                 vec![fixture.root.join(".docker/cli-plugins")]
             };

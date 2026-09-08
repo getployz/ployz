@@ -134,6 +134,10 @@ pub fn capture_build(
         }
     }
     inputs.docker_config(&project.environment, &project.working_dir)?;
+    let mut ssh_agent = project
+        .environment
+        .get("DOCKER_HOST")
+        .is_some_and(|host| host.starts_with("ssh://"));
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
     let mut targets = Vec::new();
@@ -184,6 +188,7 @@ pub fn capture_build(
             .and_then(Value::as_str)
             .unwrap_or(".")
             .to_owned();
+        ssh_agent |= is_ssh_context(&context);
         let dockerfile = (!build.contains_key(Value::String("dockerfile_inline".into()))
             && !is_remote_context(&context))
         .then(|| {
@@ -221,6 +226,7 @@ pub fn capture_build(
                         let source = context
                             .as_str()
                             .ok_or_else(|| invalid_build("invalid additional context"))?;
+                        ssh_agent |= is_ssh_context(source);
                         *context = Value::String(capture_context(
                             source,
                             &project.working_dir,
@@ -235,6 +241,7 @@ pub fn capture_build(
                             .as_str()
                             .and_then(|value| value.split_once('='))
                             .ok_or_else(|| invalid_build("invalid additional context"))?;
+                        ssh_agent |= is_ssh_context(source);
                         *context = Value::String(format!(
                             "{name}={}",
                             capture_context(source, &project.working_dir, None, &mut inputs)?
@@ -318,11 +325,7 @@ pub fn capture_build(
                         | "no_proxy"
                         | "TERM"
                         | "NO_COLOR"
-                ) || (key.as_str() == "SSH_AUTH_SOCK"
-                    && project
-                        .environment
-                        .get("DOCKER_HOST")
-                        .is_some_and(|host| host.starts_with("ssh://")))
+                ) || (key.as_str() == "SSH_AUTH_SOCK" && ssh_agent)
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
@@ -670,6 +673,10 @@ fn ssh_paths(key: &Value) -> Result<(&str, &str), ComposeError> {
 
 fn is_remote_context(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@") || source.starts_with("service:")
+}
+
+fn is_ssh_context(source: &str) -> bool {
+    source.starts_with("ssh://") || source.starts_with("git@")
 }
 
 fn invalid_build(message: &str) -> ComposeError {

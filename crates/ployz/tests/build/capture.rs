@@ -469,16 +469,11 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
 }
 
 #[test]
-fn ssh_docker_hosts_keep_the_captured_agent_socket() {
+fn ssh_docker_hosts_and_git_contexts_keep_the_captured_agent_socket() {
     let root = std::env::temp_dir().join(format!("ployz-build-agent-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
-    fs::write(
-        root.join("compose.yaml"),
-        "services: {api: {build: ./src}}\n",
-    )
-    .unwrap();
     let docker = root.join("docker");
     write_docker(&docker, &root);
     let options = BuildOptions {
@@ -488,10 +483,41 @@ fn ssh_docker_hosts_keep_the_captured_agent_socket() {
     // Process environment takes precedence over the project's .env file.
     let socket =
         std::env::var("SSH_AUTH_SOCK").unwrap_or_else(|_| "/tmp/captured-agent.sock".into());
-    for (host, expected) in [
-        ("ssh://builder@host", socket.as_str()),
-        ("unix:///var/run/docker.sock", ""),
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let remote = format!("ssh://git@example.test/repo.git#{commit}");
+    let scp = format!("git@example.test:repo.git#{commit}");
+    for (host, context, additional, expected) in [
+        (
+            "ssh://builder@host",
+            "./src",
+            String::new(),
+            socket.as_str(),
+        ),
+        ("unix:///var/run/docker.sock", "./src", String::new(), ""),
+        (
+            "unix:///var/run/docker.sock",
+            remote.as_str(),
+            String::new(),
+            socket.as_str(),
+        ),
+        (
+            "unix:///var/run/docker.sock",
+            scp.as_str(),
+            String::new(),
+            socket.as_str(),
+        ),
+        (
+            "unix:///var/run/docker.sock",
+            "./src",
+            format!(", additional_contexts: {{repo: '{remote}'}}"),
+            socket.as_str(),
+        ),
     ] {
+        fs::write(
+            root.join("compose.yaml"),
+            format!("services:\n  api:\n    build: {{context: '{context}'{additional}}}\n"),
+        )
+        .unwrap();
         fs::write(
             root.join(".env"),
             format!("DOCKER_HOST={host}\nSSH_AUTH_SOCK=/tmp/captured-agent.sock\n"),
