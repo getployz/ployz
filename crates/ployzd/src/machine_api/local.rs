@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -782,14 +782,9 @@ impl MachineRpc for MachineService {
         let generated = std::fs::read_to_string(&path);
         match generated {
             Ok(config) => respond(IngressProxyConfig { config }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => respond(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!(
-                    "Ingress Proxy configuration {} does not exist",
-                    path.display()
-                ),
-                details: Value::Null,
-            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                respond(ingress_config_missing(&path))
+            }
             Err(error) => Err(Status::internal(format!(
                 "read Ingress Proxy configuration {}: {error}",
                 path.display()
@@ -981,22 +976,45 @@ fn unavailable(message: &str) -> RpcError {
     }
 }
 
+/// The generated Ingress Proxy configuration is absent; `details.path` names the file.
+fn ingress_config_missing(path: &Path) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::NotFound,
+        message: format!(
+            "Ingress Proxy configuration {} does not exist",
+            path.display()
+        ),
+        details: serde_json::json!({ "path": path.display().to_string() }),
+    }
+}
+
 fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
+    use crate::hosted_dns::Error;
     let (code, details) = match error {
-        crate::hosted_dns::Error::AlreadyReserved => (RpcErrorCode::Conflict, Value::Null),
-        crate::hosted_dns::Error::NotFound => (RpcErrorCode::NotFound, Value::Null),
-        crate::hosted_dns::Error::AuthNoDomain => (
+        Error::AlreadyReserved => (RpcErrorCode::Conflict, Value::Null),
+        Error::NotFound => (RpcErrorCode::NotFound, Value::Null),
+        Error::AuthNoDomain => (
             RpcErrorCode::Unauthenticated,
             serde_json::json!({ "no_domain": true }),
         ),
-        crate::hosted_dns::Error::Authentication => (RpcErrorCode::Unauthenticated, Value::Null),
-        crate::hosted_dns::Error::Store(_)
-        | crate::hosted_dns::Error::Http(_)
-        | crate::hosted_dns::Error::Json(_)
-        | crate::hosted_dns::Error::InvalidEndpoint(_)
-        | crate::hosted_dns::Error::InvalidReservation(_)
-        | crate::hosted_dns::Error::InvalidReservationCleared
-        | crate::hosted_dns::Error::Status(_, _) => (RpcErrorCode::Internal, Value::Null),
+        Error::Authentication => (RpcErrorCode::Unauthenticated, Value::Null),
+        Error::InvalidEndpoint(_) => (RpcErrorCode::InvalidArgument, Value::Null),
+        // InvalidReservation is an unusable upstream response, not caller input; a
+        // malformed stored record surfaces as corrosion::InvalidDomainReservation instead.
+        Error::Http(_) | Error::Json(_) | Error::InvalidReservation(_) => {
+            (RpcErrorCode::Unavailable, Value::Null)
+        }
+        // Hosted DNS speaks HTTP; its status class is the taxonomy kind.
+        Error::Status(status, _) => (
+            match status {
+                403 => RpcErrorCode::Unauthenticated,
+                404 => RpcErrorCode::NotFound,
+                409 => RpcErrorCode::Conflict,
+                _ => RpcErrorCode::Unavailable,
+            },
+            serde_json::json!({ "status": status }),
+        ),
+        Error::Store(_) | Error::InvalidReservationCleared => (RpcErrorCode::Internal, Value::Null),
     };
     RpcError {
         code,
@@ -1009,7 +1027,10 @@ fn store_error(error: StoreError) -> RpcError {
     let code = match error {
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
-        | StoreError::NotParticipating => RpcErrorCode::Conflict,
+        | StoreError::NotParticipating
+        | StoreError::NotResetting
+        | StoreError::NotJoining
+        | StoreError::AlreadyRunning(_) => RpcErrorCode::Conflict,
         StoreError::MissingEndpoints
         | StoreError::MissingPeers
         | StoreError::KeyMismatch
@@ -1022,9 +1043,6 @@ fn store_error(error: StoreError) -> RpcError {
         }
         StoreError::Io(_)
         | StoreError::Json(_)
-        | StoreError::NotResetting
-        | StoreError::NotJoining
-        | StoreError::AlreadyRunning(_)
         | StoreError::UnsafeDataDirectory(_)
         | StoreError::UnownedDataDirectory(_)
         | StoreError::OwnershipLost(_)

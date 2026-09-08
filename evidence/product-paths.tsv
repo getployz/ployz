@@ -23,7 +23,7 @@ exec-logs	-	-	-	crates/ployz/tests/operator_cluster.rs::exec_service_logs_and_ma
 installer	scripts/test-cli-installer.sh	-	-	-	-
 daemon-install	scripts/test-daemon-lifecycle.sh	-	-	-	-
 sdk-payloads	scripts/check-sdk-types.sh	crates/ployz/tests/sdk_payloads.rs::generated_declarations_match_checked_in_file	-	-	-
-sdk-rpc-errors	gap	-	-	-	-
+sdk-rpc-errors	crates/ployzd/src/machine_api/local_tests.rs::hosted_dns_codes_follow_who_caused_the_failure	-	-	-	-
 sdk-runtime-watch	crates/ployz-core/tests/runtime_watch.rs::runtime_watch_services_follow_container_mutations	crates/ployz/tests/connect/sdk_watch.rs::lost_relay_tunnel_asks_the_caller_to_reconnect	-	-	-
 machine-local-record	crates/ployzd/tests/machine_record.rs::local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads	-	-	-	-
 machine-local-reset	crates/ployzd/src/machine/local_machine/container.rs::cancelled_create_finishes_before_reset_cleanup	-	-	-	-

@@ -727,13 +727,15 @@ impl Error {
             })
             | Self::VolumeShapeMismatch { .. }
             | Self::VolumeInUse { .. }
-            | Self::SlotNameOccupied(_) => RpcErrorCode::Conflict,
-            Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
-                RpcErrorCode::Unavailable
-            }
-            Self::ProvisionedStorageUnsupported | Self::ServicePlacementMismatch => {
-                RpcErrorCode::Conflict
-            }
+            | Self::SlotNameOccupied(_)
+            | Self::ServicePlacementMismatch => RpcErrorCode::Conflict,
+            Self::ProvisionedStorageUnsupported => RpcErrorCode::Unsupported,
+            Self::VolumeCreatedButUnverified { .. }
+            | Self::StorageUnobservable
+            | Self::EventStreamClosed
+            // A peer pull is idempotent, so a rerun is safe whatever docker printed.
+            | Self::PeerPull(_)
+            | Self::UnregistryNotReady { .. } => RpcErrorCode::Unavailable,
             Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
@@ -750,11 +752,8 @@ impl Error {
             | Self::Network(_)
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
-            | Self::EventStreamClosed
             | Self::LocalStorePoisoned
             | Self::Clock(_)
-            | Self::PeerPull(_)
-            | Self::UnregistryNotReady { .. }
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }
             | Self::Observation(_) => RpcErrorCode::Internal,
@@ -795,6 +794,30 @@ mod tests {
         ImageManifestSummary, ImageManifestSummaryImageData, ImageManifestSummaryKindEnum,
         OciPlatform,
     };
+
+    #[test]
+    fn runtime_failures_are_coded_by_kind() {
+        for (error, code) in [
+            (Error::EventStreamClosed, RpcErrorCode::Unavailable),
+            (
+                Error::PeerPull("manifest unknown".into()),
+                RpcErrorCode::Unavailable,
+            ),
+            (
+                Error::UnregistryNotReady {
+                    address: "10.0.0.1:5000".parse().unwrap(),
+                    timeout: Duration::from_secs(5),
+                },
+                RpcErrorCode::Unavailable,
+            ),
+            (
+                Error::ProvisionedStorageUnsupported,
+                RpcErrorCode::Unsupported,
+            ),
+        ] {
+            assert_eq!(error.rpc_code(), code);
+        }
+    }
 
     #[test]
     fn image_projection_keeps_only_available_runnable_platforms_sorted() {
