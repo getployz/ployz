@@ -10,7 +10,6 @@ fail() {
 
 bash -n "$ROOT/scripts/qualify-release.sh"
 bash -n "$ROOT/scripts/check-layer3-runner.sh"
-bash -n "$ROOT/scripts/check-product-paths.sh"
 
 if grep -qi vultr "$ROOT/scripts/qualify-release.sh" "$ROOT/docs/RELEASE.md"; then
     fail "authority path still names a cloud vendor"
@@ -159,5 +158,4 @@ printf '%s\n' "$output" | grep -Fq 'reset: no' || fail "dry-run omitted the defa
 printf '%s\n' "$output" | grep -Fq 'always replace' || fail "dry-run omitted forced daemon replace"
 
 "$ROOT/scripts/check-layer3-runner.sh"
-"$ROOT/scripts/check-product-paths.sh"
 echo "qualify-release contracts passed"

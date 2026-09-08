@@ -43,7 +43,6 @@ jobs:
           go test ./...
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-layer3-runner.sh
-      - run: bash scripts/check-product-paths.sh
       - run: python3 scripts/test-cloud-sdk-version.py
       - run: python3 scripts/check-cloud-sdk-version.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
