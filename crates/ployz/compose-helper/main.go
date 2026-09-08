@@ -18,13 +18,14 @@ import (
 type object = map[string]any
 
 type request struct {
-	Version     int      `json:"version"`
-	Files       []string `json:"files"`
-	Profiles    []string `json:"profiles"`
-	AllProfiles bool     `json:"all_profiles"`
-	WorkingDir  string   `json:"working_dir"`
-	Port        *string  `json:"port"`
-	YAML        string   `json:"yaml"`
+	BuildContext *contextRequest `json:"build_context"`
+	Version      int             `json:"version"`
+	Files        []string        `json:"files"`
+	Profiles     []string        `json:"profiles"`
+	AllProfiles  bool            `json:"all_profiles"`
+	WorkingDir   string          `json:"working_dir"`
+	Port         *string         `json:"port"`
+	YAML         string          `json:"yaml"`
 }
 
 func main() {
@@ -35,7 +36,9 @@ func main() {
 		err = fmt.Errorf("unsupported Compose helper protocol %d", req.Version)
 	}
 	if err == nil {
-		if req.Port != nil {
+		if req.BuildContext != nil {
+			result["result"], err = contextFiles(*req.BuildContext)
+		} else if req.Port != nil {
 			result["result"], err = extensionPort(*req.Port)
 		} else {
 			result["result"], err = run(context.Background(), req)

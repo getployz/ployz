@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/compose-spec/compose-go/v2 v2.15.0
 	github.com/distribution/reference v0.5.0
+	github.com/moby/patternmatcher v0.6.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 

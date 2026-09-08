@@ -1,5 +1,5 @@
 path	rung1	rung2	rung3	rung4	rung5
-compose-captured-build	-	crates/ployz/tests/build.rs::captured_build_preserves_sources_configuration_and_builder_flags	crates/ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	-	-
+compose-captured-build	crates/ployz/src/compose/build_inputs.rs::ignored_special_files_do_not_enter_capture	crates/ployz/tests/build.rs::captured_build_preserves_sources_configuration_and_builder_flags	crates/ployz/tests/compose_cli.rs::compose_build_accepts_volumes_declared_only_in_x_volumes	-	-
 compose-edit-during-deploy	-	crates/ployz/tests/deploy_client.rs::captured_a_deploys_while_edited_b_is_reviewed_and_cancellation_retains_unattempted_work	crates/ployz/tests/changes_cli.rs::changes_cli_selects_compose_and_reports_human_and_json_without_side_effects	-	-
 cloud-authored-environment	crates/ployz-core/tests/environment_intent.rs::compilation_preserves_owner_references_precedence_and_encrypted_values	-	-	-	-
 cloud-change-set	crates/ployz-core/tests/environment_changes.rs::presence_and_setting_ownership_preserve_each_comparison_role	-	-	-	-
@@ -87,3 +87,4 @@ cloud-authored-setting-restore	cloud/src/modules/environment-design/working-sett
 cloud-node-introduction-history	cloud/src/modules/environment-design/working-document-restore.server.postgres.test.ts	-	-	-	-
 cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
 cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-
+compose-ignored-tree-pruning	crates/ployz/compose-helper/build_context_test.go::TestExceptionCanMatchDescendant	-	-	-	-

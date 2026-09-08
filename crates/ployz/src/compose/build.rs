@@ -135,16 +135,24 @@ pub fn capture_build(
             .and_then(Value::as_str)
             .unwrap_or(".")
             .to_owned();
-        let captured = capture_context(&context, &project.working_dir, &mut inputs)?;
+        let dockerfile = (!build.contains_key(Value::String("dockerfile_inline".into()))
+            && !is_remote_context(&context))
+        .then(|| {
+            project.working_dir.join(&context).join(
+                build
+                    .get(Value::String("dockerfile".into()))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Dockerfile"),
+            )
+        });
+        let captured = capture_context(
+            &context,
+            &project.working_dir,
+            dockerfile.as_deref(),
+            &mut inputs,
+        )?;
         build.insert(Value::String("context".into()), Value::String(captured));
-        if !build.contains_key(Value::String("dockerfile_inline".into()))
-            && !is_remote_context(&context)
-        {
-            let dockerfile = build
-                .get(Value::String("dockerfile".into()))
-                .and_then(Value::as_str)
-                .unwrap_or("Dockerfile");
-            let source = project.working_dir.join(&context).join(dockerfile);
+        if let Some(source) = dockerfile {
             build.insert(
                 Value::String("dockerfile".into()),
                 Value::String(inputs.dockerfile(&source)?.to_string_lossy().into_owned()),
@@ -160,6 +168,7 @@ pub fn capture_build(
                         *context = Value::String(capture_context(
                             source,
                             &project.working_dir,
+                            None,
                             &mut inputs,
                         )?);
                     }
@@ -172,7 +181,7 @@ pub fn capture_build(
                             .ok_or_else(|| invalid_build("invalid additional context"))?;
                         *context = Value::String(format!(
                             "{name}={}",
-                            capture_context(source, &project.working_dir, &mut inputs)?
+                            capture_context(source, &project.working_dir, None, &mut inputs)?
                         ));
                     }
                 }
@@ -311,6 +320,7 @@ pub fn execute_build(
 fn capture_context(
     source: &str,
     directory: &Path,
+    dockerfile: Option<&Path>,
     inputs: &mut BuildInputs,
 ) -> Result<String, ComposeError> {
     if source.starts_with("service:") {
@@ -334,7 +344,7 @@ fn capture_context(
         ));
     }
     Ok(inputs
-        .capture(&directory.join(source))?
+        .context(&directory.join(source), dockerfile)?
         .to_string_lossy()
         .into_owned())
 }

@@ -151,6 +151,12 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     fs::write(root.join("shared/data"), "original shared").unwrap();
     fs::write(root.join("Dockerfile"), "FROM scratch\nCOPY . /app\n").unwrap();
     fs::write(root.join("Dockerfile.dockerignore"), "hidden\n").unwrap();
+    fs::write(root.join("api/.dockerignore"), "source\n").unwrap();
+    fs::create_dir(root.join("api/hidden")).unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(root.join("api/hidden/socket")).unwrap();
+    fs::write(root.join("shared/.dockerignore"), "socket\n").unwrap();
+    let _shared_socket =
+        std::os::unix::net::UnixListener::bind(root.join("shared/socket")).unwrap();
     fs::write(root.join("key"), "private-key").unwrap();
     fs::write(
         &docker,
@@ -198,6 +204,7 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     let config: serde_norway::Value = serde_norway::from_str(&override_yaml).unwrap();
     let captured_build = &config["services"]["api"]["build"];
     let context = std::path::Path::new(captured_build["context"].as_str().unwrap());
+    assert!(!context.join("hidden").exists());
     assert_eq!(
         fs::read_to_string(context.join("source")).unwrap(),
         "original source"
@@ -222,6 +229,7 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
             .as_str()
             .unwrap(),
     );
+    assert!(!shared.join("socket").exists());
     assert_eq!(
         fs::read_to_string(shared.join("data")).unwrap(),
         "original shared"
