@@ -800,21 +800,57 @@ impl ReplicatedStore {
             .collect()
     }
 
-    pub async fn has_known_missing_changes(&self) -> Result<bool, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT EXISTS (SELECT 1 FROM __corro_bookkeeping_gaps) AS has_gaps",
-                [],
-            ))
-            .await?;
-        match query.rows(["has_gaps"])?.as_slice() {
-            [[Value::Number(value)]] => value
-                .as_u64()
-                .filter(|value| *value <= 1)
-                .map(|value| value == 1)
-                .ok_or_else(|| Error::Protocol("invalid gap status".into())),
-            _ => Err(Error::Protocol("invalid gap status row".into())),
+    /// Checks replication bookkeeping through the target in one SQLite snapshot.
+    /// Superseded versions can complete before replacement data arrives; callers
+    /// requiring a particular record or condition must still verify it.
+    ///
+    /// # Errors
+    /// Returns an error for invalid targets, failed store queries, or malformed responses.
+    pub(crate) async fn has_reached_version(
+        &self,
+        target: &BTreeMap<String, i64>,
+    ) -> Result<bool, Error> {
+        let mut placeholders = Vec::with_capacity(target.len());
+        let mut params = Vec::with_capacity(target.len() * 2);
+        for (actor, version) in target {
+            let bytes = hex::decode(actor.replace('-', ""))
+                .map_err(|_| Error::InvalidCatchUpTarget("invalid actor ID"))?;
+            if bytes.len() != 16 || *version < 0 {
+                return Err(Error::InvalidCatchUpTarget(
+                    "actor must be 16 bytes and version must be nonnegative",
+                ));
+            }
+            if *version == 0 {
+                continue;
+            }
+            placeholders.push("(?, ?)");
+            params.extend([json!(bytes), json!(version)]);
+        }
+        if params.is_empty() {
+            return Ok(true);
+        }
+        let query = format!(
+            "WITH target(actor_id, version) AS (VALUES {})
+             SELECT NOT EXISTS (
+                 SELECT 1 FROM target
+                 LEFT JOIN crsql_db_versions AS current ON current.site_id = target.actor_id
+                 WHERE COALESCE(current.db_version, 0) < target.version
+                 OR EXISTS (
+                     SELECT 1 FROM __corro_bookkeeping_gaps
+                     WHERE actor_id = target.actor_id AND start <= target.version
+                 )
+                 OR EXISTS (
+                     SELECT 1 FROM __corro_seq_bookkeeping
+                     WHERE site_id = target.actor_id AND db_version <= target.version
+                 )
+             ) AS reached",
+            placeholders.join(", ")
+        );
+        let result = self.api.query(Statement::new(query, params)).await?;
+        match result.rows(["reached"])?.as_slice() {
+            [[value]] if value.as_i64() == Some(0) => Ok(false),
+            [[value]] if value.as_i64() == Some(1) => Ok(true),
+            _ => Err(Error::Protocol("invalid replication status row".into())),
         }
     }
 }

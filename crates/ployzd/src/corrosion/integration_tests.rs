@@ -111,7 +111,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         )])
         .await
         .unwrap();
-    assert!(store.has_known_missing_changes().await.unwrap());
+    assert!(!store.has_reached_version(&target).await.unwrap());
     assert!(
         tokio::time::timeout(
             Duration::from_millis(600),

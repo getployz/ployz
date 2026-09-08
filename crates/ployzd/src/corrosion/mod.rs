@@ -54,6 +54,8 @@ pub enum Error {
     },
     #[error("Corrosion API error: {0}")]
     Api(String),
+    #[error("invalid catch-up target: {0}")]
+    InvalidCatchUpTarget(&'static str),
     #[error("invalid Corrosion protocol response: {0}")]
     Protocol(String),
 }
