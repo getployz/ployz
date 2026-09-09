@@ -11,6 +11,14 @@
 //! bounded attempt, and one image bound to the content that attempt produced.
 
 mod builder;
+mod execution;
+mod received_recipe;
+pub mod remote;
+mod upload;
+
+pub use execution::{
+    Admission, Cancellation, HostPolicy, Progress, Stage, TargetEvidence, WorkEvidence,
+};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -19,10 +27,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use builder::{Builder, Lock};
+use builder::Builder;
 
 /// Pinned BuildKit release. Every Ployz Build runs this version.
 pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
@@ -69,7 +77,7 @@ pub struct Request<'a> {
 }
 
 /// One image to produce, named by the caller.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     /// Caller's name for this image, as the captured Compose file names it.
     pub name: String,
@@ -80,7 +88,7 @@ pub struct Target {
 
 /// What an attempt does with its result. These outcomes are exclusive: an
 /// attempt cannot both validate and produce an image.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Output {
     /// Load completed images into the execution host's Docker image store.
     #[default]
@@ -93,7 +101,7 @@ pub enum Output {
 
 /// A completed image in the execution host's Docker image store, identified by
 /// the content this attempt observed there.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BuiltImage {
     /// Digest-pinned reference. Binds later use to this attempt's content, so
     /// a later Build moving a shared tag cannot substitute its image.
@@ -107,6 +115,18 @@ pub struct BuiltImage {
 /// Why a Build Attempt did not produce the image it was asked for.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum BuildError {
+    /// The first phase proven to have failed, retained through cleanup.
+    #[error("{source}")]
+    AtStage {
+        stage: Stage,
+        source: Box<BuildError>,
+    },
+    /// Another attempt owns the retained builder state.
+    #[error("the Machine builder is busy; retry after the active Build finishes")]
+    Busy,
+    /// Cancellation was requested and termination was confirmed.
+    #[error("the Build was cancelled and terminated")]
+    Cancelled,
     /// The execution host cannot run Builds at all.
     #[error("{0}")]
     Prerequisite(String),
@@ -130,6 +150,49 @@ pub enum BuildError {
     Result(String),
 }
 
+impl BuildError {
+    #[must_use]
+    /// Earliest phase proven to have failed.
+    pub fn stage(&self) -> Stage {
+        match self {
+            Self::AtStage { stage, .. } => *stage,
+            Self::Busy => Stage::Admission,
+            Self::Prerequisite(_) | Self::Request(_) => Stage::Preparation,
+            Self::Result(_) => Stage::Output,
+            Self::UncertainTermination(_) => Stage::Cleanup,
+            Self::Cancelled | Self::TimedOut(_) | Self::Docker { .. } => Stage::Building,
+        }
+    }
+    #[must_use]
+    /// Whether any owned process has unconfirmed termination.
+    pub fn is_unknown(&self) -> bool {
+        match self {
+            Self::AtStage { source, .. } => source.is_unknown(),
+            Self::UncertainTermination(_) => true,
+            Self::Busy
+            | Self::Cancelled
+            | Self::Prerequisite(_)
+            | Self::Request(_)
+            | Self::Docker { .. }
+            | Self::TimedOut(_)
+            | Self::Result(_) => false,
+        }
+    }
+    fn with_later_failure(self, later: Self) -> Self {
+        if later.is_unknown() && !self.is_unknown() {
+            Self::UncertainTermination(format!("{self}; {later}")).at(self.stage())
+        } else {
+            self
+        }
+    }
+    fn at(self, stage: Stage) -> Self {
+        Self::AtStage {
+            stage,
+            source: Box::new(self),
+        }
+    }
+}
+
 /// Execute one captured Build against local Docker.
 ///
 /// Requires Docker with Buildx and the containerd image store. It does not
@@ -146,26 +209,93 @@ pub enum BuildError {
 /// observed, or a result error when the completed image is not the content it
 /// claims.
 pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
+    execute_admitted(request, Admission::wait()?, &|event| {
+        if let Progress::Output(bytes) = event {
+            use std::io::Write as _;
+            let _ = std::io::stderr().write_all(&bytes);
+        }
+    })
+}
+
+/// Execute using admission acquired before source upload. The same deadline
+/// and exclusive builder ownership cover upload, execution, and cleanup.
+///
+/// # Errors
+/// Returns the earliest proven failure, or uncertain termination when owned
+/// resources cannot be confirmed stopped. Uncertainty blocks competing work.
+pub fn execute_admitted(
+    request: &Request<'_>,
+    admission: Admission,
+    progress: &(dyn Fn(Progress) + Sync),
+) -> Result<Vec<BuiltImage>, BuildError> {
     let planned = plan(request.targets)?;
     if planned.is_empty() {
         return Ok(Vec::new());
     }
-    // Waiting for another local build is queueing, not attempt time, so the
-    // attempt's clock starts once this process owns the builder.
-    let lock = Lock::acquire()?;
+    admission.check()?;
     let docker = Docker {
         program: request.docker.unwrap_or_else(|| Path::new("docker")),
         environment: request.environment,
         working_dir: request.working_dir,
-        deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
+        deadline: admission.deadline,
+        cancellation: Some(&admission.cancellation),
+        progress: Some(progress),
     };
     let metadata = request.working_dir.join("build-metadata.json");
-    let builder = Builder::acquire(&docker, lock)?;
-    builder.run(&bake_arguments(request, &planned, &metadata))?;
-    match request.output {
-        Output::Load => built_images(&docker, &metadata, &planned),
-        Output::Registry | Output::Validate => Ok(Vec::new()),
-    }
+    progress(Progress::Stage(Stage::Preparation));
+    docker
+        .run("check Buildx", &["buildx", "version"], Streams::Captured)
+        .map_err(|error| error.at(Stage::Preparation))?;
+    let builder =
+        Builder::acquire(&docker, admission.lock).map_err(|error| error.at(Stage::Preparation))?;
+    let result = (|| {
+        let native = builder
+            .native_platform(request.targets)
+            .map_err(|error| error.at(Stage::Preparation))?;
+        let mut arguments = bake_arguments(request, &planned, &metadata);
+        for target in &planned {
+            arguments.push("--set".into());
+            arguments.push(format!(
+                "{}.platform={}",
+                target.bake,
+                target.target.platform.as_deref().unwrap_or(&native)
+            ));
+        }
+        progress(Progress::Stage(Stage::Building));
+        if let Err(error) = builder.run(&arguments) {
+            // Bake may have imported a prefix before a later target failed.
+            // Only verify after termination is known; keep the original failure.
+            if request.output == Output::Load
+                && !error.is_unknown()
+                && metadata.is_file()
+                && let Err(verification) =
+                    built_images(&docker.releasing(), &metadata, &planned, progress)
+            {
+                return Err(error.at(Stage::Building).with_later_failure(verification));
+            }
+            return Err(error.at(Stage::Building));
+        }
+        progress(Progress::Stage(Stage::Output));
+        match request.output {
+            Output::Load => built_images(&docker, &metadata, &planned, progress)
+                .map_err(|error| error.at(Stage::Output)),
+            Output::Registry | Output::Validate => {
+                for target in request.targets {
+                    progress(Progress::Target {
+                        name: target.name.clone(),
+                        outcome: if request.output == Output::Validate {
+                            TargetEvidence::Validated
+                        } else {
+                            TargetEvidence::Published
+                        },
+                    });
+                }
+                Ok(Vec::new())
+            }
+        }
+    })();
+    progress(Progress::Stage(Stage::Cleanup));
+    builder.finish(result)
 }
 
 /// One target with the Buildx name it will carry, derived once.
@@ -235,12 +365,14 @@ fn built_images(
     docker: &Docker<'_>,
     metadata: &Path,
     planned: &[Planned<'_>],
+    progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     let content = std::fs::read(metadata)
         .map_err(|error| BuildError::Result(format!("read the build result: {error}")))?;
     let results: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&content)
         .map_err(|error| BuildError::Result(format!("parse the build result: {error}")))?;
-    planned
+    let mut first_error: Option<BuildError> = None;
+    let images = planned
         .iter()
         .map(|planned| {
             let name = &planned.target.name;
@@ -277,13 +409,29 @@ fn built_images(
                 &result.digest,
                 planned.target.platform.as_deref(),
             )?;
-            Ok(BuiltImage {
+            let image = BuiltImage {
                 reference,
                 tags,
                 platform,
-            })
+            };
+            progress(Progress::Target {
+                name: name.clone(),
+                outcome: TargetEvidence::Image(image.clone()),
+            });
+            Ok(image)
         })
-        .collect()
+        .filter_map(|result| match result {
+            Ok(image) => Some(image),
+            Err(error) => {
+                first_error = Some(match first_error.take() {
+                    Some(first) => first.with_later_failure(error),
+                    None => error,
+                });
+                None
+            }
+        })
+        .collect();
+    first_error.map_or(Ok(images), Err)
 }
 
 /// Confirm the execution host holds exactly the content this attempt claims,
@@ -300,8 +448,9 @@ fn verify(
             &["image", "inspect", reference, "--format", "{{json .}}"],
             Streams::Captured,
         )
-        .map_err(|error| {
-            BuildError::Result(format!(
+        .map_err(|error| match error {
+            BuildError::Cancelled | BuildError::TimedOut(_) | BuildError::UncertainTermination(_) => error,
+            error @ (BuildError::AtStage { .. } | BuildError::Busy | BuildError::Prerequisite(_) | BuildError::Request(_) | BuildError::Docker { .. } | BuildError::Result(_)) => BuildError::Result(format!(
                 "the completed image {reference} is not in the local image store, which Ployz Builds require Docker's containerd image store to provide: {error}"
             ))
         })?;
@@ -426,6 +575,8 @@ pub(crate) struct Docker<'a> {
     environment: &'a BTreeMap<String, String>,
     working_dir: &'a Path,
     deadline: Deadline,
+    cancellation: Option<&'a Cancellation>,
+    progress: Option<&'a (dyn Fn(Progress) + Sync)>,
 }
 
 impl<'a> Docker<'a> {
@@ -436,7 +587,15 @@ impl<'a> Docker<'a> {
             program: self.program,
             environment: self.environment,
             working_dir: self.working_dir,
-            deadline: Deadline::starting_now(CLEANUP_TIMEOUT),
+            // Normal cleanup shares the active deadline. After expiry,
+            // termination gets a separate bounded grace period.
+            deadline: Deadline::starting_now(if self.deadline.remaining().is_zero() {
+                CLEANUP_TIMEOUT
+            } else {
+                self.deadline.remaining().min(CLEANUP_TIMEOUT)
+            }),
+            cancellation: None,
+            progress: self.progress,
         }
     }
 
@@ -467,20 +626,44 @@ impl<'a> Docker<'a> {
                 .stdout(self.create(action, &output)?)
                 .stderr(self.create(action, &diagnosis)?);
         }
+        let progress_file = self.working_dir.join("docker-progress");
+        let mut progress_reader = if streams == Streams::Inherited && self.progress.is_some() {
+            let file = self.create(action, &progress_file)?;
+            command
+                .stdout(file.try_clone().map_err(|error| BuildError::Docker {
+                    action,
+                    diagnostic: error.to_string(),
+                })?)
+                .stderr(file);
+            Some(
+                std::fs::File::open(&progress_file).map_err(|error| BuildError::Docker {
+                    action,
+                    diagnostic: error.to_string(),
+                })?,
+            )
+        } else {
+            None
+        };
+        let mut drain = || {
+            use std::io::Read as _;
+            if let (Some(reader), Some(progress)) = (&mut progress_reader, self.progress) {
+                let mut bytes = [0; 16 * 1024];
+                // Bound each polling round so chatty output cannot starve
+                // cancellation or the deadline.
+                for _ in 0..64 {
+                    match reader.read(&mut bytes) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => progress(Progress::Output(bytes.split_at(n).0.to_vec())),
+                    }
+                }
+            }
+        };
         let mut child = command.spawn().map_err(|error| BuildError::Docker {
             action,
             diagnostic: error.to_string(),
         })?;
-        let Some(status) =
-            wait_bounded(&mut child, self.deadline.remaining()).map_err(|error| {
-                BuildError::Docker {
-                    action,
-                    diagnostic: error.to_string(),
-                }
-            })?
-        else {
-            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
-        };
+        let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain)?;
+        drain();
         if !status.success() {
             // Only a captured command has a diagnosis this side can read back.
             // Inherited output already reached the operator, and the file
@@ -518,24 +701,67 @@ impl<'a> Docker<'a> {
     }
 }
 
-/// Wait for a child, terminating it when the budget runs out.
-fn wait_bounded(child: &mut Child, budget: Duration) -> std::io::Result<Option<ExitStatus>> {
-    let deadline = Instant::now() + budget;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
+/// Polling is bounded even after kill: inability to observe termination must
+/// not become an unbounded wait or release shared builder ownership.
+fn wait_controlled(
+    child: &mut Child,
+    deadline: Deadline,
+    cancellation: Option<&Cancellation>,
+    drain: &mut impl FnMut(),
+) -> Result<ExitStatus, BuildError> {
+    let cause = loop {
+        drain();
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => break BuildError::UncertainTermination(error.to_string()),
         }
-        if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
-            return Ok(None);
+        if cancellation.is_some_and(Cancellation::is_cancelled) {
+            break BuildError::Cancelled;
+        }
+        if deadline.remaining().is_zero() {
+            break BuildError::TimedOut(deadline.budget.as_secs());
         }
         std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = child.kill();
+    let stop = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < stop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Err(cause),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => return Err(BuildError::UncertainTermination(error.to_string())),
+        }
     }
+    Err(BuildError::UncertainTermination(format!(
+        "{cause}; Docker CLI termination was not observed"
+    )))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn later_uncertain_termination_preserves_the_first_failure_stage() {
+        let first =
+            super::BuildError::Result("missing target metadata".into()).at(super::Stage::Output);
+        let later =
+            super::BuildError::UncertainTermination("verification process still running".into());
+        let combined = first.with_later_failure(later);
+        assert!(combined.is_unknown());
+        assert_eq!(combined.stage(), super::Stage::Output);
+        assert!(combined.to_string().contains("missing target metadata"));
+        assert!(
+            combined
+                .to_string()
+                .contains("verification process still running")
+        );
+        let combined = super::BuildError::Cancelled
+            .at(super::Stage::Building)
+            .with_later_failure(combined);
+        assert!(combined.is_unknown());
+        assert_eq!(combined.stage(), super::Stage::Building);
+    }
+
     use super::*;
 
     /// Write an executable stand-in and wait until it can be executed. A
@@ -575,6 +801,8 @@ mod tests {
             environment: &environment,
             working_dir: &directory,
             deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
         };
 
         // A captured command carries its own diagnosis.
@@ -693,6 +921,21 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_terminates_the_process_before_returning() {
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let result = wait_controlled(
+            &mut child,
+            Deadline::starting_now(EXECUTION_TIMEOUT),
+            Some(&cancellation),
+            &mut || {},
+        );
+        assert!(matches!(result, Err(BuildError::Cancelled)));
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
     fn a_command_that_outlasts_its_budget_is_terminated() {
         let mut child = Command::new("sleep")
             .arg("30")
@@ -700,11 +943,15 @@ mod tests {
             .spawn()
             .unwrap();
         let waited = Instant::now();
-        assert!(
-            wait_bounded(&mut child, Duration::from_millis(200))
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            wait_controlled(
+                &mut child,
+                Deadline::starting_now(Duration::from_millis(200)),
+                None,
+                &mut || {}
+            ),
+            Err(BuildError::TimedOut(_))
+        ));
         assert!(waited.elapsed() < Duration::from_secs(5));
     }
 }

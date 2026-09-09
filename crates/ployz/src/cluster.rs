@@ -264,6 +264,30 @@ impl Client {
         MachineRpcClient::new(self.channel.clone())
     }
 
+    pub(crate) async fn build_stream(
+        &self,
+        target: &MachineTarget,
+        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
+        // Submission is one-shot. A lost response must never replay a Build.
+        Ok(self
+            .machine_rpc()
+            .build(target_request(input, Some(target)))
+            .await?
+            .into_inner())
+    }
+
+    pub(crate) async fn build_machine(
+        &mut self,
+        target: &MachineTarget,
+    ) -> Result<Machine, ConnectError> {
+        let visible = self.machines().await?;
+        Ok(visible_machine(target, &visible)
+            .map_err(ConnectError::Remote)?
+            .machine
+            .clone())
+    }
+
     pub(crate) async fn exec_stream(
         &self,
         target: &MachineTarget,

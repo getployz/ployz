@@ -1,5 +1,7 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+mod build;
+
 /// Numeric status returned by the Ployz Docker Volume plugin.
 #[doc(hidden)]
 #[derive(serde::Deserialize, serde::Serialize)]

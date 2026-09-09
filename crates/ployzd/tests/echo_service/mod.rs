@@ -39,5 +39,5 @@ impl Service<http::Request<Body>> for EchoService {
 }
 
 impl NamedService for EchoService {
-    const NAME: &'static str = "test.Echo";
+    const NAME: &'static str = "ployz.rpc.v1.MachineRpc";
 }

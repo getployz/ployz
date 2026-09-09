@@ -114,7 +114,7 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
     let opaque = br#"{\"future_field\":{\"raw\":[0,255]}}"#;
     let framed = ployz_core::encode_grpc_frame(opaque);
     let request = http::Request::builder()
-        .uri("/test.Echo/Call")
+        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
         .header("content-type", "application/grpc")
         .header("machine", remote.name.as_str())
         .body(Body::new(Full::new(Bytes::from(framed.clone()))))
@@ -166,7 +166,7 @@ async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
     let request_frames = [encode_grpc_frame(b"opaque"), encode_grpc_frame(b"future")];
     let request_body = request_frames.concat();
     let request = http::Request::builder()
-        .uri("/test.Echo/Call")
+        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
         .header("content-type", "application/grpc")
         .header("machines", local.name.as_str())
         .header("machines", reachable.name.as_str())
@@ -224,7 +224,7 @@ async fn fanout_emits_an_omission_for_a_target_with_no_message() {
     let local = machine('1', "local", 1);
     let proxy = MachineProxy::new(Routes::new(EchoService::default()), local.id, 1, None);
     let request = http::Request::builder()
-        .uri("/test.Echo/Call")
+        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
         .header("content-type", "application/grpc")
         .header("machines", local.name.as_str())
         .body(Body::empty())
@@ -258,5 +258,23 @@ fn machine(id: char, name: &str, subnet: u8) -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn client_streaming_methods_reject_fanout_before_reading_input() {
+    let local = machine('1', "local", 1);
+    let proxy = MachineProxy::new(Routes::new(EchoService::default()), local.id, 1, None);
+    for method in ["Build", "Exec"] {
+        let request = http::Request::builder()
+            .uri(format!("/ployz.rpc.v1.MachineRpc/{method}"))
+            .header("content-type", "application/grpc")
+            .header("machines", local.name.as_str())
+            .body(Body::empty())
+            .unwrap();
+        let response = proxy
+            .dispatch_with_snapshot(request, std::slice::from_ref(&local))
+            .await;
+        assert_eq!(response.headers().get("grpc-status").unwrap(), "3");
     }
 }

@@ -345,3 +345,6 @@ RUN --mount=type=secret,id=token test ! -e /source/token && test ! -e /source/ig
     ]);
     drop(cleanup);
 }
+
+#[path = "build_layer3/remote.rs"]
+mod remote;

@@ -56,8 +56,16 @@ macro_rules! define_capabilities {
         $(pub const $unary_capability: &str = $unary_capability_name;)+
         $(pub const $stream_capability: &str = $stream_capability_name;)+
 
+        /// Whether this exact RPC path accepts one buffered request for fan-out.
+        /// Client-streaming methods (Exec and Build) require one selected Machine.
+        pub fn supports_fanout(path: &str) -> bool {
+            matches!(path, $(concat!("/", $package, ".MachineRpc/", $unary_route))|+ | $(concat!("/", $package, ".MachineRpc/", $stream_route))|+)
+        }
+
         /// Bidirectional exec is outside the unary catalog.
         pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
+        /// One admitted Build over the existing bidirectional Machine stream.
+        pub const BUILD_CAPABILITY: &str = "ployz.build.v1";
 
         /// The daemon can take a Certificate Policy from cluster state.
         pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
@@ -71,6 +79,7 @@ macro_rules! define_capabilities {
             $((stringify!($unary_capability), $unary_capability_name),)+
             $((stringify!($stream_capability), $stream_capability_name),)+
             ("EXEC_CONTAINER_CAPABILITY", EXEC_CONTAINER_CAPABILITY),
+            ("BUILD_CAPABILITY", BUILD_CAPABILITY),
             ("CERTIFICATE_POLICY_CAPABILITY", CERTIFICATE_POLICY_CAPABILITY),
             (
                 "MACHINE_STORAGE_OBSERVATION_CAPABILITY",
@@ -82,6 +91,7 @@ macro_rules! define_capabilities {
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
             (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
+            (BUILD_CAPABILITY, CapabilityAdvertisement::Container),
             (CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement::Always),
             (
                 MACHINE_STORAGE_OBSERVATION_CAPABILITY,
@@ -1007,5 +1017,20 @@ mod set_cloud_pairing_wire {
                 .cloud_pairing,
             Some(pairing)
         );
+    }
+}
+
+#[cfg(test)]
+mod streaming_routing_tests {
+    #[test]
+    fn only_catalogued_single_request_methods_allow_fanout() {
+        assert!(super::supports_fanout("/ployz.rpc.v1.MachineRpc/Inspect"));
+        for path in [
+            "/ployz.rpc.v1.MachineRpc/Build",
+            "/ployz.rpc.v1.MachineRpc/Exec",
+            "/other.Service/Inspect",
+        ] {
+            assert!(!super::supports_fanout(path));
+        }
     }
 }

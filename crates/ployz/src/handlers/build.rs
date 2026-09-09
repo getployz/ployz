@@ -2,12 +2,25 @@ use clap::ArgMatches;
 
 use ployz_build::Output;
 
-use crate::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
+use crate::compose::{
+    BuildOptions, LoadOptions, capture_build, execute_build, load_project, plan_build,
+};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
 pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
+    let remote = leaf.get_one::<String>("remote");
+    if remote.is_some_and(String::is_empty) {
+        return Err(Error::usage(
+            "select a Build Machine with --remote=<Machine>; automatic selection is not available",
+        ));
+    }
+    if remote.is_some() && leaf.get_flag("push") && !leaf.get_flag("check") {
+        return Err(Error::usage(
+            "remote build --push is not supported yet; remote build leaves the image on its selected Machine, or --push-registry publishes explicitly",
+        ));
+    }
     let load = LoadOptions {
         command: "build".into(),
         files: string_values(leaf, "file")
@@ -33,6 +46,50 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     if plan.is_empty() {
         println!("No buildable services selected.");
         return Ok(());
+    }
+    if let Some(target) = remote {
+        let target = ployz_core::MachineTarget::parse(target)?;
+        let context = project
+            .selected_context(
+                leaf.get_one::<String>("context").map(String::as_str),
+                matches.get_one::<String>("connect").map(String::as_str),
+            )
+            .map(str::to_owned);
+        return runtime()?.block_on(async {
+            let cancellation = super::cancellation_on_ctrl_c();
+            let mut client = connect_client(matches, context.as_deref()).await?;
+            let machine = client.build_machine(&target).await?;
+            println!("Selected Build Machine {} ({})", machine.name, machine.id);
+            let contract = client
+                .invoke::<ployz_core::op::DescribeContract>(
+                    ployz_core::DescribeContractRequest {},
+                    &ployz_core::MachineTarget::from(&machine.id),
+                    Some(std::time::Duration::from_secs(5)),
+                )
+                .await?;
+            if contract.machine_id != machine.id || !contract.supports(ployz_core::BUILD_CAPABILITY)
+            {
+                return Err(Error::usage(format!(
+                    "Machine {} does not support remote Builds",
+                    machine.id
+                )));
+            }
+            let captured = capture_build(&plan, &options, &mut project)?;
+            let outcome = captured
+                .execute_remote(&client, machine.id, cancellation.clone(), |event| {
+                    use std::io::Write as _;
+                    match event {
+                        ployz_build::Progress::Stage(stage) => eprintln!("Build: {stage:?}"),
+                        ployz_build::Progress::Target { .. } => {}
+                        ployz_build::Progress::Output(bytes) => {
+                            let _ = std::io::stderr().write_all(&bytes);
+                        }
+                    }
+                })
+                .await;
+            cancellation.cancel();
+            report_remote(outcome)
+        });
     }
     let built = execute_build(&plan, &options, &load, &mut project)?;
     match options.output {
@@ -132,6 +189,47 @@ fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, E
         Err(Error::usage(message))
     } else {
         Ok(message)
+    }
+}
+
+fn report_remote(outcome: ployz_build::remote::Outcome) -> Result<(), Error> {
+    use ployz_build::remote::Outcome;
+    match outcome {
+        Outcome::Images { machine_id, images } => {
+            for image in images {
+                println!(
+                    "Built {} ({}) as {} on Machine {machine_id}",
+                    image.tags.join(", "),
+                    image.platform,
+                    image.reference
+                );
+            }
+            Ok(())
+        }
+        Outcome::Validated { machine_id } => {
+            println!(
+                "Validated the selected builds on Machine {machine_id}. No image was produced."
+            );
+            Ok(())
+        }
+        Outcome::Published { machine_id } => {
+            println!("Published the built images from Machine {machine_id} to their registries.");
+            Ok(())
+        }
+        Outcome::Failed {
+            stage,
+            message,
+            work,
+        } => Err(Error::usage(format!(
+            "Build failed during {stage:?}: {message}; target evidence: {work:?}; no deployment or implicit image transfer was attempted"
+        ))),
+        Outcome::Unknown {
+            stage,
+            message,
+            work,
+        } => Err(Error::usage(format!(
+            "Build outcome unknown during {stage:?}: {message}; target evidence: {work:?}; no deployment or implicit image transfer was attempted"
+        ))),
     }
 }
 

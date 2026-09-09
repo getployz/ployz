@@ -213,9 +213,6 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
         !bake.contains("MODE=release"),
         "private arguments reached argv: {bake}"
     );
-    // No platform is configured, so the builder uses its own, as Docker did.
-    assert!(!bake.contains(".platform="), "{bake}");
-    assert!(bake.ends_with(" api"), "{bake}");
     // The builder runs the pinned BuildKit release and is removed afterwards
     // with its cache kept. The version is spelled out so an unpin fails here.
     assert!(
@@ -539,12 +536,14 @@ root='{root}'
 case "$1" in --ready) exit 0 ;; esac
 printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
+  'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}'; exit 0 ;;
+  'buildx version') exit 0 ;;
   'buildx create') : > "$root/builder"; exit 0 ;;
   'buildx inspect') exit 0 ;;
   'buildx rm') rm -f "$root/builder"; exit 0 ;;
   'buildx ls')
     if [ -f "$root/builder" ]; then
-      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Platforms":["linux/amd64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
+      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/arm64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
     fi
     exit 0 ;;
   'image inspect')

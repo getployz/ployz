@@ -16,7 +16,7 @@ const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 6
 pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
     name: String,
-    _lock: Lock,
+    lock: Option<Lock>,
 }
 
 impl<'a> Builder<'a> {
@@ -30,50 +30,147 @@ impl<'a> Builder<'a> {
     /// Fails when Buildx is unavailable or the container cannot be created.
     pub(crate) fn acquire(docker: &'a Docker<'a>, lock: Lock) -> Result<Self, BuildError> {
         let name = builder_name();
-        // Best effort: any container left behind is stale by construction.
-        let _ = remove(&docker.releasing(), &name);
-        create(docker, &name)?;
-        Ok(Self {
+        let mut builder = Self {
             docker,
             name,
-            _lock: lock,
-        })
+            lock: Some(lock),
+        };
+        // Mark before any Docker mutation so a killed daemon cannot silently
+        // reuse state whose termination was never observed.
+        builder.lock.as_mut().expect("owned lock").quarantine()?;
+        let result =
+            remove(&docker.releasing(), &builder.name).and_then(|()| create(docker, &builder.name));
+        if let Err(error) = result {
+            return builder.finish(Err(error));
+        }
+        Ok(builder)
     }
 
-    /// Run one build, bounded by the attempt's deadline.
-    ///
-    /// # Errors
-    /// Returns BuildKit's own diagnosis, a timeout once the builder is
-    /// confirmed stopped, or an uncertain termination when it is not.
+    /// Read the running worker, not the Machine's advertised architecture.
+    pub(crate) fn native_platform(&self, targets: &[crate::Target]) -> Result<String, BuildError> {
+        let info = self.docker.run(
+            "inspect the image store",
+            &["info", "--format", "{{json .}}"],
+            Streams::Captured,
+        )?;
+        let info: serde_json::Value = serde_json::from_str(&info).map_err(|_| {
+            BuildError::Prerequisite("Docker reported invalid image-store capability".into())
+        })?;
+        if !info
+            .get("DriverStatus")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row == &serde_json::json!(["driver-type", "io.containerd.snapshotter.v1"])
+                })
+            })
+        {
+            return Err(BuildError::Prerequisite(
+                "Ployz Builds require Docker's containerd image store".into(),
+            ));
+        }
+        let architecture = match info.get("Architecture").and_then(serde_json::Value::as_str) {
+            Some("x86_64" | "amd64") => "amd64",
+            Some("aarch64" | "arm64") => "arm64",
+            _ => {
+                return Err(BuildError::Prerequisite(
+                    "the build host must support Linux AMD64 or ARM64".into(),
+                ));
+            }
+        };
+        if info.get("OSType").and_then(serde_json::Value::as_str) != Some("linux") {
+            return Err(BuildError::Prerequisite(
+                "the build host must run Linux containers".into(),
+            ));
+        }
+        let native = format!("linux/{architecture}");
+        self.docker.run(
+            "start the BuildKit worker",
+            &["buildx", "inspect", &self.name, "--bootstrap"],
+            Streams::Captured,
+        )?;
+        let workers = self.docker.run(
+            "inspect BuildKit platforms",
+            &["buildx", "ls", "--format", "{{json .}}"],
+            Streams::Captured,
+        )?;
+        let builder = workers
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|builder| {
+                builder.get("Name").and_then(serde_json::Value::as_str) == Some(&self.name)
+            });
+        let nodes = builder
+            .as_ref()
+            .and_then(|builder| builder.get("Nodes"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                BuildError::Prerequisite(
+                    "the selected BuildKit worker reported no capability".into(),
+                )
+            })?;
+        for target in targets {
+            let requested = target.platform.as_deref().unwrap_or(&native);
+            if !matches!(requested, "linux/amd64" | "linux/arm64" | "linux/arm64/v8")
+                || !nodes.iter().any(|node| {
+                    node.get("Status").and_then(serde_json::Value::as_str) == Some("running")
+                        && node
+                            .get("Platforms")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|platforms| {
+                                platforms
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .any(|platform| crate::covers(platform, requested))
+                            })
+                })
+            {
+                return Err(BuildError::Prerequisite(format!(
+                    "the running BuildKit worker cannot build {requested}"
+                )));
+            }
+        }
+        Ok(native)
+    }
+
     pub(crate) fn run(&self, arguments: &[String]) -> Result<(), BuildError> {
         let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-        match self.docker.run("the build", &borrowed, Streams::Inherited) {
-            Ok(_) => Ok(()),
-            Err(BuildError::TimedOut(seconds)) => Err(self.terminate(seconds)),
-            Err(error) => Err(error),
-        }
+        self.docker
+            .run("the build", &borrowed, Streams::Inherited)
+            .map(|_| ())
     }
 
-    /// The attempt was terminated; report whether its builder stopped too.
-    fn terminate(&self, seconds: u64) -> BuildError {
-        match remove(&self.docker.releasing(), &self.name) {
-            Ok(()) => BuildError::TimedOut(seconds),
-            Err(error) => BuildError::UncertainTermination(error.to_string()),
+    /// Confirm teardown before releasing retained state; failure preserves its
+    /// quarantine across daemon restart as well as competing direct calls.
+    pub(crate) fn finish<T>(mut self, result: Result<T, BuildError>) -> Result<T, BuildError> {
+        let cleanup = remove(&self.docker.releasing(), &self.name);
+        if cleanup.is_ok() && !result.as_ref().is_err_and(|error| error.is_unknown()) {
+            self.lock.as_mut().expect("owned lock").clear()?;
+        }
+        self.lock.take();
+        let stage = result
+            .as_ref()
+            .err()
+            .map_or(crate::Stage::Cleanup, BuildError::stage);
+        match cleanup {
+            Ok(()) => result,
+            Err(error) => Err(BuildError::UncertainTermination(match result {
+                Ok(_) => format!("output handling completed; cleanup failed: {error}"),
+                Err(cause) => format!("{cause}; cleanup failed: {error}"),
+            })
+            .at(stage)),
         }
     }
 }
 
 impl Drop for Builder<'_> {
-    /// Remove the container, keeping the cache volume it was built with.
-    ///
-    /// A removal that fails is reported rather than discarded: the image this
-    /// attempt built stays usable, and the next attempt replaces the container.
     fn drop(&mut self) {
-        if let Err(error) = remove(&self.docker.releasing(), &self.name) {
-            eprintln!(
-                "WARNING: build container '{}' was left behind: {error}. The next build replaces it.",
-                self.name
-            );
+        // Panic/unwind still attempts cleanup. The marker was persisted before
+        // execution, so a failed cleanup cannot unlock unsafe retained state.
+        if let Some(lock) = self.lock.as_mut()
+            && remove(&self.docker.releasing(), &self.name).is_ok()
+        {
+            let _ = lock.clear();
         }
     }
 }
@@ -117,9 +214,9 @@ fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
 
 /// Serializes local attempts sharing one builder and its retained cache.
 ///
-/// Held for the whole attempt and released when it ends, however it ends.
+/// Held for the whole attempt. Uncertain termination quarantines the retained state.
 pub(crate) struct Lock {
-    _file: fs::File,
+    file: fs::File,
 }
 
 impl Lock {
@@ -132,8 +229,19 @@ impl Lock {
     }
 
     fn acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
-        use rustix::fs::{FlockOperation, flock};
+        let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
+        loop {
+            match Self::try_acquire_in(directory) {
+                Err(BuildError::Busy) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                result => return result,
+            }
+        }
+    }
 
+    pub(crate) fn try_acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
+        use rustix::fs::{FlockOperation, flock};
         let path = directory.join(format!("{}.lock", builder_name()));
         let file = fs::OpenOptions::new()
             .read(true)
@@ -141,33 +249,50 @@ impl Lock {
             .create(true)
             .truncate(false)
             .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(&path)
-            .map_err(|error| {
-                BuildError::Prerequisite(format!("open the build lock {}: {error}", path.display()))
-            })?;
-        if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
-            return Ok(Self { _file: file });
+            .map_err(lock_error)?;
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::WOULDBLOCK) => return Err(BuildError::Busy),
+            Err(error) => return Err(lock_error(error.into())),
         }
-        // Poll rather than block: a peer that never releases the builder must
-        // not leave this command waiting forever.
-        eprintln!("Waiting for another local Ployz build to finish.");
-        let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
-        while std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
-                return Ok(Self { _file: file });
-            }
+        if file.metadata().map_err(lock_error)?.len() != 0 {
+            return Err(BuildError::UncertainTermination(format!(
+                "retained builder state is quarantined; confirm builder {} has stopped before clearing {}",
+                builder_name(),
+                path.display()
+            )));
         }
-        Err(BuildError::Prerequisite(format!(
-            "another local Ployz build has held the builder for {}s; retry once it finishes",
-            QUEUE_TIMEOUT.as_secs()
-        )))
+        Ok(Self { file })
+    }
+
+    fn clear(&mut self) -> Result<(), BuildError> {
+        self.file.set_len(0).map_err(lock_error)?;
+        self.file.sync_all().map_err(lock_error)
+    }
+
+    /// Persist uncertainty across process exit before releasing the OS lock.
+    pub(crate) fn quarantine(&mut self) -> Result<(), BuildError> {
+        use std::io::Write as _;
+        self.file
+            .write_all(b"termination unconfirmed\n")
+            .map_err(lock_error)?;
+        self.file.sync_all().map_err(lock_error)
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // Another thread may have forked a child that briefly inherited this
+        // CLOEXEC descriptor. Release ownership now, without waiting for exec.
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
     }
 }
 
 /// This user's own Ployz directory, so a shared temporary directory cannot
 /// hold the lock hostage. Falls back to the temporary directory without one.
-fn directory() -> PathBuf {
+pub(crate) fn directory() -> PathBuf {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return std::env::temp_dir();
     };
@@ -179,11 +304,36 @@ fn directory() -> PathBuf {
     }
 }
 
+fn lock_error(error: std::io::Error) -> BuildError {
+    BuildError::Prerequisite(format!("access the build lock: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn admission_refuses_competitors_and_uncertain_builder_ownership() {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-admission-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let lock = Lock::try_acquire_in(&directory).unwrap();
+        assert!(matches!(
+            Lock::try_acquire_in(&directory),
+            Err(BuildError::Busy)
+        ));
+        drop(lock);
+        let mut lock = Lock::try_acquire_in(&directory).unwrap();
+        lock.quarantine().unwrap();
+        drop(lock);
+        assert!(matches!(
+            Lock::try_acquire_in(&directory),
+            Err(BuildError::UncertainTermination(_))
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn every_attempt_replaces_the_container_and_leaves_its_cache() {
@@ -204,6 +354,8 @@ mod tests {
             environment: &environment,
             working_dir: &directory,
             deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
         };
 
         let lock = Lock::acquire_in(&directory).unwrap();

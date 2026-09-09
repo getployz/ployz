@@ -399,6 +399,32 @@ fn effective_build_args(
 }
 
 impl CapturedBuild {
+    /// Execute this capture on one resolved Machine over the authenticated
+    /// Ployz stream. No local Docker or local image store is consulted.
+    pub async fn execute_remote(
+        self,
+        client: &crate::connect::Client,
+        machine_id: ployz_core::MachineId,
+        cancellation: tokio_util::sync::CancellationToken,
+        progress: impl Fn(ployz_build::Progress),
+    ) -> ployz_build::remote::Outcome {
+        let definition = ployz_build::remote::Definition {
+            targets: self.targets,
+            output: self.options.output,
+            no_cache: self.options.no_cache,
+            pull: self.options.pull,
+        };
+        super::remote_build::execute(
+            self.inputs,
+            definition,
+            client,
+            machine_id,
+            cancellation,
+            progress,
+        )
+        .await
+    }
+
     /// Build this capture through the shared runner, without reading the
     /// original sources again.
     ///
@@ -608,58 +634,8 @@ fn capture_context(
 }
 
 fn validate_remote_context(source: &str) -> Result<(), ComposeError> {
-    let refusal = || {
-        invalid_build(
-            "remote build context must use an immutable Git commit or image digest; use a Git URL without embedded credentials and a contained subdirectory",
-        )
-    };
-    if let Some(image) = source.strip_prefix("docker-image://") {
-        let reference: oci_client::Reference = image.parse().map_err(|_| refusal())?;
-        return if reference
-            .digest()
-            .and_then(|digest| digest.strip_prefix("sha256:"))
-            .is_some_and(|digest| {
-                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }) {
-            Ok(())
-        } else {
-            Err(refusal())
-        };
-    }
-    // Normalize Git's scp spelling for URL validation, preserving the original
-    // spelling handed to upstream fetching.
-    let scp = source
-        .strip_prefix("git@")
-        .filter(|_| !source.contains("://"))
-        .and_then(|source| source.split_once(':'))
-        .map(|(host, path)| format!("ssh://git@{host}/{path}"));
-    let url = reqwest::Url::parse(scp.as_deref().unwrap_or(source)).map_err(|_| refusal())?;
-    if !matches!(url.scheme(), "http" | "https" | "ssh" | "git")
-        || url.host_str().is_none()
-        || url.password().is_some()
-        || (!url.username().is_empty() && url.scheme() != "ssh")
-        || !url.path().ends_with(".git")
-        || url.query().is_some()
-    {
-        return Err(refusal());
-    }
-    let (commit, directory) = url
-        .fragment()
-        .ok_or_else(refusal)?
-        .split_once(':')
-        .map_or((url.fragment().unwrap_or(""), ""), |pair| pair);
-    if commit.len() != 40
-        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || Path::new(directory).components().any(|part| {
-            !matches!(
-                part,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            )
-        })
-    {
-        return Err(refusal());
-    }
-    Ok(())
+    ployz_build::remote::validate_remote_context(source)
+        .map_err(|message| invalid_build(&message.to_string()))
 }
 
 fn ssh_paths(key: &Value) -> Result<(&str, &str), ComposeError> {

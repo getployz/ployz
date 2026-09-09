@@ -314,6 +314,14 @@ fn unused<T>() -> Result<T, Status> {
 #[tonic::async_trait]
 impl MachineRpc for JoinDaemon {
     type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type BuildStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+
+    async fn build(
+        &self,
+        _request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::BuildStream>, Status> {
+        Err(Status::unimplemented("Build is not used by this fixture"))
+    }
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;

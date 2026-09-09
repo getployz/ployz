@@ -113,6 +113,14 @@ impl MachineProxy {
         routing: RoutingRequest,
         visible: &[Machine],
     ) -> http::Response<Body> {
+        if matches!(&routing, RoutingRequest::Many(_))
+            && !ployz_core::rpc::supports_fanout(request.uri().path())
+        {
+            return Status::invalid_argument(
+                "this RPC requires one selected Machine; fan-out is unsupported",
+            )
+            .into_http();
+        }
         let route = match resolve_route(routing, visible) {
             Ok(route) => route,
             Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
