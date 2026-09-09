@@ -266,8 +266,20 @@ impl BuildInputs {
         Ok(captured)
     }
 
-    /// Write the captured Compose file beside the sources it points at, so the
-    /// build sees one private directory rather than scattered temporary paths.
+    /// Keep Railpack recipe metadata and variables in private upload material.
+    ///
+    /// # Errors
+    /// Fails if the private file cannot be written.
+    pub(super) fn railpack(&self, recipes: &[ployz_build::Railpack]) -> Result<(), ComposeError> {
+        if recipes.is_empty() {
+            return Ok(());
+        }
+        let bytes =
+            serde_json::to_vec(recipes).map_err(|error| input_error(io::Error::other(error)))?;
+        self.private(&self.root.join("private/railpack.json"), &bytes)
+    }
+
+    /// Write the captured Compose file beside its sources.
     ///
     /// # Errors
     /// Fails if the private file cannot be written.

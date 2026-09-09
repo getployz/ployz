@@ -30,6 +30,11 @@ impl Fixture {
         let root =
             std::env::temp_dir().join(format!("ployz-remote-build-test-{}", MachineId::random()));
         fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(
+            &root,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
         let mut store = LocalMachineStore::open(root.join("machine")).unwrap();
         let machine = store
             .initialize(
@@ -59,6 +64,7 @@ impl Fixture {
             state_directory: root.clone(),
             docker: root.join("docker"),
             active_timeout: Duration::from_secs(30),
+            configuration_file: root.join("build.yaml"),
         };
         service.build_policy = policy.clone();
         write_docker(&policy.docker, &root);
@@ -280,6 +286,7 @@ if [ -f "$root/oversized-error" ] && [ "$1 $2" = 'info --format' ]; then
   exit 1
 fi
 case "$1 $2" in
+  'context show') echo default ;;
   'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && [ -f "$root/executed" ]; then exit 1; fi ;;
@@ -510,4 +517,34 @@ async fn registry_publication_keeps_completed_and_unattempted_targets() {
         );
         assert!(!fixture.root.join("published-zzz").exists());
     }
+}
+
+#[tokio::test]
+async fn host_configuration_and_cache_clearing_share_remote_admission() {
+    let fixture = Fixture::new().await;
+    fs::write(&fixture.policy.configuration_file, "cpu_cores: -1").unwrap();
+    let (_request, mut response) = fixture.request(Output::Validate).await;
+    assert!(matches!(terminal(&mut response).await,
+        Outcome::Failed { stage: Stage::Admission, message, .. } if message.contains("cpu_cores")));
+
+    fs::write(&fixture.policy.configuration_file, "cpu_cores: 0.5").unwrap();
+    let (request, mut response) = fixture.request(Output::Validate).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    assert!(matches!(
+        ployz_build::clear_cache(&fixture.policy),
+        Err(BuildError::Busy)
+    ));
+    assert!(matches!(
+        Admission::try_acquire_with(&fixture.policy),
+        Err(BuildError::Busy)
+    ));
+    drop(request);
+    assert!(matches!(
+        terminal(&mut response).await,
+        Outcome::Failed {
+            stage: Stage::Upload,
+            ..
+        }
+    ));
+    assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
 }

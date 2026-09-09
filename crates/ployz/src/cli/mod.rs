@@ -343,6 +343,8 @@ fn machine() -> Command {
         .arg_required_else_help(true)
         .subcommand(machine_add())
         .subcommand(machine_init())
+        .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
+            .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(base("inspect", "Inspect a machine").arg(positional("machine", true)))
         .subcommand(
             log_flags(

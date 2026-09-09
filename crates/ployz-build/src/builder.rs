@@ -28,7 +28,11 @@ impl<'a> Builder<'a> {
     ///
     /// # Errors
     /// Fails when Buildx is unavailable or the container cannot be created.
-    pub(crate) fn acquire(docker: &'a Docker<'a>, lock: Lock) -> Result<Self, BuildError> {
+    pub(crate) fn acquire(
+        docker: &'a Docker<'a>,
+        lock: Lock,
+        resources: &crate::policy::Resources,
+    ) -> Result<Self, BuildError> {
         let name = builder_name();
         let mut builder = Self {
             docker,
@@ -38,8 +42,8 @@ impl<'a> Builder<'a> {
         // Mark before any Docker mutation so a killed daemon cannot silently
         // reuse state whose termination was never observed.
         builder.lock.as_mut().expect("owned lock").quarantine()?;
-        let result =
-            remove(&docker.releasing(), &builder.name).and_then(|()| create(docker, &builder.name));
+        let result = remove(&docker.releasing(), &builder.name)
+            .and_then(|()| create(docker, &builder.name, resources));
         if let Err(error) = result {
             return builder.finish(Err(error));
         }
@@ -47,7 +51,11 @@ impl<'a> Builder<'a> {
     }
 
     /// Read the running worker, not the Machine's advertised architecture.
-    pub(crate) fn native_platform(&self, targets: &[crate::Target]) -> Result<String, BuildError> {
+    pub(crate) fn native_platform(
+        &self,
+        targets: &[crate::Target],
+        resources: &crate::policy::Resources,
+    ) -> Result<String, BuildError> {
         let info = self.docker.run(
             "inspect the image store",
             &["info", "--format", "{{json .}}"],
@@ -56,6 +64,7 @@ impl<'a> Builder<'a> {
         let info: serde_json::Value = serde_json::from_str(&info).map_err(|_| {
             BuildError::Prerequisite("Docker reported invalid image-store capability".into())
         })?;
+        resources.check_support(&info)?;
         if !info
             .get("DriverStatus")
             .and_then(serde_json::Value::as_array)
@@ -188,25 +197,36 @@ impl Drop for Builder<'_> {
     }
 }
 
-fn create(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
-    let image = format!("image={BUILDKIT_IMAGE}");
-    // Host networking keeps builds reaching the hosts they reached while
-    // Docker built them with its own embedded BuildKit.
+fn create(
+    docker: &Docker<'_>,
+    name: &str,
+    resources: &crate::policy::Resources,
+) -> Result<(), BuildError> {
+    // Always supply a config, so ambient Buildx configuration cannot replace
+    // execution-host policy. Empty config retains the pinned BuildKit defaults.
+    let config = docker.working_dir.join("buildkitd.toml");
+    fs::write(&config, resources.buildkit_config()).map_err(|error| {
+        BuildError::Prerequisite(format!("write BuildKit host configuration: {error}"))
+    })?;
+    let mut arguments = vec![
+        "buildx".into(),
+        "create".into(),
+        "--name".into(),
+        name.into(),
+        "--driver".into(),
+        "docker-container".into(),
+        "--driver-opt".into(),
+        format!("image={BUILDKIT_IMAGE}"),
+        "--driver-opt".into(),
+        "network=host".into(),
+        "--buildkitd-config".into(),
+        config.to_string_lossy().into_owned(),
+    ];
+    arguments.extend(resources.worker_arguments());
     docker
         .run(
             "create the build container",
-            &[
-                "buildx",
-                "create",
-                "--name",
-                name,
-                "--driver",
-                "docker-container",
-                "--driver-opt",
-                &image,
-                "--driver-opt",
-                "network=host",
-            ],
+            &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
             Streams::Captured,
         )
         .map(|_| ())
@@ -255,6 +275,21 @@ impl Lock {
 
     pub(crate) fn try_acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
         use rustix::fs::{FlockOperation, flock};
+        use std::os::unix::fs::MetadataExt as _;
+        match fs::DirBuilder::new().mode(0o700).create(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(lock_error(error)),
+        }
+        let metadata = fs::symlink_metadata(directory).map_err(lock_error)?;
+        if !metadata.is_dir()
+            || metadata.uid() != rustix::process::getuid().as_raw()
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(BuildError::Prerequisite(
+                "builder state must be an owned directory without group/other write access".into(),
+            ));
+        }
         let path = directory.join(format!("{}.lock", builder_name()));
         let file = fs::OpenOptions::new()
             .read(true)
@@ -303,18 +338,13 @@ impl Drop for Lock {
     }
 }
 
-/// This user's own Ployz directory, so a shared temporary directory cannot
-/// hold the lock hostage. Falls back to the temporary directory without one.
+/// Stable across HOME, captures, and Docker configuration directories: a local
+/// CLI and daemon with the same builder name must lock the same retained state.
 pub(crate) fn directory() -> PathBuf {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return std::env::temp_dir();
-    };
-    let directory = home.join(".ployz");
-    match fs::DirBuilder::new().mode(0o700).create(&directory) {
-        Ok(()) => directory,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => directory,
-        Err(_) => std::env::temp_dir(),
-    }
+    PathBuf::from("/var/tmp").join(format!(
+        "ployz-build-{}",
+        rustix::process::getuid().as_raw()
+    ))
 }
 
 fn lock_error(error: std::io::Error) -> BuildError {
@@ -331,7 +361,10 @@ mod tests {
     fn dockerfile_platforms_follow_the_running_workers_capabilities() {
         let directory =
             std::env::temp_dir().join(format!("ployz-platform-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&directory).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
         let program = directory.join("docker");
         crate::tests::executable(
             &program,
@@ -354,12 +387,21 @@ esac
             cancellation: None,
             progress: None,
         };
-        let builder = Builder::acquire(&docker, Lock::try_acquire_in(&directory).unwrap()).unwrap();
+        let resources = crate::policy::Resources::default();
+        let builder = Builder::acquire(
+            &docker,
+            Lock::try_acquire_in(&directory).unwrap(),
+            &resources,
+        )
+        .unwrap();
         for platform in ["linux/386", "linux/arm/v7", "linux/ppc64le", "linux/s390x"] {
-            let result = builder.native_platform(&[crate::Target {
-                name: "api".into(),
-                platform: Some(platform.into()),
-            }]);
+            let result = builder.native_platform(
+                &[crate::Target {
+                    name: "api".into(),
+                    platform: Some(platform.into()),
+                }],
+                &resources,
+            );
             assert_eq!(
                 result.is_ok(),
                 platform != "linux/s390x",
@@ -376,6 +418,11 @@ esac
             let directory =
                 std::env::temp_dir().join(format!("ployz-clear-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
+            fs::set_permissions(
+                &directory,
+                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+            )
+            .unwrap();
             let program = directory.join("docker");
             crate::tests::executable(&program, "#!/bin/sh\nexit 0\n");
             let environment = BTreeMap::new();
@@ -388,7 +435,8 @@ esac
                 progress: None,
             };
             let lock = Lock::try_acquire_in(&directory).unwrap();
-            let mut builder = Builder::acquire(&docker, lock).unwrap();
+            let mut builder =
+                Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
             builder.lock.as_mut().unwrap().file =
                 fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap();
@@ -420,6 +468,11 @@ esac
         let directory =
             std::env::temp_dir().join(format!("ployz-admission-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(
+            &directory,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
         let lock = Lock::try_acquire_in(&directory).unwrap();
         assert!(matches!(
             Lock::try_acquire_in(&directory),
@@ -441,6 +494,11 @@ esac
         let directory = std::env::temp_dir().join(format!("ployz-builder-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(
+            &directory,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
         let program = directory.join("docker");
         crate::tests::executable(
             &program,
@@ -460,7 +518,8 @@ esac
         };
 
         let lock = Lock::acquire_in(&directory).unwrap();
-        let builder = Builder::acquire(&docker, lock).unwrap();
+        let builder =
+            Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
         let name = builder_name();
         let acquired = fs::read_to_string(directory.join("calls")).unwrap();
         // A container left by an earlier attempt is stale, so it is replaced.
@@ -469,7 +528,8 @@ esac
             [
                 format!("buildx rm --keep-state {name}"),
                 format!(
-                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host"
+                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --buildkitd-config {}",
+                    directory.join("buildkitd.toml").display()
                 ),
             ]
         );

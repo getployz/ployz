@@ -255,6 +255,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         "ls" => service::list,
         "machine add" => machine::add,
         "machine init" => machine::init,
+        "machine build-cache-clear" => build::clear_cache,
         "machine inspect" => machine::inspect,
         "machine logs" => operator::machine_logs,
         "machine ls" => machine::list,

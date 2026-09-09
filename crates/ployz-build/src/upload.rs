@@ -229,7 +229,7 @@ impl CompletedUpload {
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<Vec<BuiltImage>, BuildError> {
         let mut upload = self.0;
-        crate::received_recipe::validate_capture(&upload.root, definition)
+        let railpack = crate::received_recipe::validate_capture(&upload.root, definition)
             .map_err(|error| BuildError::Request(error.to_string()))?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
@@ -255,7 +255,7 @@ impl CompletedUpload {
         ]);
         let result = crate::execute_admitted(
             &Request {
-                railpack: &[],
+                railpack: &railpack,
                 compose_file: Path::new("compose.yaml"),
                 working_dir: &upload.root,
                 environment: &environment,

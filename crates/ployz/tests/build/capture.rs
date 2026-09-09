@@ -469,7 +469,7 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
 }
 
 #[test]
-fn ssh_docker_hosts_and_git_contexts_keep_the_captured_agent_socket() {
+fn ssh_docker_hosts_are_refused_but_git_contexts_keep_the_captured_agent_socket() {
     let root = std::env::temp_dir().join(format!("ployz-build-agent-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -531,7 +531,13 @@ fn ssh_docker_hosts_and_git_contexts_keep_the_captured_agent_socket() {
         let plan = plan_build(&project, &options).unwrap();
         let build = capture_build(&plan, &options, &mut project).unwrap();
         fs::write(root.join(".env"), "SSH_AUTH_SOCK=/tmp/changed-agent.sock\n").unwrap();
-        build.execute(Some(&docker)).unwrap();
+        let result = build.execute(Some(&docker));
+        if host.starts_with("ssh://") {
+            assert!(result.unwrap_err().to_string().contains("local Docker"));
+            assert!(!root.join("docker-environment").exists());
+            continue;
+        }
+        result.unwrap();
         let environment = fs::read_to_string(root.join("docker-environment")).unwrap();
         assert_eq!(environment.lines().nth(2), Some(expected), "{host}");
     }

@@ -10,11 +10,15 @@ use std::{
     path::{Component, Path},
 };
 
-/// Validate a captured recipe for remote execution and isolate its registry configuration.
+/// Validate a captured recipe, isolate its registry configuration, and return
+/// checked private Railpack inputs for execution.
 /// # Errors
 /// Rejects uncaptured paths, unsupported host settings, and SSH contexts without
 /// a captured default key; reports missing or malformed input.
-pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), InputError> {
+pub fn validate_capture(
+    root: &Path,
+    definition: &Definition,
+) -> Result<Vec<crate::Railpack>, InputError> {
     let names: BTreeSet<_> = definition
         .targets
         .iter()
@@ -198,6 +202,7 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
             )?;
         }
     }
+    let railpack = railpack(root, definition, services)?;
     let config_path = root.join("private/docker/config.json");
     let mut config: serde_json::Value = serde_json::from_slice(
         &fs::read(&config_path).map_err(|_| "Build registry configuration is missing")?,
@@ -218,7 +223,51 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
         serde_json::to_vec(&safe).map_err(|_| "invalid Build registry configuration")?,
     )
     .map_err(|_| "cannot isolate Build registry credentials")?;
-    Ok(())
+    Ok(railpack)
+}
+
+/// Read private Railpack metadata only after validating its source and admitted targets.
+fn railpack(
+    root: &Path,
+    definition: &Definition,
+    services: &Mapping,
+) -> Result<Vec<crate::Railpack>, InputError> {
+    let bytes = match fs::read(root.join("private/railpack.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("cannot read captured Railpack recipes".into()),
+    };
+    let recipes: Vec<crate::Railpack> =
+        serde_json::from_slice(&bytes).map_err(|_| "invalid captured Railpack recipes")?;
+    let mut names = BTreeSet::new();
+    for recipe in &recipes {
+        if !names.insert(&recipe.name)
+            || !definition
+                .targets
+                .iter()
+                .any(|target| target.name == recipe.name)
+        {
+            return Err("Railpack recipe does not identify one admitted target".into());
+        }
+        contained(root, &recipe.context, "source", false)?;
+        if !root.join(&recipe.context).is_dir() {
+            return Err("Railpack context must be a captured directory".into());
+        }
+        let service = mapping(
+            services
+                .get(recipe.name.as_str())
+                .ok_or("Railpack target is missing")?,
+        )?;
+        let build = mapping(service.get("build").ok_or("Railpack build is missing")?)?;
+        if build.get("context").and_then(Value::as_str).map(Path::new)
+            != Some(recipe.context.as_path())
+            || build.contains_key("dockerfile")
+            || build.contains_key("dockerfile_inline")
+        {
+            return Err("Railpack recipe differs from its captured Build".into());
+        }
+    }
+    Ok(recipes)
 }
 
 fn contained(root: &Path, path: &Path, area: &str, file: bool) -> Result<(), InputError> {
@@ -387,6 +436,55 @@ pub fn validate_remote_context(source: &str) -> Result<(), InputError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_railpack_metadata_cannot_escape_admitted_source_or_override_policy() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-railpack-policy-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("private/docker")).unwrap();
+        fs::create_dir(root.join("source")).unwrap();
+        fs::write(root.join("private/docker/config.json"), "{}").unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  api:\n    build: {context: source}\n",
+        )
+        .unwrap();
+        let definition = Definition {
+            targets: vec![crate::Target {
+                name: "api".into(),
+                platform: None,
+            }],
+            output: crate::Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        let valid = serde_json::json!({"name":"api", "context":"source", "variables":{}, "refresh_cache":false});
+        for invalid in [
+            serde_json::json!({"context":"/tmp"}),
+            serde_json::json!({"context":"source/../../tmp"}),
+            serde_json::json!({"name":"unadmitted"}),
+            serde_json::json!({"cpu_cores":8}),
+        ] {
+            let mut recipe = valid.clone();
+            recipe
+                .as_object_mut()
+                .unwrap()
+                .extend(invalid.as_object().unwrap().clone());
+            fs::write(
+                root.join("private/railpack.json"),
+                serde_json::to_vec(&vec![recipe]).unwrap(),
+            )
+            .unwrap();
+            assert!(validate_capture(&root, &definition).is_err());
+        }
+        fs::write(
+            root.join("private/railpack.json"),
+            serde_json::to_vec(&vec![valid]).unwrap(),
+        )
+        .unwrap();
+        validate_capture(&root, &definition).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn remote_ssh_contexts_need_a_default_key_inside_private_capture() {

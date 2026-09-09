@@ -136,6 +136,28 @@ impl Outcome {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn requests_cannot_supply_execution_host_policy() {
+        for setting in [
+            "cpu_cores",
+            "memory_bytes",
+            "cache_bytes",
+            "min_free_bytes",
+            "configuration_file",
+            "state_directory",
+        ] {
+            let mut request = serde_json::json!({"targets": [], "output": "Load", "no_cache": false, "pull": false});
+            request
+                .as_object_mut()
+                .unwrap()
+                .insert(setting.into(), serde_json::json!(999999));
+            assert!(
+                serde_json::from_value::<super::Definition>(request).is_err(),
+                "{setting}"
+            );
+        }
+    }
+
+    #[test]
     fn oversized_messages_are_rejected_before_sending() {
         assert!(super::encode(&"x".repeat(super::FRAME_LIMIT)).is_err());
     }

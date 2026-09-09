@@ -581,3 +581,6 @@ async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundari
     fs::remove_dir_all(ssh).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[path = "build_layer3/policy.rs"]
+mod policy;

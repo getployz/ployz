@@ -38,6 +38,57 @@ Railpack refuses `--check` and unsupported frontend settings by name. On this
 pinned frontend, `--no-cache` and `--pull` force a cold build by clearing the
 exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
 
+`ployz build --remote=<Machine>` runs Dockerfile or native-platform Railpack
+Builds on the selected Machine. That Machine supplies the build resource policy;
+source uploads and build requests cannot change it.
+
+Ordinary builds use local Docker: remote `DOCKER_HOST` endpoints and non-default
+Docker contexts are rejected by the shared executor before builder mutation.
+Use a selected Machine for remote builds so policy and ownership are enforced
+on the execution host.
+
+Configure the execution user on each build host in `~/.ployz/build.yaml` (the daemon
+user for selected-Machine Builds). If `HOME` is unset or empty, the user's account
+home is used. The file is read once at admission. All fields
+are optional; omitted CPU/memory limits are disabled and unconfigured GC keeps
+BuildKit 0.26.2 defaults:
+
+```yaml
+cpu_cores: 0.5
+memory_bytes: 536870912
+cache_bytes: 10737418240
+min_free_bytes: 2147483648
+```
+
+CPU is a finite number from 0.01 to 1000000 cores. Memory is at least 6291456
+bytes. Cache targets are positive byte counts; byte counts must fit a signed
+64-bit integer. CPU and memory ceilings apply to the BuildKit worker (including
+its solve processes) and the separate Railpack preparation container. Memory
+limits also disable container swap. These settings are independent of Service
+runtime limits and are not build/deploy flags. Unsupported Docker resource
+controls and observed launch failures stop the attempt.
+
+`cache_bytes` and `min_free_bytes` are retention/GC targets, **not hard peak disk
+quotas**. BuildKit owns eviction; Ployz also requests upstream GC after successful
+output, before removing the ephemeral worker. Active work can exceed the cache
+targets, and GC may not meet an impossible free-space target. Reusable build
+layers persist across builder recreation; independent cache-mount reuse is not
+promised.
+
+Run `ployz machine build-cache-clear` **on the execution host as its build user**
+to clear Ployz's retained builder cache. It preserves completed Docker images and
+unrelated Docker data, requires no running daemon, and refuses active or
+quarantined ownership. It does not accept a remote connection/context; use host
+administration to run it on the selected Machine. Docker must use its default
+context and a local Unix socket; remote `DOCKER_HOST` and non-default Docker
+contexts are refused before builder mutation. Local CLI and daemon Builds
+share a stable per-user lock under `/var/tmp/ployz-build-<uid>`, even with different
+home or Docker configuration directories. There is still one active Build per
+builder; no configurable concurrency or cache replication is introduced.
+
+Controls follow [Docker's container builder resource and cache support](https://docs.docker.com/build/builders/drivers/docker-container/)
+and [BuildKit 0.26.2 GC policy](https://github.com/moby/buildkit/blob/v0.26.2/cmd/buildkitd/config/gcpolicy.go).
+
 Run the fast local gate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 
 Cloud lives in `cloud/` with its own package and lockfile. Run `pnpm install --frozen-lockfile` and `pnpm pr:check` there. Engine Cargo commands run from the repository root. `site/` serves the ployz.sh installer CDN.

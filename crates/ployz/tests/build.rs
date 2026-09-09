@@ -537,6 +537,7 @@ case "$1" in --ready) exit 0 ;; esac
 printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
   'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}'; exit 0 ;;
+  'context show') echo default; exit 0 ;;
   'buildx version') exit 0 ;;
   'version --format') printf 'linux/amd64\n'; exit 0 ;;
   'create --name'|'rm --force') exit 0 ;;

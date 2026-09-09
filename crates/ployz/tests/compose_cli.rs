@@ -262,6 +262,7 @@ case "$1 $2" in
   'info --format') echo '{{"OSType":"linux","Architecture":"amd64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake') printf '%s\n' "$@" > '{}' ;;
+  'context show') echo default ;;
   'buildx version'|'buildx create'|'buildx inspect'|'buildx rm') exit 0 ;;
   *) exit 99 ;;
 esac
@@ -518,6 +519,7 @@ case "$1 $2" in
   'info --format') echo '{{"OSType":"linux","Architecture":"amd64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'version --format') printf 'linux/amd64\n' ;;
+  'context show') echo default ;;
   'buildx bake') echo dockerfile-failed >&2; exit 23 ;;
   'start --attach') echo preparation-failed >&2; exit 24 ;;
 esac
