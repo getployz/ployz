@@ -6,6 +6,7 @@ require (
 	github.com/compose-spec/compose-go/v2 v2.15.0
 	github.com/distribution/reference v0.5.0
 	github.com/moby/patternmatcher v0.6.1
+	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a
 	gopkg.in/yaml.v3 v3.0.1
 )
 

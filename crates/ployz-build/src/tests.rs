@@ -112,6 +112,7 @@ exit 0
     let targets = [target("api", None), target("web", None)];
     let environment = BTreeMap::new();
     let request = Request {
+        railpack: &[],
         compose_file: &directory.join("compose.json"),
         working_dir: &directory,
         environment: &environment,
@@ -207,6 +208,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
     let metadata = Path::new("/private/build-metadata.json");
     let build_args = ["MODE=release".to_owned()];
     let request = |output| Request {
+        railpack: &[],
         compose_file: Path::new("/private/compose.yaml"),
         working_dir: Path::new("/private"),
         environment: &environment,
@@ -218,12 +220,12 @@ fn requested_output_selects_exclusive_bake_behavior() {
         pull: false,
     };
 
-    let validate = bake_arguments(&request(Output::Validate), &planned, metadata);
+    let validate = bake_arguments(&request(Output::Validate), &planned, metadata, None);
     assert!(validate.contains(&"--check".to_owned()));
     assert!(!validate.contains(&"--load".to_owned()));
     assert!(!validate.contains(&"--metadata-file".to_owned()));
 
-    let load = bake_arguments(&request(Output::Load), &planned, metadata);
+    let load = bake_arguments(&request(Output::Load), &planned, metadata, None);
     assert!(load.contains(&"--load".to_owned()));
     assert!(!load.contains(&"--push".to_owned()));
     assert!(load.contains(&"--no-cache".to_owned()));
@@ -233,7 +235,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
     assert!(!load.iter().any(|argument| argument.contains(".platform")));
     assert_eq!(load.last().map(String::as_str), Some("web"));
 
-    let registry = bake_arguments(&request(Output::Registry), &planned, metadata);
+    let registry = bake_arguments(&request(Output::Registry), &planned, metadata, None);
     assert!(registry.contains(&"--push".to_owned()));
     assert!(!registry.contains(&"--load".to_owned()));
     assert!(!registry.contains(&"--metadata-file".to_owned()));

@@ -138,6 +138,16 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(recorder.uploads.load(Ordering::SeqCst), 3);
+    fs::write(
+        root.join("compose.yaml"),
+        "name: demo\nservices:\n  api:\n    build: {context: ., x-recipe: railpack}\n",
+    )
+    .unwrap();
+    let output = run(&["--remote=tower", "api"]).output().await.unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Railpack requires a local build"));
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 3);
+    assert!(!root.join("docker-called").exists());
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }

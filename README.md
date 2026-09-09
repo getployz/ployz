@@ -20,7 +20,23 @@ Release process: [docs/RELEASE.md](docs/RELEASE.md).
 - `crates/ployzd`: Linux-only daemon
 - `crates/ployz-testkit`: unpublished support crate used only by tests
 
-Building `ployz` also requires Go 1.24 or newer. Cargo builds and embeds the Compose helper; installed users need neither Go nor the Docker Compose plugin to load projects. Docker Compose remains required for builds.
+Building `ployz` also requires Go 1.24 or newer. Cargo builds and embeds the Compose helper; installed users need neither Go nor the Docker Compose plugin. Local builds require Docker with Buildx and the containerd image store.
+
+`ployz build` and `ployz deploy` prefer a declared or existing default Dockerfile.
+Buildable Services without one use Railpack; image-only Services are unchanged.
+Set `build.x-recipe` to `dockerfile`, `railpack`, or `auto` (the default) to control
+selection. A failed recipe never falls back to another.
+
+Railpack uses matching pinned 0.39.0 preparation/frontend tooling with BuildKit
+0.26.2, provisioned through Docker, and builds one native Linux AMD64 or ARM64
+image. Service variables default build variables; Compose `build.args` and then
+`--build-arg` override them without changing runtime values. Values travel as
+private secret mounts. Docker ignore patterns and Railpack's configured
+exclusions apply before source transfer. Recipes can still print or embed values.
+
+Railpack refuses `--check` and unsupported frontend settings by name. On this
+pinned frontend, `--no-cache` and `--pull` force a cold build by clearing the
+exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
 
 Run the fast local gate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 

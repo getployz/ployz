@@ -486,3 +486,112 @@ fn config_mounts_default_the_target_after_compose_normalization() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn build_cli_selects_recipes_without_fallback() {
+    let root = test_dir("recipe-selection");
+    fs::create_dir(root.join("src")).unwrap();
+    let calls = root.join("calls");
+    executable(
+        &root,
+        "docker",
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$1 $2" >> '{}'
+case "$1 $2" in
+  'version --format') printf 'linux/amd64\n' ;;
+  'buildx bake') echo dockerfile-failed >&2; exit 23 ;;
+  'start --attach') echo preparation-failed >&2; exit 24 ;;
+esac
+"#,
+            calls.display()
+        ),
+    );
+    let path = std::env::join_paths(
+        std::iter::once(root.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    for (build, file, check, expected, phase) in [
+        (
+            "build: ./src",
+            false,
+            true,
+            "Railpack does not support --check",
+            "none",
+        ),
+        ("build: ./src", true, false, "dockerfile-failed", "bake"),
+        (
+            "build: ./src",
+            false,
+            false,
+            "preparation-failed",
+            "prepare",
+        ),
+        (
+            "build: {context: ./src, x-recipe: railpack}",
+            true,
+            false,
+            "preparation-failed",
+            "prepare",
+        ),
+        (
+            "build: {context: ./src, dockerfile: Dockerfile}",
+            false,
+            false,
+            "No such file",
+            "none",
+        ),
+        (
+            "build: {context: ./src, x-recipe: dockerfile}",
+            true,
+            false,
+            "dockerfile-failed",
+            "bake",
+        ),
+    ] {
+        let _ = fs::remove_file(&calls);
+        let _ = fs::remove_file(root.join("src/Dockerfile"));
+        if file {
+            fs::write(root.join("src/Dockerfile"), "FROM scratch").unwrap();
+        }
+        fs::write(
+            root.join("compose.yaml"),
+            format!("services:\n  app:\n    {build}\n"),
+        )
+        .unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.current_dir(&root).env("PATH", &path).arg("build");
+        if check {
+            command.arg("--check");
+        }
+        let output = command.output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains(expected),
+            "{build}: {stderr}"
+        );
+        let calls = fs::read_to_string(&calls).unwrap_or_default();
+        assert_eq!(calls.contains("buildx bake"), phase == "bake", "{calls}");
+        assert_eq!(
+            calls.contains("start --attach"),
+            phase == "prepare",
+            "{calls}"
+        );
+    }
+    fs::write(
+        root.join("compose.yaml"),
+        "services: {app: {image: alpine:3.23.3}}\n",
+    )
+    .unwrap();
+    fs::remove_file(&calls).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .current_dir(&root)
+        .env("PATH", &path)
+        .arg("build")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!calls.exists());
+    fs::remove_dir_all(root).unwrap();
+}

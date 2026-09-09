@@ -255,6 +255,7 @@ impl CompletedUpload {
         ]);
         let result = crate::execute_admitted(
             &Request {
+                railpack: &[],
                 compose_file: Path::new("compose.yaml"),
                 working_dir: &upload.root,
                 environment: &environment,

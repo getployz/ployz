@@ -19,6 +19,8 @@ mod upload;
 pub use execution::{
     Admission, Cancellation, HostPolicy, Progress, Stage, TargetEvidence, WorkEvidence,
 };
+mod railpack;
+pub use railpack::Railpack;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -66,6 +68,8 @@ pub struct Request<'a> {
     pub docker: Option<&'a Path>,
     /// Images to build, named as the captured Compose file names them.
     pub targets: &'a [Target],
+    /// Railpack targets with their captured source and private effective values.
+    pub railpack: &'a [Railpack],
     /// Effective `KEY=VALUE` build-argument overrides for every target.
     pub build_args: &'a [String],
     /// What this attempt does with what it builds.
@@ -252,6 +256,11 @@ pub fn execute_admitted(
         let native = builder
             .native_platform(request.targets)
             .map_err(|error| error.at(Stage::Preparation))?;
+        let preparation =
+            railpack::prepare(&docker, request).map_err(|error| error.at(Stage::Preparation))?;
+        let overrides = preparation
+            .as_ref()
+            .map(railpack::Preparation::override_file);
         // A successful per-target push is publication evidence. A failed batch
         // cannot tell us which of its registry exports completed.
         let batch_size = if request.output == Output::Registry {
@@ -260,7 +269,7 @@ pub fn execute_admitted(
             planned.len()
         };
         for batch in planned.chunks(batch_size) {
-            let mut arguments = bake_arguments(request, batch, &metadata);
+            let mut arguments = bake_arguments(request, batch, &metadata, overrides.as_deref());
             for target in &planned {
                 arguments.push("--set".into());
                 arguments.push(format!(
@@ -343,7 +352,12 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
         .collect()
 }
 
-fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Path) -> Vec<String> {
+fn bake_arguments(
+    request: &Request<'_>,
+    planned: &[Planned<'_>],
+    metadata: &Path,
+    overrides: Option<&Path>,
+) -> Vec<String> {
     let mut arguments = vec![
         "buildx".to_owned(),
         "bake".to_owned(),
@@ -352,6 +366,12 @@ fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Pat
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];
+    if let Some(overrides) = overrides {
+        arguments.extend([
+            "--file".to_owned(),
+            overrides.to_string_lossy().into_owned(),
+        ]);
+    }
     match request.output {
         // Check runs the frontend only; an image would contradict the result.
         Output::Validate => arguments.push("--check".to_owned()),

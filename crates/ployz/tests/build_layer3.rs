@@ -348,3 +348,236 @@ RUN --mount=type=secret,id=token test ! -e /source/token && test ! -e /source/ig
 
 #[path = "build_layer3/remote.rs"]
 mod remote;
+#[tokio::test]
+#[ignore = "informing: requires Docker with the containerd image store and the privileged Ployz testkit"]
+async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundaries() {
+    let root = std::env::temp_dir().join(format!("ployz-l3-801-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let image = format!("example.test/ployz-railpack-{}:check", std::process::id());
+    let _cleanup = LocalBuild {
+        images: vec![image.clone()],
+    };
+    fs::write(root.join("compose.yaml"), format!("services:\n  app:\n    image: {image}\n    environment: {{MESSAGE: runtime}}\n    build: .\n")).unwrap();
+    fs::write(root.join("package.json"), r#"{"name":"railpack-check","version":"1.0.0","engines":{"node":"22.14.0"},"scripts":{"build":"node build.js","start":"node index.js"}}"#).unwrap();
+    fs::write(root.join("build.js"), "require('fs').writeFileSync('built.json', JSON.stringify({message:process.env.MESSAGE,stamp:Date.now()}));").unwrap();
+    fs::write(
+        root.join("index.js"),
+        "const message = require('./built.json').message; if (process.env.ONESHOT) console.log(message); else require('http').createServer((req,res) => res.end(message)).listen(3000, '0.0.0.0');",
+    )
+    .unwrap();
+    let load = LoadOptions {
+        command: "build".into(),
+        working_dir: Some(root.clone()),
+        ..Default::default()
+    };
+    let cluster = ployz_testkit::Cluster::create(
+        ployz_testkit::ClusterPlan::new(&format!("l3-railpack-{}", std::process::id()), 1).unwrap(),
+    )
+    .unwrap();
+    cluster.wait_ready(Duration::from_secs(120)).await.unwrap();
+    cluster.initialize_first().await.unwrap();
+    // Direct Image Transfer needs the normal SSH transport, not the testkit's
+    // read-only TCP forwarding. Scope its test key and known-hosts file outside source.
+    use std::os::unix::fs::PermissionsExt as _;
+    let ssh = root.with_extension("ssh");
+    fs::create_dir_all(&ssh).unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    let key = ssh.join("key");
+    fs::write(
+        &key,
+        cluster
+            .shell(0, "cat /root/.ssh/id_ed25519")
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let wrapper = ssh.join("ssh");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexec /usr/bin/ssh -i '{}' -o UserKnownHostsFile='{}' \"$@\"\n",
+            key.display(),
+            ssh.join("known_hosts").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(ssh.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let destination = format!("root@{}", cluster.endpoint(0).unwrap().0.ip());
+    let mut previous = None;
+    for (value, no_cache) in [
+        ("first", false),
+        ("first", false),
+        ("changed", false),
+        ("changed", true),
+    ] {
+        let mut project = load_project(&load).unwrap();
+        let options = BuildOptions {
+            build_args: vec![format!("MESSAGE={value}")],
+            no_cache,
+            ..Default::default()
+        };
+        let plan = plan_build(&project, &options).unwrap();
+        let built = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+        let result = output([
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--env",
+            "ONESHOT=1",
+            &built.built.reference,
+        ]);
+        assert_eq!(result.lines().last(), Some(value));
+        let content = output([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "cat",
+            &built.built.reference,
+            "/app/built.json",
+        ]);
+        if value == "first"
+            && let Some(previous) = &previous
+        {
+            assert_eq!(
+                &content, previous,
+                "unchanged inputs should reuse the build layer"
+            );
+        }
+        if no_cache {
+            assert_ne!(
+                Some(&content),
+                previous.as_ref(),
+                "--no-cache must execute the build step again"
+            );
+        }
+        previous = Some(content);
+        assert!(built.built.platform.starts_with("linux/"));
+        assert!(built.built.tags.contains(&image));
+        assert!(
+            output([
+                "ps",
+                "-aq",
+                "--filter",
+                &format!("name=buildx_buildkit_{}0", ployz_build::builder_name())
+            ])
+            .trim()
+            .is_empty()
+        );
+        assert!(
+            output([
+                "ps",
+                "-aq",
+                "--filter",
+                &format!("name={}-prepare", ployz_build::builder_name())
+            ])
+            .trim()
+            .is_empty()
+        );
+        command(["volume", "inspect", &cache_volume()]);
+    }
+
+    let deploy = || {
+        Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(&root)
+            .args([
+                "--connect",
+                &destination,
+                "deploy",
+                "--yes",
+                "--recreate",
+                "--skip-health",
+                "--build-arg",
+                "MESSAGE=changed",
+            ])
+            .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
+            .env("PATH", &path)
+            .env("XDG_RUNTIME_DIR", &ssh)
+            .env("PLOYZ_SSH_CONTROL_PERSIST", "0")
+            .output()
+            .unwrap()
+    };
+    let deployed = deploy();
+    assert!(
+        deployed.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&deployed.stdout),
+        String::from_utf8_lossy(&deployed.stderr)
+    );
+    let containers = || {
+        String::from_utf8(
+            cluster
+                .shell(
+                    0,
+                    "docker ps -aq --no-trunc --filter label=ployz.service.name=app",
+                )
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+    };
+    let before = containers();
+    assert_eq!(before.lines().count(), 1);
+    let id = before.trim();
+    let expected_image = output(["image", "inspect", &image, "--format", "{{.Id}}"]);
+    let deployed_image = cluster
+        .shell(0, &format!("docker inspect --format '{{{{.Image}}}}' {id}"))
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(deployed_image.stdout).unwrap(),
+        expected_image
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if cluster.docker(0, &["exec", id, "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>r.text()).then(t=>{if(t!=='changed')process.exit(1)})"]).is_ok() { break; }
+        assert!(
+            Instant::now() < deadline,
+            "deployed application did not serve its built variable"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Neither a compiler failure nor a detection failure may touch the live
+    // Service, even when the subsequent Deploy explicitly requests recreation.
+    fs::write(
+        root.join("build.js"),
+        "throw new Error('expected compilation failure');",
+    )
+    .unwrap();
+    let failed = deploy();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("build"));
+    assert_eq!(containers(), before);
+    for file in ["package.json", "index.js", "build.js"] {
+        fs::remove_file(root.join(file)).unwrap();
+    }
+    fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        format!(
+            "services:\n  app:\n    image: {image}\n    build: {{context: ., x-recipe: railpack}}\n"
+        ),
+    )
+    .unwrap();
+    let failed = deploy();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Railpack"));
+    assert_eq!(containers(), before);
+    assert!(
+        output([
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name={}-prepare", ployz_build::builder_name())
+        ])
+        .trim()
+        .is_empty()
+    );
+    fs::remove_dir_all(ssh).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}

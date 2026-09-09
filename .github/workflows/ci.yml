@@ -15,6 +15,18 @@ concurrency:
 permissions:
   contents: read
 
+# CI does not use debugger symbols or per-checkout incremental compilation.
+env:
+  # Fork PRs have no credentials and use the action's GitHub cache fallback.
+  KACHE_S3_BUCKET: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET || '' }}
+  KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_ACCESS_KEY_ID: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+  KACHE_S3_SECRET_ACCESS_KEY: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
 jobs:
   workspace:
     runs-on: ubuntu-latest
@@ -30,11 +42,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: ci
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-downloads-
+      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        with:
+          version: 0.18.0
+          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+          s3-region: ${{ env.KACHE_S3_REGION }}
+          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+          s3-prefix: ployz2/kache-v1
+          manifest-key: workspace-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-workspace
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          cache-c-cpp: true
+          warm: true
+          sync: false
+          pr-comment: false
       - name: Check Compose helper
         working-directory: crates/ployz/compose-helper
         run: |
@@ -76,7 +107,7 @@ jobs:
           fi
 
   macos-cli:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +116,30 @@ jobs:
           go-version-file: crates/ployz/compose-helper/go.mod
           cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-downloads-
+      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        with:
+          version: 0.18.0
+          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+          s3-region: ${{ env.KACHE_S3_REGION }}
+          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+          s3-prefix: ployz2/kache-v1
+          manifest-key: macos-cli-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-macos-cli
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          cache-c-cpp: true
+          warm: true
+          sync: false
+          pr-comment: false
       - run: cargo check --package ployz --all-targets --locked
 
   layer3-image-amd64:
@@ -130,11 +185,30 @@ jobs:
           go-version-file: crates/ployz/compose-helper/go.mod
           cache-dependency-path: crates/ployz/compose-helper/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: ci
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-downloads-
+      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        with:
+          version: 0.18.0
+          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+          s3-region: ${{ env.KACHE_S3_REGION }}
+          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+          s3-prefix: ployz2/kache-v1
+          manifest-key: layer3-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-layer3
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          cache-c-cpp: true
+          warm: true
+          sync: false
+          pr-comment: false
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

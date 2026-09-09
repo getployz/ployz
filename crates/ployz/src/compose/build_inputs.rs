@@ -26,10 +26,13 @@ pub(super) struct BuildInputs {
 enum Input {
     File(PathBuf),
     PrivateFile(PathBuf),
-    Context {
-        path: PathBuf,
-        dockerfile: Option<PathBuf>,
-    },
+    Context { path: PathBuf, recipe: Recipe },
+}
+
+#[derive(Eq, PartialEq, Ord, PartialOrd)]
+enum Recipe {
+    Dockerfile(Option<PathBuf>),
+    Railpack(PathBuf),
 }
 
 struct CapturedInput {
@@ -50,7 +53,7 @@ impl Input {
     }
 
     fn selection(&self) -> Result<Option<Selection>, ComposeError> {
-        let Self::Context { path, dockerfile } = self else {
+        let Self::Context { path, recipe } = self else {
             return Ok(None);
         };
         #[derive(serde::Deserialize)]
@@ -58,8 +61,12 @@ impl Input {
             paths: Vec<String>,
             ignore: Option<String>,
         }
+        let (dockerfile, railpack_config) = match recipe {
+            Recipe::Dockerfile(path) => (path.as_ref(), None),
+            Recipe::Railpack(path) => (None, Some(path)),
+        };
         let response: Response = super::loader::helper(&serde_json::json!({
-            "version": 1, "build_context": { "path": path, "dockerfile": dockerfile }
+            "version": 1, "build_context": { "path": path, "dockerfile": dockerfile, "railpack_config": railpack_config }
         }))?;
         let paths: BTreeSet<PathBuf> = response
             .paths
@@ -136,7 +143,28 @@ impl BuildInputs {
     ) -> Result<PathBuf, ComposeError> {
         self.capture_input(Input::Context {
             path: path.canonicalize().map_err(input_error)?,
-            dockerfile: dockerfile.map(Path::to_path_buf),
+            recipe: Recipe::Dockerfile(dockerfile.map(Path::to_path_buf)),
+        })
+    }
+
+    /// Railpack's merged exclusions are resolved inside capture, before any
+    /// source reaches the execution host. The config remains a preparation input.
+    ///
+    /// # Errors
+    /// Rejects invalid exclusions and unreadable or unstable included inputs.
+    pub(super) fn railpack_context(
+        &mut self,
+        path: &Path,
+        variables: &BTreeMap<String, String>,
+    ) -> Result<PathBuf, ComposeError> {
+        let config = variables
+            .get("RAILPACK_CONFIG_FILE")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("railpack.json");
+        self.capture_input(Input::Context {
+            path: path.canonicalize().map_err(input_error)?,
+            recipe: Recipe::Railpack(config.into()),
         })
     }
 

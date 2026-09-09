@@ -538,6 +538,16 @@ printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
   'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}'; exit 0 ;;
   'buildx version') exit 0 ;;
+  'version --format') printf 'linux/amd64\n'; exit 0 ;;
+  'create --name'|'rm --force') exit 0 ;;
+  'start --attach') test ! -f "$root/preparation-fails"; exit $? ;;
+  cp\ *)
+    case "$3" in
+      *:/app) rm -rf "$root/received"; cp -a "$2" "$root/received" ;;
+      *:/prepare.sh) cp "$2" "$root/prepare.sh" ;;
+      *) printf '{{}}' > "$3" ;;
+    esac
+    exit 0 ;;
   'buildx create') : > "$root/builder"; exit 0 ;;
   'buildx inspect') exit 0 ;;
   'buildx rm') rm -f "$root/builder"; exit 0 ;;
@@ -682,3 +692,6 @@ fn mutable_remote_build_context_is_rejected_before_execution() {
 
 #[path = "build/capture.rs"]
 mod capture;
+
+#[path = "build/railpack.rs"]
+mod railpack;

@@ -65,6 +65,7 @@ pub fn plan_build(
 pub struct CapturedBuild {
     plan: Vec<BuildService>,
     targets: Vec<ployz_build::Target>,
+    railpack: Vec<ployz_build::Railpack>,
     options: BuildOptions,
     environment: BTreeMap<String, String>,
     inputs: BuildInputs,
@@ -141,6 +142,7 @@ pub fn capture_build(
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
     let mut targets = Vec::new();
+    let mut railpack_recipes = Vec::new();
     for service in &mut plan {
         let image = service.image.clone();
         let name = service.name.clone();
@@ -149,6 +151,13 @@ pub fn capture_build(
             .as_mapping_mut()
             .ok_or_else(|| invalid_build("expected a build mapping"))?;
         refuse_unpassable_settings(&name, build)?;
+        ssh_agent |= build
+            .get("context")
+            .and_then(Value::as_str)
+            .is_some_and(is_ssh_context);
+        if let Some(recipe) = capture_recipe(&name, build, options, project, &mut inputs)? {
+            railpack_recipes.push(recipe);
+        }
         let platform = requested_platform(&name, build)?.or_else(|| {
             project
                 .environment
@@ -164,8 +173,6 @@ pub fn capture_build(
         }
         targets.push(ployz_build::Target { name, platform });
         retain_service_image_tag(&service.name, image, build)?;
-        let args = effective_build_args(&service.name, build, &options.build_args, project)?;
-        build.insert(Value::String("args".into()), Value::Mapping(args));
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
             .and_then(Value::as_sequence_mut)
@@ -182,42 +189,6 @@ pub fn capture_build(
                     .collect::<Result<Vec<_>, _>>()?;
                 *key = Value::String(format!("{id}={}", paths.join(",")));
             }
-        }
-        let context = build
-            .get(Value::String("context".into()))
-            .and_then(Value::as_str)
-            .unwrap_or(".")
-            .to_owned();
-        ssh_agent |= is_ssh_context(&context);
-        let dockerfile = (!build.contains_key(Value::String("dockerfile_inline".into()))
-            && !is_remote_context(&context))
-        .then(|| {
-            project.working_dir.join(&context).join(
-                build
-                    .get(Value::String("dockerfile".into()))
-                    .and_then(Value::as_str)
-                    .unwrap_or("Dockerfile"),
-            )
-        });
-        let captured = capture_context(
-            &context,
-            &project.working_dir,
-            dockerfile.as_deref(),
-            &mut inputs,
-        )?;
-        build.insert(Value::String("context".into()), Value::String(captured));
-        if let Some(source) = dockerfile {
-            build.insert(
-                Value::String("dockerfile".into()),
-                Value::String({
-                    let file = inputs.dockerfile(&source)?;
-                    // Both context and recipe live directly beneath source/.
-                    Path::new("..")
-                        .join(file.file_name().expect("captured recipe"))
-                        .to_string_lossy()
-                        .into_owned()
-                }),
-            );
         }
         if let Some(contexts) = build.get_mut(Value::String("additional_contexts".into())) {
             match contexts {
@@ -308,6 +279,7 @@ pub fn capture_build(
     Ok(CapturedBuild {
         plan,
         targets,
+        railpack: railpack_recipes,
         options,
         environment: project
             .environment
@@ -331,6 +303,152 @@ pub fn capture_build(
             .collect(),
         inputs,
     })
+}
+
+/// Own recipe selection, validation, variable placement, and source capture together.
+fn capture_recipe(
+    name: &str,
+    build: &mut serde_norway::Mapping,
+    options: &BuildOptions,
+    project: &mut ComposeProject,
+    inputs: &mut BuildInputs,
+) -> Result<Option<ployz_build::Railpack>, ComposeError> {
+    let railpack = selects_railpack(build, &project.working_dir)?;
+    let refresh_cache = options.no_cache
+        || options.pull
+        || build.get("no_cache").and_then(Value::as_bool) == Some(true)
+        || build.get("pull").and_then(Value::as_bool) == Some(true);
+    if railpack && options.output == Output::Validate {
+        return Err(invalid_build("Railpack does not support --check"));
+    }
+    if railpack {
+        for key in build.keys().filter_map(Value::as_str) {
+            if !matches!(
+                key,
+                "context"
+                    | "dockerfile"
+                    | "dockerfile_inline"
+                    | "x-recipe"
+                    | "args"
+                    | "tags"
+                    | "platforms"
+                    | "cache_from"
+                    | "cache_to"
+                    | "secrets"
+                    | "no_cache"
+                    | "pull"
+                    | "provenance"
+                    | "sbom"
+            ) {
+                return Err(invalid_build(&format!(
+                    "Railpack does not support build.{key}"
+                )));
+            }
+        }
+        if refresh_cache {
+            // A cold build must not reimport the records just pruned locally.
+            build.remove("cache_from");
+        }
+    }
+    build.remove("x-recipe");
+    let context = build
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or(".")
+        .to_owned();
+    let args = effective_build_args(name, build, &options.build_args, project)?;
+    if railpack {
+        if is_remote_context(&context) {
+            return Err(invalid_build(
+                "Railpack requires a captured local build.context",
+            ));
+        }
+        let variables = args
+            .iter()
+            .map(|(key, value)| {
+                key.as_str()
+                    .zip(value.as_str())
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                    .ok_or_else(|| invalid_build("Railpack build variables must be strings"))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let captured = inputs.railpack_context(&project.working_dir.join(context), &variables)?;
+        let context = inputs.relative(&captured);
+        build.remove("args");
+        build.remove("dockerfile");
+        build.remove("dockerfile_inline");
+        build.insert(
+            Value::String("context".into()),
+            Value::String(context.to_string_lossy().into_owned()),
+        );
+        Ok(Some(ployz_build::Railpack {
+            name: name.to_owned(),
+            context,
+            variables,
+            refresh_cache,
+        }))
+    } else {
+        build.insert(Value::String("args".into()), Value::Mapping(args));
+        let dockerfile = (!build.contains_key("dockerfile_inline") && !is_remote_context(&context))
+            .then(|| {
+                project.working_dir.join(&context).join(
+                    build
+                        .get("dockerfile")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Dockerfile"),
+                )
+            });
+        let captured = capture_context(
+            &context,
+            &project.working_dir,
+            dockerfile.as_deref(),
+            inputs,
+        )?;
+        build.insert(Value::String("context".into()), Value::String(captured));
+        if let Some(source) = dockerfile {
+            let file = inputs.dockerfile(&source)?;
+            // Both context and recipe live directly beneath source/.
+            let file = Path::new("..").join(file.file_name().expect("captured recipe"));
+            build.insert(
+                Value::String("dockerfile".into()),
+                Value::String(file.to_string_lossy().into_owned()),
+            );
+        }
+        Ok(None)
+    }
+}
+
+fn selects_railpack(build: &serde_norway::Mapping, directory: &Path) -> Result<bool, ComposeError> {
+    if build
+        .get("x-recipe")
+        .is_some_and(|value| value.as_str().is_none())
+    {
+        return Err(invalid_build(
+            "build.x-recipe must be auto, dockerfile, or railpack",
+        ));
+    }
+    match build.get("x-recipe").and_then(Value::as_str) {
+        Some("railpack") => Ok(true),
+        Some("dockerfile") => Ok(false),
+        Some("auto") | None => {
+            if build.contains_key("dockerfile") || build.contains_key("dockerfile_inline") {
+                return Ok(false);
+            }
+            let context = build.get("context").and_then(Value::as_str).unwrap_or(".");
+            if is_remote_context(context) {
+                return Ok(false);
+            }
+            directory
+                .join(context)
+                .join("Dockerfile")
+                .try_exists()
+                .map(|exists| !exists)
+                .map_err(|error| ComposeError::Io(format!("select build recipe: {error}")))
+        }
+        Some(_) => Err(invalid_build(
+            "build.x-recipe must be auto, dockerfile, or railpack",
+        )),
+    }
 }
 
 fn effective_build_args(
@@ -408,6 +526,13 @@ impl CapturedBuild {
         cancellation: tokio_util::sync::CancellationToken,
         progress: impl Fn(ployz_build::Progress),
     ) -> ployz_build::remote::Outcome {
+        if !self.railpack.is_empty() {
+            return ployz_build::remote::Outcome::Failed {
+                stage: ployz_build::Stage::Preparation,
+                message: "remote builds currently support Dockerfile recipes only; Railpack requires a local build".into(),
+                work: ployz_build::WorkEvidence::new(&self.targets),
+            };
+        }
         let definition = ployz_build::remote::Definition {
             targets: self.targets,
             output: self.options.output,
@@ -455,6 +580,7 @@ impl CapturedBuild {
             environment: &environment,
             docker,
             targets: &self.targets,
+            railpack: &self.railpack,
             build_args: &self.options.build_args,
             output: self.options.output,
             no_cache: self.options.no_cache,
