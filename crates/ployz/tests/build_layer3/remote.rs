@@ -95,12 +95,21 @@ async fn remote_dockerfile_runs_on_selected_machine_and_bounds_abandoned_attempt
 
     let (first, mut response) = request(&address, selected).await;
     assert!(
-        matches!(event(&mut response).await, Event::Admitted { machine_id } if machine_id == selected)
+        matches!(event(&mut response).await, Event::Admitted { machine_id, .. } if machine_id == selected)
     );
-    let (_competitor, mut rejected) = request(&address, selected).await;
-    assert!(
-        matches!(terminal(&mut rejected).await, Outcome::Failed { stage: Stage::Admission, message, .. } if message.contains("busy"))
-    );
+    let (competitor, mut queued) = request(&address, selected).await;
+    assert!(matches!(
+        event(&mut queued).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    drop(competitor);
+    assert!(matches!(
+        terminal(&mut queued).await,
+        Outcome::Failed {
+            stage: Stage::Queued,
+            ..
+        }
+    ));
     for frame in [
         Input::Entry {
             path: b"source".to_vec(),
@@ -245,4 +254,124 @@ async fn terminal(response: &mut tonic::Streaming<OpaquePayload>) -> Outcome {
             return outcome;
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn queue_upload_timeout_and_daemon_restart_discard_waiters_before_a_safe_build() {
+    let mut plan = ClusterPlan::new(&format!("l3-build-807-{}", std::process::id()), 1).unwrap();
+    plan.machines
+        .first_mut()
+        .unwrap()
+        .environment
+        .insert("PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS".into(), "1".into());
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+    let selected = cluster.initialize_first().await.unwrap().id;
+    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+    let address = cluster.api_address(0).unwrap();
+    let (uploading, mut active) = request(&address, selected).await;
+    assert!(matches!(event(&mut active).await, Event::Admitted { .. }));
+    let (disconnected, mut queued) = request(&address, selected).await;
+    assert!(matches!(
+        event(&mut queued).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    drop(disconnected);
+    assert!(matches!(
+        terminal(&mut queued).await,
+        Outcome::Failed {
+            stage: Stage::Queued,
+            ..
+        }
+    ));
+    assert!(
+        matches!(terminal(&mut active).await, Outcome::Failed { stage: Stage::Upload, message, .. } if message.contains("timeout"))
+    );
+    drop(uploading);
+
+    // Keep an admitted partial upload and another waiting connection across
+    // restart. Restore the normal active budget for the subsequent real build.
+    cluster.machine_shell(0, "mv /usr/local/bin/ployzd /usr/local/bin/ployzd-real; printf '%s\n' '#!/bin/sh' 'unset PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS' 'exec /usr/local/bin/ployzd-real \"$@\"' > /usr/local/bin/ployzd; chmod +x /usr/local/bin/ployzd").unwrap();
+    cluster.restart(0).unwrap();
+    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+    let (interrupted, mut active) = request(&address, selected).await;
+    assert!(matches!(event(&mut active).await, Event::Admitted { .. }));
+    interrupted
+        .send(
+            remote::encode(&Input::Entry {
+                path: b"source".to_vec(),
+                kind: remote::Kind::Directory,
+                mode: 0o755,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (_waiting, mut queued) = request(&address, selected).await;
+    assert!(matches!(
+        event(&mut queued).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    cluster.restart(0).unwrap();
+    for response in [&mut active, &mut queued] {
+        let result = tokio::time::timeout(Duration::from_secs(10), response.message())
+            .await
+            .unwrap();
+        if let Ok(Some(payload)) = result {
+            assert!(matches!(
+                remote::decode::<Event>(&payload).unwrap(),
+                Event::Finished(Outcome::Failed { .. } | Outcome::Unknown { .. })
+            ));
+        }
+    }
+    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+    let root = std::env::temp_dir().join(format!("ployz-build-807-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        "name: restart\nservices:\n  app:\n    image: ployz-restart:built\n    build: .\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Dockerfile"),
+        "FROM alpine:3.23.3\nCOPY payload /payload\nCMD [\"cat\", \"/payload\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("payload"), "safe-after-restart\n").unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(180),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(&root)
+            .env("PLOYZ_CONFIG", root.join("config.yaml"))
+            .args([
+                "--connect",
+                &address,
+                "build",
+                &format!("--remote={selected}"),
+                "app",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let exact = stdout
+        .split_whitespace()
+        .find(|word| word.contains("@sha256:"))
+        .unwrap();
+    assert_eq!(
+        cluster
+            .machine_shell(0, &format!("docker run --rm {exact}"))
+            .unwrap(),
+        "safe-after-restart\n"
+    );
+    fs::remove_dir_all(root).unwrap();
 }

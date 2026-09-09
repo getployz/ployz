@@ -27,6 +27,9 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_policy(|_| {}).await
+    }
+    async fn with_policy(update: impl FnOnce(&mut HostPolicy)) -> Self {
         let root =
             std::env::temp_dir().join(format!("ployz-remote-build-test-{}", MachineId::random()));
         fs::create_dir_all(&root).unwrap();
@@ -60,13 +63,15 @@ impl Fixture {
             Some((replicated, crate::corrosion::AdminClient::new("/no/admin"))),
         )
         .with_optional_containers(Some(runtime));
-        let policy = HostPolicy {
+        let mut policy = HostPolicy {
             state_directory: root.clone(),
             docker: root.join("docker"),
             active_timeout: Duration::from_secs(30),
             configuration_file: root.join("build.yaml"),
+            ..Default::default()
         };
-        service.build_policy = policy.clone();
+        update(&mut policy);
+        service.builds = Runner::new(policy.clone(), Default::default()).unwrap();
         write_docker(&policy.docker, &root);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -155,15 +160,13 @@ async fn terminal(response: &mut tonic::Streaming<OpaquePayload>) -> Outcome {
 }
 
 #[tokio::test]
-async fn admitted_upload_refuses_competitors_and_disconnect_releases_unused_ownership() {
+async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_ownership() {
     let fixture = Fixture::new().await;
     let (first, mut response) = fixture.request(Output::Load).await;
     assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
     assert!(!fixture.root.join("executed").exists());
-    let (_second, mut rejected) = fixture.request(Output::Load).await;
-    assert!(
-        matches!(terminal(&mut rejected).await, Outcome::Failed { stage: Stage::Admission, message, .. } if message.contains("busy"))
-    );
+    let (second, mut queued) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut queued).await, Event::Progress(_)));
     first
         .send(
             remote::encode(&Input::Entry {
@@ -184,6 +187,9 @@ async fn admitted_upload_refuses_competitors_and_disconnect_releases_unused_owne
         }
     ));
     assert!(!fixture.root.join("executed").exists());
+    assert!(matches!(event(&mut queued).await, Event::Admitted { .. }));
+    drop(second);
+    let _ = terminal(&mut queued).await;
     let (_third, mut admitted) = fixture.request(Output::Load).await;
     assert!(matches!(event(&mut admitted).await, Event::Admitted { .. }));
 }
@@ -386,7 +392,11 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         .unwrap()))
         .await
         .unwrap();
-    let mut responses = start(fixture.machine.id, ReceiverStream::new(receiver), policy);
+    let mut responses = start(
+        fixture.machine.id,
+        ReceiverStream::new(receiver),
+        Runner::new(policy, Default::default()).unwrap(),
+    );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),
         Event::Admitted { .. }
@@ -517,6 +527,131 @@ async fn registry_publication_keeps_completed_and_unattempted_targets() {
         );
         assert!(!fixture.root.join("published-zzz").exists());
     }
+}
+
+#[tokio::test]
+async fn queued_disconnect_cancellation_expiry_and_full_queue_never_upload() {
+    let fixture = Fixture::with_policy(|policy| {
+        policy.queue_capacity = 1;
+        policy.queue_timeout = Duration::from_millis(200);
+    })
+    .await;
+    let (active, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    for action in ["disconnect", "cancel", "early-upload", "expire"] {
+        let (waiting, mut queued) = fixture.request(Output::Load).await;
+        assert!(matches!(
+            event(&mut queued).await,
+            Event::Progress(Progress::Stage(Stage::Queued))
+        ));
+        let (_full, mut rejected) = fixture.request(Output::Load).await;
+        assert!(
+            matches!(terminal(&mut rejected).await, Outcome::Failed { stage: Stage::Queued, message, work } if message.contains("full") && work.0.get("api") == Some(&ployz_build::TargetEvidence::Unattempted))
+        );
+        match action {
+            "disconnect" => drop(waiting),
+            "cancel" => waiting
+                .send(remote::encode(&Input::Cancel).unwrap())
+                .await
+                .unwrap(),
+            "early-upload" => waiting
+                .send(remote::encode(&Input::Data(vec![1])).unwrap())
+                .await
+                .unwrap(),
+            "expire" => {}
+            _ => unreachable!(),
+        }
+        let Outcome::Failed {
+            stage: Stage::Queued,
+            message,
+            work,
+        } = terminal(&mut queued).await
+        else {
+            panic!("queued work ran")
+        };
+        let expected = match action {
+            "disconnect" => "disconnected",
+            "cancel" => "cancelled",
+            "early-upload" => "before admission",
+            "expire" => "expired",
+            _ => unreachable!(),
+        };
+        assert!(message.contains(expected), "{message}");
+        assert_eq!(
+            work.0.get("api"),
+            Some(&ployz_build::TargetEvidence::Unattempted)
+        );
+        assert!(!fixture.root.join("executed").exists());
+    }
+    drop(active);
+    let _ = terminal(&mut response).await;
+}
+
+#[tokio::test]
+async fn captured_client_cancels_in_queue_without_uploading() {
+    let fixture = Fixture::new().await;
+    let (_active, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    let capture = fixture.capture();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let result = capture
+        .execute_remote(&client, fixture.machine.id, cancellation.clone(), |event| {
+            if matches!(event, Progress::Stage(Stage::Queued)) {
+                cancellation.cancel();
+            }
+            assert!(!matches!(event, Progress::Stage(Stage::Upload)));
+        })
+        .await;
+    assert!(
+        matches!(result, Outcome::Failed { stage: Stage::Queued, message, .. } if message.contains("cancelled"))
+    );
+    assert!(!fixture.root.join("executed").exists());
+}
+
+#[tokio::test]
+async fn client_waits_past_connection_deadline_and_uploads_only_after_admission() {
+    let fixture = Fixture::new().await;
+    let (active, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    let capture = fixture.capture();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let (waiting, mut observed) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote(&client, selected, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    waiting.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    observed.recv().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert!(
+        !execution.is_finished(),
+        "client abandoned the configured queue wait"
+    );
+    assert!(
+        !fixture.root.join("build-upload/source").exists(),
+        "queued capture uploaded early"
+    );
+    drop(active);
+    let _ = terminal(&mut response).await;
+    assert!(matches!(execution.await.unwrap(), Outcome::Images { .. }));
 }
 
 #[tokio::test]

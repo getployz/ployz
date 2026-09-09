@@ -211,6 +211,7 @@ exit 0
         state_directory: directory.clone(),
         active_timeout: EXECUTION_TIMEOUT,
         configuration_file: directory.join("build.yaml"),
+        ..Default::default()
     })
     .unwrap();
     let cancellation = admission.cancellation();
@@ -358,4 +359,62 @@ fn a_command_that_outlasts_its_budget_is_terminated() {
         Err(BuildError::TimedOut(_))
     ));
     assert!(waited.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn docker_preflight_holds_quarantine_and_clears_confirmed_failures() {
+    let directory = std::env::temp_dir().join(format!("ployz-preflight-{}", uuid::Uuid::new_v4()));
+    use std::os::unix::fs::DirBuilderExt as _;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    let program = directory.join("docker");
+    let policy = HostPolicy {
+        state_directory: directory.clone(),
+        configuration_file: directory.join("build.yaml"),
+        ..Default::default()
+    };
+    let targets = [target("api", None)];
+    let environment = BTreeMap::new();
+    let request = Request {
+        railpack: &[],
+        compose_file: &directory.join("compose.json"),
+        working_dir: &directory,
+        environment: &environment,
+        docker: Some(&program),
+        targets: &targets,
+        build_args: &[],
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    for stop_at in ["context show", "buildx version"] {
+        executable(
+            &program,
+            &format!(
+                r#"#!/bin/sh
+[ "$1" = --ready ] && exit 0
+[ -s '{}.lock' ] || {{ echo missing-quarantine >&2; exit 1; }}
+if [ "$*" = '{stop_at}' ]; then
+    echo observed-quarantine >&2
+    exit 1
+fi
+[ "$*" = 'context show' ] && echo default
+exit 0
+"#,
+                builder_name()
+            ),
+        );
+        let admission = Admission::try_acquire_with(&policy).unwrap();
+        let error = execute_admitted(&request, admission, &|_| {}).unwrap_err();
+        assert!(
+            error.to_string().contains("observed-quarantine"),
+            "{stop_at}: {error}"
+        );
+        assert_eq!(error.stage(), Stage::Preparation);
+        assert!(!error.is_unknown());
+        assert!(Admission::try_acquire_with(&policy).is_ok());
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }

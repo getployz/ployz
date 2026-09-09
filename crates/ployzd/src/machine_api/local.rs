@@ -44,7 +44,7 @@ pub struct MachineService {
     allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     runtime_watch: Arc<RuntimeWatch>,
-    pub(crate) build_policy: ployz_build::HostPolicy,
+    pub(crate) builds: Arc<crate::build::Runner>,
 }
 
 impl MachineService {
@@ -64,7 +64,8 @@ impl MachineService {
             allocator_endpoint: None,
             cloud_pairing: None,
             runtime_watch: Arc::default(),
-            build_policy: ployz_build::HostPolicy::default(),
+            builds: crate::build::Runner::new(Default::default(), Default::default())
+                .expect("default Build policy"),
         }
     }
 
@@ -597,7 +598,7 @@ impl MachineRpc for MachineService {
         Ok(Response::new(crate::build::start(
             self.local_record()?.id(),
             request.into_inner(),
-            self.build_policy.clone(),
+            self.builds.clone(),
         )))
     }
 

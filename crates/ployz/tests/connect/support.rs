@@ -321,8 +321,35 @@ impl MachineRpc for DiscoveryService {
                     .map(|target| target.name.clone())
                     .collect(),
             );
+            if recorder.queued {
+                sender
+                    .send(Ok(remote::encode(&Event::Progress(
+                        ployz_build::Progress::Stage(ployz_build::Stage::Queued),
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(50), request.message())
+                        .await
+                        .is_err(),
+                    "client uploaded before admission"
+                );
+            }
+            if let Some(outcome) = &recorder.admission_outcome {
+                let _ = sender
+                    .send(Ok(
+                        remote::encode(&Event::Finished(outcome.clone())).unwrap()
+                    ))
+                    .await;
+                return;
+            }
             sender
-                .send(Ok(remote::encode(&Event::Admitted { machine_id }).unwrap()))
+                .send(Ok(remote::encode(&Event::Admitted {
+                    machine_id,
+                    active_timeout: ployz_build::EXECUTION_TIMEOUT,
+                })
+                .unwrap()))
                 .await
                 .unwrap();
             let mut upload = remote::Upload::new().unwrap();
@@ -1093,4 +1120,6 @@ pub(super) struct BuildRecorder {
     pub(super) routes: Mutex<Vec<ployz_core::RoutingRequest>>,
     pub(super) targets: Mutex<Vec<Vec<String>>>,
     pub(super) uploads: AtomicUsize,
+    pub(super) queued: bool,
+    pub(super) admission_outcome: Option<ployz_build::remote::Outcome>,
 }

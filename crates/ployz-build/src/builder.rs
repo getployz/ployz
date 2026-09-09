@@ -248,9 +248,13 @@ fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
 /// Serializes local attempts sharing one builder and its retained cache.
 ///
 /// Held for the whole attempt. Uncertain termination quarantines the retained state.
+#[derive(Clone)]
 pub(crate) struct Lock {
-    file: fs::File,
+    file: std::sync::Arc<LockedFile>,
+    pub(crate) directory: PathBuf,
 }
+
+struct LockedFile(fs::File);
 
 impl Lock {
     /// Wait for exclusive use of this user's builder.
@@ -274,6 +278,52 @@ impl Lock {
     }
 
     pub(crate) fn try_acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
+        let lock = Self::open_locked(directory)?;
+        if lock.file.0.metadata().map_err(lock_error)?.len() != 0 {
+            return Err(lock.uncertain());
+        }
+        Ok(lock)
+    }
+
+    fn uncertain(&self) -> BuildError {
+        BuildError::UncertainTermination(format!(
+            "retained builder state is quarantined; confirm builder {} and its host processes have stopped before clearing {}",
+            builder_name(),
+            self.directory
+                .join(format!("{}.lock", builder_name()))
+                .display()
+        ))
+    }
+
+    /// One bounded teardown of an abandoned builder on daemon startup. The
+    /// marker remains: removing a container cannot prove an orphaned host
+    /// process stopped, so cleanup alone must never authorize conflicting work.
+    pub(crate) fn cleanup_abandoned(policy: &crate::HostPolicy) -> Result<(), BuildError> {
+        let lock = Self::open_locked(&policy.state_directory)?;
+        if lock.file.0.metadata().map_err(lock_error)?.len() == 0 {
+            return crate::upload::remove_abandoned(&lock.directory.join("build-upload")).map_err(
+                |error| BuildError::Prerequisite(format!("remove abandoned Build upload: {error}")),
+            );
+        }
+        let environment = crate::upload::environment(&lock.directory.join("build-upload"));
+        let docker = Docker {
+            program: &policy.docker,
+            environment: &environment,
+            working_dir: &lock.directory,
+            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+            cancellation: None,
+            progress: None,
+        };
+        if let Err(error) = remove(&docker, &builder_name()) {
+            return Err(BuildError::UncertainTermination(format!(
+                "{}; abandoned builder cleanup failed: {error}",
+                lock.uncertain()
+            )));
+        }
+        Err(lock.uncertain())
+    }
+
+    fn open_locked(directory: &std::path::Path) -> Result<Self, BuildError> {
         use rustix::fs::{FlockOperation, flock};
         use std::os::unix::fs::MetadataExt as _;
         match fs::DirBuilder::new().mode(0o700).create(directory) {
@@ -305,36 +355,32 @@ impl Lock {
             Err(rustix::io::Errno::WOULDBLOCK) => return Err(BuildError::Busy),
             Err(error) => return Err(lock_error(error.into())),
         }
-        if file.metadata().map_err(lock_error)?.len() != 0 {
-            return Err(BuildError::UncertainTermination(format!(
-                "retained builder state is quarantined; confirm builder {} has stopped before clearing {}",
-                builder_name(),
-                path.display()
-            )));
-        }
-        Ok(Self { file })
+        Ok(Self {
+            file: std::sync::Arc::new(LockedFile(file)),
+            directory: directory.to_owned(),
+        })
     }
 
-    fn clear(&mut self) -> Result<(), BuildError> {
-        self.file.set_len(0).map_err(lock_error)?;
-        self.file.sync_all().map_err(lock_error)
+    pub(crate) fn clear(&mut self) -> Result<(), BuildError> {
+        self.file.0.set_len(0).map_err(lock_error)?;
+        self.file.0.sync_all().map_err(lock_error)
     }
 
     /// Persist uncertainty across process exit before releasing the OS lock.
     pub(crate) fn quarantine(&mut self) -> Result<(), BuildError> {
         use std::io::Write as _;
-        self.file
+        (&self.file.0)
             .write_all(b"termination unconfirmed\n")
             .map_err(lock_error)?;
-        self.file.sync_all().map_err(lock_error)
+        self.file.0.sync_all().map_err(lock_error)
     }
 }
 
-impl Drop for Lock {
+impl Drop for LockedFile {
     fn drop(&mut self) {
         // Another thread may have forked a child that briefly inherited this
         // CLOEXEC descriptor. Release ownership now, without waiting for exec.
-        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
+        let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
     }
 }
 
@@ -438,8 +484,9 @@ esac
             let mut builder =
                 Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
-            builder.lock.as_mut().unwrap().file =
-                fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap();
+            builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile(
+                fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap(),
+            ));
             let result = if prior_failure {
                 Err(BuildError::Result("earlier build failure".into()).at(crate::Stage::Building))
             } else {

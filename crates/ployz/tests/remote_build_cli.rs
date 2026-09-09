@@ -1,3 +1,5 @@
+//! Remote Build CLI admission, outcome rendering, and absence of local Docker I/O.
+
 use ployz_core::{BUILD_CAPABILITY, MachineTarget, RoutingRequest};
 use std::{
     fs,
@@ -32,7 +34,10 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
         .insert(BUILD_CAPABILITY.parse().unwrap());
     let mut service = support::DiscoveryService::new(description);
     service.machines = vec![support::machine('a', "tower")];
-    let recorder = Arc::new(support::BuildRecorder::default());
+    let recorder = Arc::new(support::BuildRecorder {
+        queued: true,
+        ..Default::default()
+    });
     service.builds = Some(recorder.clone());
     let (address, server) = support::serve_discovery(service).await;
     let run = |args: &[&str]| {
@@ -59,6 +64,13 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Queued")
+                && stderr.contains("queue wait:")
+                && stderr.contains("execution:"),
+            "{stderr}"
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
@@ -152,5 +164,86 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
     assert_eq!(recorder.uploads.load(Ordering::SeqCst), 4);
     assert!(!root.join("docker-called").exists());
     server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn remote_queue_outcomes_name_machine_and_unattempted_work() {
+    use ployz_build::{Stage, TargetEvidence, WorkEvidence, remote::Outcome};
+    let root = std::env::temp_dir().join(format!("ployz-queue-cli-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        "name: demo\nservices: {api: {build: .}}\n",
+    )
+    .unwrap();
+    fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    for reason in [
+        "queue full",
+        "queue expired",
+        "queue cancelled",
+        "termination unknown",
+    ] {
+        let mut description = support::test_description();
+        description.machine_id = support::machine_id('a');
+        description
+            .capabilities
+            .insert(BUILD_CAPABILITY.parse().unwrap());
+        let mut service = support::DiscoveryService::new(description);
+        service.machines = vec![support::machine('a', "tower")];
+        let work = WorkEvidence(std::collections::BTreeMap::from([(
+            "api".into(),
+            TargetEvidence::Unattempted,
+        )]));
+        let outcome = if reason == "termination unknown" {
+            Outcome::Unknown {
+                stage: Stage::Admission,
+                message: reason.into(),
+                work,
+            }
+        } else {
+            Outcome::Failed {
+                stage: Stage::Queued,
+                message: reason.into(),
+                work,
+            }
+        };
+        let recorder = Arc::new(support::BuildRecorder {
+            queued: true,
+            admission_outcome: Some(outcome),
+            ..Default::default()
+        });
+        service.builds = Some(recorder.clone());
+        let (address, server) = support::serve_discovery(service).await;
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(&root)
+            .env("PATH", &root)
+            .env("HOME", &root)
+            .env("PLOYZ_CONFIG", root.join("config.yaml"))
+            .args([
+                "--connect",
+                &format!("tcp://{address}"),
+                "build",
+                "--remote=tower",
+                "api",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(support::machine_id('a').as_str())
+                && stderr.contains(reason)
+                && stderr.contains("Unattempted"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("queue wait:") && stderr.contains("execution: 0.00s"),
+            "{stderr}"
+        );
+        assert_eq!(recorder.uploads.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
     fs::remove_dir_all(root).unwrap();
 }

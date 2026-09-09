@@ -6,7 +6,7 @@ use ployz_core::{MachineId, OpaquePayload};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub use crate::received_recipe::{validate_capture, validate_remote_context};
-pub use crate::upload::{Upload, upload};
+pub use crate::upload::{AdmittedUpload, Upload, upload};
 
 /// Invalid or unavailable captured input at the transport trust boundary.
 #[derive(Debug, thiserror::Error)]
@@ -69,7 +69,10 @@ pub enum Input {
 /// Admission, observed progress, or the terminal host report.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
-    Admitted { machine_id: MachineId },
+    Admitted {
+        machine_id: MachineId,
+        active_timeout: std::time::Duration,
+    },
     Progress(Progress),
     Finished(Outcome),
 }

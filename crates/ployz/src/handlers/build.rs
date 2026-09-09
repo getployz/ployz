@@ -87,6 +87,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
                     machine.id
                 )));
             }
+            eprintln!("Build Machine: {}", machine.id);
             let captured = capture_build(&plan, &options, &mut project)?;
             let outcome = captured
                 .execute_remote(&client, machine.id, cancellation.clone(), |event| {
@@ -94,6 +95,14 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
                     match event {
                         ployz_build::Progress::Stage(stage) => eprintln!("Build: {stage:?}"),
                         ployz_build::Progress::Target { .. } => {}
+                        ployz_build::Progress::Timing {
+                            queue_wait,
+                            execution,
+                        } => eprintln!(
+                            "Build queue wait: {:.2}s; execution: {:.2}s",
+                            queue_wait.as_secs_f64(),
+                            execution.as_secs_f64()
+                        ),
                         ployz_build::Progress::Output(bytes) => {
                             let _ = std::io::stderr().write_all(&bytes);
                         }

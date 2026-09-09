@@ -231,7 +231,7 @@ pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
 /// resources cannot be confirmed stopped. Uncertainty blocks competing work.
 pub fn execute_admitted(
     request: &Request<'_>,
-    admission: Admission,
+    mut admission: Admission,
     progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     let planned = plan(request.targets)?;
@@ -249,12 +249,24 @@ pub fn execute_admitted(
     };
     let metadata = request.working_dir.join("build-metadata.json");
     progress(Progress::Stage(Stage::Preparation));
+    // Preflight processes also use private inputs. Persist ownership before
+    // spawning them, including across a daemon crash or uncertain termination.
+    admission
+        .lock
+        .quarantine()
+        .map_err(|error| error.at(Stage::Preparation))?;
     docker
         .require_local()
-        .map_err(|error| error.at(Stage::Preparation))?;
-    docker
-        .run("check Buildx", &["buildx", "version"], Streams::Captured)
-        .map_err(|error| error.at(Stage::Preparation))?;
+        .and_then(|()| docker.run("check Buildx", &["buildx", "version"], Streams::Captured))
+        .map_err(|error| {
+            let error = error.at(Stage::Preparation);
+            if !error.is_unknown()
+                && let Err(cleanup) = admission.lock.clear()
+            {
+                return error.with_later_failure(cleanup);
+            }
+            error
+        })?;
     let builder = Builder::acquire(&docker, admission.lock, &admission.resources)
         .map_err(|error| error.at(Stage::Preparation))?;
     let result = (|| {
@@ -708,7 +720,7 @@ impl<'a> Docker<'a> {
             return Err(BuildError::Cancelled);
         }
         if self.deadline.remaining().is_zero() {
-            return Err(BuildError::TimedOut(EXECUTION_TIMEOUT.as_secs()));
+            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         }
         let mut command = Command::new(self.program);
         command

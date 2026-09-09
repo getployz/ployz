@@ -33,6 +33,7 @@ impl Host {
                 state_directory: root,
                 docker,
                 active_timeout: Duration::from_secs(10),
+                ..Default::default()
             },
         }
     }

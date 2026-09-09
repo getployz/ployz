@@ -68,6 +68,11 @@ impl MachineApi {
 }
 
 impl MachineApiBuilder {
+    pub(crate) fn with_builds(mut self, builds: Arc<crate::build::Runner>) -> Self {
+        self.service.builds = builds;
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
         self.service = self.service.with_participation(participating);

@@ -99,8 +99,26 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        let build_policy = ployz_build::HostPolicy::from_environment()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        Self::start_with_build_policy(config, build_policy).await
+    }
+
+    async fn start_with_build_policy(
+        config: DaemonConfig,
+        build_policy: ployz_build::HostPolicy,
+    ) -> Result<Self, Error> {
         let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
         let socket_lock = claim_socket(&config.socket)?;
+        let cleanup = tokio::task::spawn_blocking({
+            let policy = build_policy.clone();
+            move || ployz_build::Admission::cleanup_abandoned(&policy)
+        })
+        .await
+        .map_err(io::Error::other)?;
+        if let Err(error) = cleanup {
+            eprintln!("WARNING: abandoned Build cleanup: {error}");
+        }
         let local_record = store
             .lock()
             .map_err(|_| Error::StorePoisoned)?
@@ -167,6 +185,10 @@ impl Daemon {
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
         let machine_api = MachineApi::builder(Arc::clone(&store), reset.clone())
+            .with_builds(
+                crate::build::Runner::new(build_policy, shutdown.clone())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+            )
             .with_participation(participating.clone())
             .with_cluster(
                 corrosion
@@ -763,6 +785,48 @@ mod tests {
             .decode_response()
             .unwrap();
         response.decode::<op::Reset>().unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_cleans_abandoned_builder_without_a_build_request() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = TestDir::new("ployzd-builder-restart");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let policy = ployz_build::HostPolicy {
+            state_directory: root.0.clone(),
+            docker: root.0.join("docker"),
+            ..Default::default()
+        };
+        let marker = root.0.join(format!("{}.lock", ployz_build::builder_name()));
+        fs::write(&marker, "termination unconfirmed\n").unwrap();
+        fs::write(
+            &policy.docker,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > cleaned\n",
+        )
+        .unwrap();
+        fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
+        let daemon = Daemon::start_with_build_policy(config, policy.clone())
+            .await
+            .unwrap();
+        assert!(
+            fs::read_to_string(root.0.join("cleaned"))
+                .unwrap()
+                .contains("buildx rm")
+        );
+        assert!(!fs::read_to_string(marker).unwrap().is_empty());
+        assert!(
+            ployz_build::Admission::try_acquire_with(&policy)
+                .err()
+                .unwrap()
+                .is_unknown()
+        );
+        assert!(
+            describe(&socket)
+                .await
+                .supports(DESCRIBE_CONTRACT_CAPABILITY)
+        );
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
     }
 
     #[tokio::test]

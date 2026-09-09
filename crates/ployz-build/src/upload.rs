@@ -46,6 +46,49 @@ enum UploadState {
 /// A finished capture; only this type can execute.
 pub struct CompletedUpload(Upload);
 
+/// A receiver that owns its admission until source cleanup finishes.
+/// Consuming Admission prevents two receivers from sharing live staging.
+pub struct AdmittedUpload {
+    upload: Upload,
+    admission: Admission,
+}
+
+impl AdmittedUpload {
+    pub(crate) fn new(admission: Admission) -> Result<Self, InputError> {
+        admission
+            .check()
+            .map_err(|error| InputError::from(error.to_string()))?;
+        let upload = Upload::owned(admission.lock.directory.join("build-upload"))?;
+        Ok(Self { upload, admission })
+    }
+
+    /// Validate the next frame within the admitted execution budget.
+    /// # Errors
+    /// Rejects cancellation, expiry, and malformed upload frames.
+    pub fn accept(&mut self, frame: Input) -> Result<(), InputError> {
+        self.admission
+            .check()
+            .map_err(|error| InputError::from(error.to_string()))?;
+        self.upload.accept(frame)
+    }
+
+    /// Finish receiving and execute while retaining ownership through cleanup.
+    /// # Errors
+    /// Rejects incomplete captures or host execution failure.
+    pub fn execute(
+        self,
+        definition: &Definition,
+        docker: Option<&Path>,
+        progress: &(dyn Fn(Progress) + Sync),
+    ) -> Result<Vec<BuiltImage>, BuildError> {
+        let _ownership = self.admission.lock.clone();
+        self.upload
+            .complete()
+            .map_err(|error| BuildError::Request(error.to_string()).at(crate::Stage::Upload))?
+            .execute(definition, self.admission, docker, progress)
+    }
+}
+
 impl Upload {
     /// Create private staging for one bounded upload.
     /// # Errors
@@ -53,6 +96,17 @@ impl Upload {
     pub fn new() -> Result<Self, InputError> {
         let root =
             std::env::temp_dir().join(format!("ployz-received-build-{}", uuid::Uuid::new_v4()));
+        Self::create(root)
+    }
+
+    pub(crate) fn owned(root: PathBuf) -> Result<Self, InputError> {
+        // Called only with retained-builder ownership. An execution marker
+        // prevents reaching this point while abandoned work is uncertain.
+        remove_abandoned(&root).map_err(io_error)?;
+        Self::create(root)
+    }
+
+    fn create(root: PathBuf) -> Result<Self, InputError> {
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)
@@ -235,24 +289,7 @@ impl CompletedUpload {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;
         }
-        let environment = BTreeMap::from([
-            (
-                "PATH".into(),
-                std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
-            ),
-            (
-                "HOME".into(),
-                upload.root.join("private").to_string_lossy().into_owned(),
-            ),
-            (
-                "DOCKER_CONFIG".into(),
-                upload
-                    .root
-                    .join("private/docker")
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-        ]);
+        let environment = environment(&upload.root);
         let result = crate::execute_admitted(
             &Request {
                 railpack: &railpack,
@@ -283,6 +320,15 @@ impl Drop for Upload {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// Caller must hold builder ownership and verify that no execution is uncertain.
+pub(crate) fn remove_abandoned(root: &Path) -> io::Result<()> {
+    if root.try_exists()? {
+        make_removable(root)?;
+        fs::remove_dir_all(root)?;
+    }
+    Ok(())
 }
 
 fn make_removable(path: &Path) -> io::Result<()> {
@@ -411,6 +457,25 @@ pub fn upload(
         visit(root, Path::new(path), &mut send)?;
     }
     send(Input::Finish)
+}
+
+/// The same private Docker configuration is used for execution and bounded
+/// abandoned-builder cleanup; no client paths or ambient credentials enter it.
+pub(crate) fn environment(root: &Path) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "PATH".into(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+        ),
+        (
+            "HOME".into(),
+            root.join("private").to_string_lossy().into_owned(),
+        ),
+        (
+            "DOCKER_CONFIG".into(),
+            root.join("private/docker").to_string_lossy().into_owned(),
+        ),
+    ])
 }
 
 #[cfg(test)]

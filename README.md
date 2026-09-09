@@ -38,6 +38,23 @@ Railpack refuses `--check` and unsupported frontend settings by name. On this
 pinned frontend, `--no-cache` and `--pull` force a cold build by clearing the
 exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
 
+Remote Builds (`ployz build --remote=<machine>`) use one active
+slot per Machine and a FIFO of eight waiting attempts. Source and secrets stay
+on the client until admission. Configure the daemon environment and restart it:
+
+| Setting | Default | Accepted values |
+| --- | --- | --- |
+| `PLOYZ_BUILD_QUEUE_CAPACITY` | `8` | `0`–`1024` waiting attempts |
+| `PLOYZ_BUILD_QUEUE_TIMEOUT_SECONDS` | `600` | `1`–`86400` seconds |
+| `PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS` | `1800` | `1`–`86400` seconds |
+
+The active budget includes upload, preparation, execution, import and cleanup.
+Cancellation and disconnect remove waiters; daemon restart discards the queue.
+Unconfirmed termination keeps builder ownership quarantined, including across
+restart. Bounded abandoned-builder teardown does not clear that uncertainty:
+an operator must confirm the builder and its host processes have stopped before
+clearing the lock marker named in the error. Work is never replayed.
+
 `ployz build --remote=<Machine>` runs Dockerfile or native-platform Railpack
 Builds on the selected Machine. That Machine supplies the build resource policy;
 source uploads and build requests cannot change it.

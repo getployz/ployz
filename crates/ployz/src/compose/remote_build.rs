@@ -21,6 +21,49 @@ pub(super) async fn execute(
     cancellation: CancellationToken,
     progress: impl Fn(Progress),
 ) -> Outcome {
+    let mut queued = None;
+    let mut executing = None;
+    let outcome = execute_attempt(
+        inputs,
+        definition,
+        client,
+        machine_id,
+        cancellation,
+        |event| {
+            match &event {
+                Progress::Stage(Stage::Queued) => {
+                    queued.get_or_insert_with(tokio::time::Instant::now);
+                }
+                Progress::Stage(Stage::Upload) => {
+                    executing.get_or_insert_with(tokio::time::Instant::now);
+                }
+                Progress::Stage(_)
+                | Progress::Output(_)
+                | Progress::Timing { .. }
+                | Progress::Target { .. } => {}
+            }
+            progress(event);
+        },
+    )
+    .await;
+    let finished = tokio::time::Instant::now();
+    progress(Progress::Timing {
+        queue_wait: queued.map_or(Duration::ZERO, |start| {
+            executing.unwrap_or(finished) - start
+        }),
+        execution: executing.map_or(Duration::ZERO, |start| finished - start),
+    });
+    outcome
+}
+
+async fn execute_attempt(
+    inputs: BuildInputs,
+    definition: Definition,
+    client: &Client,
+    machine_id: MachineId,
+    cancellation: CancellationToken,
+    mut progress: impl FnMut(Progress),
+) -> Outcome {
     let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
     if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
         return failed(Stage::Preparation, error.to_string()).with_work(evidence);
@@ -54,28 +97,35 @@ pub(super) async fn execute(
             );
         }
     };
-    match tokio::time::timeout(Duration::from_secs(10), responses.message()).await {
-        Ok(Ok(Some(payload))) => match remote::decode::<Event>(&payload) {
-            Ok(Event::Admitted {
-                machine_id: admitted,
-            }) if admitted == machine_id => {}
-            Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => {
-                return outcome.with_work(evidence);
+    let waiting_since = tokio::time::Instant::now();
+    let mut admission_deadline = waiting_since + Duration::from_secs(10);
+    let mut queued = false;
+    let active_timeout = loop {
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                // No source has left this client. Dropping the stream removes
+                // its connection-scoped waiter, even if admission raced cancellation.
+                return failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence);
             }
-            _ => {
-                return failed(
-                    Stage::Admission,
-                    "invalid Build admission response; source was not uploaded",
-                );
-            }
-        },
-        _ => {
-            return failed(
-                Stage::Admission,
-                "Build admission was not observed; source was not uploaded",
-            );
+            result = responses.message() => match result {
+                Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
+                    Ok(Event::Admitted { machine_id: admitted, active_timeout })
+                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
+                    Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
+                        queued = true;
+                        // The Machine's validated local policy is bounded at 24h.
+                        admission_deadline = waiting_since + Duration::from_secs(86410);
+                        progress(Progress::Stage(Stage::Queued));
+                    }
+                    Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return outcome.with_work(evidence),
+                    _ => return failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence),
+                },
+                _ => return failed(Stage::Admission, "Build admission was not observed; source was not uploaded").with_work(evidence),
+            },
+            () = tokio::time::sleep_until(admission_deadline) => return failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence),
         }
-    }
+    };
     progress(Progress::Stage(Stage::Upload));
     let stop = cancellation.child_token();
     let _stop_upload = stop.clone().drop_guard();
@@ -101,8 +151,7 @@ pub(super) async fn execute(
     let mut uploaded = false;
     let mut cancelling = false;
     let mut stage = Stage::Upload;
-    let mut deadline =
-        tokio::time::Instant::now() + ployz_build::EXECUTION_TIMEOUT + Duration::from_secs(70);
+    let mut deadline = tokio::time::Instant::now() + active_timeout + Duration::from_secs(70);
     loop {
         tokio::select! {
             result = responses.message() => match result {
