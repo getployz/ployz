@@ -144,7 +144,7 @@ fn build_remote() -> Arg {
         .long("remote")
         .num_args(0..=1)
         .require_equals(true)
-        .default_missing_value("")
+        .default_missing_value(crate::build_location::AUTOMATIC)
         .value_name("MACHINE")
         .conflicts_with("local")
 }

@@ -611,6 +611,16 @@ fn effective_build_args(
 }
 
 impl CapturedBuild {
+    /// Platforms every captured target asked for. Empty means each target
+    /// builds for whatever platform its builder runs natively.
+    #[must_use]
+    pub fn platforms(&self) -> BTreeSet<String> {
+        self.targets
+            .iter()
+            .flat_map(|target| target.platforms.iter().cloned())
+            .collect()
+    }
+
     /// Build this capture through the shared runner, without reading the
     /// original sources again.
     ///

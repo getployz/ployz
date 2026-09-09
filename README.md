@@ -50,6 +50,18 @@ Railpack refuses `--check` and unsupported frontend settings by name. On this
 pinned frontend, `--no-cache` and `--pull` force a cold build by clearing the
 exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
 
+`ployz build` and `ployz deploy` run here by default. `--remote=<Machine>` pins
+one Machine, plain `--remote` selects one automatically, and `--local` states the
+local default explicitly. Build location is per invocation: Machine selectors are
+Cluster-local and may be ambiguous, so no Compose field pins one. Automatic
+selection uses visible Machines that advertise remote Builds, prefers the one
+whose reported architecture runs the most requested `build.platforms` natively,
+and breaks ties on Machine ID, so it does not depend on observation order. The
+selected Machine is reported before any upload, along with any platform this
+client could not confirm it runs natively and any Machine that did not answer
+for itself; it still admits or refuses the Build itself, and Ployz never falls
+back to a local Build silently.
+
 Remote Builds (`ployz build --remote=<machine>`) use one active
 slot per Machine and a FIFO of eight waiting attempts. Source and secrets stay
 on the client until admission. Configure the daemon environment and restart it:

@@ -551,3 +551,135 @@ async fn assert_temporary_tags_released(cluster: &Cluster) {
     .await
     .expect("command left temporary Build tags on a Machine");
 }
+
+/// Two compatible candidates: automatic selection, an explicit pin, and the
+/// local override.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local() {
+    let cluster = Cluster::create(
+        ClusterPlan::new(&format!("l3-build-804-{}", std::process::id()), 2).unwrap(),
+    )
+    .unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let first = machines.first().unwrap().id;
+    let second = machines.get(1).unwrap().id;
+    // Automatic selection breaks the tie between equally capable Machines on
+    // Machine ID alone, so the expected candidate is known before the run.
+    let (automatic, automatic_index) = if first.as_str() <= second.as_str() {
+        (first, 0)
+    } else {
+        (second, 1)
+    };
+    let pinned_index = 1 - automatic_index;
+    let pinned = *[first, second].get(pinned_index).unwrap();
+    let address = cluster.api_address(0).unwrap();
+    let root = std::env::temp_dir().join(format!("ployz-build-804-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let image = format!("registry.invalid/ployz-804-{}:built", std::process::id());
+    fs::write(
+        root.join("Dockerfile"),
+        "FROM alpine:3.23.3\nCOPY payload /payload\nCMD [\"sleep\", \"3600\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("payload"), "selected-machine-ran\n").unwrap();
+    fs::write(root.join(".dockerignore"), "docker\nconfig.yaml\n").unwrap();
+    fs::write(
+        root.join("docker"),
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 99\n",
+            root.join("local-docker-called").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(root.join("docker"), fs::Permissions::from_mode(0o700)).unwrap();
+    let compose = |preference: &str| {
+        fs::write(
+            root.join("compose.yaml"),
+            format!(
+                "name: remote\n{preference}services:\n  app:\n    image: {image}\n    pull_policy: never\n    x-machines: [{first}]\n    build: .\n"
+            ),
+        )
+        .unwrap();
+    };
+    let run = |args: Vec<String>| {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .current_dir(&root)
+            .env("PATH", &root)
+            .env("HOME", &root)
+            .env("PLOYZ_CONFIG", root.join("config.yaml"))
+            .env("DOCKER_HOST", "unix:///no-local-docker.sock")
+            .args(["--connect", &address])
+            .args(args)
+            .kill_on_drop(true);
+        command
+    };
+    let succeed = async |args: Vec<String>| {
+        let output = tokio::time::timeout(Duration::from_secs(240), run(args).output())
+            .await
+            .unwrap()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        stdout
+    };
+
+    // Plain --remote selects a compatible Machine and leaves the image there.
+    compose("");
+    let stdout = succeed(vec!["build".into(), "--remote".into(), "app".into()]).await;
+    assert!(stdout.contains(automatic.as_str()), "{stdout}");
+    let built = stdout
+        .split_whitespace()
+        .find(|word| word.starts_with("sha256:"))
+        .expect("remote exact image identity")
+        .to_owned();
+    assert!(
+        cluster
+            .machine_shell(automatic_index, &format!("docker image inspect {built}"))
+            .is_ok()
+    );
+    assert!(
+        cluster
+            .machine_shell(pinned_index, &format!("docker image inspect {built}"))
+            .is_err(),
+        "automatic selection left the image on both Machines"
+    );
+
+    // An explicit pin builds on the other Machine and still deploys from it.
+    let stdout = succeed(vec![
+        "deploy".into(),
+        format!("--remote={pinned}"),
+        "--yes".into(),
+        "app".into(),
+    ])
+    .await;
+    assert!(stdout.contains(pinned.as_str()), "{stdout}");
+    let container = cluster
+        .machine_shell(0, "docker ps -q --filter label=ployz.service.name=app")
+        .unwrap();
+    let container = container.trim();
+    assert!(!container.is_empty(), "application was not running");
+    assert_eq!(
+        cluster
+            .machine_shell(0, &format!("docker exec {container} cat /payload"))
+            .unwrap(),
+        "selected-machine-ran\n"
+    );
+
+    // --local runs on this host's Docker even with the Cluster reachable, which
+    // the fixture stub refuses.
+    assert!(!root.join("local-docker-called").exists());
+    let output = run(vec!["build".into(), "--local".into(), "app".into()])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(root.join("local-docker-called").exists());
+    assert_temporary_tags_released(&cluster).await;
+    fs::remove_dir_all(root).unwrap();
+}

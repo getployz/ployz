@@ -142,6 +142,8 @@ fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event:
 pub(super) struct DiscoveryService {
     pub(super) builds: Option<Arc<BuildRecorder>>,
     description: ContractDescription,
+    /// Contracts answered per routed Machine. Absent Machines answer `description`.
+    pub(super) descriptions: BTreeMap<MachineId, ContractDescription>,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
@@ -179,6 +181,7 @@ impl DiscoveryService {
         Self {
             builds: None,
             description,
+            descriptions: BTreeMap::new(),
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
@@ -406,6 +409,7 @@ impl MachineRpc for DiscoveryService {
             }
             None => {}
         }
+        let metadata = request.metadata().clone();
         let request = request
             .into_inner()
             .decode_request()
@@ -413,8 +417,18 @@ impl MachineRpc for DiscoveryService {
         if !matches!(request.body, RpcRequestBody::DescribeContract(_)) {
             return Err(Status::invalid_argument("expected discovery request"));
         }
+        let routed = match ployz_core::routing_from_metadata(&metadata) {
+            Ok(ployz_core::RoutingRequest::One(target)) => self
+                .machines
+                .iter()
+                .find(|observation| {
+                    ployz_core::machine_matches_target(&observation.machine, &target)
+                })
+                .and_then(|observation| self.descriptions.get(&observation.machine.id)),
+            _ => None,
+        };
         Ok(Response::new(
-            RpcResponse::from(self.description.clone())
+            RpcResponse::from(routed.unwrap_or(&self.description).clone())
                 .encode()
                 .unwrap(),
         ))

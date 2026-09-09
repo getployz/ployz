@@ -176,9 +176,16 @@ fn remote_build_target_requires_equals_and_preserves_positional_service() {
             "api",
         ),
         (vec!["ployz", "build", "--remote", "api"], "", "api"),
+        (
+            vec!["ployz", "deploy", "--remote=tower", "api"],
+            "tower",
+            "api",
+        ),
+        (vec!["ployz", "deploy", "--remote", "api"], "", "api"),
     ] {
-        let matches = ployz::cli::command().try_get_matches_from(args).unwrap();
-        let build = matches.subcommand_matches("build").unwrap();
+        let command = *args.get(1).unwrap();
+        let matches = ployz::cli::command().try_get_matches_from(&args).unwrap();
+        let build = matches.subcommand_matches(command).unwrap();
         assert_eq!(
             build.get_one::<String>("remote").map(String::as_str),
             Some(target)
@@ -192,9 +199,29 @@ fn remote_build_target_requires_equals_and_preserves_positional_service() {
             [service]
         );
     }
-    assert!(
-        ployz::cli::command()
-            .try_get_matches_from(["ployz", "build", "--local", "--remote=tower"])
-            .is_err()
-    );
+    // Both commands define --local, so the refusals below are conflicts rather
+    // than an unknown flag.
+    for command in ["build", "deploy"] {
+        let matches = ployz::cli::command()
+            .try_get_matches_from(["ployz", command, "--local", "api"])
+            .unwrap();
+        assert!(
+            matches
+                .subcommand_matches(command)
+                .unwrap()
+                .get_flag("local")
+        );
+    }
+    for conflicting in [
+        vec!["ployz", "build", "--local", "--remote=tower"],
+        vec!["ployz", "deploy", "--local", "--remote=tower"],
+        vec!["ployz", "deploy", "--no-build", "--remote=tower"],
+    ] {
+        assert!(
+            ployz::cli::command()
+                .try_get_matches_from(&conflicting)
+                .is_err(),
+            "{conflicting:?}"
+        );
+    }
 }
