@@ -768,3 +768,28 @@ impl BuildSpec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_context_suffix_rules_follow_buildkit_transports() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        for (repository, accepted) in [
+            ("git://example.test/repo", true),
+            ("ssh://git@example.test/repo", true),
+            ("git@example.test:repo", true),
+            ("https://github.com/moby/buildkit.git", true),
+            ("https://github.com/moby/buildkit", false),
+            ("https://example.test/source.tar.gz", false),
+        ] {
+            assert_eq!(
+                validate_remote_context(&format!("{repository}#{commit}:src")).is_ok(),
+                accepted,
+                "{repository}"
+            );
+            assert!(validate_remote_context(&format!("{repository}#main")).is_err());
+        }
+    }
+}

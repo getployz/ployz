@@ -342,7 +342,7 @@ pub fn validate_remote_context(source: &str) -> Result<(), InputError> {
         || url.host_str().is_none()
         || url.password().is_some()
         || (!url.username().is_empty() && url.scheme() != "ssh")
-        || !url.path().ends_with(".git")
+        || (matches!(url.scheme(), "http" | "https") && !url.path().ends_with(".git"))
         || url.query().is_some()
     {
         return Err(refusal());

@@ -259,7 +259,7 @@ impl BuildInputs {
         Ok(path)
     }
 
-    /// Snapshot explicitly supplied registry auth and proxies. Never consult the host's
+    /// Snapshot explicitly supplied registry auth and proxies. Never import the host's
     /// default Docker login or credential helpers. Keep CLI plugin discovery
     /// pointed at the caller's tool installation, just like PATH.
     ///
@@ -273,16 +273,26 @@ impl BuildInputs {
     ) -> Result<(), ComposeError> {
         let mut config = serde_json::Map::new();
         let mut plugin_dirs = Vec::<PathBuf>::new();
-        if let Some(path) = environment
+        let explicit_config = environment
             .get("DOCKER_CONFIG")
-            .filter(|path| !path.is_empty())
-        {
-            let path = directory.join(path).join("config.json");
+            .filter(|path| !path.is_empty());
+        let original_config = explicit_config
+            .map(|path| directory.join(path))
+            .or_else(|| {
+                environment
+                    .get("HOME")
+                    .map(|home| directory.join(home).join(".docker"))
+            });
+        if let Some(path) = &original_config {
+            let path = path.join("config.json");
             let supplied: serde_json::Value = if path.try_exists().map_err(input_error)? {
-                let captured = self.private_file(&path)?;
-                serde_json::from_slice(&fs::read(captured).map_err(input_error)?).map_err(|_| {
-                    ComposeError::Invalid("DOCKER_CONFIG/config.json is invalid".into())
-                })?
+                let path = if explicit_config.is_some() {
+                    self.private_file(&path)?
+                } else {
+                    path
+                };
+                serde_json::from_slice(&fs::read(path).map_err(input_error)?)
+                    .map_err(|_| ComposeError::Invalid("Docker config.json is invalid".into()))?
             } else {
                 serde_json::json!({})
             };
@@ -295,44 +305,38 @@ impl BuildInputs {
                     .is_some_and(|host| !host.is_empty())
             {
                 return Err(ComposeError::Invalid(
-                    "DOCKER_CONFIG currentContext is host-specific; supply DOCKER_HOST explicitly"
-                        .into(),
+                    "Docker currentContext is host-specific; supply DOCKER_HOST explicitly".into(),
                 ));
             }
-            if supplied
-                .get("credsStore")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| !value.is_empty())
-                || supplied
-                    .get("credHelpers")
-                    .and_then(serde_json::Value::as_object)
+            if explicit_config.is_some() {
+                if supplied
+                    .get("credsStore")
+                    .and_then(serde_json::Value::as_str)
                     .is_some_and(|value| !value.is_empty())
-            {
-                return Err(ComposeError::Invalid("DOCKER_CONFIG credential helpers are host-specific; supply explicit registry auths".into()));
-            }
-            for key in ["auths", "proxies"] {
-                if let Some(value) = supplied.get(key) {
-                    config.insert(key.into(), value.clone());
+                    || supplied
+                        .get("credHelpers")
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|value| !value.is_empty())
+                {
+                    return Err(ComposeError::Invalid("DOCKER_CONFIG credential helpers are host-specific; supply explicit registry auths".into()));
+                }
+                for key in ["auths", "proxies"] {
+                    if let Some(value) = supplied.get(key) {
+                        config.insert(key.into(), value.clone());
+                    }
+                }
+                if let Some(dirs) = supplied.get("cliPluginsExtraDirs") {
+                    let dirs: Vec<PathBuf> =
+                        serde_json::from_value(dirs.clone()).map_err(|_| {
+                            ComposeError::Invalid(
+                                "DOCKER_CONFIG cliPluginsExtraDirs must be an array of paths"
+                                    .into(),
+                            )
+                        })?;
+                    plugin_dirs.extend(dirs.into_iter().map(|path| directory.join(path)));
                 }
             }
-            if let Some(dirs) = supplied.get("cliPluginsExtraDirs") {
-                let dirs: Vec<PathBuf> = serde_json::from_value(dirs.clone()).map_err(|_| {
-                    ComposeError::Invalid(
-                        "DOCKER_CONFIG cliPluginsExtraDirs must be an array of paths".into(),
-                    )
-                })?;
-                plugin_dirs.extend(dirs.into_iter().map(|path| directory.join(path)));
-            }
         }
-        let original_config = environment
-            .get("DOCKER_CONFIG")
-            .filter(|path| !path.is_empty())
-            .map(|path| directory.join(path))
-            .or_else(|| {
-                environment
-                    .get("HOME")
-                    .map(|home| directory.join(home).join(".docker"))
-            });
         if let Some(original_config) = original_config {
             plugin_dirs.push(original_config.join("cli-plugins"));
         }
@@ -586,6 +590,48 @@ fn validate_link(path: &Path, root: &Path, selection: Option<&Selection>) -> io:
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn default_docker_context_is_checked_without_importing_credentials() {
+        let fixture = BuildInputs::new().unwrap();
+        fs::create_dir(fixture.root.join(".docker")).unwrap();
+        for (context, host, accepted) in [
+            ("remote", "", false),
+            ("remote", "ssh://builder@host", true),
+            ("default", "", true),
+            ("", "", true),
+        ] {
+            fs::write(
+                fixture.root.join(".docker/config.json"),
+                serde_json::json!({
+                    "currentContext": context,
+                    "credsStore": "desktop",
+                    "auths": {"example.test": {"auth": "ambient-token"}},
+                    "proxies": {"default": {"httpProxy": "http://ambient-proxy"}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let environment = BTreeMap::from([
+                ("HOME".into(), fixture.root.to_string_lossy().into_owned()),
+                ("DOCKER_HOST".into(), host.into()),
+            ]);
+            let mut inputs = BuildInputs::new().unwrap();
+            let result = inputs.docker_config(&environment, &fixture.root);
+            assert_eq!(result.is_ok(), accepted, "{context}, {host}");
+            if let Err(error) = result {
+                assert!(error.to_string().contains("currentContext"));
+            } else {
+                let staged: serde_json::Value = serde_json::from_slice(
+                    &fs::read(inputs.root.join("private/docker/config.json")).unwrap(),
+                )
+                .unwrap();
+                for key in ["auths", "proxies", "credsStore", "currentContext"] {
+                    assert!(staged.get(key).is_none(), "imported {key}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn selected_docker_context_is_not_silently_discarded() {

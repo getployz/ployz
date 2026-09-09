@@ -10,7 +10,7 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "portless run vite dev",
+    "dev": "bash ../scripts/build-cloud-sdk.sh && portless run vite dev",
     "build": "bash ../scripts/build-cloud-sdk.sh && vite build && node scripts/package-sdk.mjs",
     "start": "node scripts/start-with-inngest-sync.mjs",
     "preview": "vite preview",

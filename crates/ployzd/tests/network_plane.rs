@@ -99,14 +99,21 @@ fn endpoint_selection_preserves_unknown_down_rotation_and_reverse_learning() {
     let stale = selection.poll(
         start + Duration::from_secs(17 + 276),
         Some(start + Duration::from_secs(17)),
-        None,
+        Some(reverse),
     );
     assert_eq!(stale, Some(SelectedEndpoint(endpoints[0].0)));
+    let recovered = start + Duration::from_secs(17 + 277);
+    assert_eq!(
+        selection.poll(recovered, Some(recovered), Some(endpoints[0].0)),
+        None,
+        "the restored advertised endpoint needs no further reconfiguration"
+    );
+    assert_eq!(selection.status(recovered, Some(recovered)), PeerStatus::Up);
 
     let only = [endpoint(12)];
     let mut reverse_only = EndpointSelection::new(&only, None, start);
     reverse_only.poll(start, Some(start), Some(reverse));
-    let fallback = reverse_only.poll(start + Duration::from_secs(276), Some(start), None);
+    let fallback = reverse_only.poll(start + Duration::from_secs(276), Some(start), Some(reverse));
     assert_eq!(fallback, Some(SelectedEndpoint(only[0].0)));
 
     let persisted =
