@@ -61,8 +61,7 @@ struct JoinInner {
     lose_lifecycle_reply: AtomicBool,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
     lose_initialize_reply: AtomicBool,
-    hold_inspect_once: AtomicBool,
-    startup_ready_at: Mutex<Option<std::time::Instant>>,
+    startup_inspect_failures: AtomicUsize,
     replace_identity_on_initialize: AtomicBool,
     fail_reservation: AtomicBool,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
@@ -86,6 +85,7 @@ struct JoinInner {
     target_inspect_attempts: AtomicUsize,
     transient_target_inspect_failures: AtomicUsize,
     fail_ensure: AtomicBool,
+    fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
     _register: Mutex<Option<JoinHandle<()>>>,
@@ -104,8 +104,7 @@ impl JoinDaemon {
                 lose_lifecycle_reply: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
                 lose_initialize_reply: AtomicBool::new(false),
-                hold_inspect_once: AtomicBool::new(false),
-                startup_ready_at: Mutex::new(None),
+                startup_inspect_failures: AtomicUsize::new(0),
                 replace_identity_on_initialize: AtomicBool::new(false),
                 fail_reservation: AtomicBool::new(false),
                 reserve_request: Mutex::new(None),
@@ -129,6 +128,7 @@ impl JoinDaemon {
                 target_inspect_attempts: AtomicUsize::new(0),
                 transient_target_inspect_failures: AtomicUsize::new(0),
                 fail_ensure: AtomicBool::new(false),
+                fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
                 _register: Mutex::new(None),
@@ -250,6 +250,11 @@ impl JoinDaemon {
         self.inner.events.lock().unwrap().record(event);
     }
 
+    pub fn fail_target_inspect(self) -> Self {
+        self.inner.fail_target_inspect.store(true, Ordering::SeqCst);
+        self
+    }
+
     pub fn fail_ensure(self) -> Self {
         self.inner.fail_ensure.store(true, Ordering::SeqCst);
         self
@@ -346,16 +351,7 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if self.inner.hold_inspect_once.swap(false, Ordering::SeqCst) {
-            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
-        }
-        if self
-            .inner
-            .startup_ready_at
-            .lock()
-            .unwrap()
-            .is_some_and(|ready| std::time::Instant::now() < ready)
-        {
+        if consume_transient_failure(&self.inner.startup_inspect_failures) {
             return Err(Status::unavailable(
                 "first startup is still pulling Corrosion",
             ));
@@ -367,6 +363,11 @@ impl MachineRpc for JoinDaemon {
             self.inner
                 .target_inspect_attempts
                 .fetch_add(1, Ordering::SeqCst);
+            if self.inner.fail_target_inspect.load(Ordering::SeqCst) {
+                return Err(Status::failed_precondition(
+                    "target Machine cannot provide capacity",
+                ));
+            }
             if consume_transient_failure(&self.inner.transient_target_inspect_failures) {
                 return Err(Status::unavailable("target Machine is not ready"));
             }
@@ -458,7 +459,7 @@ impl MachineRpc for JoinDaemon {
             .lose_lifecycle_reply
             .swap(false, Ordering::SeqCst)
         {
-            return std::future::pending().await; // Applied, but the response stays open.
+            return Err(Status::unavailable("lost lifecycle reply"));
         }
         rpc_ok(JoinAccepted {})
     }
@@ -552,10 +553,10 @@ impl MachineRpc for JoinDaemon {
             .lose_initialize_reply
             .swap(false, Ordering::SeqCst)
         {
-            self.inner.hold_inspect_once.store(true, Ordering::SeqCst);
-            *self.inner.startup_ready_at.lock().unwrap() =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(70));
-            return std::future::pending().await; // Applied, but the response stays open.
+            self.inner
+                .startup_inspect_failures
+                .store(1, Ordering::SeqCst);
+            return Err(Status::unavailable("lost Initialize reply"));
         }
         rpc_ok(Initialized { machine })
     }
@@ -949,7 +950,7 @@ impl MachineRpc for JoinDaemon {
             .lose_lifecycle_reply
             .swap(false, Ordering::SeqCst)
         {
-            return std::future::pending().await; // Applied, but the response stays open.
+            return Err(Status::unavailable("lost lifecycle reply"));
         }
         rpc_ok(ResetAccepted {})
     }

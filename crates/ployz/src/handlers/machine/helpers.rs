@@ -334,3 +334,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "setup_tests.rs"]
+mod setup_tests;

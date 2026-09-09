@@ -62,7 +62,7 @@ pub(super) async fn serve_discovery(
 pub(super) enum DescribeOutcome {
     Status(Status),
     Remote(RpcError),
-    Hang,
+    Hang(tokio::sync::oneshot::Sender<()>),
 }
 
 #[derive(Clone)]
@@ -399,7 +399,10 @@ impl MachineRpc for DiscoveryService {
             Some(DescribeOutcome::Remote(error)) => {
                 return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
             }
-            Some(DescribeOutcome::Hang) => return std::future::pending().await,
+            Some(DescribeOutcome::Hang(received)) => {
+                received.send(()).unwrap();
+                return std::future::pending().await;
+            }
             None => {}
         }
         let request = request
@@ -1099,14 +1102,54 @@ pub(super) async fn connected_client(
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
     Arc<AtomicUsize>,
 ) {
-    let (address, server) = serve_discovery(service).await;
+    // Keep semantic RPC tests inside Tokio so paused time never outruns OS I/O.
+    // Transport tests use serve_discovery / SystemConnector directly.
+    struct MemoryConnector {
+        incoming: mpsc::UnboundedSender<Result<tokio::io::DuplexStream, std::io::Error>>,
+        connects: Arc<AtomicUsize>,
+    }
+    #[tonic::async_trait]
+    impl Connector for MemoryConnector {
+        async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
+            self.connects.fetch_add(1, Ordering::SeqCst);
+            let incoming = self.incoming.clone();
+            Channel::from_static("http://memory.invalid")
+                .connect_with_connector(tower::service_fn(move |_| {
+                    let (client, server) = tokio::io::duplex(64 * 1024);
+                    incoming.send(Ok(server)).unwrap();
+                    async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client)) }
+                }))
+                .await
+                .map_err(Into::into)
+        }
+
+        async fn dial_proxy(
+            &self,
+            _: &Connection,
+            _: &str,
+            _: &str,
+        ) -> Result<BoxProxyStream, ConnectError> {
+            Err(ConnectError::Attempt("unused".into()))
+        }
+    }
+    let (incoming, receiver) = mpsc::unbounded_channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(tokio_stream::wrappers::UnboundedReceiverStream::new(
+                receiver,
+            )),
+    );
     let connects = Arc::new(AtomicUsize::new(0));
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp(address)],
+            connections: vec![Connection::tcp("127.0.0.1:1".parse().unwrap())],
         },
-        Arc::new(CountingConnector::new(connects.clone())),
+        Arc::new(MemoryConnector {
+            incoming,
+            connects: connects.clone(),
+        }),
     )
     .await
     .unwrap();

@@ -250,9 +250,34 @@ async fn caddy_lookup_failure_happens_before_initialize() {
         target_versions: Default::default(),
     });
     let machine_addr = serve_machine(daemon.clone()).await;
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy = format!("http://{}", closed.local_addr().unwrap());
-    drop(closed);
+    // Reject the proxy tunnel immediately. Retry exhaustion is covered with a
+    // paused clock in setup_retry; this test checks failure before Initialize.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let rejected = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut request = String::new();
+            stream.read_line(&mut request).await.unwrap();
+            assert!(request.starts_with("CONNECT "), "{request}");
+            loop {
+                request.clear();
+                assert!(stream.read_line(&mut request).await.unwrap() > 0);
+                if request == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .get_mut()
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+    });
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
@@ -276,9 +301,11 @@ async fn caddy_lookup_failure_happens_before_initialize() {
         .await
         .unwrap();
 
+    rejected.abort();
+    assert!(rejected.await.unwrap_err().is_cancelled());
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Discovering Caddy image at Docker Hub"),
+        String::from_utf8_lossy(&output.stderr).contains("list Docker Hub Caddy tags"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

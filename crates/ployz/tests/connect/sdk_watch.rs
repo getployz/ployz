@@ -170,18 +170,20 @@ async fn cancel_interrupts_storage_enrichment() {
         .await;
     let client = connect(&session.url, description.machine_id.as_str()).await;
     let watch = client.watch().await.unwrap();
+    let (received, held) = tokio::sync::oneshot::channel();
     service
         .describe_outcomes
         .lock()
         .unwrap()
-        .push_back(DescribeOutcome::Hang);
+        .push_back(DescribeOutcome::Hang(received));
     let waiting = watch.next();
     tokio::pin!(waiting);
-    assert!(
-        timeout(Duration::from_millis(50), &mut waiting)
-            .await
-            .is_err()
-    );
+    tokio::select! {
+        result = &mut waiting => panic!("held enrichment completed: {result:?}"),
+        result = timeout(Duration::from_secs(2), held) => {
+            result.expect("enrichment request reached the server").unwrap();
+        }
+    }
 
     watch.cancel();
 
@@ -205,17 +207,25 @@ async fn storage_enrichment_has_a_short_overall_budget() {
         .await;
     let client = connect(&session.url, description.machine_id.as_str()).await;
     let watch = client.watch().await.unwrap();
+    let (received, held) = tokio::sync::oneshot::channel();
     service
         .describe_outcomes
         .lock()
         .unwrap()
-        .push_back(DescribeOutcome::Hang);
+        .push_back(DescribeOutcome::Hang(received));
 
-    let frame = timeout(Duration::from_secs(4), watch.next())
-        .await
-        .expect("storage enrichment must have a short overall budget")
-        .unwrap()
-        .unwrap();
+    let (frame, ()) = timeout(Duration::from_secs(4), async {
+        tokio::join!(watch.next(), async {
+            held.await.expect("enrichment request reached the server");
+            // Advance only once the held request has armed the overall budget.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(3)).await;
+            tokio::time::resume();
+        })
+    })
+    .await
+    .expect("storage enrichment must have a short overall budget");
+    let frame = frame.unwrap().unwrap();
 
     assert_eq!(
         frame.machines.first().and_then(|machine| machine.storage),
@@ -424,9 +434,12 @@ async fn node_watch_decodes_frames_above_tonics_default() {
 #[tokio::test]
 async fn frame_above_ceiling_errors_without_closing_session() {
     let (client, service, _session, _machine) = watching_session().await;
-    let mut frame = frozen_frame();
-    frame.observed_at = "x".repeat(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
-    service.push_watch_payload(OpaquePayload::from_json(&frame).unwrap());
+    let mut payload = OpaquePayload::from_json(&frozen_frame()).unwrap();
+    // Trailing whitespace keeps valid frame JSON without serializing a 64 MiB string.
+    payload
+        .json
+        .resize(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT + 1, b' ');
+    service.push_watch_payload(payload);
     let watch = client.watch().await.unwrap();
 
     let error = timeout(Duration::from_secs(10), watch.next())

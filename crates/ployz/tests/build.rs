@@ -147,6 +147,9 @@ services:
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 fn captured_build_preserves_sources_configuration_and_builder_flags() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -342,6 +345,9 @@ fn check_with_direct_push_stops_after_validation() {
 
 #[test]
 fn built_images_bind_to_exact_content_after_tag_reuse() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-binding-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -393,6 +399,9 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 
 #[test]
 fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-content-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -443,6 +452,9 @@ fn several_requested_build_platforms_are_refused_with_the_service_named() {
 
 #[test]
 fn content_holding_several_platforms_is_refused_however_it_was_requested() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-index-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -519,6 +531,33 @@ fn settings_upstream_would_drop_are_named_before_execution() {
         assert!(error.contains(&format!("build.{setting}")), "{error}");
         assert!(error.contains("api"), "{error}");
     }
+}
+
+/// Fake Docker has no shared builder; give its production lock a private HOME too.
+/// Re-exec avoids changing process environment while other tests are running.
+fn isolated_build_test() -> bool {
+    const CHILD: &str = "PLOYZ_ISOLATED_BUILD_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("libtest names its test threads");
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return true;
+    }
+    let home = std::env::temp_dir().join(format!("ployz-build-home-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&home).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, name)
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(home).unwrap();
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{name}:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    false
 }
 
 fn one_built(mut built: Vec<BuiltService>) -> BuiltService {
@@ -611,6 +650,9 @@ exit 1
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 fn build_and_runtime_share_one_captured_secret_resolution() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-secret-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();

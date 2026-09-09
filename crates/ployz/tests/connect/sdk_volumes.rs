@@ -209,9 +209,12 @@ async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn timed_out_removal_retains_identity_and_unknown_completion() {
-    let (client, _session, _machine) = volume_session().await;
+    // The Client owns this deadline; other tests cover the Session/Relay adapter.
+    let mut service = DiscoveryService::new(advertised_description());
+    service.machines = vec![machine('a', "one"), machine('b', "two")];
+    let (mut client, server, _) = super::support::connected_client(service).await;
     let outcomes = timeout(
         Duration::from_secs(15),
         client.remove_volumes(remove([volume('a', "slow"), volume('a', "data")], false)),
@@ -235,6 +238,7 @@ async fn timed_out_removal_retains_identity_and_unknown_completion() {
             outcome: VolumeRemovalOutcome::Removed
         }
     );
+    server.abort();
 }
 
 #[tokio::test]

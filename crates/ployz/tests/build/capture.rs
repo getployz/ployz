@@ -3,6 +3,9 @@ use super::*;
 
 #[test]
 fn capture_rejects_links_outside_the_captured_source() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-links-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -110,6 +113,9 @@ fn remote_contexts_require_valid_immutable_references() {
 #[test]
 #[expect(clippy::indexing_slicing, reason = "Fixed test fixture")]
 fn resolved_file_credentials_stay_private_across_captures() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-private-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -157,6 +163,9 @@ fn resolved_file_credentials_stay_private_across_captures() {
 
 #[test]
 fn builds_use_captured_explicit_registry_credentials_and_proxies() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-auth-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("auth")).unwrap();
@@ -208,6 +217,9 @@ fn builds_use_captured_explicit_registry_credentials_and_proxies() {
 #[test]
 #[expect(clippy::indexing_slicing, reason = "Fixed capture fixture")]
 fn capture_keeps_recipe_exclusions_negations_and_inline_contexts_separate() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-rules-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src/cache")).unwrap();
@@ -314,6 +326,9 @@ secrets:
 #[test]
 #[expect(clippy::indexing_slicing, reason = "Fixed capture fixture")]
 fn authored_configuration_follows_dockerignore() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-envfiles-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -423,6 +438,9 @@ secrets:
 #[test]
 #[expect(clippy::indexing_slicing, reason = "Fixed capture fixture")]
 fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-platform-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -470,6 +488,9 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
 
 #[test]
 fn ssh_docker_hosts_are_refused_but_git_contexts_keep_the_captured_agent_socket() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-agent-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();

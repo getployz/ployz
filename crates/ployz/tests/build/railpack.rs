@@ -57,6 +57,9 @@ fn railpack_selection_keeps_explicit_dockerfiles_and_refuses_check() {
 #[test]
 #[expect(clippy::indexing_slicing, reason = "Fixed capture fixture")]
 fn railpack_capture_filters_before_transfer_and_keeps_effective_variables_private() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-railpack-capture-{}", std::process::id()));
     fs::create_dir_all(root.join("src/config")).unwrap();
     fs::write(

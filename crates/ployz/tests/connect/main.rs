@@ -879,7 +879,7 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
     let mut service = DiscoveryService::new(test_description());
     service.machines = vec![machine('a', "recovers"), machine('b', "fails")];
@@ -1043,7 +1043,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unary_call_retries_unavailable_after_redial() {
     let description = test_description();
     let service = DiscoveryService::new(description.clone());
@@ -1068,7 +1068,7 @@ async fn unary_call_retries_unavailable_after_redial() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unary_call_does_not_retry_remote_or_not_found() {
     let not_found = DiscoveryService::new(test_description());
     let (mut client, server, connects) = connected_client(not_found.clone()).await;
@@ -1117,7 +1117,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unary_call_gives_up_after_four_unavailable_attempts() {
     let service = DiscoveryService::new(test_description());
     let (mut client, server, connects) = connected_client(service.clone()).await;

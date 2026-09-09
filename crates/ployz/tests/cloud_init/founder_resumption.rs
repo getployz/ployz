@@ -324,8 +324,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     .with_events(events.clone())
     .transient_founder_tail_failures(1);
     let machine_addr = serve_machine(daemon.clone()).await;
-    let (probe, probe_port) =
-        serve_ingress_probe(machine_id, std::time::Duration::from_secs(6)).await;
+    let (probe, probe_port) = serve_ingress_probe(machine_id).await;
 
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
@@ -347,6 +346,8 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
                 "caddy:2.10.0",
                 "--yes",
             ])
+            // Health-monitor timing is covered under virtual time in deploy tests.
+            .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
             .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
             .env("HTTPS_PROXY", &proxy)
             .env("https_proxy", &proxy)
@@ -359,7 +360,9 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     assert!(String::from_utf8_lossy(&first.stderr).contains(
         "rerun the same ployz cloud enroll command without --reset (keep all other options)"
     ));
-    assert!(String::from_utf8_lossy(&first.stderr).contains("Machine setup read timed out"));
+    assert!(
+        String::from_utf8_lossy(&first.stderr).contains("lost Ingress container creation reply")
+    );
     assert_eq!(daemon.founder_tail_attempts(), [1, 1, 0, 0]);
     assert_eq!(
         daemon.initialize_requests().len(),

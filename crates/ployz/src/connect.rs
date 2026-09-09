@@ -837,3 +837,6 @@ fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
 #[cfg(test)]
 #[path = "connect/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod test_support;

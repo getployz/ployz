@@ -786,3 +786,106 @@ fn container_on(
     })
     .unwrap()
 }
+
+#[tokio::test(start_paused = true)]
+async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() {
+    use ployz_core::{
+        ContainerCreated, InspectTelemetry, LocalMachinePhase, MachineDetails, OpaquePayload,
+        RpcRequestBody, RpcResponse,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+    use tonic::{Request, Response, Status};
+
+    for placement in [false, true] {
+        for failures in [1, 4] {
+            let target = machine('1', "joiner");
+            let observed = target.clone();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let attempts = calls.clone();
+            let request = EnsureGlobalSlotRequest {
+                project_name: ProjectName::parse("app").unwrap(),
+                resolved_spec: requested(ServiceMode::Global)
+                    .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+                    .unwrap(),
+            };
+            let expected = request.clone();
+            let (mut client, server) =
+                crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+                    let target = observed.clone();
+                    let expected = expected.clone();
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        assert_eq!(
+                            rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).unwrap(),
+                            target.id.as_str()
+                        );
+                        #[expect(
+                            clippy::wildcard_enum_match_arm,
+                            reason = "fixture accepts only the two catch-up RPCs under test"
+                        )]
+                        let response = match rpc.into_inner().decode_request().unwrap().body {
+                            RpcRequestBody::Inspect(inspect) => {
+                                assert!(!placement);
+                                assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
+                                RpcResponse::from(MachineDetails {
+                                    id: target.id,
+                                    phase: LocalMachinePhase::Participating,
+                                    public_key: target.public_key,
+                                    advertised_endpoints: Vec::new(),
+                                    machine: Some(target),
+                                    store_version: Default::default(),
+                                    rtts: Vec::new(),
+                                    cloud_paired: false,
+                                    telemetry: None,
+                                    storage: None,
+                                })
+                            }
+                            RpcRequestBody::EnsureGlobalSlot(ensure) => {
+                                assert!(placement);
+                                assert_eq!(ensure, expected);
+                                RpcResponse::from(ContainerCreated {
+                                    container_id: container_id('a'),
+                                    display_name: "api".into(),
+                                })
+                            }
+                            other => panic!("unexpected catch-up RPC: {other:?}"),
+                        };
+                        if attempt < failures {
+                            Err(Status::unavailable("transient catch-up failure"))
+                        } else {
+                            Ok(Response::new(response.encode().unwrap()))
+                        }
+                    }
+                })
+                .await;
+            let started = tokio::time::Instant::now();
+            let succeeded = if placement {
+                CatchUpClient::ensure_global_slot(&mut client, &target.id, request)
+                    .await
+                    .is_ok()
+            } else {
+                CatchUpClient::bridge_capacity(&mut client, &target.id)
+                    .await
+                    .is_ok()
+            };
+            assert_eq!(succeeded, failures == 1);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if failures == 1 { 2 } else { 4 }
+            );
+            assert_eq!(
+                started.elapsed(),
+                if failures == 1 {
+                    Duration::from_millis(500)
+                } else {
+                    Duration::from_secs(6)
+                }
+            );
+            server.abort();
+        }
+    }
+}

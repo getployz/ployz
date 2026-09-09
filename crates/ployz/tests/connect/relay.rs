@@ -117,7 +117,8 @@ async fn sdk_script_temporary_files_are_removed_after_exit_and_timeout() {
             const path = require('node:path');
             const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'ployz-sdk-check-'));
             fs.writeFileSync(path.join(dir, 'ployz-sdk.node'), 'test addon');
-            fs.writeFileSync(process.argv[1], dir);
+            fs.writeFileSync(process.argv[1] + '.tmp', dir);
+            fs.renameSync(process.argv[1] + '.tmp', process.argv[1]);
             fs.writeSync(1, 'o'.repeat(128 * 1024));
             fs.writeSync(2, 'e'.repeat(128 * 1024));
             if (process.argv[2] === 'timeout') setInterval(() => {}, 1000);
@@ -126,8 +127,27 @@ async fn sdk_script_temporary_files_are_removed_after_exit_and_timeout() {
             ])
             .arg(&report)
             .arg(mode);
-        let result = sdk_script_output(&mut command, Duration::from_secs(2)).await;
-        let dir = std::fs::read_to_string(&report).expect("Node created the SDK fixture");
+        let deadline = Duration::from_secs(60);
+        let output = sdk_script_output(&mut command, deadline);
+        tokio::pin!(output);
+        let result = tokio::select! {
+            result = &mut output => result,
+            () = async {
+                while !report.try_exists().unwrap() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }, if mode == "timeout" => {
+                // Node has created the fixture. Expire the script deadline only now,
+                // then restore real time for process termination and pipe draining.
+                tokio::time::pause();
+                tokio::time::advance(deadline).await;
+                tokio::time::resume();
+                output.await
+            }
+        };
+        let dir = std::fs::read_to_string(&report).unwrap_or_else(|error| {
+            panic!("{mode}: Node fixture report missing: {error}; subprocess result: {result:?}")
+        });
         std::fs::remove_file(report).unwrap();
         let leaked = std::path::Path::new(&dir).exists();
         if leaked {

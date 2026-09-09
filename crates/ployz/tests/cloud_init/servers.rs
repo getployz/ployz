@@ -32,10 +32,7 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
     address
 }
 
-pub async fn serve_ingress_probe(
-    machine_id: MachineId,
-    mut delay_first: std::time::Duration,
-) -> (JoinHandle<()>, u16) {
+pub async fn serve_ingress_probe(machine_id: MachineId) -> (JoinHandle<()>, u16) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
@@ -43,8 +40,8 @@ pub async fn serve_ingress_probe(
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 1024];
             let _ = stream.read(&mut request).await.unwrap();
-            tokio::time::sleep(delay_first).await;
-            delay_first = std::time::Duration::ZERO;
+            // Probe retry coverage lives in dns::probe::tests; this fixture
+            // verifies that founder enrollment reaches the real HTTP endpoint.
             let body = machine_id.as_str();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

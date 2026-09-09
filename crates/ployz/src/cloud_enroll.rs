@@ -697,6 +697,11 @@ mod tests {
             let server = tokio::spawn(async move {
                 let (mut held, _) = listener.accept().await.unwrap();
                 read_http(&mut held).await;
+                // The request has reached the server, so its timeout is armed.
+                // Advance only that wait; use real time again for the retry's I/O.
+                tokio::time::pause();
+                tokio::time::advance(REQUEST_TIMEOUT).await;
+                tokio::time::resume();
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();
                 read_http(&mut retry).await;
