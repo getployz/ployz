@@ -1,7 +1,15 @@
 name: Publish SDK
-run-name: Publish SDK ${{ inputs.tag || github.event.release.tag_name }}
+run-name: ${{ github.event_name == 'push' && 'Warm SDK build cache' || format('Publish SDK {0}', inputs.tag || github.event.release.tag_name) }}
 
 on:
+  # Build bindings on main to warm S3; only release/manual events publish.
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/publish-sdk.yml
   release:
     types: [published]
   workflow_dispatch:
@@ -12,26 +20,22 @@ on:
         type: string
 
 env:
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+  # Fork PRs have no credentials and use the action's GitHub cache fallback.
+  KACHE_S3_BUCKET: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET || '' }}
+  KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_ACCESS_KEY_ID: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+  KACHE_S3_SECRET_ACCESS_KEY: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
   ZIG_VERSION: 0.13.0
   CARGO_ZIGBUILD_VERSION: 0.19.7
 
 permissions:
   contents: read
   id-token: write
-  actions: write
 
 jobs:
-  bounce:
-    if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/bounce-release-to-main.sh publish-sdk.yml "Publish SDK ${{ github.event.release.tag_name }}" "${{ github.event.repository.default_branch }}" -f "tag=${{ github.event.release.tag_name }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   build-binding:
-    if: github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         include:
@@ -64,7 +68,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.RELEASE_TAG || github.sha }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: crates/ployz/compose-helper/go.mod
@@ -80,11 +84,30 @@ jobs:
         if: matrix.command == 'zigbuild'
         with:
           tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: sdk-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-downloads-
+      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        with:
+          version: 0.18.0
+          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+          s3-region: ${{ env.KACHE_S3_REGION }}
+          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+          s3-prefix: ployz2/kache-v1
+          manifest-key: sdk-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-sdk-${{ matrix.target }}
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          cache-c-cpp: true
+          warm: true
+          sync: false
+          pr-comment: false
       - run: cargo ${{ matrix.command }} -p ployz-sdk --release --locked --target ${{ matrix.target }}${{ matrix.glibc }}
       - run: cp "target/${{ matrix.target }}/release/${{ matrix.cdylib }}" "${{ matrix.binding }}"
       - uses: actions/upload-artifact@v4
@@ -94,13 +117,13 @@ jobs:
           if-no-files-found: error
 
   publish-sdk:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: build-binding
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -109,4 +132,4 @@ jobs:
         with:
           path: bindings
           merge-multiple: true
-      - run: bash scripts/publish-sdk-package.sh "${{ inputs.tag }}" bindings/*.node
+      - run: bash scripts/publish-sdk-package.sh "$RELEASE_TAG" bindings/*.node

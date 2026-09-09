@@ -14,11 +14,30 @@ runs:
         go-version-file: crates/ployz/compose-helper/go.mod
         cache-dependency-path: crates/ployz/compose-helper/go.sum
     - uses: dtolnay/rust-toolchain@1.97.1
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions/cache@v4
       with:
-        shared-key: testkit-release
-        save-if: ${{ github.ref == 'refs/heads/main' }}
-        cache-on-failure: true
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git/db
+        key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-downloads-
+    - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+      with:
+        version: 0.18.0
+        s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+        s3-region: ${{ env.KACHE_S3_REGION }}
+        s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+        s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+        s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+        s3-prefix: ployz2/kache-v1
+        manifest-key: testkit-release-${{ runner.os }}-${{ runner.arch }}
+        cache-key-prefix: kache-testkit-release
+        cache-dir: ${{ runner.temp }}/kache
+        cache-executables: true
+        cache-c-cpp: true
+        warm: true
+        sync: false
+        pr-comment: false
     - name: Build host binaries
       shell: bash
       run: |

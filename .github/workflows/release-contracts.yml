@@ -2,6 +2,11 @@ name: Release contracts
 
 on:
   workflow_call:
+    secrets:
+      KACHE_S3_ACCESS_KEY_ID:
+        required: false
+      KACHE_S3_SECRET_ACCESS_KEY:
+        required: false
     inputs:
       goreleaser-args:
         type: string
@@ -12,6 +17,15 @@ on:
       release-tag:
         type: string
         default: ''
+  # Populate release artifacts in S3 from a protected-branch push.
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - Cargo.toml
+      - Cargo.lock
+      - .goreleaser.yaml
+      - .github/workflows/release-contracts.yml
   workflow_dispatch:
   pull_request:
     paths:
@@ -39,7 +53,6 @@ on:
       - scripts/build-relay-image.sh
       - scripts/verify-relay-image.sh
       - scripts/publish-relay-image.sh
-      - scripts/bounce-release-to-main.sh
 
 concurrency:
   group: release-contracts-${{ github.event.pull_request.number || inputs.release-tag || github.ref }}
@@ -51,6 +64,12 @@ permissions:
   packages: write
 
 env:
+  # Fork PRs have no credentials and use the action's GitHub cache fallback.
+  KACHE_S3_BUCKET: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET || '' }}
+  KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_ACCESS_KEY_ID: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+  KACHE_S3_SECRET_ACCESS_KEY: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
   RUST_VERSION: 1.97.1
   ZIG_VERSION: 0.13.0
   CARGO_ZIGBUILD_VERSION: 0.19.7
@@ -113,9 +132,30 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: release-${{ runner.os }}-${{ matrix.arch }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-downloads-
+      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        with:
+          version: 0.18.0
+          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+          s3-region: ${{ env.KACHE_S3_REGION }}
+          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+          s3-prefix: ployz2/kache-v1
+          manifest-key: release-${{ matrix.binary }}-${{ matrix.arch }}-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-release-${{ matrix.binary }}-${{ matrix.arch }}
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          cache-c-cpp: true
+          warm: true
+          sync: false
+          pr-comment: false
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -149,9 +189,30 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-apple-darwin,aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: release-${{ runner.os }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-downloads-
+      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        with:
+          version: 0.18.0
+          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
+          s3-region: ${{ env.KACHE_S3_REGION }}
+          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
+          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+          s3-prefix: ployz2/kache-v1
+          manifest-key: release-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-release-${{ runner.os }}
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          cache-c-cpp: true
+          warm: true
+          sync: false
+          pr-comment: false
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
