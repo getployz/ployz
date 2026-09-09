@@ -11,6 +11,9 @@
 //! bounded attempt, and one image bound to the content that attempt produced.
 
 mod builder;
+mod railpack;
+
+pub use railpack::Railpack;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,6 +61,8 @@ pub struct Request<'a> {
     pub docker: Option<&'a Path>,
     /// Images to build, named as the captured Compose file names them.
     pub targets: &'a [Target],
+    /// Railpack targets with their captured source and private effective values.
+    pub railpack: &'a [Railpack],
     /// Effective `KEY=VALUE` build-argument overrides for every target.
     pub build_args: &'a [String],
     /// What this attempt does with what it builds.
@@ -161,7 +166,12 @@ pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
     };
     let metadata = request.working_dir.join("build-metadata.json");
     let builder = Builder::acquire(&docker, lock)?;
-    builder.run(&bake_arguments(request, &planned, &metadata))?;
+    let preparation = railpack::prepare(&docker, request)?;
+    let overrides = preparation
+        .as_ref()
+        .map(railpack::Preparation::override_file);
+    let arguments = bake_arguments(request, &planned, &metadata, overrides.as_deref());
+    builder.run(&arguments)?;
     match request.output {
         Output::Load => built_images(&docker, &metadata, &planned),
         Output::Registry | Output::Validate => Ok(Vec::new()),
@@ -195,7 +205,12 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
         .collect()
 }
 
-fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Path) -> Vec<String> {
+fn bake_arguments(
+    request: &Request<'_>,
+    planned: &[Planned<'_>],
+    metadata: &Path,
+    overrides: Option<&Path>,
+) -> Vec<String> {
     let mut arguments = vec![
         "buildx".to_owned(),
         "bake".to_owned(),
@@ -204,6 +219,12 @@ fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Pat
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];
+    if let Some(overrides) = overrides {
+        arguments.extend([
+            "--file".to_owned(),
+            overrides.to_string_lossy().into_owned(),
+        ]);
+    }
     match request.output {
         // Check runs the frontend only; an image would contradict the result.
         Output::Validate => arguments.push("--check".to_owned()),
@@ -660,6 +681,7 @@ mod tests {
         let metadata = Path::new("/private/build-metadata.json");
         let build_args = ["MODE=release".to_owned()];
         let request = |output| Request {
+            railpack: &[],
             compose_file: Path::new("/private/compose.yaml"),
             working_dir: Path::new("/private"),
             environment: &environment,
@@ -671,12 +693,12 @@ mod tests {
             pull: false,
         };
 
-        let validate = bake_arguments(&request(Output::Validate), &planned, metadata);
+        let validate = bake_arguments(&request(Output::Validate), &planned, metadata, None);
         assert!(validate.contains(&"--check".to_owned()));
         assert!(!validate.contains(&"--load".to_owned()));
         assert!(!validate.contains(&"--metadata-file".to_owned()));
 
-        let load = bake_arguments(&request(Output::Load), &planned, metadata);
+        let load = bake_arguments(&request(Output::Load), &planned, metadata, None);
         assert!(load.contains(&"--load".to_owned()));
         assert!(!load.contains(&"--push".to_owned()));
         assert!(load.contains(&"--no-cache".to_owned()));
@@ -686,7 +708,7 @@ mod tests {
         assert!(!load.iter().any(|argument| argument.contains(".platform")));
         assert_eq!(load.last().map(String::as_str), Some("web"));
 
-        let registry = bake_arguments(&request(Output::Registry), &planned, metadata);
+        let registry = bake_arguments(&request(Output::Registry), &planned, metadata, None);
         assert!(registry.contains(&"--push".to_owned()));
         assert!(!registry.contains(&"--load".to_owned()));
         assert!(!registry.contains(&"--metadata-file".to_owned()));

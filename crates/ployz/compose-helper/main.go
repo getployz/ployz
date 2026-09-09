@@ -102,6 +102,7 @@ func run(ctx context.Context, req request) (object, error) {
 		config.Environment = env
 		model, err = loader.LoadModelWithContext(ctx, *config, func(o *loader.Options) {
 			o.SkipValidation = true
+			o.SkipNormalization = true
 			o.ResolvePaths = false
 			name := env["COMPOSE_PROJECT_NAME"]
 			if name != "" {
@@ -121,6 +122,29 @@ func run(ctx context.Context, req request) (object, error) {
 	}
 	if name == "." || name == "/" {
 		name = "project"
+	}
+	if req.YAML == "" {
+		name = loader.NormalizeProjectName(name)
+		if env["COMPOSE_PROJECT_NAME"] != "" {
+			name = env["COMPOSE_PROJECT_NAME"]
+		}
+		// Normalization supplies a Dockerfile default. Preserve omission so the
+		// captured Build can select Railpack without hiding explicit missing files.
+		implicit := []string{}
+		for service, value := range mapping(model["services"]) {
+			build := mapping(mapping(value)["build"])
+			if build != nil && build["dockerfile"] == nil {
+				implicit = append(implicit, service)
+			}
+		}
+		model["name"] = name
+		model, err = loader.Normalize(model, env)
+		if err != nil {
+			return nil, err
+		}
+		for _, service := range implicit {
+			delete(mapping(mapping(mapping(model["services"])[service])["build"]), "dockerfile")
+		}
 	}
 	// Ployz extensions supply resources that Compose cannot provision itself.
 	// Adapt the in-memory declarations before running upstream consistency checks.
