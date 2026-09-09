@@ -71,8 +71,7 @@ pub(crate) async fn push_from_machine_using_machines(
         let delivery = source
             .deliver(
                 client,
-                &image.reference,
-                &reference,
+                ImageContent::built(&reference, &image.reference),
                 &machine,
                 None,
                 &mut cancellation,
@@ -121,9 +120,9 @@ pub(crate) async fn serve_build_image(
 /// It serves a destination only a variant that store demonstrably holds.
 #[derive(Debug)]
 pub(super) struct Source {
-    pub machine_id: MachineId,
-    pub destination: ImageIngestDestination,
-    pub store: MachineImages,
+    machine_id: MachineId,
+    destination: ImageIngestDestination,
+    store: MachineImages,
 }
 
 impl Source {
@@ -205,25 +204,23 @@ impl Source {
         })
     }
 
-    /// Have `machine` pull `reference` from this source, naming the variant
-    /// [`Self::variant`] selected for it. `image` identifies the content in
-    /// this store; `reference` is what the destination pulls.
+    /// Have `machine` pull the published reference from this source, naming
+    /// the variant [`Self::variant`] selected for the exact content.
     ///
     /// # Errors
     /// Reports a variant this source does not hold, cancellation, and a failed pull.
     pub(super) async fn deliver(
         &self,
         client: &mut Client,
-        image: &str,
-        reference: &str,
+        content: ImageContent<'_>,
         machine: &Machine,
         platform: Option<&str>,
         cancellation: &mut Cancellation<'_>,
     ) -> Result<(), PushError> {
-        let variant = self.variant(image, machine, platform)?;
+        let variant = self.variant(content.exact, machine, platform)?;
         pull_on_machine(
             client,
-            reference,
+            content.published,
             machine,
             self.destination,
             variant,

@@ -257,7 +257,13 @@ pub(crate) async fn push_using_machines(
     };
     for machine in targets.by_ref() {
         let outcome = source
-            .deliver(client, image, image, &machine, platform, &mut cancellation)
+            .deliver(
+                client,
+                ImageContent::tagged(image),
+                &machine,
+                platform,
+                &mut cancellation,
+            )
             .await;
         if record(&mut result, &machine, outcome).is_err() {
             break;
