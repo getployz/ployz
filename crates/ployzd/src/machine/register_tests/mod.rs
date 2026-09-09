@@ -143,6 +143,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
             wireguard_mtu: None,
             cloud_pairing: None,
         })
+        .await
         .unwrap();
     assert_eq!(target.record().unwrap().phase(), LocalMachinePhase::Joining);
 
@@ -184,6 +185,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
             wireguard_mtu: None,
             cloud_pairing: None,
         })
+        .await
         .unwrap();
     assert_eq!(joiner.record().unwrap().phase(), LocalMachinePhase::Joining);
 

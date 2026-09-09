@@ -519,6 +519,18 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
+    async fn request_machine_upgrade(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn inspect_machine_upgrade(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn inspect_container(
         &self,
         request: Request<OpaquePayload>,

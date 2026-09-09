@@ -99,16 +99,28 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        let run_dir = config
+            .socket
+            .parent()
+            .unwrap_or_else(|| Path::new("/run/ployz"))
+            .to_owned();
+        crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
+            .await
+            .map_err(io::Error::other)?;
         let build_policy = ployz_build::HostPolicy::from_environment()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Self::start_with_build_policy(config, build_policy).await
+        Self::start_with_build_policy(config, build_policy, run_dir).await
     }
 
     async fn start_with_build_policy(
         config: DaemonConfig,
         build_policy: ployz_build::HostPolicy,
+        run_dir: PathBuf,
     ) -> Result<Self, Error> {
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
+        let store = Arc::new(Mutex::new(LocalMachineStore::open_with_admission(
+            &config.data_dir,
+            run_dir,
+        )?));
         let socket_lock = claim_socket(&config.socket)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();
@@ -806,7 +818,8 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
-        let daemon = Daemon::start_with_build_policy(config, policy.clone())
+        let run_dir = config.socket.parent().unwrap().to_owned();
+        let daemon = Daemon::start_with_build_policy(config, policy.clone(), run_dir)
             .await
             .unwrap();
         assert!(

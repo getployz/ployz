@@ -228,14 +228,16 @@ async fn fake_docker(
                     serde_json::json!({"bound_bytes":bound,"used_bytes":0}),
                 );
             }
-            fake.volumes
-                .lock()
-                .unwrap()
-                .insert(name.clone(), observed.clone());
+            let mut response = observed.clone();
+            if driver == ployz_core::PROVISIONED_VOLUME_DRIVER {
+                // Docker's plugin Create response lacks Status; the following inspect supplies it.
+                response.as_object_mut().unwrap().remove("Status");
+            }
+            fake.volumes.lock().unwrap().insert(name.clone(), observed);
             if fake.fail_after_create.lock().unwrap().contains(&name) {
                 fake.fail_inspect_once.lock().unwrap().insert(name.clone());
             }
-            (StatusCode::CREATED, observed)
+            (StatusCode::CREATED, response)
         }
     } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
         (StatusCode::NO_CONTENT, serde_json::Value::Null)

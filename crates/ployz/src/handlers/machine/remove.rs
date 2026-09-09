@@ -112,7 +112,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn select_machine(
+pub(super) fn select_machine(
     machines: &[ployz_core::MachineObservation],
     selector: &str,
 ) -> Result<Machine, Error> {

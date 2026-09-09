@@ -6,7 +6,8 @@ use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    GetContainerObservationsRequest, HealthObservation, MachineId, MachineRpc, ProjectName,
+    GetContainerObservationsRequest, HealthObservation, MachineId, MachineRelease, MachineRpc,
+    MachineUpgradeAttemptId, ProjectName, RequestMachineUpgradeRequest, ResetRequest,
     ResolvedServiceSpec, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, ServiceId,
     ServiceName, op,
 };
@@ -99,6 +100,99 @@ fn allocator_not_quiet_is_retryable_unavailable() {
     };
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(error.message, "Allocator is not quiet");
+}
+
+#[tokio::test]
+async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-upgrade-rpc-admission-{}",
+        MachineId::random()
+    ));
+    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let service = MachineService::with_cluster(store, watch::channel(false).0, None);
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mutation = tokio::spawn({
+        let local = service.local();
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        async move { local.hold_mutation_for_test(started, release).await }
+    });
+    started.notified().await;
+
+    let response = service
+        .request_machine_upgrade(Request::new(
+            op::RequestMachineUpgrade::into_request(RequestMachineUpgradeRequest {
+                attempt_id: MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap(),
+                release: MachineRelease::parse("1.2.3").unwrap(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert!(matches!(
+        response.body,
+        RpcResponseBody::Error(error) if error.code == RpcErrorCode::Conflict
+    ));
+    release.notify_one();
+    mutation.await.unwrap().unwrap();
+
+    std::fs::write(data_dir.join(".upgrade-active"), "attempt").unwrap();
+    let response = service
+        .reset(Request::new(
+            op::Reset::into_request(ResetRequest {}).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert!(matches!(
+        response.body,
+        RpcResponseBody::Error(error) if error.code == RpcErrorCode::Conflict
+    ));
+
+    drop(service);
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[tokio::test]
+async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-upgrade-rpc-paths-{}", MachineId::random()));
+    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let service = MachineService::with_cluster(store, watch::channel(false).0, None);
+
+    let response = service
+        .request_machine_upgrade(Request::new(
+            op::RequestMachineUpgrade::into_request(RequestMachineUpgradeRequest {
+                attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
+                release: MachineRelease::parse("1.2.3").unwrap(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+
+    assert!(matches!(
+        response.body,
+        RpcResponseBody::Error(error)
+            if error.code == RpcErrorCode::InvalidArgument
+                && error.message.contains("system installation requires --data-dir")
+    ));
+    assert!(!data_dir.join("upgrade-attempt.json").exists());
+    assert!(!data_dir.join(".upgrade-active").exists());
+
+    drop(service);
+    std::fs::remove_dir_all(data_dir).unwrap();
 }
 
 #[test]

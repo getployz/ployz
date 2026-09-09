@@ -26,17 +26,17 @@ fn recording_installer(
     daemon: JoinDaemon,
     outcome: InstallOutcome,
     calls: Arc<AtomicUsize>,
-) -> impl Fn() -> Result<(), ployz::handlers::Error> {
-    move || {
+) -> impl Fn(ployz_core::StorageChoice) -> std::future::Ready<Result<(), ployz::handlers::Error>> {
+    move |_| {
         calls.fetch_add(1, Ordering::SeqCst);
-        match outcome {
+        std::future::ready(match outcome {
             InstallOutcome::UpdateDaemon => {
                 daemon.set_daemon_version(env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
             InstallOutcome::LeaveStale => Ok(()),
             InstallOutcome::Fail(message) => Err(ployz::handlers::Error::usage(message)),
-        }
+        })
     }
 }
 
@@ -62,7 +62,11 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
 
 async fn run_enroll(
     matches: ArgMatches,
-    install: impl Fn() -> Result<(), ployz::handlers::Error> + Send + 'static,
+    install: impl Fn(
+        ployz_core::StorageChoice,
+    ) -> std::future::Ready<Result<(), ployz::handlers::Error>>
+    + Send
+    + 'static,
 ) -> Result<(), ployz::handlers::Error> {
     tokio::task::spawn_blocking(move || {
         ployz::handlers::cloud_enroll_with_installer(&matches, &install)
@@ -79,13 +83,25 @@ async fn enroll_locally(
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
 ) {
+    enroll_locally_with_storage(daemon_version, outcome, "none").await
+}
+
+async fn enroll_locally_with_storage(
+    daemon_version: &str,
+    outcome: InstallOutcome,
+    storage: &str,
+) -> (
+    Result<(), ployz::handlers::Error>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
     let registration = registration();
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
-        "storage": "none",
+        "storage": storage,
         "pairing": pairing,
         "registration": registration,
     }))
@@ -98,6 +114,23 @@ async fn enroll_locally(
     let result = run_enroll(enroll_matches(&connect, &enroll.url), installer).await;
     let _ = std::fs::remove_file(socket);
     (result, calls, connections)
+}
+
+#[tokio::test]
+async fn zfs_preparation_reconnects_after_restarting_a_matching_daemon() {
+    let (result, calls, connections) = enroll_locally_with_storage(
+        env!("CARGO_PKG_VERSION"),
+        InstallOutcome::UpdateDaemon,
+        "zfs",
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        connections.load(Ordering::SeqCst) >= 2,
+        "enrollment must reconnect after storage preparation restarts the daemon"
+    );
 }
 
 #[tokio::test]

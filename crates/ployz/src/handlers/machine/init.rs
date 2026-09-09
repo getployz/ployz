@@ -50,15 +50,18 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     let no_install = matches.get_flag("no-install");
     let storage = crate::provisioning::resolve_storage(matches)?;
-    if !no_install {
-        if local {
-            crate::provisioning::provision_local(storage)?;
-        } else {
-            crate::provisioning::provision(matches, storage)?;
+    let version = matches
+        .get_one::<String>("version")
+        .expect("version has a default");
+    let runtime = runtime()?;
+    let (machine, connection) = runtime.block_on(async {
+        if !no_install {
+            if local {
+                crate::provisioning::provision_local(version, storage).await?;
+            } else {
+                crate::provisioning::provision(matches, storage).await?;
+            }
         }
-    }
-
-    let (machine, connection) = runtime()?.block_on(async {
         let mut target = if !no_install {
             helpers::reconnect_direct(matches, &connection).await?
         } else {
@@ -117,7 +120,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         &context_name,
         &["machine", "inspect", machine.name.as_str()],
     );
-    runtime()?.block_on(async {
+    runtime.block_on(async {
         let mut ready =
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;

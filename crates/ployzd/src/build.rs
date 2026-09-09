@@ -21,19 +21,31 @@ use tonic::Status;
 #[derive(Default)]
 struct AttemptState {
     evidence: Mutex<ployz_build::WorkEvidence>,
-    retained: Mutex<Option<ployz_build::ImageRetention>>,
+    retained: Mutex<Option<RetainedBuild>>,
+}
+
+struct RetainedBuild {
+    // Field order keeps installation exclusion until Docker tag cleanup finishes.
+    _retention: ployz_build::ImageRetention,
+    _installation: crate::mutation::MutationGuard,
+}
+
+struct ExecutionAdmission {
+    build: Admission,
+    machine: crate::machine::MutationAdmission,
 }
 
 pub(crate) fn start(
     machine_id: MachineId,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     runner: std::sync::Arc<Runner>,
+    local: crate::machine::LocalMachine,
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
-        let outcome = attempt(machine_id, requests, &events, runner, state.clone()).await;
+        let outcome = attempt(machine_id, requests, &events, runner, local, state.clone()).await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -50,7 +62,8 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
-        // Admission is already released. Only image retention follows this stream.
+        // Local mutation serialization is already released. Installation exclusion follows
+        // retained image cleanup because releasing temporary tags mutates Docker.
         if state
             .retained
             .lock()
@@ -70,6 +83,7 @@ async fn attempt(
     mut requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     runner: Arc<Runner>,
+    local: crate::machine::LocalMachine,
     state: Arc<AttemptState>,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
@@ -119,6 +133,28 @@ async fn attempt(
         Err(reason) => return failed(Stage::Queued, reason.to_string()).with_work(work),
     };
     let policy = runner.policy.clone();
+    let mutation = {
+        let admission = local.admit_mutation();
+        tokio::pin!(admission);
+        tokio::select! {
+            biased;
+            () = runner.shutdown.cancelled() => return failed(Stage::Admission, "Build daemon stopped before admission").with_work(work),
+            () = events.closed() => return failed(Stage::Admission, "Build client disconnected before admission").with_work(work),
+            frame = requests.next() => {
+                let reason = match frame {
+                    Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => "Build cancelled before admission",
+                    None | Some(Err(_)) => "Build client disconnected before admission",
+                    Some(Ok(_)) => "Build upload before admission is forbidden",
+                };
+                return failed(Stage::Admission, reason).with_work(work);
+            }
+            () = tokio::time::sleep(policy.active_timeout) => return failed(Stage::Admission, "Build admission timed out waiting for another Machine mutation").with_work(work),
+            result = &mut admission => match result {
+                Ok(admission) => admission,
+                Err(error) => return failed(Stage::Admission, error.to_string()).with_work(work),
+            },
+        }
+    };
     let admission = match tokio::task::spawn_blocking({
         let policy = policy.clone();
         move || Admission::try_acquire_with(&policy)
@@ -148,7 +184,16 @@ async fn attempt(
     let mut execution = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         receive_and_execute(
-            machine_id, definition, source, admission, policy, &output, &observed,
+            machine_id,
+            definition,
+            source,
+            ExecutionAdmission {
+                build: admission,
+                machine: mutation,
+            },
+            policy,
+            &output,
+            &observed,
         )
     });
     // Dropping the input pump closes the upload channel. A receiver blocked
@@ -220,11 +265,15 @@ fn receive_and_execute(
     machine_id: MachineId,
     mut definition: Definition,
     mut source: mpsc::Receiver<OpaquePayload>,
-    admission: Admission,
+    admission: ExecutionAdmission,
     policy: HostPolicy,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
 ) -> Outcome {
+    let ExecutionAdmission {
+        build: admission,
+        machine: mutation,
+    } = admission;
     let cancellation = admission.cancellation();
     let deadline = std::time::Instant::now() + admission.remaining();
     let mut upload = match admission.upload() {
@@ -294,7 +343,10 @@ fn receive_and_execute(
     match result {
         Ok(completed) => {
             if !definition.retained_tags.is_empty() {
-                *state.retained.lock().expect("Build retention lock") = Some(completed.retention);
+                *state.retained.lock().expect("Build retention lock") = Some(RetainedBuild {
+                    _retention: completed.retention,
+                    _installation: mutation.into_installation_guard(),
+                });
             }
             match definition.output {
                 Output::Load => Outcome::Images {

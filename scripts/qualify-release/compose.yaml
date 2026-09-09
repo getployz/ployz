@@ -1,8 +1,13 @@
 services:
   data:
-    image: alpine:3.23.3
-    command: ["sleep", "infinity"]
+    image: busybox:1.37.0
+    command:
+      - sh
+      - -c
+      - test -s /data/identity || printf 'qualify-persistent-data\n' > /data/identity; exec httpd -f -p 8080 -h /data
     volumes:
       - qualify-data:/data
-volumes:
-  qualify-data:
+    x-machines: [qualify-1]
+    x-ports: [18082:8080/tcp@host]
+x-volumes:
+  qualify-data: 256M

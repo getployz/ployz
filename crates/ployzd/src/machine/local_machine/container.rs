@@ -1,15 +1,17 @@
 //! Machine-local container admission and creation.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use ployz_core::{
-    ContainerCreated, ContainerKind, LocalMachinePhase, MachineStorageObservation, ProjectName,
-    ResolvedServiceSpec,
+    ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
+    CreateVolumeRequest, DockerVolumeName, ImageIngestOpened, ImageIngestReason, ImagePulled,
+    LocalMachinePhase, MachineStorageObservation, ProjectName, PullImageFromMachineRequest,
+    ResolvedServiceSpec, VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
+use crate::docker::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest, ImageIngest};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -23,12 +25,9 @@ impl LocalMachine {
         &self,
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
-        use ployz_core::{RawVolumeSource, RpcError};
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
+        use ployz_core::RawVolumeSource;
         let local = self.clone();
-        tokio::spawn(async move {
-            let _guard = guard;
+        self.finish_mutation(async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let record = local.record()?;
             if !matches!(
@@ -71,15 +70,10 @@ impl LocalMachine {
                 crate::storage::plugin("Storage.Prepare", &requested).await?;
             containers
                 .ensure_provisioned_volumes(&machine.id, &specs)
-                .await
-                .map_err(|error| {
-                    let mut error = RpcError::from(&error);
-                    error.details = serde_json::json!({ "prepared_volumes": names });
-                    error
-                })?;
+                .await?;
             Ok(ployz_core::PreparedVolumes { names })
         })
-        .await?
+        .await
     }
 
     /// Create a container after storage admission and deferred Machine-local validation.
@@ -95,14 +89,180 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         // Once admitted, caller cancellation must not let reset overtake a Docker request.
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.create_container_admitted(kind, &project, &spec).await
+        self.finish_mutation(
+            async move { local.create_container_admitted(kind, &project, &spec).await },
+        )
+        .await
+    }
+
+    /// Start one local container while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot start the
+    /// container.
+    pub(crate) async fn start_container(
+        &self,
+        container_id: ContainerId,
+    ) -> Result<ContainerChanged, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .start(&container_id)
+                .await?;
+            Ok(ContainerChanged { container_id })
         })
-        .await?
+        .await
+    }
+
+    /// Stop one local container while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot stop the
+    /// container.
+    pub(crate) async fn stop_container(
+        &self,
+        container_id: ContainerId,
+        signal: Option<String>,
+        grace_period_seconds: Option<i32>,
+    ) -> Result<ContainerChanged, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .stop(&container_id, signal.as_deref(), grace_period_seconds)
+                .await?;
+            Ok(ContainerChanged { container_id })
+        })
+        .await
+    }
+
+    /// Remove one local container while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot remove the
+    /// container.
+    pub(crate) async fn remove_container(
+        &self,
+        container_id: ContainerId,
+        remove_volumes: bool,
+        force: bool,
+    ) -> Result<ContainerChanged, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .remove(&container_id, remove_volumes, force)
+                .await?;
+            Ok(ContainerChanged { container_id })
+        })
+        .await
+    }
+
+    /// Create one local Docker Volume while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when local state or Docker is unavailable, admission is busy, or Docker cannot
+    /// create the Volume.
+    pub(crate) async fn create_volume(
+        &self,
+        request: CreateVolumeRequest,
+    ) -> Result<CreateVolumeReport, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let machine_id = local.record()?.id();
+            Ok(local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .create_volume(&machine_id, request)
+                .await?)
+        })
+        .await
+    }
+
+    /// Remove one local Docker Volume while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot remove the
+    /// Volume.
+    pub(crate) async fn remove_volume(
+        &self,
+        name: DockerVolumeName,
+        force: bool,
+    ) -> Result<VolumeRemoved, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .remove_volume(&name, force)
+                .await?;
+            Ok(VolumeRemoved {})
+        })
+        .await
+    }
+
+    /// Start or reconcile image ingest while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when this Machine is not participating, admission is busy, or the ingest helper
+    /// cannot start.
+    pub(crate) async fn ensure_image_ingest(
+        &self,
+        ingest: Arc<ImageIngest>,
+    ) -> Result<ImageIngestOpened, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let record = local.record()?;
+            let address = record
+                .machine()
+                .filter(|_| record.phase() == LocalMachinePhase::Participating)
+                .map(|machine| machine.management_address())
+                .ok_or_else(|| {
+                    Error::StoragePreparation(
+                        ImageIngestReason::NotParticipating
+                            .rpc_error("Machine is not participating"),
+                    )
+                })?;
+            ingest
+                .open(address)
+                .await
+                .map_err(Error::StoragePreparation)
+        })
+        .await
+    }
+
+    /// Pull one image from peer ingest while holding Machine mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the image transfer fails.
+    pub(crate) async fn pull_image_from_machine(
+        &self,
+        request: PullImageFromMachineRequest,
+    ) -> Result<ImagePulled, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            crate::docker::pull_from_ingest(&request.image, request.source).await?;
+            Ok(ImagePulled {})
+        })
+        .await
     }
 
     async fn create_container_admitted(
@@ -145,14 +305,11 @@ impl LocalMachine {
         project: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<GlobalSlotConvergence, Error> {
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.converge_global_slot_admitted(&project, &spec).await
-        })
-        .await?
+        self.finish_mutation(
+            async move { local.converge_global_slot_admitted(&project, &spec).await },
+        )
+        .await
     }
 
     async fn converge_global_slot_admitted(

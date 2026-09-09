@@ -49,8 +49,8 @@ check_archive() {
 
 check_checksums_and_formula() {
     checksum_names=$(awk '{print $2}' "$DIST/checksums.txt" | sort)
-    expected_checksums=$(cli_archives | sort)
-    [ "$checksum_names" = "$expected_checksums" ] || fail "checksums.txt must cover only CLI archives"
+    expected_checksums=$(printf '%s\n' "$(cli_archives)" ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz | sort)
+    [ "$checksum_names" = "$expected_checksums" ] || fail "checksums.txt must cover CLI and daemon archives"
 
     formula=$(find "$DIST" -name 'ployz.rb' -print -quit)
     [ -n "$formula" ] || fail "Homebrew formula was not generated"

@@ -543,6 +543,7 @@ impl<'de> Deserialize<'de> for Connection {
 pub struct SshDestination {
     value: String,
     target: String,
+    copy_target: String,
     port: Option<u16>,
 }
 
@@ -565,9 +566,15 @@ impl SshDestination {
             return Err(ConnectionError::SshDestination(value));
         }
         let target = format!("{user}@{host}");
+        let copy_target = if host.contains(':') && !host.starts_with('[') {
+            format!("{user}@[{host}]")
+        } else {
+            target.clone()
+        };
         Ok(Self {
             value,
             target,
+            copy_target,
             port,
         })
     }
@@ -580,6 +587,12 @@ impl SshDestination {
     #[must_use]
     pub fn target(&self) -> &str {
         &self.target
+    }
+
+    /// Return the SCP target, with IPv6 hosts bracketed to distinguish its path separator.
+    #[must_use]
+    pub(crate) fn copy_target(&self) -> &str {
+        &self.copy_target
     }
 
     #[must_use]

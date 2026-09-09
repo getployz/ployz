@@ -71,7 +71,42 @@ async fn storage_inspection_preserves_unrecoverable_backing() {
 }
 
 #[tokio::test]
-async fn batch_preparation_checks_total_before_allocating_and_reuses_committed_volumes() {
+async fn batch_preparation_rejects_an_existing_read_only_volume_before_dataset_creation() {
+    let test = TestDir::new();
+    for marker in ["root", "volume", "readonly-volume"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(
+        UnixListener::bind(&socket).unwrap(),
+        VolumeStorage::with_programs(zpool, zfs),
+    ));
+
+    let response = post(
+        &socket,
+        "/Storage.Prepare",
+        json!({"data":1073741824u64,"other":1073741824u64}),
+    )
+    .await;
+
+    assert!(
+        response
+            .pointer("/Err/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("read-only")),
+        "{response}"
+    );
+    assert!(
+        !fs::read_to_string(test.0.join("commands"))
+            .unwrap()
+            .contains("zfs create")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn batch_preparation_reserves_capacity_before_docker_creates_volumes() {
     let test = TestDir::new();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(
@@ -103,6 +138,28 @@ async fn batch_preparation_checks_total_before_allocating_and_reuses_committed_v
         post(&socket, "/Storage.Prepare", requested.clone()).await,
         json!({"Ok":["data","other"]})
     );
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await,
+        json!({"Err":"Provisioned Volume data does not exist"})
+    );
+    assert_eq!(
+        post(&socket, "/VolumeDriver.List", json!({})).await,
+        json!({"Volumes":[],"Err":""})
+    );
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(capacity.pointer("/Ok/volumes").unwrap(), &json!({}));
+
+    for (name, size) in [("data", "1073741824b"), ("other", "2147483648b")] {
+        assert_eq!(
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":name,"Opts":{"size":size}}),
+            )
+            .await,
+            json!({"Err":""})
+        );
+    }
     let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
     assert_eq!(
         capacity.pointer("/Ok/volumes").unwrap(),

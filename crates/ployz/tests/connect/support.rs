@@ -606,6 +606,20 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(RpcResponse::from(report).encode().unwrap()))
     }
 
+    async fn request_machine_upgrade(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn inspect_machine_upgrade(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn inspect_container(
         &self,
         _request: Request<OpaquePayload>,

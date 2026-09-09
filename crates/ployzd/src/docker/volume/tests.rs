@@ -361,6 +361,14 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
                 "Status":{"bound_bytes":1073741824,"used_bytes":0}
             }),
         ),
+        (
+            provisioned_source("missing-metadata", 2_147_483_648),
+            serde_json::json!({
+                "Name":"app_missing-metadata","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/app_missing-metadata",
+                "Options":null,"Labels":null,
+                "Status":{"bound_bytes":2147483648_u64,"used_bytes":0}
+            }),
+        ),
     ];
     for (source, observed) in cases {
         let name = source.docker_volume_name().unwrap().to_string();

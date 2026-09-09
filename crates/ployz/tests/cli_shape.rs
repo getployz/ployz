@@ -61,6 +61,93 @@ fn native_completion_is_generated_for_every_supported_shell() {
     }
 }
 
+#[test]
+fn machine_upgrade_requires_explicit_targets_and_has_typed_inspection() {
+    let command = ployz::cli::command();
+    let request = command
+        .clone()
+        .try_get_matches_from([
+            "ployz",
+            "machine",
+            "upgrade",
+            "1.2.3-beta.4",
+            "--machine",
+            "edge-a",
+            "--machine",
+            "0123456789abcdef0123456789abcdef",
+        ])
+        .unwrap();
+    let upgrade = request
+        .subcommand_matches("machine")
+        .unwrap()
+        .subcommand_matches("upgrade")
+        .unwrap();
+    assert_eq!(
+        upgrade
+            .get_one::<ployz_core::MachineRelease>("version")
+            .map(ployz_core::MachineRelease::as_str),
+        Some("1.2.3-beta.4")
+    );
+    assert_eq!(
+        upgrade
+            .get_many::<String>("machine")
+            .unwrap()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["edge-a", "0123456789abcdef0123456789abcdef"]
+    );
+    assert!(
+        command
+            .clone()
+            .try_get_matches_from(["ployz", "machine", "upgrade", "stable"])
+            .is_err()
+    );
+    assert!(
+        command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "upgrade",
+                "nightly",
+                "--machine",
+                "edge-a"
+            ])
+            .is_err()
+    );
+
+    let inspect = command
+        .try_get_matches_from([
+            "ployz",
+            "machine",
+            "upgrade",
+            "inspect",
+            "edge-a",
+            "--attempt",
+            "0123456789abcdef0123456789abcdef",
+            "-o",
+            "json",
+        ])
+        .unwrap();
+    let inspect = inspect
+        .subcommand_matches("machine")
+        .unwrap()
+        .subcommand_matches("upgrade")
+        .unwrap()
+        .subcommand_matches("inspect")
+        .unwrap();
+    assert_eq!(
+        inspect
+            .get_one::<ployz_core::MachineUpgradeAttemptId>("attempt")
+            .map(ToString::to_string),
+        Some("0123456789abcdef0123456789abcdef".into())
+    );
+    assert_eq!(
+        inspect.get_one::<String>("output").map(String::as_str),
+        Some("json")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {

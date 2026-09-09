@@ -15,10 +15,12 @@ cli_archives=$(printf '%s\n' \
     ployz_linux_arm64.tar.gz \
     ployz_macos_amd64.tar.gz \
     ployz_macos_arm64.tar.gz)
+daemon_archives=$(printf '%s\n' \
+    ployzd_linux_amd64.tar.gz \
+    ployzd_linux_arm64.tar.gz)
 all_archives=$(printf '%s\n' \
     $cli_archives \
-    ployzd_linux_amd64.tar.gz \
-    ployzd_linux_arm64.tar.gz \
+    $daemon_archives \
     ployz-relay_linux_amd64.tar.gz \
     ployz-relay_linux_arm64.tar.gz)
 
@@ -34,7 +36,7 @@ repo=${GITHUB_REPOSITORY:-getployz/ployz2}
 (
     cd "$DIST"
     # shellcheck disable=SC2086
-    sha256sum $cli_archives | sort -k2 > checksums.txt
+    sha256sum $cli_archives $daemon_archives | sort -k2 > checksums.txt
 )
 
 write_homebrew_formula_from_checksums "$DIST/checksums.txt" "$DIST/homebrew/ployz.rb" "$version" "$tag" "$repo"

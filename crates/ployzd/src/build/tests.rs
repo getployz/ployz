@@ -21,6 +21,7 @@ struct Fixture {
     root: PathBuf,
     policy: HostPolicy,
     cluster: tokio::task::JoinHandle<()>,
+    local: crate::machine::LocalMachine,
     machine: ployz_core::Machine,
     address: String,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
@@ -74,6 +75,7 @@ impl Fixture {
         update(&mut policy);
         let shutdown = tokio_util::sync::CancellationToken::new();
         service.builds = Runner::new(policy.clone(), shutdown.clone()).unwrap();
+        let local = service.local();
         write_docker(&policy.docker, &root);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -86,6 +88,7 @@ impl Fixture {
             root,
             policy,
             cluster,
+            local,
             machine,
             address,
             server,
@@ -200,6 +203,63 @@ async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_owner
 }
 
 #[tokio::test]
+async fn active_build_refuses_an_upgrade_request() {
+    let fixture = Fixture::new().await;
+    let (sender, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+
+    let error = fixture
+        .local
+        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
+    ));
+
+    let mut ordinary = Box::pin(fixture.local.set_cloud_pairing(None));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), ordinary.as_mut())
+            .await
+            .is_err(),
+        "ordinary mutation ran concurrently with active Build execution"
+    );
+    drop(sender);
+    let _ = terminal(&mut response).await;
+    tokio::time::timeout(Duration::from_secs(2), ordinary)
+        .await
+        .expect("ordinary mutation stayed blocked after Build execution ended")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn durable_upgrade_marker_refuses_build_before_execution() {
+    let fixture = Fixture::new().await;
+    let marker = fixture.root.join("machine/.upgrade-active");
+    fs::write(&marker, "active-upgrade").unwrap();
+
+    let (_sender, mut rejected) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        terminal(&mut rejected).await,
+        Outcome::Failed {
+            stage: Stage::Admission,
+            ..
+        }
+    ));
+    assert!(!fixture.root.join("executed").exists());
+
+    fs::remove_file(marker).unwrap();
+    let (sender, mut admitted) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut admitted).await, Event::Admitted { .. }));
+    drop(sender);
+    let _ = terminal(&mut admitted).await;
+}
+
+#[tokio::test]
 async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence() {
     let fixture = Fixture::new().await;
     let capture = fixture.capture();
@@ -246,6 +306,50 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
             .any(|event| matches!(event, Progress::Stage(Stage::Building)))
     );
     assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+}
+
+#[tokio::test]
+async fn retained_build_images_do_not_block_same_machine_mutation() {
+    let fixture = Fixture::new().await;
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let retained = fixture
+        .capture()
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.local.set_cloud_pairing(None),
+    )
+    .await
+    .expect("retained Build stream held the local mutation mutex")
+    .unwrap();
+
+    let error = fixture
+        .local
+        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
+    ));
+    drop(retained);
 }
 
 #[tokio::test]
@@ -401,6 +505,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         fixture.machine.id,
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
+        fixture.local.clone(),
     );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),

@@ -133,7 +133,27 @@ impl Client {
         request: T::Request,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
+        self.call_repeatable_for::<T>(request, target, crate::setup_retry::WAIT)
+            .await
+            .map_err(|error| match error {
+                crate::setup_retry::Error::Permanent(error) => error,
+                crate::setup_retry::Error::Exhausted(message) => {
+                    ConnectError::Attempt(message.into())
+                }
+            })
+    }
+
+    /// Retry a read or stable-identity request for the caller's remaining time budget.
+    pub(crate) async fn call_repeatable_for<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: Option<&MachineTarget>,
+        wait: Duration,
+    ) -> Result<T::Response, crate::setup_retry::Error<ConnectError>> {
+        let payload = T::into_request(request)
+            .encode()
+            .map_err(ConnectError::from)
+            .map_err(crate::setup_retry::Error::Permanent)?;
         let mut redial = false;
         let operation = T::PATH.rsplit('/').next().unwrap_or(T::PATH);
         let destination = target.map_or_else(
@@ -144,7 +164,7 @@ impl Client {
         crate::setup_retry::run(
             self,
             &progress,
-            crate::setup_retry::WAIT,
+            wait,
             ConnectError::is_setup_retryable,
             async |client| {
                 let reconnect = redial;
@@ -160,10 +180,6 @@ impl Client {
             },
         )
         .await
-        .map_err(|error| match error {
-            crate::setup_retry::Error::Permanent(error) => error,
-            crate::setup_retry::Error::Exhausted(message) => ConnectError::Attempt(message.into()),
-        })
     }
 
     /// Setup mutations must not be replayed after a lost response.

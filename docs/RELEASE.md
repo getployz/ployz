@@ -35,7 +35,7 @@ Protected `main` pushes warm the shared R2 cache, including release archives and
 
 Fast CI on `main` is the merge gate. The ignored cluster suite is informing. A red nightly there does not block a tag or Publish.
 
-Before Publish, run `scripts/qualify-release.sh` against real Linux Machines using the draft musl archives (`PLOYZ_ARTIFACT_DIR`). That script does not pick a cloud vendor. You pass SSH targets. Those hosts must be uninitialized Machines unless you set `PLOYZ_QUALIFY_RESET=1`, which accepts a reset and destroys managed containers. Pass a qualification key with `PLOYZ_QUALIFY_SSH_KEY` or `-i` in `PLOYZ_QUALIFY_SSH_OPTS` so `ssh` and `ployz machine init`/`add` use the same identity.
+Before Publish, run `scripts/qualify-release.sh` against real Linux Machines using two draft musl archive sets: `PLOYZ_ARTIFACT_DIR` is the source release and `PLOYZ_UPGRADE_ARTIFACT_DIR` is the target release. The versions must differ. The script does not pick a cloud vendor. You pass SSH targets. Those hosts must be uninitialized Machines unless you set `PLOYZ_QUALIFY_RESET=1`, which accepts a reset and destroys managed containers. Pass a qualification key with `PLOYZ_QUALIFY_SSH_KEY`; the normal `ployz machine init`/`add` path installs the verified source, then the qualifier proves a target upgrade through client disconnection, persistent ZFS-backed traffic, corrupt preflight rejection, failed activation evidence, and explicit previous-binary repair.
 
 When the informing cluster suite and that run disagree, the real Machines are the authority. Testkit bugs do not block a release.
 
@@ -85,7 +85,7 @@ Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.
 
 ## Machine daemon
 
-`scripts/install.sh` on Linux. Same version tokens: `latest` / `stable` / `beta` / pin. Set `PLOYZ_VERSION`.
+`ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
 
 ## Cloud Relay
 

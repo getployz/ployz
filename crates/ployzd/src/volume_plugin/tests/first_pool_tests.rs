@@ -2,8 +2,11 @@
 
 use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
+    sync::Arc,
     time::Duration,
 };
+
+use tokio::sync::Mutex;
 
 use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
 use super::*;
@@ -426,6 +429,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         pool: first.pool.clone(),
         zfs: first.zfs.clone(),
         mutation: Arc::new(Mutex::new(())),
+        installation: first.installation.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -491,6 +495,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         pool: first.pool.clone(),
         zfs: first.zfs.clone(),
         mutation: Arc::new(Mutex::new(())),
+        installation: first.installation.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -956,5 +961,9 @@ esac
         ),
         zfs: program("zfs"),
         mutation: Arc::new(Mutex::new(())),
+        installation: ployzd::mutation::MutationGate::new(
+            directory.join("admission-run"),
+            directory.join("admission-data"),
+        ),
     }
 }

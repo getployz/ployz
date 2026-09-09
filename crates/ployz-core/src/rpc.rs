@@ -6,6 +6,9 @@ use std::{
 };
 use ts_rs::TS;
 
+mod upgrade;
+pub use upgrade::*;
+
 use ipnet::Ipv4Net;
 use prost::Message;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
@@ -839,6 +842,7 @@ define_responses! {
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";
     MachineUpdated(MachineUpdated) => "machine_updated";
+    MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";
     MachineRemoved(MachineRemoved) => "machine_removed";
     WireGuardInspected(WireGuardInspected) => "wireguard_inspected";

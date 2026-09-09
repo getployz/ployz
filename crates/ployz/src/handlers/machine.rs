@@ -18,6 +18,7 @@ mod helpers;
 mod init;
 mod inspect;
 mod remove;
+mod upgrade;
 
 pub(super) use add::add;
 pub(super) use helpers::{
@@ -26,6 +27,7 @@ pub(super) use helpers::{
 pub(super) use init::init;
 pub(super) use inspect::{inspect, list, rtt, wireguard_show};
 pub(super) use remove::remove;
+pub(super) use upgrade::{inspect as inspect_upgrade, upgrade};
 
 const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 

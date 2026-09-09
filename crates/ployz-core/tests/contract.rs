@@ -14,16 +14,18 @@ use ployz_core::{
     GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, HttpProtocol,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
     IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
-    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineSubnet,
-    MachineSuccess, MachineTokenRequest, MachineUpdate, ManagementAddress, NameMatches,
-    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    PartialResult, PortPublication, ProjectName, PublicIpDiscovery, PublicIpUpdate,
-    PullImageFromMachineRequest, QualifiedService, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
-    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest,
-    VolumeSource, encode_grpc_frame, grpc_frames, op,
+    InspectMachineUpgradeRequest, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
+    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
+    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
+    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
+    MachineVersion, ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
+    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, QualifiedService,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestMachineUpgradeRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted,
+    ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource,
+    encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1472,6 +1474,57 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
             request
         );
     }
+}
+
+#[test]
+fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
+    let attempt_id = MachineUpgradeAttemptId::parse(MACHINE_ID).unwrap();
+    let request = RequestMachineUpgradeRequest {
+        attempt_id,
+        release: MachineRelease::parse("beta").unwrap(),
+    };
+    assert_eq!(
+        op::RequestMachineUpgrade::into_request(request.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::RequestMachineUpgrade(request)
+    );
+    let inspect = InspectMachineUpgradeRequest {
+        attempt_id: Some(attempt_id),
+    };
+    assert_eq!(
+        op::InspectMachineUpgrade::into_request(inspect.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::InspectMachineUpgrade(inspect)
+    );
+
+    let attempt = MachineUpgradeAttempt {
+        attempt_id,
+        target: MachineVersion::parse("1.2.3-beta.4").unwrap(),
+        outcome: MachineUpgradeOutcome::Failed {
+            stage: MachineUpgradeStage::Verifying,
+            error: "checksum mismatch".into(),
+        },
+    };
+    let response = RpcResponse::from(attempt.clone());
+    assert_eq!(
+        response
+            .clone()
+            .decode::<op::RequestMachineUpgrade>()
+            .unwrap(),
+        attempt
+    );
+    assert_eq!(
+        response.decode::<op::InspectMachineUpgrade>().unwrap(),
+        attempt
+    );
 }
 
 #[test]

@@ -1,6 +1,7 @@
 include!("src/rpc_catalog.rs");
 
 fn main() {
+    println!("cargo:rerun-if-changed=src/rpc_catalog.rs");
     macro_rules! build_service {
         (
             package $package:literal

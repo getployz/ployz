@@ -249,6 +249,8 @@ fn handler_for(path: &str) -> Option<Handler> {
         "machine rm" => machine::remove,
         "machine rtt" => machine::rtt,
         "machine update" => machine::update,
+        "machine upgrade" => machine::upgrade,
+        "machine upgrade inspect" => machine::inspect_upgrade,
         "proxy" => operator::proxy,
         "project ls" => project::list,
         "project rm" => project::remove,

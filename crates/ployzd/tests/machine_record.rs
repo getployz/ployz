@@ -130,8 +130,8 @@ fn sample_cloud_pairing() -> CloudPairing {
     .unwrap()
 }
 
-#[test]
-fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
+#[tokio::test]
+async fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
     let dir = TestDir::new("ployzd-initialize-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let (reset, _) = tokio::sync::watch::channel(false);
@@ -147,6 +147,7 @@ fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
             wireguard_mtu: None,
             cloud_pairing: Some(pairing.clone()),
         })
+        .await
         .unwrap();
 
     assert_eq!(
@@ -171,8 +172,8 @@ fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
     assert!(pairing_json.get("dial").is_none());
 }
 
-#[test]
-fn set_cloud_pairing_after_initialize_persists() {
+#[tokio::test]
+async fn set_cloud_pairing_after_initialize_persists() {
     let dir = TestDir::new("ployzd-set-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let (reset, _) = tokio::sync::watch::channel(false);
@@ -188,10 +189,14 @@ fn set_cloud_pairing_after_initialize_persists() {
             wireguard_mtu: None,
             cloud_pairing: None,
         })
+        .await
         .unwrap();
     assert_eq!(local.record().unwrap().cloud_pairing, None);
 
-    local.set_cloud_pairing(Some(pairing.clone())).unwrap();
+    local
+        .set_cloud_pairing(Some(pairing.clone()))
+        .await
+        .unwrap();
     assert_eq!(
         local.record().unwrap().cloud_pairing.as_ref(),
         Some(&pairing)
@@ -201,8 +206,8 @@ fn set_cloud_pairing_after_initialize_persists() {
     assert_eq!(reopened.record().cloud_pairing.as_ref(), Some(&pairing));
 }
 
-#[test]
-fn set_cloud_pairing_none_clears_persisted_pairing() {
+#[tokio::test]
+async fn set_cloud_pairing_none_clears_persisted_pairing() {
     let dir = TestDir::new("ployzd-clear-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let (reset, _) = tokio::sync::watch::channel(false);
@@ -216,28 +221,30 @@ fn set_cloud_pairing_none_clears_persisted_pairing() {
             wireguard_mtu: None,
             cloud_pairing: Some(sample_cloud_pairing()),
         })
+        .await
         .unwrap();
-    local.set_cloud_pairing(None).unwrap();
+    local.set_cloud_pairing(None).await.unwrap();
     assert_eq!(local.record().unwrap().cloud_pairing, None);
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().cloud_pairing, None);
 }
 
-#[test]
-fn set_cloud_pairing_before_initialize_is_not_participating() {
+#[tokio::test]
+async fn set_cloud_pairing_before_initialize_is_not_participating() {
     let dir = TestDir::new("ployzd-set-cloud-pairing-uninitialized");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let (reset, _) = tokio::sync::watch::channel(false);
     let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
     let error = local
         .set_cloud_pairing(Some(sample_cloud_pairing()))
+        .await
         .unwrap_err();
     assert!(matches!(error, LocalMachineError::NotParticipating));
 }
 
-#[test]
-fn join_with_cloud_pairing_stores_the_same_two_fields() {
+#[tokio::test]
+async fn join_with_cloud_pairing_stores_the_same_two_fields() {
     let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
     let initialized = first
@@ -278,6 +285,7 @@ fn join_with_cloud_pairing_stores_the_same_two_fields() {
             wireguard_mtu: None,
             cloud_pairing: Some(pairing.clone()),
         })
+        .await
         .unwrap();
 
     assert_eq!(
@@ -440,6 +448,7 @@ async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
             wireguard_mtu: None,
             cloud_pairing: Some(sample_cloud_pairing()),
         })
+        .await
         .unwrap();
 
     let details = local.inspect(InspectRequest::default()).await.unwrap();

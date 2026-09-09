@@ -380,12 +380,40 @@ fn machine() -> Command {
                 ),
         )
         .subcommand(base("rtt", "Show round-trip times"))
+        .subcommand(machine_upgrade())
         .subcommand(
             base("update", "Update machine configuration")
                 .arg(value("name", None))
                 .arg(value("public-ip", None))
                 .arg(many("wg-endpoint", None))
                 .arg(positional("machine", true)),
+        )
+}
+
+fn machine_upgrade() -> Command {
+    base("upgrade", "Upgrade explicitly selected machines")
+        .arg_required_else_help(true)
+        .subcommand_negates_reqs(true)
+        .args_conflicts_with_subcommands(true)
+        .subcommand_precedence_over_arg(true)
+        .arg(
+            positional("version", true)
+                .value_name("VERSION")
+                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+        )
+        .arg(
+            many("machine", Some('m'))
+                .required(true)
+                .help("Machine name or ID; repeat for an explicit sequence"),
+        )
+        .subcommand(
+            base("inspect", "Inspect one Machine upgrade attempt")
+                .arg(positional("machine", true))
+                .arg(
+                    value("attempt", None)
+                        .value_parser(clap::value_parser!(ployz_core::MachineUpgradeAttemptId)),
+                )
+                .arg(json_output()),
         )
 }
 

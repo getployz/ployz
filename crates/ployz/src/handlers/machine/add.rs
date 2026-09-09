@@ -27,14 +27,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let storage = crate::provisioning::resolve_storage(matches)?;
-    if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches, storage)?;
-    }
-
-    let assigned = runtime()?.block_on(async {
+    let no_install = matches.get_flag("no-install");
+    let runtime = runtime()?;
+    let assigned = runtime.block_on(async {
+        if !no_install {
+            crate::provisioning::provision(matches, storage).await?;
+        }
         let mut entry = connect_client(matches, options.context()).await?;
         let visible = entry.machines().await?;
-        let mut target_client = if matches.get_flag("no-install") {
+        let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
             helpers::reconnect_direct(matches, &connection).await?
@@ -100,13 +101,13 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     println!("{}", added_machine_line(&assigned));
 
-    runtime()?.block_on(helpers::wait_direct_participating(
+    runtime.block_on(helpers::wait_direct_participating(
         matches,
         &connection,
         "added Machine did not become ready",
     ))?;
 
-    let catch_up = runtime()?.block_on(async {
+    let catch_up = runtime.block_on(async {
         let mut entry = super::super::reconnect_client(matches, options.context()).await?;
         Ok::<_, Error>(
             crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_ingress).await,
@@ -120,7 +121,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             crate::global_catch_up::joined_catch_up_error(error)
         )));
     }
-    let dns_result = runtime()?.block_on(async {
+    let dns_result = runtime.block_on(async {
         let mut entry = super::super::reconnect_client(matches, options.context()).await?;
         crate::dns::update_records_if_reserved(&mut entry).await?;
         Ok::<_, Error>(())

@@ -39,7 +39,6 @@ on:
       - .github/workflows/release-contracts.yml
       - .goreleaser.yaml
       - install.sh
-      - scripts/install.sh
       - scripts/uninstall.sh
       - scripts/verify-release.sh
       - scripts/pack-release.sh

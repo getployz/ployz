@@ -44,6 +44,8 @@ macro_rules! rpc_catalog {
                 SetCloudPairing: (set_cloud_pairing, "SetCloudPairing", SetCloudPairingRequest, "set_cloud_pairing", CloudPairingSet, SET_CLOUD_PAIRING_CAPABILITY, "ployz.machine.set-cloud-pairing.v1", Always),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
+                RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always),
+                InspectMachineUpgrade: (inspect_machine_upgrade, "InspectMachineUpgrade", InspectMachineUpgradeRequest, "inspect_machine_upgrade", MachineUpgradeAttempt, INSPECT_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.inspect.v1", Always),
                 RemoveLocalMachine: (remove_local_machine, "RemoveLocalMachine", RemoveLocalMachineRequest, "remove_local_machine", LocalMachineRemoved, REMOVE_LOCAL_MACHINE_CAPABILITY, "ployz.machine.remove-local.v1", Always),
                 RemoveMachine: (remove_machine, "RemoveMachine", RemoveMachineRequest, "remove_machine", MachineRemoved, REMOVE_MACHINE_CAPABILITY, "ployz.machine.remove.v1", Always),
                 InspectWireguard: (inspect_wireguard, "InspectWireguard", InspectWireGuardRequest, "inspect_wireguard", WireGuardInspected, INSPECT_WIREGUARD_CAPABILITY, "ployz.wireguard.inspect.v1", Always),

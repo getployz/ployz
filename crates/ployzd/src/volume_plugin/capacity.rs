@@ -4,7 +4,7 @@ use axum::{Json, extract::State};
 use ployz_core::{ProvisionedVolumeMaximumBytes, StorageCapacity, StorageCapacityError};
 use std::collections::BTreeMap;
 
-use super::{CapacityAdmission, DockerVolumeName, VolumeStorage};
+use super::{DockerVolumeName, VolumeStorage};
 
 type Volumes = BTreeMap<ployz_core::DockerVolumeName, ProvisionedVolumeMaximumBytes>;
 
@@ -65,11 +65,37 @@ impl VolumeStorage {
         })
     }
 
+    async fn inspect_capacity(&self) -> Result<StorageCapacity, ployz_core::RpcError> {
+        let admission = self.admit_mutation().await.map_err(unknown)?;
+        let storage = self.clone();
+        tokio::spawn(async move {
+            let _admission = admission;
+            let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
+            storage.capacity().await.map_err(unknown)
+        })
+        .await
+        .unwrap_or_else(|error| Err(unknown(error)))
+    }
+
     async fn prepare(
         &self,
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
-        let _guard = self.mutation.lock().await;
+        let admission = self.admit_mutation().await.map_err(storage_error)?;
+        let storage = self.clone();
+        let requested = requested.clone();
+        tokio::spawn(async move {
+            let _admission = admission;
+            storage.prepare_admitted(&requested).await
+        })
+        .await
+        .unwrap_or_else(|error| Err(unknown(error)))
+    }
+
+    async fn prepare_admitted(
+        &self,
+        requested: &Volumes,
+    ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
         let capacity = self.capacity().await.map_err(unknown)?;
         let budget = capacity
@@ -78,78 +104,53 @@ impl VolumeStorage {
         if requested.is_empty() {
             return Ok(Vec::new());
         }
+        let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
+        if let Some(pool) = &existing_pool {
+            let datasets = self.datasets(pool).await.map_err(storage_error)?;
+            for (name, maximum) in requested {
+                let plugin_name = name
+                    .as_str()
+                    .parse::<DockerVolumeName>()
+                    .map_err(storage_error)?;
+                if let Some(existing) =
+                    Self::dataset(&datasets, pool, &plugin_name).map_err(storage_error)?
+                {
+                    existing
+                        .require_requested(&plugin_name, maximum.get())
+                        .map_err(storage_error)?;
+                }
+            }
+        }
         let commitment = capacity
             .volumes
             .values()
             .map(|maximum| maximum.get())
             .try_fold(budget.additional_commitment_bytes, u64::checked_add)
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
-        let pool = match self.pool.one_usable().await.map_err(storage_error)? {
+        match existing_pool {
             Some(pool) => {
                 self.pool
                     .ensure_capacity(&pool, commitment, capacity.unmanaged_used_bytes)
                     .await
                     .map_err(storage_error)?;
-                pool
             }
             None => {
                 self.pool.create(commitment).await.map_err(storage_error)?;
-                self.one_pool().await.map_err(storage_error)?
             }
-        };
-        let mut prepared = Vec::new();
-        for (name, maximum) in requested {
-            let plugin_name = name
-                .as_str()
-                .parse::<DockerVolumeName>()
-                .map_err(storage_error)?;
-            // The whole batch has physical backing; each dataset records its durable commitment.
-            if let Err(error) = self
-                .create_volume(
-                    &pool,
-                    &plugin_name,
-                    maximum.get(),
-                    CapacityAdmission::Ensured,
-                )
-                .await
-            {
-                let mut error = storage_error(error);
-                error
-                    .details
-                    .as_object_mut()
-                    .expect("storage errors have object details")
-                    .insert("prepared_volumes".into(), serde_json::json!(prepared));
-                return Err(error);
-            }
-            prepared.push(name.clone());
         }
-        Ok(prepared)
+        Ok(requested.keys().cloned().collect())
     }
 }
 
 pub(super) async fn inspect(
     State(storage): State<VolumeStorage>,
 ) -> Json<Result<StorageCapacity, ployz_core::RpcError>> {
-    // Finish import recovery under the locks even if the observer disconnects.
-    Json(
-        tokio::spawn(async move {
-            let _guard = storage.mutation.lock().await;
-            let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
-            storage.capacity().await.map_err(unknown)
-        })
-        .await
-        .unwrap_or_else(|error| Err(unknown(error))),
-    )
+    Json(storage.inspect_capacity().await)
 }
 
 pub(super) async fn prepare(
     State(storage): State<VolumeStorage>,
     Json(requested): Json<Volumes>,
 ) -> Json<Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError>> {
-    // Finish admitted allocation even if the requesting connection disappears.
-    Json(
-        tokio::spawn(async move { storage.prepare(&requested).await })
-            .await
-            .unwrap_or_else(|error| Err(unknown(error))),
-    )
+    Json(storage.prepare(&requested).await)
 }

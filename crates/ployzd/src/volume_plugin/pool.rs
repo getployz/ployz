@@ -70,7 +70,7 @@ impl VolumeStorage {
         options: &BTreeMap<String, String>,
     ) -> Result<()> {
         let requested = parse_size(options)?;
-        let _guard = self.mutation.lock().await;
+        let _guard = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
         let existing = match self.pool.one_usable().await? {
             Some(pool) => Some(pool),

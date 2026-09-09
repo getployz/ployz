@@ -63,6 +63,18 @@ fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
 }
 
+fn is_machine_version(value: &str) -> bool {
+    let Ok(version) = semver::Version::parse(value) else {
+        return false;
+    };
+    let pre = version.pre.as_str();
+    version.build.is_empty()
+        && (pre.is_empty()
+            || pre.strip_prefix("beta.").is_some_and(|number| {
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+            }))
+}
+
 macro_rules! hex_id_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
         $(#[$attribute])*
@@ -209,6 +221,13 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
+    /// Identity of one bounded Machine upgrade attempt.
+    MachineUpgradeAttemptId,
+    "Machine upgrade attempt ID",
+    32,
+    "32 lowercase hexadecimal characters"
+);
+hex_id_newtype!(
     ServiceId,
     "Service ID",
     32,
@@ -229,6 +248,16 @@ hex_id_newtype!(
 
 impl MachineId {
     /// Random 32-character lowercase hexadecimal Machine ID.
+    #[must_use]
+    pub fn random() -> Self {
+        let mut hex = [0_u8; 32];
+        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        Self(hex)
+    }
+}
+
+impl MachineUpgradeAttemptId {
+    /// Random 32-character lowercase hexadecimal attempt ID.
     #[must_use]
     pub fn random() -> Self {
         let mut hex = [0_u8; 32];
@@ -286,6 +315,20 @@ validated_string_newtype!(
     "Machine Name",
     "a 1-63 character lowercase DNS label",
     |value| is_dns_label(value)
+);
+validated_string_newtype!(
+    /// A trusted release selector: stable, beta, or an exact supported version.
+    MachineRelease,
+    "Machine release",
+    "stable, beta, X.Y.Z, or X.Y.Z-beta.N",
+    |value| matches!(value, "stable" | "beta") || is_machine_version(value)
+);
+validated_string_newtype!(
+    /// One exact supported Machine release version.
+    MachineVersion,
+    "Machine version",
+    "X.Y.Z or X.Y.Z-beta.N",
+    |value| is_machine_version(value)
 );
 validated_string_newtype!(
     DockerVolumeName,
@@ -877,5 +920,25 @@ mod tests {
         assert_eq!(token.as_str(), "pmet_test");
         assert_eq!(format!("{token:?}"), "CloudEnrollToken(..)");
         assert!(!format!("{token:?}").contains("pmet_test"));
+    }
+
+    #[test]
+    fn machine_release_accepts_only_channels_and_supported_exact_versions() {
+        for release in ["stable", "beta", "1.2.3", "1.2.3-beta.4"] {
+            assert!(MachineRelease::parse(release).is_ok(), "{release}");
+        }
+        for release in [
+            "nightly",
+            "v1.2.3",
+            "1.2",
+            "1.2.3-alpha.1",
+            "1.2.3+build",
+            "1.2.3-beta.01",
+            "https://example.test/release",
+        ] {
+            assert!(MachineRelease::parse(release).is_err(), "{release}");
+            assert!(MachineVersion::parse(release).is_err(), "{release}");
+        }
+        assert!(MachineVersion::parse("stable").is_err());
     }
 }

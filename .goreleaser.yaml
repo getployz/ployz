@@ -117,7 +117,7 @@ archives:
 
 checksum:
   name_template: checksums.txt
-  ids: [ployz]
+  ids: [ployz, ployzd]
 
 changelog:
   disable: true

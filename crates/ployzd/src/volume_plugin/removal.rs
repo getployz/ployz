@@ -11,7 +11,7 @@ use super::{
 
 impl VolumeStorage {
     async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.admit_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(());
         };
