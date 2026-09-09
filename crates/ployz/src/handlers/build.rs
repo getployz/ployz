@@ -78,7 +78,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
             let machine = select_build_machine(
                 &mut client,
                 target.as_ref(),
-                captured.targets(),
+                &captured.targets()?,
                 &visible,
                 &cancellation,
             )

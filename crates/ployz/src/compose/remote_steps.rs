@@ -36,10 +36,20 @@ impl CapturedBuild {
                 Err(outcome) => outcome,
             };
         }
+        let targets = match self.targets() {
+            Ok(targets) => targets,
+            Err(error) => {
+                return Outcome::Failed {
+                    stage: Stage::Preparation,
+                    message: error.to_string(),
+                    work: WorkEvidence::new(&self.targets),
+                };
+            }
+        };
         let definition = ployz_build::remote::Definition {
             retained_tags: Vec::new(),
             image_contexts: Default::default(),
-            targets: self.targets,
+            targets,
             output: self.options.output,
             no_cache: self.options.no_cache,
             pull: self.options.pull,
@@ -105,6 +115,9 @@ impl CapturedBuild {
             message,
             work: Default::default(),
         };
+        let targets = self.targets().map_err(|error| {
+            failed(Stage::Preparation, error.to_string()).with_work(work.clone())
+        })?;
         if self.options.output != Output::Load {
             return Err(failed(
                 Stage::Preparation,
@@ -124,7 +137,7 @@ impl CapturedBuild {
             .with_work(work));
         }
         let mut completed: Vec<BuiltService> = Vec::new();
-        for (service, target) in self.plan.iter().zip(&self.targets) {
+        for (service, target) in self.plan.iter().zip(&targets) {
             if cancellation.is_cancelled() {
                 return Err(failed(
                     Stage::Admission,

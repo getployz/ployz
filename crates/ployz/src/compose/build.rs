@@ -76,16 +76,6 @@ pub struct CapturedBuild {
     environment: BTreeMap<String, String>,
     inputs: BuildInputs,
     retained_tags: BTreeMap<String, String>,
-    /// Targets whose platforms Compose authored, as opposed to the execution
-    /// host's default a Deploy may replace with what its Machines run.
-    authored_platforms: BTreeSet<String>,
-}
-
-impl CapturedBuild {
-    /// Complete command requirements, including captured Build dependencies.
-    pub(crate) fn targets(&self) -> &[ployz_build::Target] {
-        &self.targets
-    }
 }
 
 /// Where a completed image is available; Machine identity is already resolved.
@@ -202,7 +192,6 @@ pub fn capture_build(
     let mut targets = Vec::new();
     let mut retained_tags = BTreeMap::new();
     let mut railpack_recipes = Vec::new();
-    let mut authored_platforms = BTreeSet::new();
     for service in &mut plan {
         let image = service.image.clone();
         let name = service.name.clone();
@@ -220,10 +209,7 @@ pub fn capture_build(
         if let Some(recipe) = recipe {
             railpack_recipes.push(recipe);
         }
-        let mut platforms = requested_platforms(&name, build, railpack)?;
-        if !platforms.is_empty() {
-            authored_platforms.insert(name.clone());
-        }
+        let platforms = requested_platforms(&name, build, railpack)?;
         if railpack {
             // Assembly cannot carry attestations, and a Deploy may still turn
             // one platform into two, so Railpack never accepts them.
@@ -239,14 +225,6 @@ pub fn capture_build(
                 build.remove(field);
             }
         }
-        if platforms.is_empty()
-            && let Some(platform) = project
-                .environment
-                .get("DOCKER_DEFAULT_PLATFORM")
-                .filter(|p| !p.is_empty())
-        {
-            platforms.push(platform.clone());
-        }
         if railpack
             && platforms
                 .iter()
@@ -256,11 +234,9 @@ pub fn capture_build(
                 "Railpack supports only linux/amd64 and linux/arm64",
             ));
         }
-        // Railpack consumes Target.platforms directly. Keep an inherited host
-        // default out of the recipe: Deploy may replace it after capture.
-        if railpack && !authored_platforms.contains(&name) {
+        if platforms.is_empty() {
             build.remove("platforms");
-        } else if !platforms.is_empty() {
+        } else {
             build.insert(
                 Value::String("platforms".into()),
                 Value::Sequence(platforms.iter().cloned().map(Value::String).collect()),
@@ -406,6 +382,7 @@ pub fn capture_build(
                     key.as_str(),
                     "PATH"
                         | "DOCKER_HOST"
+                        | "DOCKER_DEFAULT_PLATFORM"
                         | "HTTP_PROXY"
                         | "HTTPS_PROXY"
                         | "NO_PROXY"
@@ -420,7 +397,6 @@ pub fn capture_build(
             .collect(),
         inputs,
         retained_tags,
-        authored_platforms,
     })
 }
 
@@ -636,6 +612,41 @@ fn effective_build_args(
 }
 
 impl CapturedBuild {
+    /// Apply the captured default only after Deploy has supplied its platforms.
+    /// Local execution and remote admission must use the same effective targets.
+    /// # Errors
+    /// Rejects effective Railpack platforms before setup, admission, or upload.
+    pub(crate) fn targets(&self) -> Result<Vec<ployz_build::Target>, ComposeError> {
+        let mut targets = self.targets.clone();
+        if let Some(platform) = self
+            .environment
+            .get("DOCKER_DEFAULT_PLATFORM")
+            .filter(|platform| !platform.is_empty())
+        {
+            for target in &mut targets {
+                if target.platforms.is_empty() {
+                    target.platforms.push(platform.clone());
+                }
+            }
+        }
+        for target in &targets {
+            if self
+                .railpack
+                .iter()
+                .any(|recipe| recipe.name == target.name)
+                && target
+                    .platforms
+                    .iter()
+                    .any(|platform| !RAILPACK_PLATFORMS.contains(&platform.as_str()))
+            {
+                return Err(invalid_build(
+                    "Railpack supports only linux/amd64 and linux/arm64",
+                ));
+            }
+        }
+        Ok(targets)
+    }
+
     /// Build this capture through the shared runner, without reading the
     /// original sources again.
     ///
@@ -647,7 +658,10 @@ impl CapturedBuild {
         docker: Option<&Path>,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<BuiltService>, ComposeError> {
+        let targets = self.targets()?;
         let mut environment = self.environment.clone();
+        // The default selects Build targets, not helper containers or image operations.
+        environment.remove("DOCKER_DEFAULT_PLATFORM");
         environment.insert(
             "HOME".into(),
             self.inputs
@@ -681,7 +695,7 @@ impl CapturedBuild {
                 working_dir: self.inputs.root(),
                 environment: &environment,
                 docker,
-                targets: &self.targets,
+                targets: &targets,
                 railpack: &self.railpack,
                 build_args: &self.options.build_args,
                 output: self.options.output,
@@ -1008,6 +1022,116 @@ impl BuildSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unsupported_railpack_default_fails_before_local_setup_or_remote_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let client = crate::connect::Client::new(
+            tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+            crate::context::Connection::unix("/tmp/ployz-unused.sock").unwrap(),
+            crate::context::ConnectionSource::Direct,
+            Arc::new(crate::connect::SystemConnector::default()),
+        );
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        for output in [Output::Load, Output::Registry] {
+            let mut project = crate::compose::parse_normalized(
+                "services:\n  api:\n    image: example.test/api:latest\n    build: {context: ., x-recipe: railpack}\n",
+                root.path(),
+            ).unwrap();
+            project
+                .environment
+                .insert("DOCKER_DEFAULT_PLATFORM".into(), "linux/386".into());
+            let options = BuildOptions {
+                output,
+                ..Default::default()
+            };
+            let plan = plan_build(&project, &options).unwrap();
+            let captured = capture_build(&plan, &options, &mut project).unwrap();
+            let expected = "Railpack supports only linux/amd64 and linux/arm64";
+            assert!(
+                captured
+                    .targets()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected)
+            );
+            // An invalid Docker executable must never be reached.
+            let error = captured
+                .execute(Some(&root.path().join("missing-docker")), &cancellation)
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            // No Machine is listening: a request reaching admission cannot return this error.
+            let outcome = captured
+                .execute_remote(
+                    &client,
+                    ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+                    cancellation.clone(),
+                    |_| {},
+                )
+                .await;
+            let ployz_build::remote::Outcome::Failed {
+                stage,
+                message,
+                work,
+            } = outcome
+            else {
+                panic!("unexpected outcome: {outcome:?}");
+            };
+            assert_eq!(stage, ployz_build::Stage::Preparation);
+            assert!(message.contains(expected), "{message}");
+            assert!(
+                work.0
+                    .values()
+                    .all(|evidence| matches!(evidence, ployz_build::TargetEvidence::Unattempted))
+            );
+        }
+    }
+
+    #[test]
+    fn execution_defaults_preserve_authored_platforms_and_remote_admission() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        for default in ["", "linux/arm64"] {
+            for declared in ["", ", platforms: []", ", platforms: [linux/amd64]"] {
+                for recipe in ["", ", x-recipe: railpack"] {
+                    let mut project = crate::compose::parse_normalized(
+                        &format!(
+                            "services:\n  api:\n    image: example.test/api:latest\n    build: {{context: .{declared}{recipe}}}\n"
+                        ),
+                        root.path(),
+                    )
+                    .unwrap();
+                    project
+                        .environment
+                        .insert("DOCKER_DEFAULT_PLATFORM".into(), default.into());
+                    let options = BuildOptions::default();
+                    let plan = plan_build(&project, &options).unwrap();
+                    let captured = capture_build(&plan, &options, &mut project).unwrap();
+                    project
+                        .environment
+                        .insert("DOCKER_DEFAULT_PLATFORM".into(), "linux/386".into());
+                    let expected = if declared.contains("linux/amd64") {
+                        vec!["linux/amd64".to_owned()]
+                    } else if default.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec!["linux/arm64".to_owned()]
+                    };
+                    let definition = ployz_build::remote::Definition {
+                        image_contexts: Default::default(),
+                        retained_tags: Vec::new(),
+                        targets: captured.targets().unwrap(),
+                        output: options.output,
+                        no_cache: options.no_cache,
+                        pull: options.pull,
+                    };
+                    assert_eq!(definition.targets.first().unwrap().platforms, expected);
+                    ployz_build::remote::validate_capture(captured.inputs.root(), &definition)
+                        .unwrap();
+                }
+            }
+        }
+    }
 
     #[test]
     fn disabled_multi_platform_attestations_pass_remote_validation() {

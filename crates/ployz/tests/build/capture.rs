@@ -461,7 +461,7 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
     write_docker(&docker, &root);
     fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
     fs::write(root.join("image"), "example.test/api:latest").unwrap();
-    for declared in ["", ", platforms: [linux/amd64]"] {
+    for declared in ["", ", platforms: []", ", platforms: [linux/amd64]"] {
         fs::write(root.join(".env"), "DOCKER_DEFAULT_PLATFORM=linux/arm64\n").unwrap();
         fs::write(root.join("compose.yaml"), format!("services:\n  api:\n    image: example.test/api:latest\n    build: {{context: ./src{declared}}}\n")).unwrap();
         let mut project = load_project(&LoadOptions {
@@ -475,7 +475,7 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
         fs::write(root.join(".env"), "DOCKER_DEFAULT_PLATFORM=linux/amd64\n").unwrap();
         // The recording executor reports AMD64: an ARM64 request must reject it.
         let result = build.execute(Some(&docker), &tokio_util::sync::CancellationToken::new());
-        let expected = if declared.is_empty() {
+        let expected = if !declared.contains("linux/amd64") {
             assert!(
                 result
                     .unwrap_err()
@@ -490,10 +490,25 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
         let config: serde_norway::Value =
             serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap())
                 .unwrap();
-        assert_eq!(
-            config["services"]["api"]["build"]["platforms"][0].as_str(),
-            Some(expected)
-        );
+        if declared.contains("linux/amd64") {
+            assert_eq!(
+                config["services"]["api"]["build"]["platforms"][0].as_str(),
+                Some(expected)
+            );
+        } else {
+            assert!(
+                config["services"]["api"]["build"]
+                    .get("platforms")
+                    .is_none()
+            );
+        }
+        let calls = fs::read_to_string(root.join("calls")).unwrap();
+        let bake = calls
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("buildx bake"))
+            .unwrap();
+        assert!(bake.contains(&format!("api.platform={expected}")), "{bake}");
     }
     fs::remove_dir_all(root).unwrap();
 }

@@ -122,8 +122,8 @@ async fn build_images(
     build
         .cover_machines(candidate, &machines)
         .map_err(crate::deploy::DeployError::from)?;
-    let platforms = build
-        .targets()
+    let targets = build.targets().map_err(crate::deploy::DeployError::from)?;
+    let platforms = targets
         .iter()
         .flat_map(|target| target.platforms.iter().map(String::as_str))
         .collect::<std::collections::BTreeSet<_>>();
@@ -146,7 +146,7 @@ async fn build_images(
     let machine = super::build::select_build_machine(
         client,
         remote.as_ref(),
-        build.targets(),
+        &targets,
         &machines,
         cancellation,
     )
