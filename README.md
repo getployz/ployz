@@ -28,8 +28,20 @@ Set `build.x-recipe` to `dockerfile`, `railpack`, or `auto` (the default) to con
 selection. A failed recipe never falls back to another.
 
 Railpack uses matching pinned 0.39.0 preparation/frontend tooling with BuildKit
-0.26.2, provisioned through Docker, and builds one native Linux AMD64 or ARM64
-image. Service variables default build variables; Compose `build.args` and then
+0.26.2, provisioned through Docker. Builds default to the native Linux AMD64 or
+ARM64 platform. Set `build.platforms: [linux/amd64, linux/arm64]` to build both;
+the execution host must provide native or emulated support for each platform.
+Separate solves are assembled locally with pinned regctl 0.11.6 into one immutable
+image in Docker’s containerd store, with every platform’s content verified.
+Multi-platform builds currently require local output and reject requested
+`build.provenance` or `build.sbom`; Dockerfiles remain limited to one platform. Deploy platform
+inference is separate work.
+
+The [prototype findings](https://github.com/getployz/ployz2/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md)
+preserve the evidence for this assembly approach. They used shipped beta binaries
+and emulated ARM64; they do not qualify this implementation or native ARM64.
+
+Service variables default build variables; Compose `build.args` and then
 `--build-arg` override them without changing runtime values. Values travel as
 private secret mounts. Docker ignore patterns and Railpack's configured
 exclusions apply before source transfer. Recipes can still print or embed values.

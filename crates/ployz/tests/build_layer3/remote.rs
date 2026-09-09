@@ -226,7 +226,7 @@ async fn request(
             remote::encode(&Input::Start(Definition {
                 targets: vec![ployz_build::Target {
                     name: "app".into(),
-                    platform: None,
+                    platforms: Vec::new(),
                 }],
                 output: Output::Load,
                 no_cache: false,

@@ -1,7 +1,6 @@
 use std::{
     ffi::OsStr,
     future::Future,
-    pin::Pin,
     process::{Output, Stdio},
 };
 
@@ -53,8 +52,6 @@ pub enum PushError {
     UnsupportedPlatform(String),
     #[error("image push cancelled")]
     Cancelled,
-    #[error("listen for image-push cancellation: {0}")]
-    Cancellation(#[source] std::io::Error),
     #[error("image '{0}' not found locally")]
     ImageNotFound(String),
     #[error("Machine target selection failed: {0}")]
@@ -100,26 +97,25 @@ pub enum PushError {
 
 impl PushError {
     pub(crate) fn is_cancellation(&self) -> bool {
-        matches!(self, Self::Cancelled | Self::Cancellation(_))
+        matches!(self, Self::Cancelled)
             || matches!(self, Self::CleanupAfter { primary, .. } if primary.is_cancellation())
     }
 }
 
-struct Cancellation {
-    signal: Pin<Box<dyn Future<Output = std::io::Result<()>>>>,
+struct Cancellation<'token> {
+    token: &'token tokio_util::sync::CancellationToken,
 }
 
-impl Cancellation {
-    fn new() -> Self {
-        Self {
-            signal: Box::pin(tokio::signal::ctrl_c()),
-        }
+impl<'token> Cancellation<'token> {
+    fn new(token: &'token tokio_util::sync::CancellationToken) -> Self {
+        Self { token }
     }
 
     async fn race<T>(&mut self, future: impl Future<Output = T>) -> Result<T, PushError> {
         tokio::select! {
+            biased;
+            () = self.token.cancelled() => Err(PushError::Cancelled),
             output = future => Ok(output),
-            result = self.signal.as_mut() => Err(cancellation_error(result)),
         }
     }
 }
@@ -156,11 +152,20 @@ pub async fn push(
     content: ImageContent<'_>,
     platform: Option<&str>,
     selectors: &[String],
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialResult<(), PushError>, PushError> {
-    let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await?;
-    push_using_machines(client, content, platform, selectors, &machines.machines).await
+    let machines = Cancellation::new(cancellation)
+        .race(client.call::<op::ListMachines>(ListMachinesRequest {}, None))
+        .await??;
+    push_using_machines(
+        client,
+        content,
+        platform,
+        selectors,
+        &machines.machines,
+        cancellation,
+    )
+    .await
 }
 
 pub(crate) async fn push_using_machines(
@@ -169,8 +174,9 @@ pub(crate) async fn push_using_machines(
     platform: Option<&str>,
     selectors: &[String],
     machines: &[ployz_core::MachineObservation],
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialResult<(), PushError>, PushError> {
-    let mut cancellation = Cancellation::new();
+    let mut cancellation = Cancellation::new(cancellation);
     // TODO: without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
     let image = content.published;
@@ -295,7 +301,7 @@ async fn push_to_machine(
     platform: Option<&str>,
     machine: &Machine,
     mode: ProxyMode,
-    cancellation: &mut Cancellation,
+    cancellation: &mut Cancellation<'_>,
 ) -> Result<ImageIngestDestination, PushError> {
     // EnsureImageIngest is idempotent; a dropped RPC must not fail the Machine.
     let opened = cancellation
@@ -322,7 +328,7 @@ async fn pull_on_machine(
     image: &str,
     machine: &Machine,
     source: ImageIngestDestination,
-    cancellation: &mut Cancellation,
+    cancellation: &mut Cancellation<'_>,
 ) -> Result<(), PushError> {
     cancellation
         .race(client.call::<op::PullImageFromMachine>(
@@ -451,7 +457,7 @@ impl PushSession {
         mode: ProxyMode,
         content: ImageContent<'_>,
         platform: Option<&str>,
-        cancellation: &mut Cancellation,
+        cancellation: &mut Cancellation<'_>,
     ) -> Result<(), PushError> {
         let mut session = Self {
             proxy: ImageProxy::open(mode, cancellation).await?,
@@ -572,13 +578,6 @@ impl PushSession {
         } else {
             Err(PushError::Cleanup(errors.join("; ")))
         }
-    }
-}
-
-fn cancellation_error(result: std::io::Result<()>) -> PushError {
-    match result {
-        Ok(()) => PushError::Cancelled,
-        Err(error) => PushError::Cancellation(error),
     }
 }
 

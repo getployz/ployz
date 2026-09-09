@@ -121,10 +121,14 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     let image = leaf
         .get_one::<String>("image")
         .ok_or_else(|| Error::usage("image is required"))?;
+    let cancellation = crate::cancellation::listen()?;
     let result = runtime()?.block_on(async {
-        let mut client = connect_client(
-            matches,
-            leaf.get_one::<String>("context").map(String::as_str),
+        let mut client = crate::cancellation::read(
+            &cancellation,
+            connect_client(
+                matches,
+                leaf.get_one::<String>("context").map(String::as_str),
+            ),
         )
         .await?;
         Ok::<_, Error>(
@@ -133,6 +137,7 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
                 crate::image::ImageContent::tagged(image),
                 leaf.get_one::<String>("platform").map(String::as_str),
                 &string_values(leaf, "machine"),
+                &cancellation,
             )
             .await?,
         )

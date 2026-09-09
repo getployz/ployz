@@ -53,6 +53,7 @@ impl Drop for Preparation {
 pub(crate) fn prepare(
     docker: &Docker<'_>,
     request: &Request<'_>,
+    native: &str,
     resources: &crate::policy::Resources,
 ) -> Result<Option<Preparation>, BuildError> {
     if request.railpack.is_empty() {
@@ -63,16 +64,24 @@ pub(crate) fn prepare(
             "Railpack does not support --check".into(),
         ));
     }
-    let native = docker.run(
-        "read the native build platform",
-        &["version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
-        Streams::Captured,
-    )?;
-    let native = native.trim();
-    if !matches!(native, "linux/amd64" | "linux/arm64") {
-        return Err(BuildError::Request(
-            "Railpack requires a native Linux AMD64 or ARM64 builder".into(),
-        ));
+    for recipe in request.railpack {
+        let target = request
+            .targets
+            .iter()
+            .find(|t| t.name == recipe.name)
+            .ok_or_else(|| BuildError::Request("Railpack recipe has no build target".into()))?;
+        for platform in target
+            .platforms
+            .iter()
+            .map(String::as_str)
+            .chain(target.platforms.is_empty().then_some(native))
+        {
+            if !matches!(platform, "linux/amd64" | "linux/arm64") {
+                return Err(BuildError::Request(
+                    "Railpack supports only linux/amd64 and linux/arm64".into(),
+                ));
+            }
+        }
     }
     let directory = request.working_dir.join("private/railpack");
     fs::DirBuilder::new()
@@ -84,11 +93,6 @@ pub(crate) fn prepare(
     if request.railpack.iter().any(|recipe| recipe.refresh_cache) {
         // ponytail: this frontend ignores no-cache/pull. Prune only the locked,
         // Ployz-owned builder; replace this cold rebuild when upstream supports them.
-        docker.run(
-            "start the builder for cache refresh",
-            &["buildx", "inspect", &builder_name(), "--bootstrap"],
-            Streams::Captured,
-        )?;
         docker.run(
             "refresh Railpack build cache",
             &[
@@ -103,17 +107,6 @@ pub(crate) fn prepare(
         )?;
     }
     for (index, recipe) in request.railpack.iter().enumerate() {
-        if request
-            .targets
-            .iter()
-            .find(|target| target.name == recipe.name)
-            .and_then(|target| target.platform.as_deref())
-            .is_some_and(|platform| !crate::covers(native, platform))
-        {
-            return Err(BuildError::Request(format!(
-                "Railpack requires the execution host's native platform {native}"
-            )));
-        }
         let directory = preparation.directory.join(index.to_string());
         fs::DirBuilder::new()
             .mode(0o700)
@@ -166,7 +159,7 @@ pub(crate) fn prepare(
             recipe.name.replace('.', "_"),
             json!({
                 "dockerfile": plan,
-                "platforms": [native],
+                "platforms": [request.targets.iter().find(|t| t.name == recipe.name).and_then(|t| t.platforms.first()).map_or(native, String::as_str)],
                 "args": {"BUILDKIT_SYNTAX": IMAGE, "secrets-hash": hash},
                 "secret": secrets,
             }),
@@ -189,67 +182,45 @@ fn prepare_container(
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     let name = format!("{}-prepare", builder_name());
-    // The builder lock also owns this name. Remove an abandoned preparation
-    // before copying new source; docker cp works with remote Docker hosts too.
-    let _ = docker.releasing().run(
-        "remove stale Railpack preparation",
-        &["rm", "--force", &name],
-        Streams::Captured,
-    );
-    let result = (|| {
-        let mut arguments = vec![
-            "create".into(),
-            "--name".into(),
-            name.clone(),
-            "--network".into(),
-            "host".into(),
-            "--entrypoint".into(),
-            "/bin/sh".into(),
-        ];
-        arguments.extend(resources.preparation_arguments());
-        arguments.extend([IMAGE.into(), "/prepare.sh".into()]);
-        docker.run(
-            "create Railpack preparation",
-            &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
-            Streams::Captured,
-        )?;
-        docker.run(
-            "copy captured Railpack source",
-            &["cp", &context.to_string_lossy(), &format!("{name}:/app")],
-            Streams::Captured,
-        )?;
-        docker.run(
-            "copy private Railpack variables",
-            &[
-                "cp",
-                &script.to_string_lossy(),
-                &format!("{name}:/prepare.sh"),
-            ],
-            Streams::Captured,
-        )?;
-        docker.run(
-            "Railpack preparation",
-            &["start", "--attach", &name],
-            Streams::Inherited,
-        )?;
-        docker.run(
-            "read the Railpack plan",
-            &["cp", &format!("{name}:/plan.json"), &plan.to_string_lossy()],
-            Streams::Captured,
-        )?;
-        Ok(())
-    })();
-    match docker.releasing().run(
-        "remove Railpack preparation",
-        &["rm", "--force", &name],
-        Streams::Captured,
-    ) {
-        Ok(_) => result,
-        Err(BuildError::Docker { diagnostic, .. }) if diagnostic.contains("No such container") => {
-            result
-        }
-        Err(error) => Err(BuildError::UncertainTermination(error.to_string())),
-    }
+    let mut arguments = vec![
+        "--network".into(),
+        "host".into(),
+        "--entrypoint".into(),
+        "/bin/sh".into(),
+    ];
+    arguments.extend(resources.preparation_arguments());
+    arguments.extend([IMAGE.into(), "/prepare.sh".into()]);
+    docker.with_container(
+        &name,
+        &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
+        |name| {
+            docker.run(
+                "copy captured Railpack source",
+                &["cp", &context.to_string_lossy(), &format!("{name}:/app")],
+                Streams::Captured,
+            )?;
+            docker.run(
+                "copy private Railpack variables",
+                &[
+                    "cp",
+                    &script.to_string_lossy(),
+                    &format!("{name}:/prepare.sh"),
+                ],
+                Streams::Captured,
+            )?;
+            docker.run(
+                "Railpack preparation",
+                &["start", "--attach", name],
+                Streams::Inherited,
+            )?;
+            docker.run(
+                "read the Railpack plan",
+                &["cp", &format!("{name}:/plan.json"), &plan.to_string_lossy()],
+                Streams::Captured,
+            )?;
+            Ok(())
+        },
+    )
 }
 
 fn quote(value: &str) -> String {

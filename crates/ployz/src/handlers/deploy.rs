@@ -56,13 +56,18 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let skip_health_monitor = matches.get_flag("skip-health");
     let mut options = plan_options(force_recreate, skip_health_monitor);
     options.selected = selected_attempts(&project, &string_values(matches, "service"))?;
-    let (candidate, builds) = prepare_deploy(matches, &load, project, &resolved, options)?;
+    let cancellation = crate::cancellation::listen()?;
+    let (candidate, builds) =
+        prepare_deploy(matches, &load, project, &resolved, options, &cancellation)?;
     runtime()?.block_on(async {
-        let mut client = connect_client(root, context.as_deref()).await?;
+        let mut client =
+            crate::cancellation::read(&cancellation, connect_client(root, context.as_deref()))
+                .await?;
         deploy_project(
             &mut client,
             &candidate,
             &builds,
+            &cancellation,
             crate::deploy::ConfirmGate {
                 auto_confirm: yes,
                 context: context.as_deref().unwrap_or("default"),
@@ -257,6 +262,7 @@ fn prepare_deploy(
     mut project: ComposeProject,
     resolved: &ResolvedProject,
     options: ployz_core::PlanOptions,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(CapturedCompose, Vec<BuiltService>), Error> {
     let selected = string_values(matches, "service");
     for warning in &project.warnings {
@@ -294,7 +300,7 @@ fn prepare_deploy(
     // Every required Build finishes before any application change begins.
     let built = match captured_build {
         Some(build) => build
-            .execute(load.docker.as_deref())
+            .execute(load.docker.as_deref(), cancellation)
             .map_err(crate::deploy::DeployError::from)?,
         None => Vec::new(),
     };

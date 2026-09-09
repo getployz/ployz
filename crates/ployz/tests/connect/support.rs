@@ -372,9 +372,10 @@ impl MachineRpc for DiscoveryService {
                         .targets
                         .iter()
                         .map(|_| ployz_build::BuiltImage {
-                            reference: format!("example.test/api@sha256:{}", "1".repeat(64)),
+                            reference: format!("sha256:{}", "1".repeat(64)),
                             tags: vec!["example.test/api:built".into()],
-                            platform: "linux/amd64".into(),
+                            platforms: vec!["linux/amd64".into()],
+                            location: "unix:///var/run/docker.sock".into(),
                         })
                         .collect(),
                 },

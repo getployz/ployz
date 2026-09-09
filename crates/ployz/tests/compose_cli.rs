@@ -284,7 +284,14 @@ esac
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
-    execute_build(&plan, &options, &load, &mut project).unwrap();
+    execute_build(
+        &plan,
+        &options,
+        &load,
+        &mut project,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .unwrap();
     let calls = fs::read_to_string(calls).unwrap();
     assert!(calls.lines().any(|argument| argument == "--check"));
     assert!(calls.lines().any(|argument| argument == "api"));

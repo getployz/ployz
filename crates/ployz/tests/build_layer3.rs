@@ -91,7 +91,14 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
     );
     cleanup.images = plan.iter().map(|service| service.image.clone()).collect();
 
-    execute_build(&plan, &options, &load, &mut project).unwrap();
+    execute_build(
+        &plan,
+        &options,
+        &load,
+        &mut project,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .unwrap();
     for image in &cleanup.images {
         // Publication retains no local copy, so the registry is the only source.
         let _ = Command::new("docker").args(["image", "rm", image]).status();
@@ -163,11 +170,20 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     let options = BuildOptions::default();
     let plan = plan_build(&project, &options).unwrap();
 
-    let first = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+    let first = one_built(
+        execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap(),
+    );
     assert_eq!(first.image, image);
     assert!(first.built.tags.iter().any(|tag| tag.ends_with(&image)));
-    assert_eq!(first.built.platform, host_platform());
-    assert!(first.built.reference.contains("@sha256:"));
+    assert_eq!(first.built.platforms, [host_platform()]);
+    assert!(first.built.reference.starts_with("sha256:"));
     // The image is in the local store under exactly the content just built.
     command(["image", "inspect", &first.built.reference]);
     let stamp = output(["run", "--rm", &first.built.reference, "cat", "/built-at"]);
@@ -184,7 +200,16 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     command(["volume", "inspect", &cache_volume()]);
 
     // A second Build recreates the builder and reuses that cache.
-    let rebuilt = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+    let rebuilt = one_built(
+        execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap(),
+    );
     assert_eq!(
         output(["run", "--rm", &rebuilt.built.reference, "cat", "/built-at"]),
         stamp,
@@ -313,7 +338,11 @@ RUN --mount=type=secret,id=token test ! -e /source/token && test ! -e /source/ig
         "runtime"
     );
     fs::remove_dir_all(&root).unwrap();
-    let built = one_built(captured.execute(None).unwrap());
+    let built = one_built(
+        captured
+            .execute(None, &tokio_util::sync::CancellationToken::new())
+            .unwrap(),
+    );
     assert_eq!(
         output(["run", "--rm", &built.built.reference, "cat", "/values"]),
         "cli\nservice\nprivate-$VALUE\n$LATER\nprivate-$VALUE\n"
@@ -423,7 +452,16 @@ async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundari
             ..Default::default()
         };
         let plan = plan_build(&project, &options).unwrap();
-        let built = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+        let built = one_built(
+            execute_build(
+                &plan,
+                &options,
+                &load,
+                &mut project,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap(),
+        );
         let result = output([
             "run",
             "--rm",
@@ -458,7 +496,13 @@ async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundari
             );
         }
         previous = Some(content);
-        assert!(built.built.platform.starts_with("linux/"));
+        assert!(
+            built
+                .built
+                .platforms
+                .iter()
+                .all(|p| p.starts_with("linux/"))
+        );
         assert!(built.built.tags.contains(&image));
         assert!(
             output([
@@ -582,5 +626,123 @@ async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundari
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Informing evidence only: on AMD64 hosts ARM64 execution uses binfmt/QEMU.
+/// Native ARM64 Machine and packaged release proof remain qualification work.
+#[test]
+#[ignore = "informing: requires Docker containerd storage and AMD64/ARM64 worker support"]
+fn railpack_builds_complete_amd64_arm64_content_and_runs_without_registry_fallback() {
+    let root = std::env::temp_dir().join(format!("ployz-l3-805-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let image = format!("railpack.invalid/ployz-{}:multi", std::process::id());
+    let extra = format!("railpack.invalid/ployz-{}:extra", std::process::id());
+    let mut cleanup = LocalBuild {
+        images: vec![image.clone(), extra.clone()],
+    };
+    fs::write(root.join("compose.yaml"), format!("services:\n  app:\n    image: {image}\n    build:\n      context: .\n      platforms: [linux/amd64, linux/arm64]\n      tags: [{extra}]\n")).unwrap();
+    fs::write(root.join("package.json"), r#"{"name":"multi-check","version":"1.0.0","engines":{"node":"22.16.0"},"scripts":{"start":"node index.js"}}"#).unwrap();
+    fs::write(root.join("index.js"), "console.log(process.arch);").unwrap();
+    let load = LoadOptions {
+        command: "build".into(),
+        working_dir: Some(root.clone()),
+        ..Default::default()
+    };
+    let mut project = load_project(&load).unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+    let built = one_built(
+        execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap(),
+    );
+    cleanup.images.push(built.built.reference.clone());
+    assert_eq!(built.built.platforms, ["linux/amd64", "linux/arm64"]);
+    assert!(built.built.tags.contains(&image));
+    assert!(built.built.tags.contains(&extra));
+    // Moving every requested tag must not change or lose the Build's identity.
+    for tag in &built.built.tags {
+        command(["image", "tag", ployz_build::BUILDKIT_IMAGE, tag]);
+    }
+    eprintln!(
+        "Execution host: {}; non-native variants below are EMULATED",
+        host_platform()
+    );
+    for (platform, expected) in [("linux/amd64", "x64"), ("linux/arm64", "arm64")] {
+        assert_eq!(
+            output([
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--platform",
+                platform,
+                &built.built.reference
+            ])
+            .lines()
+            .last(),
+            Some(expected)
+        );
+    }
+    // Saving from the execution store reads every blob; check the resulting
+    // OCI inventory and hashes independently of the executor and regctl.
+    let archive = root.join("observed.tar");
+    command([
+        "image",
+        "save",
+        "--output",
+        archive.to_str().unwrap(),
+        &built.built.reference,
+    ]);
+    let inventory = Command::new("python3")
+        .args([
+            "-c",
+            r#"
+import hashlib, json, sys, tarfile
+with tarfile.open(sys.argv[1]) as archive:
+    def read(digest):
+        data = archive.extractfile('blobs/' + digest.replace(':', '/')).read()
+        assert 'sha256:' + hashlib.sha256(data).hexdigest() == digest
+        return data
+    index = json.loads(read(sys.argv[2]))
+    platforms = set()
+    for descriptor in index['manifests']:
+        manifest = json.loads(read(descriptor['digest']))
+        config = json.loads(read(manifest['config']['digest']))
+        platforms.add(config['os'] + '/' + config['architecture'])
+        for layer in manifest['layers']:
+            read(layer['digest'])
+    assert platforms == {'linux/amd64', 'linux/arm64'}, platforms
+    print('Verified index, manifests, configurations and all layer hashes:', sorted(platforms))
+"#,
+            archive.to_str().unwrap(),
+            &built.built.reference,
+        ])
+        .status()
+        .unwrap();
+    assert!(inventory.success());
+    assert!(
+        output([
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name={}-assemble", ployz_build::builder_name())
+        ])
+        .trim()
+        .is_empty()
+    );
+    assert!(
+        !Command::new("docker")
+            .args(["buildx", "inspect", &ployz_build::builder_name()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    command(["volume", "inspect", &cache_volume()]);
+    fs::remove_dir_all(root).unwrap();
+}
 #[path = "build_layer3/policy.rs"]
 mod policy;

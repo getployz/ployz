@@ -2,14 +2,7 @@
 
 use crate::{BuildError, Deadline, EXECUTION_TIMEOUT, builder::Lock};
 use serde::{Deserialize, Serialize};
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 /// Earliest observed phase of one Build attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,20 +65,9 @@ impl WorkEvidence {
     }
 }
 
-/// A request to stop, never proof that execution stopped.
-#[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
-impl Cancellation {
-    /// Request bounded termination.
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-    /// Whether termination has been requested.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
+/// A caller-owned request to stop, never proof that execution stopped.
+/// Shared by synchronous Build execution and subsequent async command phases.
+pub use tokio_util::sync::CancellationToken as Cancellation;
 
 /// Execution-host settings. These are never deserialized from a Build request.
 #[derive(Clone)]
@@ -210,14 +192,14 @@ impl Admission {
             cancellation: Cancellation::default(),
         })
     }
-    pub(crate) fn wait() -> Result<Self, BuildError> {
-        let lock = Lock::acquire()?;
+    pub(crate) fn wait(cancellation: &Cancellation) -> Result<Self, BuildError> {
+        let lock = Lock::acquire(cancellation)?;
         let resources = crate::policy::Resources::load(&HostPolicy::default().configuration_file)?;
         Ok(Self {
             resources,
             lock,
             deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
-            cancellation: Cancellation::default(),
+            cancellation: cancellation.clone(),
         })
     }
     /// Handle for requesting this attempt to stop.

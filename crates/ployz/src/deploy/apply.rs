@@ -82,12 +82,15 @@ async fn apply_spec(
         );
         return Ok(());
     }
+    let cancellation = crate::cancellation::on_ctrl_c();
+    let _stop_listener = cancellation.clone().drop_guard();
     finish(
         stream_confirm(
             client,
             &preview,
             format!("Running service {}", requested.name),
             Ink::detect(io::stdout()),
+            &cancellation,
         )
         .await,
         &format!("Deployed to {context}"),
@@ -155,10 +158,12 @@ pub(crate) async fn deploy_project(
     client: &mut Client,
     candidate: &CapturedCompose,
     builds: &[BuiltService],
+    cancellation: &CancellationToken,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    let machines = client.machines().await?;
-    let outcome = push_project_images(client, builds, &machines).await?;
+    let machines =
+        crate::cancellation::read(cancellation, async { Ok(client.machines().await?) }).await?;
+    let outcome = push_project_images(client, builds, &machines, cancellation).await?;
     print_pushed_images(&outcome);
     if !outcome.failures.is_empty() {
         return Err(Failure::usage(format!(
@@ -166,10 +171,11 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(client, candidate, machines).await?;
+    let preview =
+        crate::cancellation::read(cancellation, plan_project(client, candidate, machines)).await?;
     println!("Captured candidate {}", candidate.id());
     print_warnings(&preview);
-    confirm_and_execute(client, &preview, gate).await
+    confirm_and_execute(client, &preview, gate, cancellation).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -191,6 +197,8 @@ pub(crate) async fn deploy_scale(
         name: project_name,
         source: gate.project.source,
     };
+    let cancellation = crate::cancellation::on_ctrl_c();
+    let _stop_listener = cancellation.clone().drop_guard();
     confirm_and_execute(
         client,
         &preview,
@@ -199,6 +207,7 @@ pub(crate) async fn deploy_scale(
             context: gate.context,
             project: &project,
         },
+        &cancellation,
     )
     .await
 }
@@ -207,6 +216,7 @@ async fn confirm_and_execute(
     client: &Client,
     preview: &DeployPlan,
     gate: ConfirmGate<'_>,
+    cancellation: &CancellationToken,
 ) -> Result<(), Failure> {
     let source = Some(gate.project.source.to_string());
     print!(
@@ -216,7 +226,13 @@ async fn confirm_and_execute(
     if preview.noop() {
         return Ok(());
     }
-    if !gate.auto_confirm && !confirm(&render::confirm_prompt(gate.context))? {
+    if !gate.auto_confirm
+        && !crate::cancellation::read(
+            cancellation,
+            confirm(&render::confirm_prompt(gate.context), cancellation),
+        )
+        .await?
+    {
         println!("No changes were made.");
         return Ok(());
     }
@@ -226,6 +242,7 @@ async fn confirm_and_execute(
             preview,
             format!("Deploying to {}", gate.context),
             Ink::detect(io::stdout()),
+            cancellation,
         )
         .await,
         &format!("Deployed to {}", gate.context),
@@ -250,12 +267,15 @@ pub(crate) async fn remove_project(
     if preview.noop() {
         return Ok(());
     }
+    let cancellation = crate::cancellation::on_ctrl_c();
+    let _stop_listener = cancellation.clone().drop_guard();
     finish(
         stream_confirm(
             client,
             &preview,
             format!("Removing Project {name} from {context}"),
             Ink::detect(io::stdout()),
+            &cancellation,
         )
         .await,
         &format!("Removed Project {name} from {context}"),
@@ -269,15 +289,10 @@ async fn stream_confirm(
     preview: &DeployPlan,
     title: String,
     ink: Ink,
+    cancel: &CancellationToken,
 ) -> (DeployOutcome<ExecutionError>, ProgressPrinter) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let cancel = CancellationToken::new();
-    let abort = cancel.clone();
-    let ctrl_c = tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        abort.cancel();
-    });
-    let execute = client.confirm(preview, &cancel, Some(tx));
+    let execute = client.confirm(preview, cancel, Some(tx));
     tokio::pin!(execute);
     let mut printer = ProgressPrinter::new(title, ink);
     let outcome = loop {
@@ -295,7 +310,6 @@ async fn stream_confirm(
             }
         }
     };
-    ctrl_c.abort();
     (outcome, printer)
 }
 
@@ -398,7 +412,7 @@ fn print_warnings(preview: &DeployPreview) {
     }
 }
 
-fn confirm(prompt: &str) -> Result<bool, Failure> {
+async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool, Failure> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(Failure::usage(
             "confirmation requires a terminal; pass --yes to continue",
@@ -406,8 +420,8 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
     }
     print!("{prompt}");
     io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    let input =
+        crate::cancellation::read_line(cancellation, io::BufReader::new(io::stdin())).await?;
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 

@@ -150,7 +150,7 @@ exit 0
     host.configure("cpu_cores: 8\nmemory_bytes: 8589934592");
     let targets = [Target {
         name: "app".into(),
-        platform: None,
+        platforms: Vec::new(),
     }];
     let railpack = [Railpack {
         name: "app".into(),
@@ -182,7 +182,7 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
     host.configure("cpu_cores: 0.5");
     let targets = [Target {
         name: "app".into(),
-        platform: None,
+        platforms: Vec::new(),
     }];
     let error = execute_admitted(
         &Request {
@@ -302,7 +302,7 @@ echo "$*" >> "$root/mutations"
     );
     let targets = [Target {
         name: "api".into(),
-        platform: None,
+        platforms: Vec::new(),
     }];
     for (key, value) in [
         ("DOCKER_HOST", "ssh://remote"),

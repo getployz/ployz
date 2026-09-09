@@ -1,8 +1,8 @@
 use std::{future::Future, path::Path, pin::Pin};
 
+use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
-use tokio_util::sync::CancellationToken;
 
 use crate::failure::Failure;
 
@@ -104,20 +104,6 @@ fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
         .get_one::<String>(name)
         .cloned()
         .ok_or_else(|| Error::usage(format!("{name} is required")))
-}
-
-fn cancellation_on_ctrl_c() -> CancellationToken {
-    let cancellation = CancellationToken::new();
-    let signal = cancellation.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            () = signal.cancelled() => {}
-            result = tokio::signal::ctrl_c() => if result.is_ok() {
-                signal.cancel();
-            }
-        }
-    });
-    cancellation
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, Error> {

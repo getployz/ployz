@@ -74,7 +74,7 @@ pub(super) struct ImageProxy {
 impl ImageProxy {
     pub(super) async fn open(
         mode: ProxyMode,
-        cancellation: &mut Cancellation,
+        cancellation: &mut Cancellation<'_>,
     ) -> Result<Self, PushError> {
         let mut proxy = Self {
             listener: Listener::bind(mode).await?,
@@ -483,6 +483,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_interrupt_from_the_build_prevents_image_push_work() {
+        let mut client = client(FailingDial {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            error: || ConnectError::from(std::io::Error::other("must not dial")),
+        });
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let result = super::super::push(
+            &mut client,
+            super::super::ImageContent::tagged("api:v1"),
+            None,
+            &[],
+            &cancellation,
+        )
+        .await;
+        assert!(matches!(result, Err(PushError::Cancelled)), "{result:?}");
+    }
+
+    #[tokio::test]
     async fn image_proxy_holds_docker_connection_across_a_dropped_machine_dial() {
         let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = echo.local_addr().unwrap().to_string();
@@ -493,7 +512,8 @@ mod tests {
             stream.write_all(&buffer).await.unwrap();
         });
 
-        let mut cancellation = super::super::Cancellation::new();
+        let token = tokio_util::sync::CancellationToken::new();
+        let mut cancellation = super::super::Cancellation::new(&token);
         let mut proxy = ImageProxy::open(ProxyMode::Native, &mut cancellation)
             .await
             .unwrap();

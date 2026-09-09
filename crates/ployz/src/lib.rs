@@ -1,3 +1,4 @@
+mod cancellation;
 pub mod changes;
 pub mod cli;
 mod cloud_enroll;

@@ -155,23 +155,49 @@ pub fn capture_build(
             .get("context")
             .and_then(Value::as_str)
             .is_some_and(is_ssh_context);
-        if let Some(recipe) = capture_recipe(&name, build, options, project, &mut inputs)? {
+        let recipe = capture_recipe(&name, build, options, project, &mut inputs)?;
+        let railpack = recipe.is_some();
+        if let Some(recipe) = recipe {
             railpack_recipes.push(recipe);
         }
-        let platform = requested_platform(&name, build)?.or_else(|| {
-            project
+        let mut platforms = requested_platforms(&name, build, railpack)?;
+        if railpack && platforms.len() > 1 {
+            for field in ["provenance", "sbom"] {
+                if build.get(field).is_some_and(|value| {
+                    !matches!(value, Value::Null | Value::Bool(false))
+                        && value.as_str() != Some("false")
+                }) {
+                    return Err(invalid_build(&format!(
+                        "multi-platform Railpack does not support build.{field}; use false or a single platform",
+                    )));
+                }
+                build.remove(field);
+            }
+        }
+        if platforms.is_empty()
+            && let Some(platform) = project
                 .environment
                 .get("DOCKER_DEFAULT_PLATFORM")
-                .filter(|platform| !platform.is_empty())
-                .cloned()
-        });
-        if let Some(platform) = &platform {
+                .filter(|p| !p.is_empty())
+        {
+            platforms.push(platform.clone());
+        }
+        if railpack
+            && platforms
+                .iter()
+                .any(|p| !matches!(p.as_str(), "linux/amd64" | "linux/arm64"))
+        {
+            return Err(invalid_build(
+                "Railpack supports only linux/amd64 and linux/arm64",
+            ));
+        }
+        if !platforms.is_empty() {
             build.insert(
                 Value::String("platforms".into()),
-                Value::Sequence(vec![Value::String(platform.clone())]),
+                Value::Sequence(platforms.iter().cloned().map(Value::String).collect()),
             );
         }
-        targets.push(ployz_build::Target { name, platform });
+        targets.push(ployz_build::Target { name, platforms });
         retain_service_image_tag(&service.name, image, build)?;
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
@@ -550,7 +576,11 @@ impl CapturedBuild {
     /// # Errors
     /// Fails if the runner cannot execute the build or the result cannot be
     /// bound to the content it produced.
-    pub fn execute(&self, docker: Option<&Path>) -> Result<Vec<BuiltService>, ComposeError> {
+    pub fn execute(
+        &self,
+        docker: Option<&Path>,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<BuiltService>, ComposeError> {
         let mut environment = self.environment.clone();
         environment.insert(
             "HOME".into(),
@@ -568,18 +598,21 @@ impl CapturedBuild {
                 .to_string_lossy()
                 .into_owned(),
         );
-        let images = ployz_build::execute(&ployz_build::Request {
-            compose_file: Path::new("compose.yaml"),
-            working_dir: self.inputs.root(),
-            environment: &environment,
-            docker,
-            targets: &self.targets,
-            railpack: &self.railpack,
-            build_args: &self.options.build_args,
-            output: self.options.output,
-            no_cache: self.options.no_cache,
-            pull: self.options.pull,
-        })
+        let images = ployz_build::execute(
+            &ployz_build::Request {
+                compose_file: Path::new("compose.yaml"),
+                working_dir: self.inputs.root(),
+                environment: &environment,
+                docker,
+                targets: &self.targets,
+                railpack: &self.railpack,
+                build_args: &self.options.build_args,
+                output: self.options.output,
+                no_cache: self.options.no_cache,
+                pull: self.options.pull,
+            },
+            cancellation,
+        )
         // BuildKit diagnoses its own failure; name the Builds it was running.
         .map_err(|source| ComposeError::Build {
             services: self
@@ -613,8 +646,9 @@ pub fn execute_build(
     options: &BuildOptions,
     load: &LoadOptions,
     project: &mut ComposeProject,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<BuiltService>, ComposeError> {
-    capture_build(plan, options, project)?.execute(load.docker.as_deref())
+    capture_build(plan, options, project)?.execute(load.docker.as_deref(), cancellation)
 }
 
 /// Refuse a setting Ployz cannot pass on, naming it rather than dropping it.
@@ -685,36 +719,38 @@ fn refuse_unpassable_settings(
     Ok(())
 }
 
-/// The single platform this Service asks for, if it asks for one.
-///
-/// A Dockerfile Build produces one image for one platform, so several
-/// requested platforms are refused here, where the Service is named.
-fn requested_platform(
+/// Dockerfiles remain single-platform; Railpack assembles explicit variants.
+fn requested_platforms(
     service: &str,
     build: &serde_norway::Mapping,
-) -> Result<Option<String>, ComposeError> {
-    let Some(platforms) = build
-        .get(Value::String("platforms".into()))
-        .and_then(Value::as_sequence)
-    else {
-        return Ok(None);
+    railpack: bool,
+) -> Result<Vec<String>, ComposeError> {
+    let Some(value) = build.get("platforms") else {
+        return Ok(Vec::new());
     };
-    match platforms.as_slice() {
-        [] => Ok(None),
-        [platform] => platform
-            .as_str()
-            .map(ToOwned::to_owned)
-            .map(Some)
-            .ok_or_else(|| {
-                invalid_build(&format!(
-                    "service '{service}' has an invalid build platform"
-                ))
-            }),
-        several => Err(invalid_build(&format!(
+    let platforms = value
+        .as_sequence()
+        .ok_or_else(|| invalid_build("build.platforms must be a list"))?;
+    if !railpack && platforms.len() > 1 {
+        return Err(invalid_build(&format!(
             "service '{service}' requests {} build platforms; a Dockerfile Build produces one platform",
-            several.len()
-        ))),
+            platforms.len()
+        )));
     }
+    platforms
+        .iter()
+        .map(|platform| {
+            platform
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    invalid_build(&format!(
+                        "service '{service}' has an invalid build platform"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Upstream translation uses explicit build tags alone; keep the Service image
@@ -892,6 +928,39 @@ impl BuildSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_multi_platform_attestations_pass_remote_validation() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-disabled-attestations-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for settings in [
+            "provenance: false",
+            "sbom: false",
+            "provenance: false, sbom: false",
+        ] {
+            let mut project = crate::compose::parse_normalized(
+                &format!("services:\n  api:\n    build: {{context: ., x-recipe: railpack, platforms: [linux/amd64, linux/arm64], {settings}}}\n"),
+                &root,
+            ).unwrap();
+            let options = BuildOptions::default();
+            let plan = plan_build(&project, &options).unwrap();
+            let captured = capture_build(&plan, &options, &mut project).unwrap();
+            let definition = ployz_build::remote::Definition {
+                targets: captured.targets,
+                output: options.output,
+                no_cache: options.no_cache,
+                pull: options.pull,
+            };
+            let recipes =
+                ployz_build::remote::validate_capture(captured.inputs.root(), &definition)
+                    .unwrap_or_else(|error| panic!("{settings}: {error}"));
+            assert_eq!(recipes.len(), 1);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn git_context_suffix_rules_follow_buildkit_transports() {

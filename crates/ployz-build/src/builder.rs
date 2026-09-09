@@ -51,6 +51,9 @@ impl<'a> Builder<'a> {
     }
 
     /// Read the running worker, not the Machine's advertised architecture.
+    ///
+    /// # Errors
+    /// Refuses unsupported image stores, hosts, resource limits, or requested worker platforms.
     pub(crate) fn native_platform(
         &self,
         targets: &[crate::Target],
@@ -118,8 +121,13 @@ impl<'a> Builder<'a> {
                     "the selected BuildKit worker reported no capability".into(),
                 )
             })?;
-        for target in targets {
-            let requested = target.platform.as_deref().unwrap_or(&native);
+        for requested in targets.iter().flat_map(|target| {
+            target
+                .platforms
+                .iter()
+                .map(String::as_str)
+                .chain(target.platforms.is_empty().then_some(native.as_str()))
+        }) {
             if !nodes.iter().any(|node| {
                 node.get("Status").and_then(serde_json::Value::as_str) == Some("running")
                     && node
@@ -175,7 +183,17 @@ impl<'a> Builder<'a> {
             });
         }
         match cleanup {
-            Ok(()) => result,
+            Ok(()) => result.and_then(|output| {
+                if self
+                    .docker
+                    .cancellation
+                    .is_some_and(crate::Cancellation::is_cancelled)
+                {
+                    Err(BuildError::Cancelled)
+                } else {
+                    Ok(output)
+                }
+            }),
             Err(error) => Err(BuildError::UncertainTermination(match result {
                 Ok(_) => format!("output handling completed; cleanup failed: {error}"),
                 Err(cause) => format!("{cause}; cleanup failed: {error}"),
@@ -261,13 +279,19 @@ impl Lock {
     ///
     /// # Errors
     /// Fails when the lock file cannot be opened or locked.
-    pub(crate) fn acquire() -> Result<Self, BuildError> {
-        Self::acquire_in(&directory())
+    pub(crate) fn acquire(cancellation: &crate::Cancellation) -> Result<Self, BuildError> {
+        Self::acquire_in(&directory(), cancellation)
     }
 
-    fn acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
+    fn acquire_in(
+        directory: &std::path::Path,
+        cancellation: &crate::Cancellation,
+    ) -> Result<Self, BuildError> {
         let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
         loop {
+            if cancellation.is_cancelled() {
+                return Err(BuildError::Cancelled);
+            }
             match Self::try_acquire_in(directory) {
                 Err(BuildError::Busy) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -444,7 +468,7 @@ esac
             let result = builder.native_platform(
                 &[crate::Target {
                     name: "api".into(),
-                    platform: Some(platform.into()),
+                    platforms: vec![platform.into()],
                 }],
                 &resources,
             );
@@ -564,7 +588,7 @@ esac
             progress: None,
         };
 
-        let lock = Lock::acquire_in(&directory).unwrap();
+        let lock = Lock::acquire_in(&directory, &crate::Cancellation::default()).unwrap();
         let builder =
             Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
         let name = builder_name();

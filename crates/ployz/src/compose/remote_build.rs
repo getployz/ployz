@@ -216,14 +216,18 @@ fn validate_outcome(
                 && output == ployz_build::Output::Load =>
         {
             if images.iter().any(|image| {
-                image
+                !image
                     .reference
-                    .parse::<oci_client::Reference>()
-                    .ok()
-                    .and_then(|reference| reference.digest().map(str::to_owned))
-                    .is_none()
+                    .strip_prefix("sha256:")
+                    .is_some_and(|digest| {
+                        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
                     || image.tags.is_empty()
-                    || !linux_platform(&image.platform)
+                    || image.platforms.is_empty()
+                    || image
+                        .platforms
+                        .iter()
+                        .any(|platform| !linux_platform(platform))
             }) {
                 return unknown(
                     Stage::Output,
@@ -290,9 +294,10 @@ mod tests {
         use ployz_build::{BuiltImage, Output, TargetEvidence, WorkEvidence};
         let machine_id = MachineId::random();
         let image = BuiltImage {
-            reference: format!("example.test/api@sha256:{}", "1".repeat(64)),
+            reference: format!("sha256:{}", "1".repeat(64)),
             tags: vec!["example.test/api:built".into()],
-            platform: "linux/arm/v7".into(),
+            platforms: vec!["linux/arm/v7".into()],
+            location: "unix:///var/run/docker.sock".into(),
         };
         let work = WorkEvidence(std::collections::BTreeMap::from([(
             "api".into(),
@@ -311,7 +316,7 @@ mod tests {
             Outcome::Images {
                 machine_id,
                 images: vec![BuiltImage {
-                    platform: "linux//v7".into(),
+                    platforms: vec!["linux//v7".into()],
                     ..image.clone()
                 }],
             },

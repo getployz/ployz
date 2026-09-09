@@ -148,9 +148,7 @@ pub fn validate_capture(
                 .iter()
                 .find(|target| target.name == name)
                 .expect("validated target");
-            if platforms.len() != usize::from(target.platform.is_some())
-                || platforms.first().map(text).transpose()? != target.platform.as_deref()
-            {
+            if platforms.iter().map(text).collect::<Result<Vec<_>, _>>()? != target.platforms {
                 return Err("Build recipe platforms differ from the admitted request".into());
             }
         }
@@ -452,7 +450,7 @@ mod tests {
         let definition = Definition {
             targets: vec![crate::Target {
                 name: "api".into(),
-                platform: None,
+                platforms: Vec::new(),
             }],
             output: crate::Output::Load,
             no_cache: false,
@@ -497,7 +495,7 @@ mod tests {
         let definition = Definition {
             targets: vec![crate::Target {
                 name: "api".into(),
-                platform: None,
+                platforms: Vec::new(),
             }],
             output: crate::Output::Load,
             no_cache: false,

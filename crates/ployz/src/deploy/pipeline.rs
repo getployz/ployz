@@ -281,11 +281,12 @@ pub(super) async fn push_project_images(
     client: &mut Client,
     builds: &[BuiltService],
     machines: &[MachineObservation],
+    cancellation: &CancellationToken,
 ) -> Result<PushOutcome, Failure> {
     let mut pushed = Vec::new();
     let mut failures = Vec::new();
     for service in builds {
-        match push_image(client, service, machines).await {
+        match push_image(client, service, machines, cancellation).await {
             Ok((images, service_failures)) => {
                 pushed.extend(images);
                 failures.extend(service_failures);
@@ -528,6 +529,7 @@ async fn push_image(
     client: &mut Client,
     service: &BuiltService,
     machines: &[MachineObservation],
+    cancellation: &CancellationToken,
 ) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
     let targets = service
         .machines
@@ -535,9 +537,15 @@ async fn push_image(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     // Deliver the content this command built, not whatever the tag now holds.
-    let result =
-        crate::image::push_using_machines(client, service.content(), None, &targets, machines)
-            .await?;
+    let result = crate::image::push_using_machines(
+        client,
+        service.content(),
+        None,
+        &targets,
+        machines,
+        cancellation,
+    )
+    .await?;
     let pushed = result
         .successes
         .iter()
