@@ -15,6 +15,8 @@ use super::Error;
 ///
 /// Docker treats `127.0.0.0/8` as an insecure registry, so the pull is proxied
 /// through localhost instead of asking dockerd to speak HTTP to the WireGuard IP.
+/// `platform` makes Docker fetch that variant's manifest, configuration and
+/// layers; a source holding only the index fails the pull.
 ///
 /// # Errors
 ///
@@ -22,6 +24,7 @@ use super::Error;
 pub(crate) async fn pull_from_ingest(
     image: &str,
     source: ImageIngestDestination,
+    platform: &str,
 ) -> Result<(), Error> {
     let retained = if image.contains('@') {
         ployz_build::remote::validate_remote_context(&format!("docker-image://{image}"))
@@ -42,6 +45,7 @@ pub(crate) async fn pull_from_ingest(
         image,
         &pulled,
         retained.as_deref(),
+        platform,
         std::path::Path::new("docker"),
     )
     .await
@@ -51,14 +55,15 @@ async fn pull_and_tag(
     image: &str,
     pulled: &str,
     retained: Option<&str>,
+    platform: &str,
     docker: &std::path::Path,
 ) -> Result<(), Error> {
     let result = async {
-        docker_cli(docker, ["pull", pulled]).await?;
+        docker_cli(docker, &["pull", "--platform", platform, pulled]).await?;
         if let Some((_, digest)) = image.split_once('@') {
             let descriptor = docker_cli(
                 docker,
-                [
+                &[
                     "image",
                     "inspect",
                     pulled,
@@ -76,11 +81,11 @@ async fn pull_and_tag(
         }
         // Verify before publishing the deterministic retention tag: a failed
         // attempt must not leave a tag or remove one from an earlier delivery.
-        docker_cli(docker, ["tag", pulled, retained.unwrap_or(image)]).await?;
+        docker_cli(docker, &["tag", pulled, retained.unwrap_or(image)]).await?;
         Ok(())
     }
     .await;
-    let _ = docker_cli(docker, ["image", "rm", pulled]).await;
+    let _ = docker_cli(docker, &["image", "rm", pulled]).await;
     result
 }
 
@@ -130,10 +135,7 @@ impl Drop for ImageProxy {
     }
 }
 
-async fn docker_cli<const N: usize>(
-    docker: &std::path::Path,
-    args: [&str; N],
-) -> Result<String, Error> {
+async fn docker_cli(docker: &std::path::Path, args: &[&str]) -> Result<String, Error> {
     let output = Command::new(docker)
         .args(args)
         .output()
@@ -196,7 +198,8 @@ esac
         for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
             fs::write(root.join("mode"), mode).unwrap();
             fs::write(root.join("calls"), "").unwrap();
-            let result = pull_and_tag(&image, &pulled, Some(&retained), &docker).await;
+            let result =
+                pull_and_tag(&image, &pulled, Some(&retained), "linux/arm64", &docker).await;
             assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
             if let Err(error) = result {
                 assert!(!error.to_string().contains("cleanup-failed"), "{error}");
@@ -216,6 +219,12 @@ esac
             assert_eq!(
                 calls.lines().any(|line| line.starts_with("tag ")),
                 ["tag", "success"].contains(&mode),
+                "{mode}: {calls}"
+            );
+            // The destination's variant is named on every attempt: Docker must
+            // fetch that manifest and its content, not merely the index.
+            assert!(
+                calls.contains(&format!("pull --platform linux/arm64 {pulled}")),
                 "{mode}: {calls}"
             );
             assert!(

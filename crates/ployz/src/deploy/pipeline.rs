@@ -297,7 +297,7 @@ pub(super) async fn push_project_images(
             let compatible = architecture.is_some_and(|architecture|
                 service.built.platforms.iter().any(|platform| crate::image::platform_compatible(platform, architecture)));
             if !compatible {
-                return Err(Failure::usage(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
+                return Err(Failure::usage(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
             }
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))

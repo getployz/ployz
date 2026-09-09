@@ -11,6 +11,10 @@ use serde_norway::Value;
 
 use super::{BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::BuildInputs};
 
+#[path = "platforms.rs"]
+mod platforms;
+use platforms::RAILPACK_PLATFORMS;
+
 #[path = "remote_steps.rs"]
 mod remote_steps;
 
@@ -72,6 +76,9 @@ pub struct CapturedBuild {
     environment: BTreeMap<String, String>,
     inputs: BuildInputs,
     retained_tags: BTreeMap<String, String>,
+    /// Targets whose platforms Compose authored, as opposed to the execution
+    /// host's default a Deploy may replace with what its Machines run.
+    authored_platforms: BTreeSet<String>,
 }
 
 impl CapturedBuild {
@@ -195,6 +202,7 @@ pub fn capture_build(
     let mut targets = Vec::new();
     let mut retained_tags = BTreeMap::new();
     let mut railpack_recipes = Vec::new();
+    let mut authored_platforms = BTreeSet::new();
     for service in &mut plan {
         let image = service.image.clone();
         let name = service.name.clone();
@@ -213,14 +221,19 @@ pub fn capture_build(
             railpack_recipes.push(recipe);
         }
         let mut platforms = requested_platforms(&name, build, railpack)?;
-        if railpack && platforms.len() > 1 {
+        if !platforms.is_empty() {
+            authored_platforms.insert(name.clone());
+        }
+        if railpack {
+            // Assembly cannot carry attestations, and a Deploy may still turn
+            // one platform into two, so Railpack never accepts them.
             for field in ["provenance", "sbom"] {
                 if build.get(field).is_some_and(|value| {
                     !matches!(value, Value::Null | Value::Bool(false))
                         && value.as_str() != Some("false")
                 }) {
                     return Err(invalid_build(&format!(
-                        "multi-platform Railpack does not support build.{field}; use false or a single platform",
+                        "Railpack does not support build.{field}; use false or a Dockerfile",
                     )));
                 }
                 build.remove(field);
@@ -237,13 +250,17 @@ pub fn capture_build(
         if railpack
             && platforms
                 .iter()
-                .any(|p| !matches!(p.as_str(), "linux/amd64" | "linux/arm64"))
+                .any(|p| !RAILPACK_PLATFORMS.contains(&p.as_str()))
         {
             return Err(invalid_build(
                 "Railpack supports only linux/amd64 and linux/arm64",
             ));
         }
-        if !platforms.is_empty() {
+        // Railpack consumes Target.platforms directly. Keep an inherited host
+        // default out of the recipe: Deploy may replace it after capture.
+        if railpack && !authored_platforms.contains(&name) {
+            build.remove("platforms");
+        } else if !platforms.is_empty() {
             build.insert(
                 Value::String("platforms".into()),
                 Value::Sequence(platforms.iter().cloned().map(Value::String).collect()),
@@ -403,6 +420,7 @@ pub fn capture_build(
             .collect(),
         inputs,
         retained_tags,
+        authored_platforms,
     })
 }
 

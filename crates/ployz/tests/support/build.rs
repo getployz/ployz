@@ -54,16 +54,41 @@ impl BuildFixture {
         machine: MachineId,
         pull: PullImageFromMachineRequest,
     ) -> ployz_core::RpcResponse {
+        let failure = self.pull_failures.lock().unwrap().get(&machine).cloned();
+        if failure.is_none() {
+            // The destination now holds exactly the requested variant, as a
+            // real pull of one platform leaves it: identity intact, other
+            // variants absent.
+            let (repo_tags, id) = match pull.image.rsplit_once('@') {
+                Some((_, digest)) => (Vec::new(), digest.to_owned()),
+                None => (
+                    vec![pull.image.clone()],
+                    format!("sha256:{}", "f".repeat(64)),
+                ),
+            };
+            let mut stores = self.stores.lock().unwrap();
+            let store = stores.entry(machine).or_insert(MachineImages {
+                containerd_store: true,
+                images: Vec::new(),
+            });
+            let platforms = vec![pull.platform.clone()];
+            match store.images.iter_mut().find(|stored| stored.id == id) {
+                Some(stored) => stored.platforms.extend(platforms),
+                None => store.images.push(ployz_core::ImageSummary {
+                    id,
+                    repo_tags,
+                    created: 0,
+                    size: 1,
+                    containers: 0,
+                    platforms,
+                }),
+            }
+        }
         self.pulls.lock().unwrap().push((machine, pull));
-        self.pull_failures
-            .lock()
-            .unwrap()
-            .get(&machine)
-            .cloned()
-            .map_or_else(
-                || ployz_core::RpcResponse::from(ployz_core::ImagePulled {}),
-                ployz_core::RpcResponse::from,
-            )
+        failure.map_or_else(
+            || ployz_core::RpcResponse::from(ployz_core::ImagePulled {}),
+            ployz_core::RpcResponse::from,
+        )
     }
 
     #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.

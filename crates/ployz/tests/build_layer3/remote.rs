@@ -679,3 +679,262 @@ async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local(
     assert_temporary_tags_released(&cluster).await;
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Mixed-architecture delivery through the product path. Both testkit Machines
+/// run this host's kernel, so the derived platform is native for both and the
+/// second Railpack variant runs EMULATED under binfmt. This is not evidence for
+/// native AMD64 plus native ARM64 Machines; that needs an ARM64 Machine and
+/// belongs to the qualification path.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx and host Docker with containerd storage and AMD64/ARM64 worker support"]
+async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve_missing_variants()
+{
+    let plan = ClusterPlan::new(&format!("l3-build-806-{}", std::process::id()), 2).unwrap();
+    let first_container = plan.machine_name(0);
+    let cluster = Cluster::create(plan).unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let first = machines.first().unwrap().id;
+    let second = machines.get(1).unwrap().id;
+    let address = cluster.api_address(0).unwrap();
+    let root = std::env::temp_dir().join(format!("ployz-build-806-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(root.join("app")).unwrap();
+    let native = super::host_platform();
+    let native = native.as_str();
+    let (other, native_arch, other_arch) = match native {
+        "linux/amd64" => ("linux/arm64", "x64", "arm64"),
+        "linux/arm64" => ("linux/amd64", "arm64", "x64"),
+        platform => panic!("Railpack does not build for {platform}"),
+    };
+    eprintln!("Execution host and both Machines: {native}; {other} below is EMULATED");
+
+    // Part 1: the product path. No build.platforms; the Service may run on
+    // both Machines, so Deploy derives the platform they run and every
+    // destination receives that variant from the Build Machine.
+    let image = format!("registry.invalid/ployz-806-{}:app", std::process::id());
+    fs::write(root.join("compose.yaml"), format!(
+        "name: mixed\nservices:\n  app:\n    image: {image}\n    pull_policy: never\n    deploy: {{mode: global}}\n    build:\n      context: ./app\n      x-recipe: railpack\n"
+    )).unwrap();
+    fs::write(root.join("app/package.json"), r#"{"name":"mixed","version":"1.0.0","engines":{"node":"22.16.0"},"scripts":{"start":"node index.js"}}"#).unwrap();
+    fs::write(
+        root.join("app/index.js"),
+        "console.log(process.arch); setInterval(() => {}, 1000);",
+    )
+    .unwrap();
+    fs::write(
+        root.join("docker"),
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 99\n",
+            root.join("local-docker-called").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(root.join("docker"), fs::Permissions::from_mode(0o700)).unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(600),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(&root)
+            .env("PATH", &root)
+            .env("HOME", &root)
+            .env("PLOYZ_CONFIG", root.join("config.yaml"))
+            .env("DOCKER_HOST", "unix:///no-local-docker.sock")
+            .args(["--connect", &address, "deploy", "--remote", "--yes", "app"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!root.join("local-docker-called").exists());
+    assert!(
+        stderr.contains(&format!("Build platforms: {native}")),
+        "{stderr}"
+    );
+    for index in 0..2 {
+        let container = cluster
+            .machine_shell(index, "docker ps -q --filter label=ployz.service.name=app")
+            .unwrap();
+        let container = container.trim();
+        assert!(!container.is_empty(), "application not running on {index}");
+        let logs = cluster
+            .machine_shell(index, &format!("docker logs {container}"))
+            .unwrap();
+        // npm echoes the start script before the process prints its architecture.
+        assert_eq!(logs.lines().last(), Some(native_arch), "Machine {index}");
+        let spec_image = cluster
+            .machine_shell(
+                index,
+                &format!("docker inspect {container} --format '{{{{.Config.Image}}}}'"),
+            )
+            .unwrap();
+        assert!(spec_image.contains("@sha256:"), "{spec_image}");
+    }
+
+    // Part 2: the prototype's partial-peer observation as a regression case.
+    // A complete two-platform image reaches Machine 0; Machine 1 pulls only
+    // the emulated variant, keeps the whole index, and must never serve the
+    // native variant it does not hold.
+    let multi = format!("railpack.invalid/ployz-806-{}:multi", std::process::id());
+    let mut cleanup = super::LocalBuild {
+        images: vec![multi.clone()],
+    };
+    fs::create_dir_all(root.join("multi")).unwrap();
+    fs::write(root.join("multi/compose.yaml"), format!("services:\n  app:\n    image: {multi}\n    build:\n      context: .\n      platforms: [linux/amd64, linux/arm64]\n")).unwrap();
+    fs::write(root.join("multi/package.json"), r#"{"name":"multi","version":"1.0.0","engines":{"node":"22.16.0"},"scripts":{"start":"node index.js"}}"#).unwrap();
+    fs::write(root.join("multi/index.js"), "console.log(process.arch);").unwrap();
+    let load = ployz::compose::LoadOptions {
+        command: "build".into(),
+        working_dir: Some(root.join("multi")),
+        ..Default::default()
+    };
+    let mut project = ployz::compose::load_project(&load).unwrap();
+    let options = ployz::compose::BuildOptions::default();
+    let plan = ployz::compose::plan_build(&project, &options).unwrap();
+    let built = tokio::task::spawn_blocking(move || {
+        ployz::compose::execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &CancellationToken::new(),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap()
+    .remove(0);
+    cleanup.images.push(built.built.reference.clone());
+    assert_eq!(built.built.platforms, ["linux/amd64", "linux/arm64"]);
+    let mut client = ployz::connect::connect(&root.join("config.yaml"), Some(&address), None)
+        .await
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    // A direct push from this host needs a proxied connection the testkit's
+    // plain TCP endpoint does not offer, so Machine 0 loads the exact archive
+    // Docker would have pushed: the complete index with both variants.
+    let archive = root.join("multi.tar");
+    super::command([
+        "image",
+        "save",
+        "--output",
+        archive.to_str().unwrap(),
+        &built.built.reference,
+    ]);
+    super::command([
+        "cp",
+        archive.to_str().unwrap(),
+        &format!("{first_container}:/multi.tar"),
+    ]);
+    cluster
+        .machine_shell(0, "docker load --input /multi.tar")
+        .unwrap();
+    let lister = client.clone();
+    let listed = |machine: MachineId| {
+        let mut client = lister.clone();
+        async move {
+            let targets = client
+                .machines()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|observed| observed.machine.id == machine)
+                .map(|observed| observed.machine)
+                .collect::<Vec<_>>();
+            client
+                .list_images(None, &targets)
+                .await
+                .successes
+                .remove(0)
+                .value
+                .images
+        }
+    };
+    let holds = |store: &ployz_core::MachineImages, platform: &str| {
+        store.images.iter().any(|stored| {
+            stored.id == built.built.reference && stored.platforms.iter().any(|p| p == platform)
+        })
+    };
+    let complete = listed(first).await;
+    assert!(
+        holds(&complete, native) && holds(&complete, other),
+        "{complete:?}"
+    );
+    let opened = client
+        .call::<ployz_core::op::EnsureImageIngest>(
+            ployz_core::EnsureImageIngestRequest {},
+            Some(&MachineTarget::from(&first)),
+        )
+        .await
+        .unwrap();
+    client
+        .call::<ployz_core::op::PullImageFromMachine>(
+            ployz_core::PullImageFromMachineRequest {
+                image: built.built.repository_reference(&built.image).unwrap(),
+                source: opened.destination,
+                platform: other.into(),
+            },
+            Some(&MachineTarget::from(&second)),
+        )
+        .await
+        .unwrap();
+    let partial = listed(second).await;
+    assert!(holds(&partial, other), "{partial:?}");
+    assert!(
+        !holds(&partial, native),
+        "the unselected variant's content must be absent on the peer: {partial:?}"
+    );
+    // The partial peer is excluded as a source for what it does not hold.
+    let refused = ployz::image::push_from_machine(
+        &mut client,
+        &built.built,
+        &built.image,
+        second,
+        &[first.to_string()],
+        &cancellation,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&refused, ployz::image::PushError::BuildIncomplete { missing, .. } if missing == &[native]),
+        "{refused}"
+    );
+    // The complete Build host serves the peer's native variant with its platform named.
+    let served = ployz::image::push_from_machine(
+        &mut client,
+        &built.built,
+        &built.image,
+        first,
+        &[second.to_string()],
+        &cancellation,
+    )
+    .await
+    .unwrap();
+    assert_eq!(served.successes.len(), 1, "{:?}", served.failures);
+    let completed = listed(second).await;
+    assert!(
+        holds(&completed, native) && holds(&completed, other),
+        "{completed:?}"
+    );
+    for (platform, expected) in [(native, native_arch), (other, other_arch)] {
+        let printed = cluster
+            .machine_shell(
+                1,
+                &format!(
+                    "docker run --rm --pull=never --platform {platform} {}",
+                    built.built.reference
+                ),
+            )
+            .unwrap();
+        // npm echoes the start script before the process prints its architecture.
+        assert_eq!(printed.lines().last(), Some(expected), "{platform}");
+    }
+    drop(built);
+    assert_temporary_tags_released(&cluster).await;
+    drop(cleanup);
+    fs::remove_dir_all(root).unwrap();
+}

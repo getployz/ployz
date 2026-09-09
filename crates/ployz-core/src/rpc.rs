@@ -426,6 +426,9 @@ pub struct ImageIngestOpened {
 pub struct PullImageFromMachineRequest {
     pub image: String,
     pub source: ImageIngestDestination,
+    /// Platform the destination must receive, so a partial source cannot
+    /// answer with an index whose selected variant it does not hold.
+    pub platform: String,
 }
 
 /// Successful `PullImageFromMachine` payload.

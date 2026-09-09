@@ -74,10 +74,12 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
             let cancellation = super::cancellation_on_ctrl_c();
             let mut client = connect_client(matches, context.as_deref()).await?;
             let captured = capture_build(&plan, &options, &mut project)?;
+            let visible = client.machines().await?;
             let machine = select_build_machine(
                 &mut client,
                 target.as_ref(),
                 captured.targets(),
+                &visible,
                 &cancellation,
             )
             .await?;
@@ -155,12 +157,12 @@ pub(super) async fn select_build_machine(
     client: &mut crate::connect::Client,
     target: Option<&ployz_core::MachineTarget>,
     targets: &[ployz_build::Target],
+    visible: &[ployz_core::MachineObservation],
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<ployz_core::Machine, Error> {
-    let visible = client.machines().await?;
     // Resolve pins before filtering so policy cannot hide Name Ambiguity.
     let mut candidates = if let Some(target) = target {
-        vec![crate::cluster::visible_machine(target, &visible).map_err(ConnectError::Remote)?]
+        vec![crate::cluster::visible_machine(target, visible).map_err(ConnectError::Remote)?]
     } else {
         visible.iter().collect::<Vec<_>>()
     };

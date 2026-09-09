@@ -905,6 +905,7 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
     let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
         image: "busybox:1.37.0".into(),
         source,
+        platform: "linux/amd64".into(),
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
     assert_eq!(request.body.command(), "pull_image_from_machine");

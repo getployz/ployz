@@ -244,18 +244,21 @@ fn railpack_accepts_explicit_linux_architectures_and_rejects_other_platforms() {
 }
 
 #[test]
-fn multi_platform_railpack_refuses_requested_attestations() {
+fn railpack_refuses_requested_attestations_on_every_platform_count() {
     let root = std::env::temp_dir().join(format!(
         "ployz-railpack-attestations-{}",
         std::process::id()
     ));
     fs::create_dir_all(&root).unwrap();
+    // Assembly cannot carry attestations, and a Deploy may derive a second
+    // platform after capture, so the platform count never makes them legal.
     for (field, platforms, value, accepted) in [
         ("provenance", "linux/amd64, linux/arm64", "true", false),
         ("provenance", "linux/amd64, linux/arm64", "mode=max", false),
         ("provenance", "linux/amd64, linux/arm64", "false", true),
-        ("provenance", "linux/amd64", "true", true),
-        ("provenance", "linux/arm64", "mode=max", true),
+        ("provenance", "linux/amd64", "true", false),
+        ("provenance", "linux/arm64", "mode=max", false),
+        ("provenance", "linux/amd64", "false", true),
         ("sbom", "linux/amd64, linux/arm64", "true", false),
         (
             "sbom",
@@ -264,7 +267,8 @@ fn multi_platform_railpack_refuses_requested_attestations() {
             false,
         ),
         ("sbom", "linux/amd64, linux/arm64", "false", true),
-        ("sbom", "linux/amd64", "true", true),
+        ("sbom", "linux/amd64", "true", false),
+        ("sbom", "linux/amd64", "false", true),
     ] {
         let mut project = parse_normalized(&format!("services:\n  api:\n    build: {{context: ., x-recipe: railpack, platforms: [{platforms}], {field}: {value}}}\n"), &root).unwrap();
         let options = BuildOptions::default();
@@ -282,7 +286,7 @@ fn multi_platform_railpack_refuses_requested_attestations() {
                 .expect("requested attestation must not be discarded")
                 .to_string();
             assert!(
-                error.contains("multi-platform Railpack")
+                error.contains("Railpack does not support")
                     && error.contains(&format!("build.{field}")),
                 "{error}"
             );
