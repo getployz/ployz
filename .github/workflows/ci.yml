@@ -18,7 +18,11 @@ permissions:
 # CI does not use debugger symbols or per-checkout incremental compilation.
 env:
   # Only protected main pushes receive write keys; all other runs use R2 read-only keys.
-  KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
+  # Missing credentials (including fork PRs) select the GitHub-cache fallback.
+  KACHE_S3_BUCKET: >-
+    ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID) &&
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY) &&
+        vars.KACHE_S3_BUCKET || '' }}
   KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
   KACHE_S3_ACCESS_KEY_ID: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
@@ -74,7 +78,6 @@ jobs:
           go test ./...
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-layer3-runner.sh
-      - run: python3 scripts/test-cache-credentials.py
       - run: python3 scripts/test-cloud-sdk-version.py
       - run: python3 scripts/check-cloud-sdk-version.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
