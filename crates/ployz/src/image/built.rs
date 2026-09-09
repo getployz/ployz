@@ -13,6 +13,7 @@ use super::*;
 pub async fn push_from_machine(
     client: &mut Client,
     image: &BuiltImage,
+    repository: &str,
     source: MachineId,
     selectors: &[String],
     cancellation: &tokio_util::sync::CancellationToken,
@@ -20,13 +21,22 @@ pub async fn push_from_machine(
     let machines = Cancellation::new(cancellation)
         .race(client.machines())
         .await??;
-    push_from_machine_using_machines(client, image, source, selectors, &machines, cancellation)
-        .await
+    push_from_machine_using_machines(
+        client,
+        image,
+        repository,
+        source,
+        selectors,
+        &machines,
+        cancellation,
+    )
+    .await
 }
 
 pub(crate) async fn push_from_machine_using_machines(
     client: &mut Client,
     image: &BuiltImage,
+    repository: &str,
     source: MachineId,
     selectors: &[String],
     machines: &[MachineObservation],
@@ -42,12 +52,13 @@ pub(crate) async fn push_from_machine_using_machines(
         return Ok(result);
     }
     let source = serve_build_image(client, image, source, cancellation).await?;
-    let reference = image
-        .repository_reference()
-        .map_err(|error| PushError::InvalidReference {
-            reference: image.reference.clone(),
-            message: error.to_string(),
-        })?;
+    let reference =
+        image
+            .repository_reference(repository)
+            .map_err(|error| PushError::InvalidReference {
+                reference: image.reference.clone(),
+                message: error.to_string(),
+            })?;
     let mut cancellation = Cancellation::new(cancellation);
     let mut remaining = selection.targets.into_iter();
     while let Some(machine) = remaining.next() {

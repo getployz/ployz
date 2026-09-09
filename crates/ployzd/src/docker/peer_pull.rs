@@ -38,28 +38,50 @@ pub(crate) async fn pull_from_ingest(
     };
     let proxy = ImageProxy::open(source).await?;
     let pulled = localhost_registry_reference(proxy.port, image);
-    docker_cli(["pull", &pulled]).await?;
-    // Docker cannot tag repository@digest. A content-specific tag retains
-    // that repository's digest without another client's tag overwriting it.
-    docker_cli(["tag", &pulled, retained.as_deref().unwrap_or(image)]).await?;
-    if let Some((_, digest)) = image.split_once('@') {
-        let descriptor = docker_cli([
-            "image",
-            "inspect",
-            image,
-            "--format",
-            "{{json .Descriptor}}",
-        ])
-        .await?;
-        let descriptor: serde_json::Value = serde_json::from_str(&descriptor)?;
-        if descriptor.get("digest").and_then(serde_json::Value::as_str) != Some(digest) {
-            return Err(Error::PeerPull(format!(
-                "the image store did not retain {image}"
-            )));
+    pull_and_tag(
+        image,
+        &pulled,
+        retained.as_deref(),
+        std::path::Path::new("docker"),
+    )
+    .await
+}
+
+async fn pull_and_tag(
+    image: &str,
+    pulled: &str,
+    retained: Option<&str>,
+    docker: &std::path::Path,
+) -> Result<(), Error> {
+    let result = async {
+        docker_cli(docker, ["pull", pulled]).await?;
+        if let Some((_, digest)) = image.split_once('@') {
+            let descriptor = docker_cli(
+                docker,
+                [
+                    "image",
+                    "inspect",
+                    pulled,
+                    "--format",
+                    "{{json .Descriptor}}",
+                ],
+            )
+            .await?;
+            let descriptor: serde_json::Value = serde_json::from_str(&descriptor)?;
+            if descriptor.get("digest").and_then(serde_json::Value::as_str) != Some(digest) {
+                return Err(Error::PeerPull(format!(
+                    "the image store did not retain {image}"
+                )));
+            }
         }
+        // Verify before publishing the deterministic retention tag: a failed
+        // attempt must not leave a tag or remove one from an earlier delivery.
+        docker_cli(docker, ["tag", pulled, retained.unwrap_or(image)]).await?;
+        Ok(())
     }
-    let _ = docker_cli(["image", "rm", &pulled]).await;
-    Ok(())
+    .await;
+    let _ = docker_cli(docker, ["image", "rm", pulled]).await;
+    result
 }
 
 fn localhost_registry_reference(port: u16, image: &str) -> String {
@@ -108,8 +130,11 @@ impl Drop for ImageProxy {
     }
 }
 
-async fn docker_cli<const N: usize>(args: [&str; N]) -> Result<String, Error> {
-    let output = Command::new("docker")
+async fn docker_cli<const N: usize>(
+    docker: &std::path::Path,
+    args: [&str; N],
+) -> Result<String, Error> {
+    let output = Command::new(docker)
         .args(args)
         .output()
         .await
@@ -127,6 +152,79 @@ async fn docker_cli<const N: usize>(args: [&str; N]) -> Result<String, Error> {
 mod tests {
     use super::*;
     use ployz_core::UNREGISTRY_PORT;
+
+    #[tokio::test]
+    async fn failed_digest_delivery_cleans_up_without_publishing_unverified_content() {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+
+        let root = std::env::temp_dir().join(format!(
+            "ployz-peer-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        fs::create_dir(&root).unwrap();
+        let docker = root.join("docker");
+        fs::write(
+            &docker,
+            r#"#!/bin/sh
+cd "$(dirname "$0")"
+printf '%s\n' "$*" >> calls
+mode=$(cat mode)
+case "$1 $2" in
+  'image inspect')
+    case "$mode" in
+      inspect) echo inspect-failed >&2; exit 1 ;;
+      json) echo not-json ;;
+      digest) echo '{"digest":"sha256:wrong"}' ;;
+      *) cat descriptor ;;
+    esac ;;
+  'image rm') echo cleanup-failed >&2; exit 1 ;;
+  *) if [ "$1" = "$mode" ]; then echo "$mode-failed" >&2; exit 1; fi ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = format!("sha256:{}", "1".repeat(64));
+        let image = format!("example.test/api@{digest}");
+        let retained = image.replace("@sha256:", ":ployz-sha256-");
+        let pulled = format!("127.0.0.1:1234/{image}");
+        fs::write(
+            root.join("descriptor"),
+            serde_json::json!({"digest": digest}).to_string(),
+        )
+        .unwrap();
+        for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
+            fs::write(root.join("mode"), mode).unwrap();
+            fs::write(root.join("calls"), "").unwrap();
+            let result = pull_and_tag(&image, &pulled, Some(&retained), &docker).await;
+            assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
+            if let Err(error) = result {
+                assert!(!error.to_string().contains("cleanup-failed"), "{error}");
+                if ["inspect", "tag", "pull"].contains(&mode) {
+                    assert!(
+                        error.to_string().contains(&format!("{mode}-failed")),
+                        "{error}"
+                    );
+                }
+            }
+            let calls = fs::read_to_string(root.join("calls")).unwrap();
+            assert_eq!(
+                calls.lines().last(),
+                Some(format!("image rm {pulled}").as_str()),
+                "{mode}: {calls}"
+            );
+            assert_eq!(
+                calls.lines().any(|line| line.starts_with("tag ")),
+                ["tag", "success"].contains(&mode),
+                "{mode}: {calls}"
+            );
+            assert!(
+                !calls.contains(&format!("image rm {retained}")),
+                "must preserve previously retained content"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn localhost_pull_reference_keeps_the_image_path() {

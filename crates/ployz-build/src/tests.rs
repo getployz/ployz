@@ -552,3 +552,17 @@ exit 0
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn repository_reference_rejects_a_malformed_service_image() {
+    let image = BuiltImage {
+        reference: format!("sha256:{}", "1".repeat(64)),
+        tags: vec!["example.test/api:latest".into()],
+        platforms: vec!["linux/amd64".into()],
+        location: "unix:///var/run/docker.sock".into(),
+    };
+    assert!(matches!(
+        image.repository_reference("not a repository"),
+        Err(BuildError::Result(_))
+    ));
+}

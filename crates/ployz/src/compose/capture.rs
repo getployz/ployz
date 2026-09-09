@@ -41,12 +41,14 @@ impl CapturedCompose {
                 .iter()
                 .find(|build| build.name == service.name.as_str())
             {
-                service.container.image = build.built.repository_reference().map_err(|error| {
-                    super::ComposeError::Build {
-                        services: build.name.clone(),
-                        source: error,
-                    }
-                })?;
+                service.container.image =
+                    build
+                        .built
+                        .repository_reference(&build.image)
+                        .map_err(|error| super::ComposeError::Build {
+                            services: build.name.clone(),
+                            source: error,
+                        })?;
                 service.container.pull_policy = ployz_core::PullPolicy::Never;
             }
         }
@@ -140,7 +142,10 @@ fn deploy_binds_each_service_to_its_build_when_requested_tags_are_shared() {
         location: BuildLocation::Machine(ployz_core::MachineId::parse("a".repeat(32)).unwrap()),
         built: ployz_build::BuiltImage {
             reference: digest.into(),
-            tags: vec!["example.test/shared:latest".into()],
+            tags: vec![
+                "auxiliary.test:5000/other:extra".into(),
+                "example.test/shared:latest".into(),
+            ],
             platforms: vec!["linux/amd64".into()],
             location: "unix:///var/run/docker.sock".into(),
         },

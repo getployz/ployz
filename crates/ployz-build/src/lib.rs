@@ -127,15 +127,11 @@ pub struct BuiltImage {
 }
 
 impl BuiltImage {
-    /// Name this manifest in the repository used by its Build.
+    /// Name this manifest in the caller's requested repository.
     /// # Errors
-    /// Rejects missing or malformed repository evidence.
-    pub fn repository_reference(&self) -> Result<String, BuildError> {
-        let tag = self
-            .tags
-            .first()
-            .ok_or_else(|| BuildError::Result("Build image has no tags".into()))?;
-        let reference = tag
+    /// Rejects malformed repository references.
+    pub fn repository_reference(&self, image: &str) -> Result<String, BuildError> {
+        let reference = image
             .parse::<oci_client::Reference>()
             .map_err(|error| BuildError::Result(error.to_string()))?;
         Ok(format!(

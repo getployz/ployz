@@ -557,7 +557,7 @@ async fn push_image(
             // Retain each digest even when multiple Services requested one tag.
             let tag = service
                 .built
-                .repository_reference()
+                .repository_reference(&service.image)
                 .map_err(|error| crate::image::PushError::InvalidReference {
                     reference: service.built.reference.clone(),
                     message: error.to_string(),
@@ -577,6 +577,7 @@ async fn push_image(
             crate::image::push_from_machine_using_machines(
                 client,
                 &service.built,
+                &service.image,
                 source,
                 targets,
                 machines,

@@ -506,6 +506,7 @@ async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry
     let result = ployz::image::push_from_machine(
         &mut client,
         &app.built,
+        &app.image,
         destination,
         &[selected.to_string()],
         &CancellationToken::new(),

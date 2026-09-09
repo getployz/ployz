@@ -858,7 +858,7 @@ fn ssh_paths(key: &Value) -> Result<(&str, &str), ComposeError> {
         })
 }
 
-fn is_remote_context(source: &str) -> bool {
+pub(super) fn is_remote_context(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@") || source.starts_with("service:")
 }
 

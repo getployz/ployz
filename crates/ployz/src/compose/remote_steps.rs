@@ -165,9 +165,12 @@ impl CapturedBuild {
                 contexts.insert(
                     dependency.to_owned(),
                     ployz_build::ImageContext {
-                        reference: image.built.repository_reference().map_err(|error| {
-                            failed(Stage::Preparation, error.to_string()).with_work(work.clone())
-                        })?,
+                        reference: image.built.repository_reference(&image.image).map_err(
+                            |error| {
+                                failed(Stage::Preparation, error.to_string())
+                                    .with_work(work.clone())
+                            },
+                        )?,
                         platforms: image.built.platforms.clone(),
                         source,
                     },

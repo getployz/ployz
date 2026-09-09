@@ -792,6 +792,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let root = TestDir::new("ployzd-builder-restart");
         let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        fs::set_permissions(&root.0, fs::Permissions::from_mode(0o700)).unwrap();
         let policy = ployz_build::HostPolicy {
             state_directory: root.0.clone(),
             docker: root.0.join("docker"),

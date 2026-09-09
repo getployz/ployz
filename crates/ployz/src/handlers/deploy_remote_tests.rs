@@ -172,7 +172,10 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     );
     let image = ployz_build::BuiltImage {
         reference: format!("sha256:{}", "1".repeat(64)),
-        tags: vec!["registry.invalid/shared:latest".into()],
+        tags: vec![
+            "auxiliary.test:5000/other:extra".into(),
+            "registry.invalid/shared:latest".into(),
+        ],
         platforms: vec!["linux/amd64".into()],
         location: "unix:///var/run/docker.sock".into(),
     };
@@ -209,6 +212,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     let result = crate::image::push_from_machine(
         &mut client,
         &image,
+        "registry.invalid/shared:latest",
         source.machine.id,
         &[],
         &tokio_util::sync::CancellationToken::new(),
@@ -238,17 +242,13 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
             .contains("containerd image store")
     );
     assert_eq!(result.omissions, [missing.machine.id]);
-    assert!(
-        builds
-            .pulls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(
-                |(_, pull)| pull.image == image.repository_reference().unwrap()
-                    && pull.source.management_address == source.machine.management_address()
-            )
-    );
+    assert!(builds.pulls.lock().unwrap().iter().all(|(_, pull)| {
+        pull.image
+            == image
+                .repository_reference("registry.invalid/shared:latest")
+                .unwrap()
+            && pull.source.management_address == source.machine.management_address()
+    }));
     builds
         .stores
         .lock()
@@ -260,6 +260,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         crate::image::push_from_machine(
             &mut client,
             &image,
+            "registry.invalid/shared:latest",
             source.machine.id,
             &[success.machine.id.to_string()],
             &tokio_util::sync::CancellationToken::new(),
