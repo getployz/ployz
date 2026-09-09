@@ -165,10 +165,10 @@ impl NetworkPlane {
                                 }
                                 previous = Some(snapshot);
                             }
-                            self.poll_endpoints(&local);
                         }
                         Err(error) => eprintln!("failed to read Machine table for network plane: {error}"),
                     }
+                    self.poll_endpoints(&local);
                 }
                 () = shutdown.cancelled() => {
                     let resetting = local
