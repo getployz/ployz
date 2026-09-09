@@ -130,6 +130,14 @@ _Avoid_: Ployz-managed draft, Git index, Saved State
 A bounded operation that makes a local Docker image available on selected Machines without requiring an external registry. It preserves layer-aware transfer and may use a Machine that already holds the image as the source for other Machines.
 _Avoid_: Unregistry, image ingest as a product term
 
+**Build**:
+The work to produce one container image from source and a build recipe. A Compose project with three buildable Services has three Builds.
+_Avoid_: Deploy, whole-project build as one Build
+
+**Build Attempt**:
+One execution of a Build, which may succeed, fail, or stop before producing an image.
+_Avoid_: Build as an execution identity, Deploy Attempt
+
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
 _Avoid_: Deployment resource, reconciliation loop
