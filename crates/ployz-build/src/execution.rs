@@ -60,18 +60,8 @@ impl WorkEvidence {
     }
     /// Record only observed progress; starting Bake does not prove completion.
     pub fn observe(&mut self, event: &Progress) {
-        match event {
-            Progress::Stage(Stage::Building) => {
-                for evidence in self.0.values_mut() {
-                    if matches!(evidence, TargetEvidence::Unattempted) {
-                        *evidence = TargetEvidence::Unknown;
-                    }
-                }
-            }
-            Progress::Target { name, outcome } => {
-                self.0.insert(name.clone(), outcome.clone());
-            }
-            Progress::Stage(_) | Progress::Output(_) => {}
+        if let Progress::Target { name, outcome } = event {
+            self.0.insert(name.clone(), outcome.clone());
         }
     }
 }

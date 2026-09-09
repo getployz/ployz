@@ -5,7 +5,7 @@ use crate::{BuiltImage, Output, Progress, Stage, Target};
 use ployz_core::{MachineId, OpaquePayload};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub use crate::received_recipe::validate_remote_context;
+pub use crate::received_recipe::{validate_capture, validate_remote_context};
 pub use crate::upload::{Upload, upload};
 
 /// Invalid or unavailable captured input at the transport trust boundary.

@@ -246,6 +246,18 @@ case "$1 $2" in
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
+    if [ -f "$root/registry-attempt" ]; then
+      for arg in "$@"; do
+        case "$arg" in
+          api) : > "$root/published-api" ;;
+          web)
+            if [ -f "$root/cancel-publication" ]; then printf 'publishing web\n'; exec sleep 30; fi
+            exit 1 ;;
+          zzz) : > "$root/published-zzz" ;;
+        esac
+      done
+      exit 0
+    fi
     find source -type f > "$root/source-list"
     find source -name payload -exec cp '{{}}' "$root/received-payload" \;
     if [ -f "$root/slow" ]; then printf 'building\n'; exec sleep 30; fi
@@ -403,5 +415,58 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
                 Some(&ployz_build::TargetEvidence::Unknown)
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn registry_publication_keeps_completed_and_unattempted_targets() {
+    for cancelled in [false, true] {
+        let fixture = Fixture::new().await;
+        drop(fixture.capture());
+        let root = fixture.root.join("project");
+        let mut project = ployz::compose::parse_normalized(
+            "name: demo\nservices:\n  api:\n    image: example.test/api:built\n    build: .\n  web:\n    image: example.test/web:built\n    build: .\n  zzz:\n    image: example.test/zzz:built\n    build: .\n", &root).unwrap();
+        let options = ployz::compose::BuildOptions {
+            output: Output::Registry,
+            ..Default::default()
+        };
+        let plan = ployz::compose::plan_build(&project, &options).unwrap();
+        let capture = ployz::compose::capture_build(&plan, &options, &mut project).unwrap();
+        fs::write(fixture.root.join("registry-attempt"), "").unwrap();
+        if cancelled {
+            fs::write(fixture.root.join("cancel-publication"), "").unwrap();
+        }
+        let client = ployz::connect::connect(
+            Path::new("/missing-test-config"),
+            Some(&fixture.address.replace("http://", "tcp://")),
+            None,
+        )
+        .await
+        .unwrap();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let result = capture
+            .execute_remote(&client, fixture.machine.id, cancellation.clone(), |event| {
+                if cancelled && matches!(event, Progress::Output(_)) {
+                    cancellation.cancel();
+                }
+            })
+            .await;
+        let Outcome::Failed { work, .. } = result else {
+            panic!("{result:?}")
+        };
+        assert!(fixture.root.join("published-api").exists());
+        assert_eq!(
+            work.0.get("api"),
+            Some(&ployz_build::TargetEvidence::Published)
+        );
+        assert_eq!(
+            work.0.get("web"),
+            Some(&ployz_build::TargetEvidence::Unknown)
+        );
+        assert_eq!(
+            work.0.get("zzz"),
+            Some(&ployz_build::TargetEvidence::Unattempted)
+        );
+        assert!(!fixture.root.join("published-zzz").exists());
     }
 }

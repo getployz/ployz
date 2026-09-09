@@ -22,6 +22,9 @@ pub(super) async fn execute(
     progress: impl Fn(Progress),
 ) -> Outcome {
     let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
+    if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
+        return failed(Stage::Preparation, error.to_string()).with_work(evidence);
+    }
     let expected = definition.targets.len();
     let output = definition.output;
     let (sender, receiver) = mpsc::channel(2);
@@ -121,7 +124,9 @@ pub(super) async fn execute(
                     deadline = tokio::time::Instant::now() + Duration::from_secs(70);
                     // The capture cannot be completed; ask the host to release
                     // admission and wait for its typed termination evidence.
-                    if let Ok(frame) = remote::encode(&Input::Cancel) { let _ = sender.try_send(frame); }
+                    if send_cancellation(&sender).await.is_err() {
+                        return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
+                    }
                 }
             },
             () = cancellation.cancelled(), if !cancelling => {
@@ -129,14 +134,23 @@ pub(super) async fn execute(
                 deadline = tokio::time::Instant::now() + Duration::from_secs(70);
                 // Stop the producer first so cancellation cannot sit behind an
                 // unbounded upload. Only two bounded frames can be in flight.
-                let frame = remote::encode(&Input::Cancel).expect("bounded cancellation frame");
-                if tokio::time::timeout(Duration::from_secs(5), sender.send(frame)).await.is_err() {
+                if send_cancellation(&sender).await.is_err() {
                     return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
                 }
             },
             () = tokio::time::sleep_until(deadline) => return unknown(stage, "Build response deadline expired; termination was not confirmed").with_work(evidence),
         }
     }
+}
+
+async fn send_cancellation(
+    sender: &mpsc::Sender<ployz_core::OpaquePayload>,
+) -> Result<(), remote::InputError> {
+    let frame = remote::encode(&Input::Cancel)?;
+    tokio::time::timeout(Duration::from_secs(5), sender.send(frame))
+        .await
+        .map_err(|_| "Build cancellation delivery timed out")?
+        .map_err(|_| "Build request stream closed before cancellation".into())
 }
 
 fn validate_outcome(
@@ -196,5 +210,39 @@ fn unknown(stage: Stage, message: impl Into<String>) -> Outcome {
         work: Default::default(),
         stage,
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancellation_waits_for_a_full_upload_channel() {
+        let (sender, mut receiver) = mpsc::channel(2);
+        for _ in 0..2 {
+            sender
+                .send(remote::encode(&Input::Data(vec![1])).unwrap())
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let (sent, ()) = tokio::join!(send_cancellation(&sender), async {
+                tokio::task::yield_now().await;
+                for _ in 0..2 {
+                    receiver.recv().await.unwrap();
+                }
+                let frame = receiver.recv().await.unwrap();
+                assert!(matches!(
+                    remote::decode::<Input>(&frame).unwrap(),
+                    Input::Cancel
+                ));
+            });
+            sent.unwrap();
+        })
+        .await
+        .expect("cancellation was dropped behind queued upload frames");
+        drop(receiver);
+        assert!(send_cancellation(&sender).await.is_err());
     }
 }

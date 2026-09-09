@@ -133,10 +133,14 @@ impl<'a> Builder<'a> {
         Ok(native)
     }
 
-    pub(crate) fn run(&self, arguments: &[String]) -> Result<(), BuildError> {
+    pub(crate) fn run(
+        &self,
+        arguments: &[String],
+        started: impl FnOnce(),
+    ) -> Result<(), BuildError> {
         let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
         self.docker
-            .run("the build", &borrowed, Streams::Inherited)
+            .run_started("the build", &borrowed, Streams::Inherited, started)
             .map(|_| ())
     }
 
@@ -144,14 +148,25 @@ impl<'a> Builder<'a> {
     /// quarantine across daemon restart as well as competing direct calls.
     pub(crate) fn finish<T>(mut self, result: Result<T, BuildError>) -> Result<T, BuildError> {
         let cleanup = remove(&self.docker.releasing(), &self.name);
-        if cleanup.is_ok() && !result.as_ref().is_err_and(|error| error.is_unknown()) {
-            self.lock.as_mut().expect("owned lock").clear()?;
-        }
-        self.lock.take();
         let stage = result
             .as_ref()
             .err()
             .map_or(crate::Stage::Cleanup, BuildError::stage);
+        let cleared = if cleanup.is_ok() && !result.as_ref().is_err_and(|error| error.is_unknown())
+        {
+            self.lock.as_mut().expect("owned lock").clear()
+        } else {
+            Ok(())
+        };
+        self.lock.take();
+        if let Err(error) = cleared {
+            return Err(match result {
+                Ok(_) => error.at(stage),
+                Err(cause) => {
+                    BuildError::Result(format!("{cause}; cleanup failed: {error}")).at(stage)
+                }
+            });
+        }
         match cleanup {
             Ok(()) => result,
             Err(error) => Err(BuildError::UncertainTermination(match result {
@@ -313,6 +328,51 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn quarantine_clear_failure_preserves_cleanup_and_prior_failure_stages() {
+        for prior_failure in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("ployz-clear-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let program = directory.join("docker");
+            crate::tests::executable(&program, "#!/bin/sh\nexit 0\n");
+            let environment = BTreeMap::new();
+            let docker = Docker {
+                program: &program,
+                environment: &environment,
+                working_dir: &directory,
+                deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+                cancellation: None,
+                progress: None,
+            };
+            let lock = Lock::try_acquire_in(&directory).unwrap();
+            let mut builder = Builder::acquire(&docker, lock).unwrap();
+            // A read-only descriptor deterministically makes marker truncation fail.
+            builder.lock.as_mut().unwrap().file =
+                fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap();
+            let result = if prior_failure {
+                Err(BuildError::Result("earlier build failure".into()).at(crate::Stage::Building))
+            } else {
+                Ok(())
+            };
+            let error = builder.finish(result).unwrap_err();
+            assert_eq!(
+                error.stage(),
+                if prior_failure {
+                    crate::Stage::Building
+                } else {
+                    crate::Stage::Cleanup
+                }
+            );
+            assert!(!error.is_unknown(), "Docker termination was confirmed");
+            if prior_failure {
+                assert!(error.to_string().contains("earlier build failure"));
+            }
+            assert!(error.to_string().contains("build lock"));
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
 
     #[test]
     fn admission_refuses_competitors_and_uncertain_builder_ownership() {

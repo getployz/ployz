@@ -10,7 +10,11 @@ use std::{
     path::{Component, Path},
 };
 
-pub(crate) fn validate(root: &Path, definition: &Definition) -> Result<(), InputError> {
+/// Validate a captured recipe for remote execution and isolate its registry configuration.
+/// # Errors
+/// Rejects uncaptured paths, unsupported host settings, and SSH contexts without
+/// a captured default key; reports missing or malformed input.
+pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), InputError> {
     let names: BTreeSet<_> = definition
         .targets
         .iter()
@@ -73,12 +77,27 @@ pub(crate) fn validate(root: &Path, definition: &Definition) -> Result<(), Input
             ],
             "build",
         )?;
+        let mut default_ssh = false;
+        if let Some(ssh) = build.get("ssh") {
+            for key in sequence(ssh)? {
+                let (id, paths) = text(key)?
+                    .split_once('=')
+                    .ok_or("SSH agent sockets cannot be sent to a Build host")?;
+                if id.is_empty() {
+                    return Err("invalid Build SSH key ID".into());
+                }
+                default_ssh |= id == "default";
+                for path in paths.split(',') {
+                    contained(root, Path::new(path), "private", true)?;
+                }
+            }
+        }
         let context = text(
             build
                 .get("context")
                 .ok_or("Build recipe has no captured context")?,
         )?;
-        context_path(root, context, &names)?;
+        context_path(root, context, &names, default_ssh)?;
         if let Some(recipe) = build.get("dockerfile") {
             let recipe = text(recipe)?;
             if remote(context) {
@@ -96,7 +115,7 @@ pub(crate) fn validate(root: &Path, definition: &Definition) -> Result<(), Input
             match contexts {
                 Value::Mapping(contexts) => {
                     for value in contexts.values() {
-                        context_path(root, text(value)?, &names)?;
+                        context_path(root, text(value)?, &names, default_ssh)?;
                     }
                 }
                 Value::Sequence(contexts) => {
@@ -104,7 +123,7 @@ pub(crate) fn validate(root: &Path, definition: &Definition) -> Result<(), Input
                         let (_, value) = text(value)?
                             .split_once('=')
                             .ok_or("invalid named Build context")?;
-                        context_path(root, value, &names)?;
+                        context_path(root, value, &names, default_ssh)?;
                     }
                 }
                 Value::Null => {}
@@ -117,19 +136,6 @@ pub(crate) fn validate(root: &Path, definition: &Definition) -> Result<(), Input
             && mapping(args)?.values().any(Value::is_null)
         {
             return Err("Build arguments must have captured values".into());
-        }
-        if let Some(ssh) = build.get("ssh") {
-            for key in sequence(ssh)? {
-                let (id, paths) = text(key)?
-                    .split_once('=')
-                    .ok_or("SSH agent sockets cannot be sent to a Build host")?;
-                if id.is_empty() {
-                    return Err("invalid Build SSH key ID".into());
-                }
-                for path in paths.split(',') {
-                    contained(root, Path::new(path), "private", true)?;
-                }
-            }
         }
         if let Some(platforms) = build.get("platforms") {
             let platforms = sequence(platforms)?;
@@ -243,7 +249,12 @@ fn contained(root: &Path, path: &Path, area: &str, file: bool) -> Result<(), Inp
     Ok(())
 }
 
-fn context_path(root: &Path, value: &str, names: &BTreeSet<&str>) -> Result<(), InputError> {
+fn context_path(
+    root: &Path,
+    value: &str,
+    names: &BTreeSet<&str>,
+    default_ssh: bool,
+) -> Result<(), InputError> {
     if let Some(service) = value.strip_prefix("service:") {
         return if names.contains(service) {
             Ok(())
@@ -252,7 +263,14 @@ fn context_path(root: &Path, value: &str, names: &BTreeSet<&str>) -> Result<(), 
         };
     }
     if remote(value) {
-        return validate_remote_context(value);
+        validate_remote_context(value)?;
+        if !default_ssh
+            && (value.starts_with("git@")
+                || url::Url::parse(value).is_ok_and(|url| url.scheme() == "ssh"))
+        {
+            return Err("remote SSH build contexts require a captured default SSH key; configure build.ssh with default=<key-file>".into());
+        }
+        return Ok(());
     }
     contained(root, Path::new(value), "source", false)?;
     if !root.join(value).is_dir() {
@@ -364,4 +382,45 @@ pub fn validate_remote_context(source: &str) -> Result<(), InputError> {
         return Err(refusal());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_ssh_contexts_need_a_default_key_inside_private_capture() {
+        let root = std::env::temp_dir().join(format!("ployz-ssh-recipe-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("private/docker")).unwrap();
+        fs::create_dir(root.join("source")).unwrap();
+        fs::write(root.join("private/docker/config.json"), "{}").unwrap();
+        fs::write(root.join("private/key"), "captured-key").unwrap();
+        fs::write(root.join("source/key"), "source-content").unwrap();
+        let definition = Definition {
+            targets: vec![crate::Target {
+                name: "api".into(),
+                platform: None,
+            }],
+            output: crate::Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        for ssh in [
+            "",
+            "other=private/key",
+            "default=private/missing",
+            "default=source/key",
+            "default=private/key",
+        ] {
+            fs::write(root.join("compose.yaml"), format!(
+                "services:\n  api:\n    build:\n      context: SSH://git@example.test/repo#0123456789abcdef0123456789abcdef01234567\n      ssh: [{}]\n", if ssh.is_empty() { String::new() } else { format!("'{ssh}'") }
+            )).unwrap();
+            assert_eq!(
+                validate_capture(&root, &definition).is_ok(),
+                ssh == "default=private/key",
+                "{ssh}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }

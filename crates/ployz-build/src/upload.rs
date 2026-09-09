@@ -229,7 +229,7 @@ impl CompletedUpload {
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<Vec<BuiltImage>, BuildError> {
         let mut upload = self.0;
-        crate::received_recipe::validate(&upload.root, definition)
+        crate::received_recipe::validate_capture(&upload.root, definition)
             .map_err(|error| BuildError::Request(error.to_string()))?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))

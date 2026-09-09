@@ -252,47 +252,65 @@ pub fn execute_admitted(
         let native = builder
             .native_platform(request.targets)
             .map_err(|error| error.at(Stage::Preparation))?;
-        let mut arguments = bake_arguments(request, &planned, &metadata);
-        for target in &planned {
-            arguments.push("--set".into());
-            arguments.push(format!(
-                "{}.platform={}",
-                target.bake,
-                target.target.platform.as_deref().unwrap_or(&native)
-            ));
-        }
-        progress(Progress::Stage(Stage::Building));
-        if let Err(error) = builder.run(&arguments) {
-            // Bake may have imported a prefix before a later target failed.
-            // Only verify after termination is known; keep the original failure.
-            if request.output == Output::Load
-                && !error.is_unknown()
-                && metadata.is_file()
-                && let Err(verification) =
-                    built_images(&docker.releasing(), &metadata, &planned, progress)
-            {
-                return Err(error.at(Stage::Building).with_later_failure(verification));
+        // A successful per-target push is publication evidence. A failed batch
+        // cannot tell us which of its registry exports completed.
+        let batch_size = if request.output == Output::Registry {
+            1
+        } else {
+            planned.len()
+        };
+        for batch in planned.chunks(batch_size) {
+            let mut arguments = bake_arguments(request, batch, &metadata);
+            for target in &planned {
+                arguments.push("--set".into());
+                arguments.push(format!(
+                    "{}.platform={}",
+                    target.bake,
+                    target.target.platform.as_deref().unwrap_or(&native)
+                ));
             }
-            return Err(error.at(Stage::Building));
-        }
-        progress(Progress::Stage(Stage::Output));
-        match request.output {
-            Output::Load => built_images(&docker, &metadata, &planned, progress)
-                .map_err(|error| error.at(Stage::Output)),
-            Output::Registry | Output::Validate => {
-                for target in request.targets {
+            progress(Progress::Stage(Stage::Building));
+            if let Err(error) = builder.run(&arguments, || {
+                for target in batch {
                     progress(Progress::Target {
-                        name: target.name.clone(),
-                        outcome: if request.output == Output::Validate {
-                            TargetEvidence::Validated
-                        } else {
-                            TargetEvidence::Published
-                        },
+                        name: target.target.name.clone(),
+                        outcome: TargetEvidence::Unknown,
                     });
                 }
-                Ok(Vec::new())
+            }) {
+                // Bake may have imported a prefix before a later target failed.
+                // Only verify after termination is known; keep the original failure.
+                if request.output == Output::Load
+                    && !error.is_unknown()
+                    && metadata.is_file()
+                    && let Err(verification) =
+                        built_images(&docker.releasing(), &metadata, batch, progress)
+                {
+                    return Err(error.at(Stage::Building).with_later_failure(verification));
+                }
+                return Err(error.at(Stage::Building));
+            }
+            progress(Progress::Stage(Stage::Output));
+            match request.output {
+                Output::Load => {
+                    return built_images(&docker, &metadata, batch, progress)
+                        .map_err(|error| error.at(Stage::Output));
+                }
+                Output::Registry | Output::Validate => {
+                    for target in batch {
+                        progress(Progress::Target {
+                            name: target.target.name.clone(),
+                            outcome: if request.output == Output::Validate {
+                                TargetEvidence::Validated
+                            } else {
+                                TargetEvidence::Published
+                            },
+                        });
+                    }
+                }
             }
         }
+        Ok(Vec::new())
     })();
     progress(Progress::Stage(Stage::Cleanup));
     builder.finish(result)
@@ -609,6 +627,22 @@ impl<'a> Docker<'a> {
         arguments: &[&str],
         streams: Streams,
     ) -> Result<String, BuildError> {
+        self.run_started(action, arguments, streams, || {})
+    }
+
+    fn run_started(
+        &self,
+        action: &'static str,
+        arguments: &[&str],
+        streams: Streams,
+        started: impl FnOnce(),
+    ) -> Result<String, BuildError> {
+        if self.cancellation.is_some_and(Cancellation::is_cancelled) {
+            return Err(BuildError::Cancelled);
+        }
+        if self.deadline.remaining().is_zero() {
+            return Err(BuildError::TimedOut(EXECUTION_TIMEOUT.as_secs()));
+        }
         let mut command = Command::new(self.program);
         command
             .env_clear()
@@ -662,6 +696,7 @@ impl<'a> Docker<'a> {
             action,
             diagnostic: error.to_string(),
         })?;
+        started();
         let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain)?;
         drain();
         if !status.success() {
@@ -739,219 +774,4 @@ fn wait_controlled(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn later_uncertain_termination_preserves_the_first_failure_stage() {
-        let first =
-            super::BuildError::Result("missing target metadata".into()).at(super::Stage::Output);
-        let later =
-            super::BuildError::UncertainTermination("verification process still running".into());
-        let combined = first.with_later_failure(later);
-        assert!(combined.is_unknown());
-        assert_eq!(combined.stage(), super::Stage::Output);
-        assert!(combined.to_string().contains("missing target metadata"));
-        assert!(
-            combined
-                .to_string()
-                .contains("verification process still running")
-        );
-        let combined = super::BuildError::Cancelled
-            .at(super::Stage::Building)
-            .with_later_failure(combined);
-        assert!(combined.is_unknown());
-        assert_eq!(combined.stage(), super::Stage::Building);
-    }
-
-    use super::*;
-
-    /// Write an executable stand-in and wait until it can be executed. A
-    /// concurrently forked process can briefly hold a just-written program
-    /// open, which makes the exec fail until that fork execs or exits.
-    pub(crate) fn executable(path: &Path, script: &str) {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        std::fs::write(path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        for _ in 0..100 {
-            match Command::new(path).arg("--ready").status() {
-                Ok(_) => return,
-                Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("stand-in {}: {error}", path.display()),
-            }
-        }
-        panic!("stand-in {} never became executable", path.display());
-    }
-
-    #[test]
-    fn a_failed_build_is_not_blamed_on_an_earlier_command() {
-        let directory =
-            std::env::temp_dir().join(format!("ployz-diagnosis-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        let program = directory.join("docker");
-        executable(
-            &program,
-            "#!/bin/sh\ncase \"$1\" in\n  --ready) exit 0 ;;\n  captured) printf 'the earlier command failed\\n' >&2; exit 1 ;;\nesac\nexit 3\n",
-        );
-        let environment = BTreeMap::new();
-        let docker = Docker {
-            program: &program,
-            environment: &environment,
-            working_dir: &directory,
-            deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
-            cancellation: None,
-            progress: None,
-        };
-
-        // A captured command carries its own diagnosis.
-        let captured = match docker.run("an earlier step", &["captured"], Streams::Captured) {
-            Ok(output) => panic!("the stand-in reported success: {output}"),
-            Err(error) => error.to_string(),
-        };
-        assert!(
-            captured.contains("the earlier command failed"),
-            "{captured}"
-        );
-
-        // The build's own output already reached the operator, so its failure
-        // reports its status rather than the earlier command's diagnosis.
-        let build = match docker.run("the build", &["build"], Streams::Inherited) {
-            Ok(output) => panic!("the stand-in reported success: {output}"),
-            Err(error) => error.to_string(),
-        };
-        assert!(build.contains("exited with"), "{build}");
-        assert!(!build.contains("the earlier command failed"), "{build}");
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    fn target(name: &str, platform: Option<&str>) -> Target {
-        Target {
-            name: name.to_owned(),
-            platform: platform.map(ToOwned::to_owned),
-        }
-    }
-
-    #[test]
-    fn targets_that_would_share_one_build_name_are_refused() {
-        let distinct = [target("api.internal", None), target("web", None)];
-        let planned = plan(&distinct).unwrap();
-        assert_eq!(
-            planned
-                .iter()
-                .map(|planned| planned.bake.as_str())
-                .collect::<Vec<_>>(),
-            ["api_internal", "web"]
-        );
-        let colliding = [target("api.internal", None), target("api_internal", None)];
-        let collision = match plan(&colliding) {
-            Ok(_) => panic!("two targets shared one build name"),
-            Err(error) => error.to_string(),
-        };
-        assert!(collision.contains("api_internal"), "{collision}");
-    }
-
-    #[test]
-    fn an_observed_platform_covers_a_request_without_its_variant() {
-        assert!(covers("linux/arm64", "linux/arm64"));
-        assert!(covers("linux/arm64/v8", "linux/arm64"));
-        assert!(covers("linux/arm64", "linux/arm64/v8"));
-        assert!(!covers("linux/amd64", "linux/arm64"));
-        assert!(!covers("linux/arm", "linux/arm64"));
-    }
-
-    #[test]
-    fn a_repository_survives_tags_digests_and_registry_ports() {
-        assert_eq!(
-            repository("docker.io/library/api:v1"),
-            "docker.io/library/api"
-        );
-        assert_eq!(repository("127.0.0.1:5000/api:v1"), "127.0.0.1:5000/api");
-        assert_eq!(
-            repository("registry.test:5000/team/api"),
-            "registry.test:5000/team/api"
-        );
-        assert_eq!(
-            repository(
-                "api@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            ),
-            "api"
-        );
-    }
-
-    #[test]
-    fn requested_output_selects_exclusive_bake_behavior() {
-        let environment = BTreeMap::new();
-        let targets = [target("api", Some("linux/arm64")), target("web", None)];
-        let planned = plan(&targets).unwrap();
-        let metadata = Path::new("/private/build-metadata.json");
-        let build_args = ["MODE=release".to_owned()];
-        let request = |output| Request {
-            compose_file: Path::new("/private/compose.yaml"),
-            working_dir: Path::new("/private"),
-            environment: &environment,
-            docker: None,
-            targets: &targets,
-            build_args: &build_args,
-            output,
-            no_cache: true,
-            pull: false,
-        };
-
-        let validate = bake_arguments(&request(Output::Validate), &planned, metadata);
-        assert!(validate.contains(&"--check".to_owned()));
-        assert!(!validate.contains(&"--load".to_owned()));
-        assert!(!validate.contains(&"--metadata-file".to_owned()));
-
-        let load = bake_arguments(&request(Output::Load), &planned, metadata);
-        assert!(load.contains(&"--load".to_owned()));
-        assert!(!load.contains(&"--push".to_owned()));
-        assert!(load.contains(&"--no-cache".to_owned()));
-        assert!(!load.contains(&"--pull".to_owned()));
-        assert!(load.contains(&"*.args.MODE=release".to_owned()));
-        // The captured Compose file carries platforms; bake reads them there.
-        assert!(!load.iter().any(|argument| argument.contains(".platform")));
-        assert_eq!(load.last().map(String::as_str), Some("web"));
-
-        let registry = bake_arguments(&request(Output::Registry), &planned, metadata);
-        assert!(registry.contains(&"--push".to_owned()));
-        assert!(!registry.contains(&"--load".to_owned()));
-        assert!(!registry.contains(&"--metadata-file".to_owned()));
-    }
-
-    #[test]
-    fn cancellation_terminates_the_process_before_returning() {
-        let cancellation = Cancellation::default();
-        cancellation.cancel();
-        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
-        let result = wait_controlled(
-            &mut child,
-            Deadline::starting_now(EXECUTION_TIMEOUT),
-            Some(&cancellation),
-            &mut || {},
-        );
-        assert!(matches!(result, Err(BuildError::Cancelled)));
-        assert!(child.try_wait().unwrap().is_some());
-    }
-
-    #[test]
-    fn a_command_that_outlasts_its_budget_is_terminated() {
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
-        let waited = Instant::now();
-        assert!(matches!(
-            wait_controlled(
-                &mut child,
-                Deadline::starting_now(Duration::from_millis(200)),
-                None,
-                &mut || {}
-            ),
-            Err(BuildError::TimedOut(_))
-        ));
-        assert!(waited.elapsed() < Duration::from_secs(5));
-    }
-}
+mod tests;

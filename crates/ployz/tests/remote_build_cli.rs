@@ -101,6 +101,43 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
         !root.join("docker-called").exists(),
         "remote Build accessed local Docker"
     );
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    for build in [
+        format!("context: ssh://git@example.test/private#{commit}"),
+        format!("context: git@example.test:private#{commit}"),
+        format!(
+            "context: .\n      additional_contexts:\n        dependency: ssh://git@example.test/private#{commit}"
+        ),
+        format!(
+            "context: .\n      additional_contexts:\n        - dependency=git@example.test:private#{commit}"
+        ),
+    ] {
+        fs::write(root.join("compose.yaml"), format!("name: demo\nservices:\n  api:\n    image: example.test/api:built\n    build:\n      {build}\n")).unwrap();
+        let output = run(&["--remote=tower", "api"])
+            .env("SSH_AUTH_SOCK", root.join("client-agent.sock"))
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "agent-dependent context was submitted"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("captured default SSH key"));
+    }
+    assert_eq!(
+        recorder.uploads.load(Ordering::SeqCst),
+        2,
+        "SSH refusal must precede upload"
+    );
+    fs::write(root.join("key"), "captured-key").unwrap();
+    fs::write(root.join("compose.yaml"), format!("name: demo\nservices:\n  api:\n    image: example.test/api:built\n    build:\n      context: ssh://git@example.test/private#{commit}\n      ssh:\n        - default=key\n")).unwrap();
+    let output = run(&["--remote=tower", "api"]).output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 3);
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
