@@ -13,6 +13,9 @@ use std::{
 mod support;
 use support::*;
 
+#[path = "local_push_tests.rs"]
+mod local_push_tests;
+
 fn fixture() -> (PathBuf, DeployService, Arc<BuildFixture>) {
     let root = std::env::temp_dir().join(format!("ployz-deploy-803-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();

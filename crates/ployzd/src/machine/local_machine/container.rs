@@ -259,8 +259,13 @@ impl LocalMachine {
         let local = self.clone();
         self.finish_mutation(async move {
             local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            crate::docker::pull_from_ingest(&request.image, request.source, &request.platform)
-                .await?;
+            crate::docker::pull_from_ingest(
+                &request.image,
+                request.source,
+                &request.platform,
+                request.tag.as_deref(),
+            )
+            .await?;
             Ok(ImagePulled {})
         })
         .await

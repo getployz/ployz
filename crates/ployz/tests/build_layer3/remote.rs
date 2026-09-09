@@ -874,6 +874,7 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
     client
         .call::<ployz_core::op::PullImageFromMachine>(
             ployz_core::PullImageFromMachineRequest {
+                tag: None,
                 image: built.built.repository_reference(&built.image).unwrap(),
                 source: opened.destination,
                 platform: other.into(),

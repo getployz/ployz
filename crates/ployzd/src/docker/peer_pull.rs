@@ -16,7 +16,8 @@ use super::Error;
 /// Docker treats `127.0.0.0/8` as an insecure registry, so the pull is proxied
 /// through localhost instead of asking dockerd to speak HTTP to the WireGuard IP.
 /// `platform` makes Docker fetch that variant's manifest, configuration and
-/// layers; a source holding only the index fails the pull.
+/// layers; a source holding only the index fails the pull. An optional `tag`
+/// is published only after the pulled digest has been verified.
 ///
 /// # Errors
 ///
@@ -25,7 +26,13 @@ pub(crate) async fn pull_from_ingest(
     image: &str,
     source: ImageIngestDestination,
     platform: &str,
+    tag: Option<&str>,
 ) -> Result<(), Error> {
+    if tag.is_some() && !image.contains('@') {
+        return Err(Error::PeerPull(
+            "publishing a destination tag requires a digest reference".into(),
+        ));
+    }
     let retained = if image.contains('@') {
         ployz_build::remote::validate_remote_context(&format!("docker-image://{image}"))
             .map_err(|error| Error::PeerPull(error.to_string()))?;
@@ -44,7 +51,7 @@ pub(crate) async fn pull_from_ingest(
     pull_and_tag(
         image,
         &pulled,
-        retained.as_deref(),
+        tag.or(retained.as_deref()),
         platform,
         std::path::Path::new("docker"),
     )
@@ -54,7 +61,7 @@ pub(crate) async fn pull_from_ingest(
 async fn pull_and_tag(
     image: &str,
     pulled: &str,
-    retained: Option<&str>,
+    tag: Option<&str>,
     platform: &str,
     docker: &std::path::Path,
 ) -> Result<(), Error> {
@@ -79,9 +86,9 @@ async fn pull_and_tag(
                 )));
             }
         }
-        // Verify before publishing the deterministic retention tag: a failed
+        // Verify before publishing the requested or retention tag: a failed
         // attempt must not leave a tag or remove one from an earlier delivery.
-        docker_cli(docker, &["tag", pulled, retained.unwrap_or(image)]).await?;
+        docker_cli(docker, &["tag", "--", pulled, tag.unwrap_or(image)]).await?;
         Ok(())
     }
     .await;
@@ -156,6 +163,21 @@ mod tests {
     use ployz_core::UNREGISTRY_PORT;
 
     #[tokio::test]
+    async fn destination_tag_requires_a_valid_digest_before_any_docker_work() {
+        let source = ImageIngestDestination {
+            management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
+            port: UNREGISTRY_PORT,
+        };
+        for image in ["api:latest", "api@sha256:invalid"] {
+            let error = pull_from_ingest(image, source, "linux/amd64", Some("api:delivered"))
+                .await
+                .unwrap_err();
+            assert!(matches!(&error, Error::PeerPull(_)), "{error}");
+            assert!(error.to_string().contains("digest"), "{error}");
+        }
+    }
+
+    #[tokio::test]
     async fn failed_digest_delivery_cleans_up_without_publishing_unverified_content() {
         use std::{fs, os::unix::fs::PermissionsExt as _};
 
@@ -195,42 +217,46 @@ esac
             serde_json::json!({"digest": digest}).to_string(),
         )
         .unwrap();
-        for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
-            fs::write(root.join("mode"), mode).unwrap();
-            fs::write(root.join("calls"), "").unwrap();
-            let result =
-                pull_and_tag(&image, &pulled, Some(&retained), "linux/arm64", &docker).await;
-            assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
-            if let Err(error) = result {
-                assert!(!error.to_string().contains("cleanup-failed"), "{error}");
-                if ["inspect", "tag", "pull"].contains(&mode) {
-                    assert!(
-                        error.to_string().contains(&format!("{mode}-failed")),
-                        "{error}"
-                    );
+        for tag in [&retained, "example.test/api:latest"] {
+            for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
+                fs::write(root.join("mode"), mode).unwrap();
+                fs::write(root.join("calls"), "").unwrap();
+                let result = pull_and_tag(&image, &pulled, Some(tag), "linux/arm64", &docker).await;
+                assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
+                if let Err(error) = result {
+                    assert!(!error.to_string().contains("cleanup-failed"), "{error}");
+                    if ["inspect", "tag", "pull"].contains(&mode) {
+                        assert!(
+                            error.to_string().contains(&format!("{mode}-failed")),
+                            "{error}"
+                        );
+                    }
                 }
+                let calls = fs::read_to_string(root.join("calls")).unwrap();
+                if mode == "success" {
+                    assert!(calls.contains(&format!("tag -- {pulled} {tag}")), "{calls}");
+                }
+                assert_eq!(
+                    calls.lines().last(),
+                    Some(format!("image rm {pulled}").as_str()),
+                    "{mode}: {calls}"
+                );
+                assert_eq!(
+                    calls.lines().any(|line| line.starts_with("tag ")),
+                    ["tag", "success"].contains(&mode),
+                    "{mode}: {calls}"
+                );
+                // The destination's variant is named on every attempt: Docker must
+                // fetch that manifest and its content, not merely the index.
+                assert!(
+                    calls.contains(&format!("pull --platform linux/arm64 {pulled}")),
+                    "{mode}: {calls}"
+                );
+                assert!(
+                    !calls.contains(&format!("image rm {retained}")),
+                    "must preserve previously retained content"
+                );
             }
-            let calls = fs::read_to_string(root.join("calls")).unwrap();
-            assert_eq!(
-                calls.lines().last(),
-                Some(format!("image rm {pulled}").as_str()),
-                "{mode}: {calls}"
-            );
-            assert_eq!(
-                calls.lines().any(|line| line.starts_with("tag ")),
-                ["tag", "success"].contains(&mode),
-                "{mode}: {calls}"
-            );
-            // The destination's variant is named on every attempt: Docker must
-            // fetch that manifest and its content, not merely the index.
-            assert!(
-                calls.contains(&format!("pull --platform linux/arm64 {pulled}")),
-                "{mode}: {calls}"
-            );
-            assert!(
-                !calls.contains(&format!("image rm {retained}")),
-                "must preserve previously retained content"
-            );
         }
         fs::remove_dir_all(root).unwrap();
     }

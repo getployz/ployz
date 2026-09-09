@@ -204,8 +204,8 @@ impl Source {
         })
     }
 
-    /// Have `machine` pull the published reference from this source, naming
-    /// the variant [`Self::variant`] selected for the exact content.
+    /// Have `machine` pull the exact content and publish its requested tag,
+    /// naming the variant [`Self::variant`] selected for that content.
     ///
     /// # Errors
     /// Reports a variant this source does not hold, cancellation, and a failed pull.
@@ -217,10 +217,10 @@ impl Source {
         platform: Option<&str>,
         cancellation: &mut Cancellation<'_>,
     ) -> Result<(), PushError> {
-        let variant = self.variant(content.exact, machine, platform)?;
+        let variant = self.variant(content.exact(), machine, platform)?;
         pull_on_machine(
             client,
-            content.published,
+            content,
             machine,
             self.destination,
             variant,

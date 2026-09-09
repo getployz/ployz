@@ -424,7 +424,11 @@ pub struct ImageIngestOpened {
 /// Pull one image from another Machine's image-ingest TCP destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PullImageFromMachineRequest {
+    /// Reference to fetch, pinned to a digest when exact content is required.
     pub image: String,
+    /// Requested destination tag, applied only after verifying the pulled content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     pub source: ImageIngestDestination,
     /// Platform the destination must receive, so a partial source cannot
     /// answer with an index whose selected variant it does not hold.

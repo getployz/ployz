@@ -60,7 +60,7 @@ impl BuildFixture {
             // real pull of one platform leaves it: identity intact, other
             // variants absent.
             let (repo_tags, id) = match pull.image.rsplit_once('@') {
-                Some((_, digest)) => (Vec::new(), digest.to_owned()),
+                Some((_, digest)) => (pull.tag.iter().cloned().collect(), digest.to_owned()),
                 None => (
                     vec![pull.image.clone()],
                     format!("sha256:{}", "f".repeat(64)),
@@ -73,7 +73,10 @@ impl BuildFixture {
             });
             let platforms = vec![pull.platform.clone()];
             match store.images.iter_mut().find(|stored| stored.id == id) {
-                Some(stored) => stored.platforms.extend(platforms),
+                Some(stored) => {
+                    stored.platforms.extend(platforms);
+                    stored.repo_tags.extend(repo_tags);
+                }
                 None => store.images.push(ployz_core::ImageSummary {
                     id,
                     repo_tags,

@@ -904,6 +904,7 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
     };
     let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
         image: "busybox:1.37.0".into(),
+        tag: None,
         source,
         platform: "linux/amd64".into(),
     });

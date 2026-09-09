@@ -148,25 +148,39 @@ impl<'token> Cancellation<'token> {
 /// A Build binds the two separately so a later Build moving the same tag
 /// cannot substitute its own image during delivery.
 #[derive(Clone, Copy, Debug)]
-pub struct ImageContent<'a> {
-    published: &'a str,
-    exact: &'a str,
+pub enum ImageContent<'a> {
+    /// Follow the content currently named by this tag.
+    Tagged(&'a str),
+    /// Keep the content fixed while publishing the requested reference.
+    Pinned { published: &'a str, exact: &'a str },
 }
 
 impl<'a> ImageContent<'a> {
     /// A reference carrying whatever content its tag resolves to now.
     #[must_use]
     pub fn tagged(image: &'a str) -> Self {
-        Self {
-            published: image,
-            exact: image,
-        }
+        Self::Tagged(image)
     }
 
     /// A published tag bound to exact content, such as a Build's result.
     #[must_use]
     pub fn built(published: &'a str, exact: &'a str) -> Self {
-        Self { published, exact }
+        Self::Pinned { published, exact }
+    }
+
+    fn published(self) -> &'a str {
+        match self {
+            Self::Tagged(image)
+            | Self::Pinned {
+                published: image, ..
+            } => image,
+        }
+    }
+
+    fn exact(self) -> &'a str {
+        match self {
+            Self::Tagged(image) | Self::Pinned { exact: image, .. } => image,
+        }
     }
 }
 
@@ -203,14 +217,14 @@ pub(crate) async fn push_using_machines(
     // Without an explicit platform Docker pushes every variant it holds; each
     // destination then receives the one its architecture runs.
     let platform = platform.map(validated_platform).transpose()?;
-    let image = content.published;
+    let image = content.published();
     validate_push_reference(image)?;
     let inspected = cancellation
-        .race(docker_output(["image", "inspect", content.exact]))
+        .race(docker_output(["image", "inspect", content.exact()]))
         .await??;
     if !inspected.status.success() {
         return Err(if not_found(&inspected) {
-            PushError::ImageNotFound(content.exact.into())
+            PushError::ImageNotFound(content.exact().into())
         } else {
             command_error("inspect local image", &inspected)
         });
@@ -388,16 +402,47 @@ async fn push_to_machine(
 
 async fn pull_on_machine(
     client: &mut Client,
-    image: &str,
+    content: ImageContent<'_>,
     machine: &Machine,
     source: ImageIngestDestination,
     platform: &str,
     cancellation: &mut Cancellation<'_>,
 ) -> Result<(), PushError> {
+    let (image, tag) = match content {
+        ImageContent::Tagged(image) => (image.to_owned(), None),
+        ImageContent::Pinned { published, exact } => {
+            let reference =
+                published
+                    .parse::<Reference>()
+                    .map_err(|error| PushError::InvalidReference {
+                        reference: published.to_owned(),
+                        message: error.to_string(),
+                    })?;
+            // Upload uses the raw repository path, including short names.
+            // Reference's normalized repository would address a different path.
+            let repository = if reference.digest().is_some() {
+                published
+                    .rsplit_once('@')
+                    .expect("parsed digest reference")
+                    .0
+            } else {
+                reference
+                    .tag()
+                    .and_then(|tag| published.strip_suffix(tag)?.strip_suffix(':'))
+                    .unwrap_or(published)
+            };
+            let digest = exact.rsplit_once('@').map_or(exact, |(_, digest)| digest);
+            (
+                format!("{repository}@{digest}"),
+                reference.digest().is_none().then(|| published.to_owned()),
+            )
+        }
+    };
     cancellation
         .race(client.call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
-                image: image.to_owned(),
+                image,
+                tag,
                 source,
                 platform: platform.to_owned(),
             },
@@ -474,6 +519,7 @@ pub(crate) async fn ensure_cluster_image(
         .call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
+                tag: None,
                 source: opened.destination,
                 platform: (*platform).to_owned(),
             },
@@ -539,12 +585,12 @@ impl PushSession {
         content: ImageContent<'_>,
         platform: Option<&str>,
     ) -> Result<(), PushError> {
-        let temporary = temporary_reference(self.proxy.push_port(), content.published);
+        let temporary = temporary_reference(self.proxy.push_port(), content.published());
         self.temporary = Some(temporary.clone());
         self.command = Some(
             Command::new("docker")
                 // Tag the content this attempt built, under the published reference.
-                .args(["tag", content.exact, &temporary])
+                .args(["tag", content.exact(), &temporary])
                 .kill_on_drop(true)
                 .spawn()
                 .map_err(|error| PushError::Docker {
