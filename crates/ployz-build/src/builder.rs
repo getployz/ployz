@@ -111,20 +111,18 @@ impl<'a> Builder<'a> {
             })?;
         for target in targets {
             let requested = target.platform.as_deref().unwrap_or(&native);
-            if !matches!(requested, "linux/amd64" | "linux/arm64" | "linux/arm64/v8")
-                || !nodes.iter().any(|node| {
-                    node.get("Status").and_then(serde_json::Value::as_str) == Some("running")
-                        && node
-                            .get("Platforms")
-                            .and_then(serde_json::Value::as_array)
-                            .is_some_and(|platforms| {
-                                platforms
-                                    .iter()
-                                    .filter_map(serde_json::Value::as_str)
-                                    .any(|platform| crate::covers(platform, requested))
-                            })
-                })
-            {
+            if !nodes.iter().any(|node| {
+                node.get("Status").and_then(serde_json::Value::as_str) == Some("running")
+                    && node
+                        .get("Platforms")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|platforms| {
+                            platforms
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .any(|platform| crate::covers(platform, requested))
+                        })
+            }) {
                 return Err(BuildError::Prerequisite(format!(
                     "the running BuildKit worker cannot build {requested}"
                 )));
@@ -328,6 +326,49 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn dockerfile_platforms_follow_the_running_workers_capabilities() {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-platform-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let program = directory.join("docker");
+        crate::tests::executable(
+            &program,
+            &format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/386","linux/arm/v7","linux/ppc64le"]}}]}}' ;;
+esac
+"#,
+                builder_name()
+            ),
+        );
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: &directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+        };
+        let builder = Builder::acquire(&docker, Lock::try_acquire_in(&directory).unwrap()).unwrap();
+        for platform in ["linux/386", "linux/arm/v7", "linux/ppc64le", "linux/s390x"] {
+            let result = builder.native_platform(&[crate::Target {
+                name: "api".into(),
+                platform: Some(platform.into()),
+            }]);
+            assert_eq!(
+                result.is_ok(),
+                platform != "linux/s390x",
+                "{platform}: {result:?}"
+            );
+        }
+        builder.finish(Ok(())).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn quarantine_clear_failure_preserves_cleanup_and_prior_failure_stages() {

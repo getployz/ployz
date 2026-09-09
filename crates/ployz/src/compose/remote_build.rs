@@ -112,7 +112,7 @@ pub(super) async fn execute(
                         evidence.observe(&event);
                         progress(event);
                     }
-                    Ok(Event::Finished(outcome)) => return validate_outcome(outcome, machine_id, expected, output),
+                    Ok(Event::Finished(outcome)) => return validate_outcome(outcome, machine_id, expected, output, evidence),
                     _ => return unknown(stage, "invalid Build response; termination was not confirmed").with_work(evidence),
                 },
                 _ => return unknown(stage, "Build stream disconnected; termination was not confirmed").with_work(evidence),
@@ -154,10 +154,11 @@ async fn send_cancellation(
 }
 
 fn validate_outcome(
-    outcome: Outcome,
+    mut outcome: Outcome,
     expected: MachineId,
     count: usize,
     output: ployz_build::Output,
+    evidence: ployz_build::WorkEvidence,
 ) -> Outcome {
     match &outcome {
         Outcome::Images { machine_id, images }
@@ -173,15 +174,13 @@ fn validate_outcome(
                     .and_then(|reference| reference.digest().map(str::to_owned))
                     .is_none()
                     || image.tags.is_empty()
-                    || !matches!(
-                        image.platform.as_str(),
-                        "linux/amd64" | "linux/arm64" | "linux/arm64/v8"
-                    )
+                    || !linux_platform(&image.platform)
             }) {
                 return unknown(
                     Stage::Output,
                     "Build returned an invalid image identity or platform",
-                );
+                )
+                .with_work(evidence);
             }
         }
         Outcome::Validated { machine_id }
@@ -193,10 +192,30 @@ fn validate_outcome(
             return unknown(
                 Stage::Output,
                 "Build result does not match the admitted request",
-            );
+            )
+            .with_work(evidence);
+        }
+    }
+    if let Outcome::Failed { work, .. } | Outcome::Unknown { work, .. } = &mut outcome {
+        for (name, observed) in evidence.0 {
+            work.0.entry(name).or_insert(observed);
         }
     }
     outcome
+}
+
+fn linux_platform(platform: &str) -> bool {
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    };
+    let mut parts = platform.split('/');
+    parts.next() == Some("linux")
+        && parts.next().is_some_and(valid)
+        && parts.next().is_none_or(valid)
+        && parts.next().is_none()
 }
 fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
     Outcome::Failed {
@@ -216,6 +235,59 @@ fn unknown(stage: Stage, message: impl Into<String>) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_validation_keeps_observed_work_and_accepts_linux_cross_builds() {
+        use ployz_build::{BuiltImage, Output, TargetEvidence, WorkEvidence};
+        let machine_id = MachineId::random();
+        let image = BuiltImage {
+            reference: format!("example.test/api@sha256:{}", "1".repeat(64)),
+            tags: vec!["example.test/api:built".into()],
+            platform: "linux/arm/v7".into(),
+        };
+        let work = WorkEvidence(std::collections::BTreeMap::from([(
+            "api".into(),
+            TargetEvidence::Image(image.clone()),
+        )]));
+        for outcome in [
+            Outcome::Images {
+                machine_id: MachineId::random(),
+                images: vec![image.clone()],
+            },
+            Outcome::Images {
+                machine_id,
+                images: Vec::new(),
+            },
+            Outcome::Validated { machine_id },
+            Outcome::Images {
+                machine_id,
+                images: vec![BuiltImage {
+                    platform: "linux//v7".into(),
+                    ..image.clone()
+                }],
+            },
+        ] {
+            let Outcome::Unknown { work: retained, .. } =
+                validate_outcome(outcome, machine_id, 1, Output::Load, work.clone())
+            else {
+                panic!("malformed success was accepted")
+            };
+            assert_eq!(retained.0, work.0);
+        }
+        assert!(matches!(
+            validate_outcome(
+                Outcome::Images {
+                    machine_id,
+                    images: vec![image]
+                },
+                machine_id,
+                1,
+                Output::Load,
+                work
+            ),
+            Outcome::Images { .. }
+        ));
+    }
 
     #[tokio::test]
     async fn cancellation_waits_for_a_full_upload_channel() {

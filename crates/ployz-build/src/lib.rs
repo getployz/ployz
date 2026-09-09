@@ -680,21 +680,26 @@ impl<'a> Docker<'a> {
                 .stdout(self.create(action, &output)?)
                 .stderr(self.create(action, &diagnosis)?);
         }
-        let progress_file = self.working_dir.join("docker-progress");
         let mut progress_reader = if streams == Streams::Inherited && self.progress.is_some() {
-            let file = self.create(action, &progress_file)?;
+            // The pipe applies backpressure instead of retaining an unbounded
+            // progress file on the execution host.
+            let (reader, writer) = std::io::pipe().map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })?;
+            rustix::fs::fcntl_setfl(&reader, rustix::fs::OFlags::NONBLOCK).map_err(|error| {
+                BuildError::Docker {
+                    action,
+                    diagnostic: error.to_string(),
+                }
+            })?;
             command
-                .stdout(file.try_clone().map_err(|error| BuildError::Docker {
+                .stdout(writer.try_clone().map_err(|error| BuildError::Docker {
                     action,
                     diagnostic: error.to_string(),
                 })?)
-                .stderr(file);
-            Some(
-                std::fs::File::open(&progress_file).map_err(|error| BuildError::Docker {
-                    action,
-                    diagnostic: error.to_string(),
-                })?,
-            )
+                .stderr(writer);
+            Some(reader)
         } else {
             None
         };
@@ -716,9 +721,15 @@ impl<'a> Docker<'a> {
             action,
             diagnostic: error.to_string(),
         })?;
+        drop(command);
         started();
-        let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain)?;
-        drain();
+        let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain);
+        if !status.as_ref().is_err_and(|error| error.is_unknown()) {
+            // Drain the bounded pipe tail. Keep the quota: after cancellation,
+            // a surviving Buildx plugin can still hold the write end.
+            drain();
+        }
+        let status = status?;
         if !status.success() {
             // Only a captured command has a diagnosis this side can read back.
             // Inherited output already reached the operator, and the file
