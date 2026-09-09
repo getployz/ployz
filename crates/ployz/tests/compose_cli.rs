@@ -252,7 +252,24 @@ x-volumes:
         ),
     )
     .unwrap();
-    let docker = executable(&root, "docker", "#!/bin/sh\nexec /usr/bin/docker \"$@\"\n");
+    let calls = root.join("bake-calls");
+    let docker = executable(
+        &root,
+        "docker",
+        &format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  'info --format') echo '{{"OSType":"linux","Architecture":"amd64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+  'buildx bake') printf '%s\n' "$@" > '{}' ;;
+  'buildx version'|'buildx create'|'buildx inspect'|'buildx rm') exit 0 ;;
+  *) exit 99 ;;
+esac
+"#,
+            ployz_build::builder_name(),
+            calls.display()
+        ),
+    );
     let load = LoadOptions {
         command: "build".into(),
         working_dir: Some(root.clone()),
@@ -266,11 +283,10 @@ x-volumes:
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
-    let result = execute_build(&plan, &options, &load, &mut project);
-    let _ = Command::new("/usr/bin/docker")
-        .args(["image", "rm", "-f", &image])
-        .status();
-    result.unwrap();
+    execute_build(&plan, &options, &load, &mut project).unwrap();
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(calls.lines().any(|argument| argument == "--check"));
+    assert!(calls.lines().any(|argument| argument == "api"));
     fs::remove_dir_all(root).unwrap();
 }
 
