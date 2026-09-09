@@ -897,14 +897,50 @@ fn image_ingest_contract_returns_the_management_address_destination() {
 }
 
 #[test]
+fn peer_image_pull_publication_requires_a_valid_digest_on_the_wire() {
+    let request = |pull| {
+        json!({
+            "pull": pull,
+            "source": { "management_address": "fdcc::7", "port": 5000 },
+            "platform": "linux/amd64",
+        })
+    };
+    let digest = format!("sha256:{}", "1".repeat(64));
+    let ordinary = request(json!({ "mode": "reference", "image": "api:latest" }));
+    let decoded: PullImageFromMachineRequest = serde_json::from_value(ordinary.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), ordinary);
+    for repository in ["api", "team/api", "registry.invalid:5000/api"] {
+        let published = request(json!({
+            "mode": "publish", "image": format!("{repository}@{digest}"), "tag": "api:latest",
+        }));
+        let decoded: PullImageFromMachineRequest =
+            serde_json::from_value(published.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), published);
+    }
+    for image in [
+        "api:latest".to_owned(),
+        "api@sha256:invalid".to_owned(),
+        format!("@{digest}"),
+        format!("bad repository@{digest}"),
+    ] {
+        let invalid = request(json!({ "mode": "publish", "image": image, "tag": "api:latest" }));
+        assert!(serde_json::from_value::<PullImageFromMachineRequest>(invalid).is_err());
+    }
+    let invalid =
+        request(json!({ "mode": "reference", "image": "api:latest", "tag": "api:other" }));
+    assert!(serde_json::from_value::<PullImageFromMachineRequest>(invalid).is_err());
+}
+
+#[test]
 fn peer_image_pull_contract_names_the_source_management_destination() {
     let source = ImageIngestDestination {
         management_address: ManagementAddress("fdcc::7".parse().unwrap()),
         port: ployz_core::UNREGISTRY_PORT,
     };
     let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
-        image: "busybox:1.37.0".into(),
-        tag: None,
+        pull: ployz_core::PeerImagePull::Reference {
+            image: "busybox:1.37.0".into(),
+        },
         source,
         platform: "linux/amd64".into(),
     });

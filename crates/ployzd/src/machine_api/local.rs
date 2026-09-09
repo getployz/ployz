@@ -749,7 +749,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PullImageFromMachine>(request)?;
-        if request.image.is_empty() {
+        if request.pull.image().is_empty() {
             return respond(RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: "image is required".into(),

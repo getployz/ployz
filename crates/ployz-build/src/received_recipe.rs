@@ -427,17 +427,9 @@ pub fn validate_remote_context(source: &str) -> Result<(), InputError> {
         "remote build context must use an immutable Git commit or image digest; use a Git URL without embedded credentials and a contained subdirectory".into()
     };
     if let Some(image) = source.strip_prefix("docker-image://") {
-        let reference: oci_client::Reference = image.parse().map_err(|_| refusal())?;
-        return if reference
-            .digest()
-            .and_then(|digest| digest.strip_prefix("sha256:"))
-            .is_some_and(|digest| {
-                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }) {
-            Ok(())
-        } else {
-            Err(refusal())
-        };
+        return ployz_core::ImageDigestReference::parse(image)
+            .map(|_| ())
+            .map_err(|_| refusal());
     }
     // Normalize Git's scp spelling for URL validation, preserving the original
     // spelling handed to upstream fetching.

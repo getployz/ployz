@@ -117,7 +117,7 @@ async fn automatic_deploy_uses_one_build_only_source_for_all_services() {
     assert_eq!(pulls.len(), 2);
     assert!(pulls.iter().all(
         |(target, pull)| *target == machine('b', "application").machine.id
-            && pull.image.contains("@sha256:")
+            && pull.pull.image().contains("@sha256:")
             && pull.source.management_address
                 == machine('a', "builder").machine.management_address()
     ));
@@ -293,7 +293,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         "the unserved Machine was never asked to pull"
     );
     assert!(pulls.iter().all(|(_, pull)| {
-        pull.image
+        pull.pull.image()
             == image
                 .repository_reference("registry.invalid/shared:latest")
                 .unwrap()
@@ -709,7 +709,7 @@ async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
     assert_eq!(pulls.len(), 1);
     let (target, pull) = pulls.first().unwrap();
     assert_eq!(*target, destination.machine.id);
-    assert_eq!(pull.image, image);
+    assert_eq!(pull.pull.image(), image);
     assert_eq!(pull.platform, "linux/amd64");
     assert_eq!(
         pull.source.management_address,

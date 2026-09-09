@@ -2195,6 +2195,7 @@ version = "0.1.2-beta.35"
 dependencies = [
  "base64",
  "ipnet",
+ "oci-spec",
  "prost",
  "semver",
  "serde",

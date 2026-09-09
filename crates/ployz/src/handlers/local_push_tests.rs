@@ -130,8 +130,8 @@ fn local_build_push_keeps_exact_content_after_the_published_tag_moves() {
                     assert_eq!(pulls.len(), 1);
                     let (target, pull) = pulls.first().unwrap();
                     assert_eq!(*target, destination.machine.id);
-                    assert_eq!(pull.image, format!("{repository}@{exact}"));
-                    assert_eq!(pull.tag.as_deref(), Some(published));
+                    assert_eq!(pull.pull.image(), format!("{repository}@{exact}"));
+                    assert_eq!(pull.pull.tag(), Some(published));
                     assert_eq!(pull.platform, "linux/amd64");
                 } else {
                     assert_eq!(result.successes.len(), 1);

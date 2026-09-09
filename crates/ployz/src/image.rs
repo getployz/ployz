@@ -8,8 +8,8 @@ use oci_client::Reference;
 use ployz_core::{
     EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
     ListMachinesRequest, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess,
-    MachineTarget, PartialResult, PullImageFromMachineRequest, PullPolicy, RpcError, op,
-    resolve_machine_selectors,
+    MachineTarget, PartialResult, PeerImagePull, PullImageFromMachineRequest, PullPolicy, RpcError,
+    op, resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::process::{Child, Command};
@@ -408,8 +408,10 @@ async fn pull_on_machine(
     platform: &str,
     cancellation: &mut Cancellation<'_>,
 ) -> Result<(), PushError> {
-    let (image, tag) = match content {
-        ImageContent::Tagged(image) => (image.to_owned(), None),
+    let pull = match content {
+        ImageContent::Tagged(image) => PeerImagePull::Reference {
+            image: image.to_owned(),
+        },
         ImageContent::Pinned { published, exact } => {
             let reference =
                 published
@@ -432,17 +434,26 @@ async fn pull_on_machine(
                     .unwrap_or(published)
             };
             let digest = exact.rsplit_once('@').map_or(exact, |(_, digest)| digest);
-            (
-                format!("{repository}@{digest}"),
-                reference.digest().is_none().then(|| published.to_owned()),
-            )
+            let image = format!("{repository}@{digest}");
+            if reference.digest().is_some() {
+                PeerImagePull::Reference { image }
+            } else {
+                PeerImagePull::Publish {
+                    image: ployz_core::ImageDigestReference::parse(&image).map_err(|error| {
+                        PushError::InvalidReference {
+                            reference: image,
+                            message: error.to_string(),
+                        }
+                    })?,
+                    tag: published.to_owned(),
+                }
+            }
         }
     };
     cancellation
         .race(client.call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
-                image,
-                tag,
+                pull,
                 source,
                 platform: platform.to_owned(),
             },
@@ -518,8 +529,9 @@ pub(crate) async fn ensure_cluster_image(
     listing_client
         .call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
-                image: image.to_owned(),
-                tag: None,
+                pull: PeerImagePull::Reference {
+                    image: image.to_owned(),
+                },
                 source: opened.destination,
                 platform: (*platform).to_owned(),
             },

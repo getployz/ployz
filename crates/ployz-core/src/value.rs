@@ -214,6 +214,16 @@ macro_rules! validated_string_newtype {
     };
 }
 
+validated_string_newtype!(
+    /// An image reference pinned to a SHA-256 digest, preserving its raw repository path.
+    ImageDigestReference, "image digest reference", "an image repository pinned to a SHA-256 digest",
+    |value| value.parse::<oci_spec::distribution::Reference>().is_ok_and(|reference| {
+        reference.digest().and_then(|digest| digest.strip_prefix("sha256:")).is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    })
+);
+
 pub(crate) fn is_swarm_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"_-.".contains(&byte)
 }

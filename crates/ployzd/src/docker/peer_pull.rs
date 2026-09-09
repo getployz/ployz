@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use ployz_core::ImageIngestDestination;
+use ployz_core::{ImageDigestReference, ImageIngestDestination, PeerImagePull};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
@@ -11,7 +11,7 @@ use tokio::{
 
 use super::Error;
 
-/// Pull `image` from a peer Machine's ingest TCP destination into local Docker.
+/// Pull an image from a peer Machine's ingest TCP destination into local Docker.
 ///
 /// Docker treats `127.0.0.0/8` as an insecure registry, so the pull is proxied
 /// through localhost instead of asking dockerd to speak HTTP to the WireGuard IP.
@@ -23,19 +23,13 @@ use super::Error;
 ///
 /// Returns when the localhost proxy cannot listen or Docker cannot pull or tag.
 pub(crate) async fn pull_from_ingest(
-    image: &str,
+    pull: &PeerImagePull,
     source: ImageIngestDestination,
     platform: &str,
-    tag: Option<&str>,
 ) -> Result<(), Error> {
-    if tag.is_some() && !image.contains('@') {
-        return Err(Error::PeerPull(
-            "publishing a destination tag requires a digest reference".into(),
-        ));
-    }
+    let image = pull.image();
     let retained = if image.contains('@') {
-        ployz_build::remote::validate_remote_context(&format!("docker-image://{image}"))
-            .map_err(|error| Error::PeerPull(error.to_string()))?;
+        ImageDigestReference::parse(image).map_err(|error| Error::PeerPull(error.to_string()))?;
         if !super::LocalDocker::connect()?
             .uses_containerd_store()
             .await?
@@ -51,7 +45,7 @@ pub(crate) async fn pull_from_ingest(
     pull_and_tag(
         image,
         &pulled,
-        tag.or(retained.as_deref()),
+        pull.tag().or(retained.as_deref()),
         platform,
         std::path::Path::new("docker"),
     )
@@ -163,13 +157,16 @@ mod tests {
     use ployz_core::UNREGISTRY_PORT;
 
     #[tokio::test]
-    async fn destination_tag_requires_a_valid_digest_before_any_docker_work() {
+    async fn invalid_digest_reference_is_rejected_before_any_docker_work() {
         let source = ImageIngestDestination {
             management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
             port: UNREGISTRY_PORT,
         };
-        for image in ["api:latest", "api@sha256:invalid"] {
-            let error = pull_from_ingest(image, source, "linux/amd64", Some("api:delivered"))
+        for image in ["api@sha256:invalid", "api@sha512:invalid"] {
+            let pull = PeerImagePull::Reference {
+                image: image.into(),
+            };
+            let error = pull_from_ingest(&pull, source, "linux/amd64")
                 .await
                 .unwrap_err();
             assert!(matches!(&error, Error::PeerPull(_)), "{error}");

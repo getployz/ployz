@@ -423,16 +423,47 @@ pub struct ImageIngestOpened {
 
 /// Pull one image from another Machine's image-ingest TCP destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PullImageFromMachineRequest {
-    /// Reference to fetch, pinned to a digest when exact content is required.
-    pub image: String,
-    /// Requested destination tag, applied only after verifying the pulled content.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
+    /// Select reference delivery or verified exact-content publication.
+    pub pull: PeerImagePull,
     pub source: ImageIngestDestination,
     /// Platform the destination must receive, so a partial source cannot
     /// answer with an index whose selected variant it does not hold.
     pub platform: String,
+}
+
+/// Whether peer delivery follows a reference or publishes a tag for exact content.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PeerImagePull {
+    /// Pull this reference; digest references receive a deterministic retention tag.
+    Reference { image: String },
+    /// Pull pinned content and publish `tag` only after verifying its digest.
+    Publish {
+        image: crate::ImageDigestReference,
+        tag: String,
+    },
+}
+
+impl PeerImagePull {
+    /// The source reference to fetch.
+    #[must_use]
+    pub fn image(&self) -> &str {
+        match self {
+            Self::Reference { image } => image,
+            Self::Publish { image, .. } => image.as_str(),
+        }
+    }
+
+    /// The requested destination tag, if this delivery publishes one.
+    #[must_use]
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Reference { .. } => None,
+            Self::Publish { tag, .. } => Some(tag),
+        }
+    }
 }
 
 /// Successful `PullImageFromMachine` payload.

@@ -131,7 +131,7 @@ async fn local_push_selects_peer_variants_by_the_original_digest() {
     };
     assert_eq!(*machine_id, peer.machine.id);
     assert_eq!(pull.platform, "linux/amd64");
-    assert_eq!(pull.image, format!("registry.invalid/api@{digest}"));
-    assert_eq!(pull.tag.as_deref(), Some(tag));
+    assert_eq!(pull.pull.image(), format!("registry.invalid/api@{digest}"));
+    assert_eq!(pull.pull.tag(), Some(tag));
     server.abort();
 }
