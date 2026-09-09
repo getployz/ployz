@@ -19,9 +19,22 @@ pub(crate) fn start(
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
         let outcome = attempt(machine_id, requests, &events, policy).await;
-        if let Ok(payload) = remote::encode(&Event::Finished(outcome)) {
-            let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
-        }
+        let message = "Build terminal report exceeds the response size limit";
+        let fallback = match &outcome {
+            Outcome::Unknown { stage, .. } => Outcome::Unknown {
+                stage: *stage,
+                message: message.into(),
+                work: Default::default(),
+            },
+            Outcome::Failed { stage, .. } => failed(*stage, message),
+            Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
+                failed(Stage::Output, format!("Build completed; {message}"))
+            }
+        };
+        let payload = remote::encode(&Event::Finished(outcome)).unwrap_or_else(|_| {
+            remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
+        });
+        let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
     });
     ReceiverStream::new(receiver)
 }

@@ -234,10 +234,51 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
     assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
 }
 
+#[tokio::test]
+async fn oversized_diagnostics_still_return_a_definite_terminal_failure() {
+    let fixture = Fixture::new().await;
+    let capture = fixture.capture();
+    fs::write(fixture.root.join("oversized-error"), "").unwrap();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let result = capture
+        .execute_remote(
+            &client,
+            fixture.machine.id,
+            tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await;
+    let Outcome::Failed {
+        stage,
+        message,
+        work,
+    } = result
+    else {
+        panic!("a known failure lost its terminal report: {result:?}")
+    };
+    assert_eq!(stage, Stage::Preparation);
+    assert!(message.contains("response size limit"), "{message}");
+    assert_eq!(
+        work.0.get("api"),
+        Some(&ployz_build::TargetEvidence::Unattempted)
+    );
+    assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+}
+
 fn write_docker(path: &Path, root: &Path) {
     let script = format!(
         r#"#!/bin/sh
 root='{}'
+if [ -f "$root/oversized-error" ] && [ "$1 $2" = 'info --format' ]; then
+  /usr/bin/head -c 262144 /dev/zero | /usr/bin/tr '\000' x >&2
+  exit 1
+fi
 case "$1 $2" in
   'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')

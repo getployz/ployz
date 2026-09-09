@@ -83,6 +83,83 @@ fn a_failed_build_is_not_blamed_on_an_earlier_command() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+#[test]
+fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
+    let directory = std::env::temp_dir().join(format!("ployz-output-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\n/usr/bin/head -c 4194304 /dev/zero\nprintf final-diagnosis >&2\nexit 1\n",
+    );
+    let environment = BTreeMap::new();
+    let output = std::sync::Mutex::new(Vec::new());
+    let progress = |event| {
+        if let Progress::Output(bytes) = event {
+            output.lock().unwrap().extend(bytes);
+        }
+    };
+    let docker = Docker {
+        program: &program,
+        environment: &environment,
+        working_dir: &directory,
+        deadline: Deadline::starting_now(Duration::from_secs(10)),
+        cancellation: None,
+        progress: Some(&progress),
+    };
+    // Let a file-backed writer finish its burst before the first poll.
+    let error = docker
+        .run_started("the build", &[], Streams::Inherited, || {
+            std::thread::sleep(Duration::from_millis(200));
+        })
+        .unwrap_err();
+    assert!(matches!(error, BuildError::Docker { .. }), "{error}");
+    let output = output.into_inner().unwrap();
+    assert_eq!(output.len(), 4 * 1024 * 1024 + b"final-diagnosis".len());
+    assert!(output.ends_with(b"final-diagnosis"));
+    let stored: u64 = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    assert!(stored < 1024 * 1024, "progress used {stored} bytes of disk");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn cancellation_does_not_wait_for_a_surviving_output_writer() {
+    let directory = std::env::temp_dir().join(format!("ployz-writer-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\n/usr/bin/timeout 4 /usr/bin/yes output &\nwait\n",
+    );
+    let cancellation = Cancellation::default();
+    let progress = |event| {
+        if matches!(event, Progress::Output(_)) {
+            cancellation.cancel();
+            // Keep the descendant's pipe full while its parent is terminated.
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let environment = BTreeMap::new();
+    let docker = Docker {
+        program: &program,
+        environment: &environment,
+        working_dir: &directory,
+        deadline: Deadline::starting_now(Duration::from_secs(10)),
+        cancellation: Some(&cancellation),
+        progress: Some(&progress),
+    };
+    let started = Instant::now();
+    assert!(matches!(
+        docker.run("the build", &[], Streams::Inherited),
+        Err(BuildError::Cancelled)
+    ));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn target(name: &str, platform: Option<&str>) -> Target {
     Target {
         name: name.to_owned(),
