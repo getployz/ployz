@@ -53,11 +53,11 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base"]
+        ["base", "api"]
     );
-    assert_eq!(direct.first().unwrap().image, "example.test/api:version2");
+    assert_eq!(direct.get(1).unwrap().image, "example.test/api:version2");
     assert_eq!(
-        direct.get(1).unwrap().image,
+        direct.first().unwrap().image,
         project.services.get("base").unwrap().container.image
     );
 
@@ -75,7 +75,7 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base", "database", "frontend"]
+        ["base", "database", "api", "frontend"]
     );
     assert_eq!(
         with_deps.get(3).unwrap().image,
@@ -119,7 +119,7 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base"]
+        ["base", "api"]
     );
 
     let cycle = parse_normalized(
@@ -139,6 +139,7 @@ services:
         .to_string()
         .contains("build dependency cycle")
     );
+    assert!(plan_build(&cycle, &BuildOptions::default()).is_err());
 }
 
 #[test]
@@ -590,6 +591,7 @@ case "$1 $2" in
       printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/arm64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
     fi
     exit 0 ;;
+  'image rm') exit 0 ;;
   'image inspect')
     identity=$(cat "$root/store" 2>/dev/null || cat "$root/digest")
     media=$(cat "$root/media" 2>/dev/null || printf 'application/vnd.oci.image.manifest.v1+json')

@@ -667,7 +667,11 @@ pub fn local_runtime() -> MachineRuntime {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         docker_version: docker_version(Path::new("docker"), DOCKER_VERSION_TIMEOUT),
         hostname: read_trimmed("/etc/hostname"),
-        architecture: std::env::consts::ARCH.into(),
+        // Kernel architecture preserves distinctions lost by Rust's ARCH,
+        // including ppc64/ppc64le and ARM generations.
+        architecture: nix::sys::utsname::uname()
+            .map(|system| system.machine().to_string_lossy().into_owned())
+            .unwrap_or_else(|_| std::env::consts::ARCH.into()),
         os_pretty_name: fs::read_to_string("/etc/os-release")
             .ok()
             .and_then(|contents| {

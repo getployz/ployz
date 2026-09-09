@@ -8,10 +8,33 @@ use ployz_build::{
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::{MachineId, MachineTarget};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+
+pub(super) enum Completion {
+    Images {
+        machine_id: MachineId,
+        images: Vec<ployz_build::BuiltImage>,
+        stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
+    },
+    Report(Outcome),
+}
+impl Completion {
+    /// Explicitly release temporary image retention when only a terminal report is needed.
+    pub(super) fn into_outcome(self) -> Outcome {
+        match self {
+            Self::Images {
+                machine_id, images, ..
+            } => Outcome::Images { machine_id, images },
+            Self::Report(outcome) => outcome,
+        }
+    }
+}
 
 pub(super) async fn execute(
     inputs: BuildInputs,
@@ -20,7 +43,7 @@ pub(super) async fn execute(
     machine_id: MachineId,
     cancellation: CancellationToken,
     progress: impl Fn(Progress),
-) -> Outcome {
+) -> Completion {
     let mut queued = None;
     let mut executing = None;
     let outcome = execute_attempt(
@@ -63,132 +86,152 @@ async fn execute_attempt(
     machine_id: MachineId,
     cancellation: CancellationToken,
     mut progress: impl FnMut(Progress),
-) -> Outcome {
-    let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
-    if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
-        return failed(Stage::Preparation, error.to_string()).with_work(evidence);
-    }
-    let expected = definition.targets.len();
-    let output = definition.output;
-    let (sender, receiver) = mpsc::channel(2);
-    let start = match remote::encode(&Input::Start(definition)) {
-        Ok(start) => start,
-        Err(message) => return failed(Stage::Admission, message.to_string()),
-    };
-    sender.send(start).await.expect("request receiver is owned");
-    let target = MachineTarget::from(&machine_id);
-    let mut responses = match tokio::time::timeout(
-        Duration::from_secs(10),
-        client.build_stream(&target, ReceiverStream::new(receiver)),
-    )
-    .await
-    {
-        Ok(Ok(responses)) => responses,
-        Ok(Err(error)) => {
-            return failed(
-                Stage::Admission,
-                format!("Machine {machine_id} cannot accept the Build: {error}"),
-            );
+) -> Completion {
+    let mut retained = None;
+    let outcome = async {
+        let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
+        if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
+            return failed(Stage::Preparation, error.to_string()).with_work(evidence);
         }
-        Err(_) => {
-            return failed(
-                Stage::Admission,
-                format!("Machine {machine_id} did not answer; source was not uploaded"),
-            );
-        }
-    };
-    let waiting_since = tokio::time::Instant::now();
-    let mut admission_deadline = waiting_since + Duration::from_secs(10);
-    let mut queued = false;
-    let active_timeout = loop {
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => {
-                // No source has left this client. Dropping the stream removes
-                // its connection-scoped waiter, even if admission raced cancellation.
-                return failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence);
+        let expected = definition.targets.len();
+        let output = definition.output;
+        let (sender, receiver) = mpsc::channel(2);
+        let start = match remote::encode(&Input::Start(definition)) {
+            Ok(start) => start,
+            Err(message) => return failed(Stage::Admission, message.to_string()),
+        };
+        sender.send(start).await.expect("request receiver is owned");
+        let target = MachineTarget::from(&machine_id);
+        let mut responses = match tokio::time::timeout(
+            Duration::from_secs(10),
+            client.build_stream(&target, ReceiverStream::new(receiver)),
+        )
+        .await
+        {
+            Ok(Ok(responses)) => responses,
+            Ok(Err(error)) => {
+                return failed(
+                    Stage::Admission,
+                    format!("Machine {machine_id} cannot accept the Build: {error}"),
+                );
             }
-            result = responses.message() => match result {
-                Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
-                    Ok(Event::Admitted { machine_id: admitted, active_timeout })
-                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
-                    Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
-                        queued = true;
-                        // The Machine's validated local policy is bounded at 24h.
-                        admission_deadline = waiting_since + Duration::from_secs(86410);
-                        progress(Progress::Stage(Stage::Queued));
-                    }
-                    Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return outcome.with_work(evidence),
-                    _ => return failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence),
-                },
-                _ => return failed(Stage::Admission, "Build admission was not observed; source was not uploaded").with_work(evidence),
-            },
-            () = tokio::time::sleep_until(admission_deadline) => return failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence),
-        }
-    };
-    progress(Progress::Stage(Stage::Upload));
-    let stop = cancellation.child_token();
-    let _stop_upload = stop.clone().drop_guard();
-    let producer = sender.clone();
-    let mut upload = tokio::task::spawn_blocking(move || {
-        remote::upload(inputs.root(), |frame| {
-            let mut payload = remote::encode(&frame)?;
-            loop {
-                if stop.is_cancelled() {
-                    return Err("Build upload cancelled".into());
-                }
-                match producer.try_send(payload) {
-                    Ok(()) => return Ok(()),
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        return Err("Build upload stream closed".into());
-                    }
-                    Err(mpsc::error::TrySendError::Full(value)) => payload = value,
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            Err(_) => {
+                return failed(
+                    Stage::Admission,
+                    format!("Machine {machine_id} did not answer; source was not uploaded"),
+                );
             }
-        })
-    });
-    let mut uploaded = false;
-    let mut cancelling = false;
-    let mut stage = Stage::Upload;
-    let mut deadline = tokio::time::Instant::now() + active_timeout + Duration::from_secs(70);
-    loop {
-        tokio::select! {
-            result = responses.message() => match result {
-                Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
-                    Ok(Event::Progress(event)) => {
-                        if let Progress::Stage(observed) = &event { stage = *observed; }
-                        evidence.observe(&event);
-                        progress(event);
-                    }
-                    Ok(Event::Finished(outcome)) => return validate_outcome(outcome, machine_id, expected, output, evidence),
-                    _ => return unknown(stage, "invalid Build response; termination was not confirmed").with_work(evidence),
+        };
+        let waiting_since = tokio::time::Instant::now();
+        let mut admission_deadline = waiting_since + Duration::from_secs(10);
+        let mut queued = false;
+        let active_timeout = loop {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => {
+                    // No source has left this client. Dropping the stream removes
+                    // its connection-scoped waiter, even if admission raced cancellation.
+                    return failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence);
+                }
+                result = responses.message() => match result {
+                    Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
+                        Ok(Event::Admitted { machine_id: admitted, active_timeout })
+                            if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
+                        Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
+                            queued = true;
+                            // The Machine's validated local policy is bounded at 24h.
+                            admission_deadline = waiting_since + Duration::from_secs(86410);
+                            progress(Progress::Stage(Stage::Queued));
+                        }
+                        Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return outcome.with_work(evidence),
+                        _ => return failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence),
+                    },
+                    _ => return failed(Stage::Admission, "Build admission was not observed; source was not uploaded").with_work(evidence),
                 },
-                _ => return unknown(stage, "Build stream disconnected; termination was not confirmed").with_work(evidence),
-            },
-            result = &mut upload, if !uploaded => {
-                uploaded = true;
-                if !matches!(result, Ok(Ok(()))) && !cancelling {
+                () = tokio::time::sleep_until(admission_deadline) => return failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence),
+            }
+        };
+        progress(Progress::Stage(Stage::Upload));
+        let stop = cancellation.child_token();
+        let _stop_upload = stop.clone().drop_guard();
+        let producer = sender.clone();
+        let mut upload = tokio::task::spawn_blocking(move || {
+            remote::upload(inputs.root(), |frame| {
+                let mut payload = remote::encode(&frame)?;
+                loop {
+                    if stop.is_cancelled() {
+                        return Err("Build upload cancelled".into());
+                    }
+                    match producer.try_send(payload) {
+                        Ok(()) => return Ok(()),
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            return Err("Build upload stream closed".into());
+                        }
+                        Err(mpsc::error::TrySendError::Full(value)) => payload = value,
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            })
+        });
+        let mut uploaded = false;
+        let mut cancelling = false;
+        let mut stage = Stage::Upload;
+        let mut deadline = tokio::time::Instant::now() + active_timeout + Duration::from_secs(70);
+        loop {
+            tokio::select! {
+                result = responses.message() => match result {
+                    Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
+                        Ok(Event::Progress(event)) => {
+                            if let Progress::Stage(observed) = &event { stage = *observed; }
+                            evidence.observe(&event);
+                            progress(event);
+                        }
+                        Ok(Event::Finished(outcome)) => {
+                            let outcome = validate_outcome(outcome, machine_id, expected, output, evidence);
+                            if matches!(outcome, Outcome::Images { .. }) { retained = Some(responses); }
+                            return outcome;
+                        },
+                        _ => return unknown(stage, "invalid Build response; termination was not confirmed").with_work(evidence),
+                    },
+                    _ => return unknown(stage, "Build stream disconnected; termination was not confirmed").with_work(evidence),
+                },
+                result = &mut upload, if !uploaded => {
+                    uploaded = true;
+                    if !matches!(result, Ok(Ok(()))) && !cancelling {
+                        cancelling = true;
+                        deadline = tokio::time::Instant::now() + Duration::from_secs(70);
+                        // The capture cannot be completed; ask the host to release
+                        // admission and wait for its typed termination evidence.
+                        if send_cancellation(&sender).await.is_err() {
+                            return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
+                        }
+                    }
+                },
+                () = cancellation.cancelled(), if !cancelling => {
                     cancelling = true;
                     deadline = tokio::time::Instant::now() + Duration::from_secs(70);
-                    // The capture cannot be completed; ask the host to release
-                    // admission and wait for its typed termination evidence.
+                    // Stop the producer first so cancellation cannot sit behind an
+                    // unbounded upload. Only two bounded frames can be in flight.
                     if send_cancellation(&sender).await.is_err() {
                         return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
                     }
-                }
-            },
-            () = cancellation.cancelled(), if !cancelling => {
-                cancelling = true;
-                deadline = tokio::time::Instant::now() + Duration::from_secs(70);
-                // Stop the producer first so cancellation cannot sit behind an
-                // unbounded upload. Only two bounded frames can be in flight.
-                if send_cancellation(&sender).await.is_err() {
-                    return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
-                }
-            },
-            () = tokio::time::sleep_until(deadline) => return unknown(stage, "Build response deadline expired; termination was not confirmed").with_work(evidence),
+                },
+                () = tokio::time::sleep_until(deadline) => return unknown(stage, "Build response deadline expired; termination was not confirmed").with_work(evidence),
+            }
         }
+    }.await;
+    match outcome {
+        Outcome::Images { machine_id, images } => Completion::Images {
+            machine_id,
+            images,
+            stream: Arc::new(Mutex::new(
+                retained.expect("validated loaded images retain their response stream"),
+            )),
+        },
+        outcome @ (Outcome::Validated { .. }
+        | Outcome::Published { .. }
+        | Outcome::Failed { .. }
+        | Outcome::Unknown { .. }) => Completion::Report(outcome),
     }
 }
 
@@ -227,7 +270,7 @@ fn validate_outcome(
                     || image
                         .platforms
                         .iter()
-                        .any(|platform| !linux_platform(platform))
+                        .any(|platform| !remote::linux_platform(platform))
             }) {
                 return unknown(
                     Stage::Output,
@@ -257,19 +300,6 @@ fn validate_outcome(
     outcome
 }
 
-fn linux_platform(platform: &str) -> bool {
-    let valid = |part: &str| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-    };
-    let mut parts = platform.split('/');
-    parts.next() == Some("linux")
-        && parts.next().is_some_and(valid)
-        && parts.next().is_none_or(valid)
-        && parts.next().is_none()
-}
 fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
     Outcome::Failed {
         work: Default::default(),

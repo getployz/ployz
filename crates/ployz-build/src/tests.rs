@@ -195,6 +195,7 @@ exit 0
     let targets = [target("api", None), target("web", None)];
     let environment = BTreeMap::new();
     let request = Request {
+        image_contexts: &BTreeMap::new(),
         railpack: &[],
         compose_file: &directory.join("compose.json"),
         working_dir: &directory,
@@ -275,7 +276,9 @@ fn requested_output_selects_exclusive_bake_behavior() {
     let planned = plan(&targets).unwrap();
     let metadata = Path::new("/private/build-metadata.json");
     let build_args = ["MODE=release".to_owned()];
+    let image_contexts = BTreeMap::new();
     let request = |output| Request {
+        image_contexts: &image_contexts,
         railpack: &[],
         compose_file: Path::new("/private/compose.yaml"),
         working_dir: Path::new("/private"),
@@ -368,6 +371,7 @@ esac
         let environment = BTreeMap::new();
         let targets = [target("api", None)];
         let request = Request {
+            image_contexts: &BTreeMap::new(),
             compose_file: Path::new("compose.yaml"),
             working_dir: &directory,
             environment: &environment,
@@ -424,6 +428,7 @@ fn docker_preflight_holds_quarantine_and_clears_confirmed_failures() {
     let targets = [target("api", None)];
     let environment = BTreeMap::new();
     let request = Request {
+        image_contexts: &BTreeMap::new(),
         railpack: &[],
         compose_file: &directory.join("compose.json"),
         working_dir: &directory,
@@ -462,5 +467,88 @@ exit 0
         assert!(!error.is_unknown());
         assert!(Admission::try_acquire_with(&policy).is_ok());
     }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn cross_platform_image_context_reaches_buildkit() {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let directory = std::env::temp_dir().join(format!("ployz-context-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        &format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  'context show') echo default ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"arm64","OSType":"linux"}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/arm64"]}}]}}' ;;
+  'buildx bake') printf '%s\n' "$@" > bake-arguments ;;
+esac
+exit 0
+"#,
+            builder_name()
+        ),
+    );
+    std::fs::write(
+        directory.join("compose.yaml"),
+        "services: {app: {build: {context: ., additional_contexts: {base: 'service:base'}}}}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("Dockerfile"),
+        "FROM --platform=linux/amd64 base\n",
+    )
+    .unwrap();
+    let contexts = BTreeMap::from([(
+        "base".into(),
+        ImageContext {
+            reference: format!("example.test/base@sha256:{}", "1".repeat(64)),
+            platforms: vec!["linux/amd64".into()],
+            source: ployz_core::ImageIngestDestination {
+                management_address: ployz_core::ManagementAddress(
+                    std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(),
+                ),
+                port: 5000,
+            },
+        },
+    )]);
+    let environment = BTreeMap::new();
+    let targets = [target("app", Some("linux/arm64"))];
+    let request = Request {
+        image_contexts: &contexts,
+        compose_file: Path::new("compose.yaml"),
+        working_dir: &directory,
+        environment: &environment,
+        docker: Some(&program),
+        targets: &targets,
+        railpack: &[],
+        build_args: &[],
+        output: Output::Validate,
+        no_cache: false,
+        pull: false,
+    };
+    let admission = Admission::try_acquire_with(&HostPolicy {
+        state_directory: directory.clone(),
+        configuration_file: directory.join("build.yaml"),
+        ..Default::default()
+    })
+    .unwrap();
+    execute_admitted(&request, admission, &|_| {}).unwrap();
+    assert!(
+        std::fs::read_to_string(directory.join("bake-arguments"))
+            .unwrap()
+            .contains("app.platform=linux/arm64")
+    );
+    assert!(
+        std::fs::read_to_string(directory.join("compose.yaml"))
+            .unwrap()
+            .contains("docker-image://127.0.0.1:5000/example.test/base@sha256:")
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }

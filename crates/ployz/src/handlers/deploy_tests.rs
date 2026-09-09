@@ -342,16 +342,8 @@ fn deploy_preparation_captures_resolved_input_and_selection_before_planning() {
         ..Default::default()
     };
     std::fs::write(&source, yaml.replace("captured", "later-edit")).unwrap();
-    let (candidate, builds) = prepare_deploy(
-        matches,
-        &load,
-        project,
-        &resolved,
-        options,
-        &tokio_util::sync::CancellationToken::new(),
-    )
-    .unwrap();
-    assert!(builds.is_empty());
+    let (candidate, builds) = prepare_deploy(matches, &load, project, &resolved, options).unwrap();
+    assert!(builds.is_none());
     assert_eq!(
         std::fs::read_to_string(directory.join("calls")).unwrap(),
         "x"
@@ -417,17 +409,24 @@ fn a_failed_build_leaves_the_deployment_unattempted() {
         source: ProjectNameSource::CommandLine,
     };
 
-    let error = match prepare_deploy(
+    let (_, build) = prepare_deploy(
         leaf_matches(&root),
         &load,
         project,
         &resolved,
         ployz_core::PlanOptions::default(),
-        &tokio_util::sync::CancellationToken::new(),
-    ) {
-        Ok(_) => panic!("a failed build was admitted for deployment"),
-        Err(error) => error.to_string(),
-    };
+    )
+    .unwrap();
+    let error = crate::deploy::DeployError::from(
+        build
+            .unwrap()
+            .execute(
+                load.docker.as_deref(),
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap_err(),
+    )
+    .to_string();
     assert!(
         error.contains("No Service, hook, or volume change was attempted"),
         "{error}"

@@ -21,7 +21,10 @@ use crate::{
 
 use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 
+mod built;
 mod proxy;
+pub use built::push_from_machine;
+pub(crate) use built::{platform_compatible, push_from_machine_using_machines, serve_build_image};
 
 #[must_use]
 pub fn with_default_tag(image: &str) -> String {
@@ -38,6 +41,14 @@ pub fn with_default_tag(image: &str) -> String {
 
 #[derive(Debug, Error)]
 pub enum PushError {
+    #[error(
+        "Build image {image} on Machine {machine_id} is not available with platform {platform}"
+    )]
+    BuildImageUnavailable {
+        image: String,
+        machine_id: MachineId,
+        platform: String,
+    },
     #[error("invalid image reference '{reference}': {message}")]
     InvalidReference { reference: String, message: String },
     #[error("direct image push requires a tagged local reference")]

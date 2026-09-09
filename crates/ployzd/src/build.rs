@@ -9,10 +9,20 @@ use ployz_build::{
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::{MachineId, OpaquePayload};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::Status;
+
+#[derive(Default)]
+struct AttemptState {
+    evidence: Mutex<ployz_build::WorkEvidence>,
+    retained: Mutex<Option<ployz_build::ImageRetention>>,
+}
 
 pub(crate) fn start(
     machine_id: MachineId,
@@ -21,7 +31,9 @@ pub(crate) fn start(
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
-        let outcome = attempt(machine_id, requests, &events, runner).await;
+        let shutdown = runner.shutdown.clone();
+        let state = Arc::new(AttemptState::default());
+        let outcome = attempt(machine_id, requests, &events, runner, state.clone()).await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -38,6 +50,17 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
+        // Admission is already released. Only image retention follows this stream.
+        if state
+            .retained
+            .lock()
+            .expect("Build retention lock")
+            .is_some()
+        {
+            tokio::select! { () = events.closed() => {}, () = shutdown.cancelled() => {} }
+        }
+        let retained = state.retained.lock().expect("Build retention lock").take();
+        let _ = tokio::task::spawn_blocking(move || drop(retained)).await;
     });
     ReceiverStream::new(receiver)
 }
@@ -46,7 +69,8 @@ async fn attempt(
     machine_id: MachineId,
     mut requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
-    runner: std::sync::Arc<Runner>,
+    runner: Arc<Runner>,
+    state: Arc<AttemptState>,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
     let definition = match start {
@@ -56,7 +80,10 @@ async fn attempt(
         },
         _ => return failed(Stage::Admission, "Build request ended before admission"),
     };
-    if definition.targets.is_empty() || definition.targets.len() > 128 {
+    if definition.targets.is_empty()
+        || definition.targets.len() > 128
+        || definition.image_contexts.len() > 128
+    {
         return failed(
             Stage::Admission,
             "Build must name between one and 128 targets",
@@ -102,10 +129,9 @@ async fn attempt(
         Ok(Err(error)) => return failure(Stage::Admission, error).with_work(work),
         Err(_) => return failed(Stage::Admission, "Build admission task failed"),
     };
-    let evidence = std::sync::Arc::new(std::sync::Mutex::new(ployz_build::WorkEvidence::new(
-        &definition.targets,
-    )));
-    let observed = evidence.clone();
+    *state.evidence.lock().expect("Build evidence lock") =
+        ployz_build::WorkEvidence::new(&definition.targets);
+    let observed = state.clone();
     let cancellation = admission.cancellation();
     let remaining = admission.remaining();
     let deadline = tokio::time::Instant::now() + remaining;
@@ -131,7 +157,7 @@ async fn attempt(
         let input = pump(&mut requests, upload);
         tokio::pin!(input);
         tokio::select! {
-            result = &mut execution => return joined(result).with_work(evidence.lock().expect("Build evidence lock").clone()),
+            result = &mut execution => return joined(result).with_work(state.evidence.lock().expect("Build evidence lock").clone()),
             reason = &mut input => reason,
             () = runner.shutdown.cancelled() => "Build daemon stopped".to_owned(),
             () = events.closed() => "Build client disconnected".to_owned(),
@@ -164,7 +190,7 @@ async fn attempt(
             ),
         },
     };
-    outcome.with_work(evidence.lock().expect("Build evidence lock").clone())
+    outcome.with_work(state.evidence.lock().expect("Build evidence lock").clone())
 }
 
 async fn pump(
@@ -192,12 +218,12 @@ async fn pump(
 
 fn receive_and_execute(
     machine_id: MachineId,
-    definition: Definition,
+    mut definition: Definition,
     mut source: mpsc::Receiver<OpaquePayload>,
     admission: Admission,
     policy: HostPolicy,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
-    evidence: &std::sync::Mutex<ployz_build::WorkEvidence>,
+    state: &AttemptState,
 ) -> Outcome {
     let cancellation = admission.cancellation();
     let deadline = std::time::Instant::now() + admission.remaining();
@@ -225,7 +251,8 @@ fn receive_and_execute(
         }
     }
     let progress = |progress| {
-        evidence
+        state
+            .evidence
             .lock()
             .expect("Build evidence lock")
             .observe(&progress);
@@ -248,12 +275,36 @@ fn receive_and_execute(
         }
     };
     progress(Progress::Stage(Stage::Upload));
-    match upload.execute(&definition, Some(&policy.docker), &progress) {
-        Ok(images) => match definition.output {
-            Output::Load => Outcome::Images { machine_id, images },
-            Output::Validate => Outcome::Validated { machine_id },
-            Output::Registry => Outcome::Published { machine_id },
-        },
+    // Keep bytes on the Machines. Reuse the Docker peer-pull bridge because
+    // Buildx cannot reliably encode IPv6 registry keys in its TOML config.
+    let mut proxies = Vec::new();
+    for context in definition.image_contexts.values_mut() {
+        let proxy = match tokio::runtime::Handle::current()
+            .block_on(crate::docker::ImageProxy::open(context.source))
+        {
+            Ok(proxy) => proxy,
+            Err(error) => return failed(Stage::Preparation, error.to_string()),
+        };
+        context.source.management_address =
+            ployz_core::ManagementAddress(std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped());
+        context.source.port = proxy.port;
+        proxies.push(proxy);
+    }
+    let result = upload.execute(&definition, Some(&policy.docker), &progress);
+    match result {
+        Ok(completed) => {
+            if !definition.retained_tags.is_empty() {
+                *state.retained.lock().expect("Build retention lock") = Some(completed.retention);
+            }
+            match definition.output {
+                Output::Load => Outcome::Images {
+                    machine_id,
+                    images: completed.images,
+                },
+                Output::Validate => Outcome::Validated { machine_id },
+                Output::Registry => Outcome::Published { machine_id },
+            }
+        }
         Err(error) => failure(error.stage(), error),
     }
 }

@@ -34,10 +34,15 @@ use tonic::{Request, Response, Status, Streaming, transport::Server};
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
 
+#[path = "../support/build.rs"]
+mod build_fixture;
+pub(super) use build_fixture::BuildFixture;
+
 pub(super) type ObservationRequest = (MachineId, Vec<ContainerId>, u64);
 
 #[derive(Clone)]
 pub(super) struct DeployService {
+    pub(super) builds: Option<Arc<BuildFixture>>,
     machines: Vec<MachineObservation>,
     create_volume_error: Option<RpcError>,
     create_volume_verification_error: Option<RpcError>,
@@ -62,6 +67,7 @@ pub(super) struct DeployService {
 impl DeployService {
     pub(super) fn new(machine: MachineObservation) -> Self {
         Self {
+            builds: None,
             machines: vec![machine],
             create_volume_error: None,
             create_volume_verification_error: None,
@@ -86,6 +92,7 @@ impl DeployService {
 
     pub(super) fn empty() -> Self {
         Self {
+            builds: None,
             machines: Vec::new(),
             create_volume_error: None,
             create_volume_verification_error: None,
@@ -239,13 +246,16 @@ impl MachineRpc for DeployService {
     }
 
     type ExecStream = tokio_stream::wrappers::ReceiverStream<Result<OpaquePayload, Status>>;
-    type BuildStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type BuildStream = tokio_stream::wrappers::ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn build(
         &self,
-        _request: Request<tonic::Streaming<OpaquePayload>>,
+        request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
-        Err(Status::unimplemented("Build is not used by this fixture"))
+        self.builds
+            .clone()
+            .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?
+            .stream(request)
     }
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
@@ -253,7 +263,7 @@ impl MachineRpc for DeployService {
 
     async fn describe_contract(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let mut capabilities: BTreeSet<_> =
             [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()].into();
@@ -261,11 +271,20 @@ impl MachineRpc for DeployService {
             capabilities
                 .insert(CapabilityName::parse(GET_CONTAINER_OBSERVATIONS_CAPABILITY).unwrap());
         }
+        if self.builds.is_some() {
+            capabilities.extend(
+                [
+                    ployz_core::BUILD_CAPABILITY,
+                    ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY,
+                    ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+                ]
+                .map(|name| CapabilityName::parse(name).unwrap()),
+            );
+        }
         encoded(RpcResponse::from(ContractDescription {
-            machine_id: self
-                .machines
-                .first()
-                .map(|machine| machine.machine.id)
+            machine_id: machine_from_metadata(&request)
+                .ok()
+                .or_else(|| self.machines.first().map(|machine| machine.machine.id))
                 .unwrap_or_else(MachineId::random),
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: "test".into(),
@@ -709,24 +728,48 @@ impl MachineRpc for DeployService {
     }
     async fn list_images(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        encoded(RpcResponse::from(MachineImages {
-            containerd_store: false,
-            images: Vec::new(),
-        }))
+        let machine = machine_from_metadata(&request)?;
+        let images = self
+            .builds
+            .as_ref()
+            .map(|builds| builds.images(machine))
+            .unwrap_or(MachineImages {
+                containerd_store: self.builds.is_some(),
+                images: Vec::new(),
+            });
+        encoded(RpcResponse::from(images))
     }
     async fn ensure_image_ingest(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(builds) = &self.builds {
+            let machine = machine_from_metadata(&request)?;
+            let machine = self
+                .machines
+                .iter()
+                .find(|observed| observed.machine.id == machine)
+                .unwrap();
+            return encoded(RpcResponse::from(builds.open(&machine.machine)));
+        }
         self.record_mutation();
         unused()
     }
     async fn pull_image_from_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(builds) = &self.builds {
+            let machine = machine_from_metadata(&request)?;
+            let RpcRequestBody::PullImageFromMachine(pull) =
+                request.into_inner().decode_request().unwrap().body
+            else {
+                panic!("expected peer pull");
+            };
+            return encoded(builds.pull(machine, pull));
+        }
         self.record_mutation();
         unused()
     }

@@ -39,6 +39,39 @@ pub fn validate_capture(
     {
         return Err("invalid Build target names".into());
     }
+    if definition.image_contexts.len() > 128
+        || definition.image_contexts.keys().any(|name| {
+            names.contains(name.as_str())
+                || name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+        })
+    {
+        return Err("invalid completed Build context names".into());
+    }
+    for context in definition.image_contexts.values() {
+        validate_remote_context(&format!("docker-image://{}", context.reference))?;
+        if context.source.port == 0
+            || (context.platforms.is_empty()
+                || context
+                    .platforms
+                    .iter()
+                    .any(|platform| !crate::remote::linux_platform(platform)))
+        {
+            return Err("invalid completed Build image context".into());
+        }
+    }
+    if definition.retained_tags.len() > names.len()
+        || (!definition.retained_tags.is_empty() && definition.output != crate::Output::Load)
+    {
+        return Err("invalid temporary Build tags".into());
+    }
+    let context_names = names
+        .iter()
+        .copied()
+        .chain(definition.image_contexts.keys().map(String::as_str))
+        .collect();
     let bytes = fs::read(root.join("compose.yaml")).map_err(|_| "Build recipe is missing")?;
     let document: Value =
         serde_norway::from_slice(&bytes).map_err(|_| "invalid captured Build recipe")?;
@@ -48,6 +81,17 @@ pub fn validate_capture(
     let services = mapping(top.get("services").ok_or("Build recipe has no services")?)?;
     if services.len() != names.len() {
         return Err("Build recipe targets differ from the admitted request".into());
+    }
+    for tag in &definition.retained_tags {
+        if !services.values().any(|service| {
+            service
+                .get("build")
+                .and_then(|build| build.get("tags"))
+                .and_then(Value::as_sequence)
+                .is_some_and(|tags| tags.iter().any(|value| value.as_str() == Some(tag)))
+        }) {
+            return Err("temporary Build tag is absent from the captured recipe".into());
+        }
     }
     for (name, service) in services {
         let name = text(name)?;
@@ -101,7 +145,7 @@ pub fn validate_capture(
                 .get("context")
                 .ok_or("Build recipe has no captured context")?,
         )?;
-        context_path(root, context, &names, default_ssh)?;
+        context_path(root, context, &context_names, default_ssh)?;
         if let Some(recipe) = build.get("dockerfile") {
             let recipe = text(recipe)?;
             if remote(context) {
@@ -119,7 +163,7 @@ pub fn validate_capture(
             match contexts {
                 Value::Mapping(contexts) => {
                     for value in contexts.values() {
-                        context_path(root, text(value)?, &names, default_ssh)?;
+                        context_path(root, text(value)?, &context_names, default_ssh)?;
                     }
                 }
                 Value::Sequence(contexts) => {
@@ -127,7 +171,7 @@ pub fn validate_capture(
                         let (_, value) = text(value)?
                             .split_once('=')
                             .ok_or("invalid named Build context")?;
-                        context_path(root, value, &names, default_ssh)?;
+                        context_path(root, value, &context_names, default_ssh)?;
                     }
                 }
                 Value::Null => {}
@@ -448,6 +492,8 @@ mod tests {
         )
         .unwrap();
         let definition = Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
             targets: vec![crate::Target {
                 name: "api".into(),
                 platforms: Vec::new(),
@@ -493,6 +539,8 @@ mod tests {
         fs::write(root.join("private/key"), "captured-key").unwrap();
         fs::write(root.join("source/key"), "source-content").unwrap();
         let definition = Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
             targets: vec![crate::Target {
                 name: "api".into(),
                 platforms: Vec::new(),

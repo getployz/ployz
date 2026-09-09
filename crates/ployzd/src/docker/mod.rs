@@ -4,6 +4,7 @@ mod lifecycle;
 mod managed_service;
 mod observe;
 mod peer_pull;
+pub(crate) use peer_pull::ImageProxy;
 mod spec_store;
 mod stream;
 mod telemetry;
@@ -611,6 +612,8 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("Direct Image Transfer requires Docker's containerd image store")]
+    UnsupportedImageStore,
     #[error(transparent)]
     Observation(#[from] ployz_core::ContainerObservationError),
     /// A required host telemetry read failed.
@@ -729,7 +732,7 @@ impl Error {
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
             | Self::ServicePlacementMismatch => RpcErrorCode::Conflict,
-            Self::ProvisionedStorageUnsupported => RpcErrorCode::Unsupported,
+            Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
             | Self::StorageUnobservable
             | Self::EventStreamClosed

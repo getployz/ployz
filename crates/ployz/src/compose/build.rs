@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::{Arc, Mutex},
 };
 
 use ployz_build::{BuiltImage, Output};
@@ -9,6 +10,9 @@ use serde::Serialize;
 use serde_norway::Value;
 
 use super::{BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::BuildInputs};
+
+#[path = "remote_steps.rs"]
+mod remote_steps;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuildOptions {
@@ -33,18 +37,16 @@ pub fn plan_build(
     project: &ComposeProject,
     options: &BuildOptions,
 ) -> Result<Vec<BuildService>, ComposeError> {
-    if options.services.is_empty() {
-        return project
-            .builds
-            .keys()
-            .map(|name| build_service(project, name))
-            .collect();
-    }
+    let names = if options.services.is_empty() {
+        project.builds.keys().cloned().collect::<Vec<_>>()
+    } else {
+        options.services.clone()
+    };
 
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
     let mut visiting = BTreeSet::new();
-    for name in &options.services {
+    for name in &names {
         include_service(
             project,
             name,
@@ -69,17 +71,59 @@ pub struct CapturedBuild {
     options: BuildOptions,
     environment: BTreeMap<String, String>,
     inputs: BuildInputs,
+    retained_tags: BTreeMap<String, String>,
+}
+
+/// Where a completed image is available; Machine identity is already resolved.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BuildLocation {
+    /// The invoking client’s Docker store contains the completed image.
+    #[default]
+    Local,
+    /// This resolved Machine contains the completed image.
+    Machine(ployz_core::MachineId),
 }
 
 /// A Service whose image this command built, bound to the content produced.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct BuiltService {
+    /// Raw Compose Build target name, including build-only dependencies.
+    /// Build names may contain dots/underscores, unlike Deploy Service names.
+    pub name: String,
+    /// Store that holds this completed image.
+    pub location: BuildLocation,
     /// Reference the Service requested, used when the image is published.
     pub image: String,
     /// Machines this Service is placed on.
     pub machines: Vec<MachineTarget>,
     /// The image this command built for it.
     pub built: BuiltImage,
+    pub(super) _retention: Option<BuildRetention>,
+}
+
+#[derive(Clone)]
+pub(super) enum BuildRetention {
+    Local {
+        _tags: Arc<ployz_build::ImageRetention>,
+    },
+    Remote {
+        _stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
+    },
+}
+impl std::fmt::Debug for BuildRetention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BuildRetention")
+    }
+}
+
+impl PartialEq for BuiltService {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.location == other.location
+            && self.image == other.image
+            && self.machines == other.machines
+            && self.built == other.built
+    }
 }
 
 impl BuiltService {
@@ -142,6 +186,7 @@ pub fn capture_build(
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
     let mut targets = Vec::new();
+    let mut retained_tags = BTreeMap::new();
     let mut railpack_recipes = Vec::new();
     for service in &mut plan {
         let image = service.image.clone();
@@ -199,6 +244,27 @@ pub fn capture_build(
         }
         targets.push(ployz_build::Target { name, platforms });
         retain_service_image_tag(&service.name, image, build)?;
+        if options.output == Output::Load {
+            // Bake can import multiple Services under one requested tag in any
+            // order. Retain every result before a sibling or later client moves it.
+            let reference = service
+                .image
+                .parse::<oci_client::Reference>()
+                .map_err(|error| invalid_build(&error.to_string()))?;
+            let retained = format!(
+                "{}/{}:ployz-build-{}",
+                reference.registry(),
+                reference.repository(),
+                uuid::Uuid::new_v4()
+            );
+            retained_tags.insert(service.name.clone(), retained.clone());
+            let tags = build
+                .entry(Value::String("tags".into()))
+                .or_insert_with(|| Value::Sequence(vec![Value::String(service.image.clone())]));
+            tags.as_sequence_mut()
+                .ok_or_else(|| invalid_build("invalid build tags"))?
+                .push(Value::String(retained));
+        }
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
             .and_then(Value::as_sequence_mut)
@@ -329,6 +395,7 @@ pub fn capture_build(
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
         inputs,
+        retained_tags,
     })
 }
 
@@ -544,32 +611,6 @@ fn effective_build_args(
 }
 
 impl CapturedBuild {
-    /// Execute this capture on one resolved Machine over the authenticated
-    /// Ployz stream. No local Docker or local image store is consulted.
-    pub async fn execute_remote(
-        self,
-        client: &crate::connect::Client,
-        machine_id: ployz_core::MachineId,
-        cancellation: tokio_util::sync::CancellationToken,
-        progress: impl Fn(ployz_build::Progress),
-    ) -> ployz_build::remote::Outcome {
-        let definition = ployz_build::remote::Definition {
-            targets: self.targets,
-            output: self.options.output,
-            no_cache: self.options.no_cache,
-            pull: self.options.pull,
-        };
-        super::remote_build::execute(
-            self.inputs,
-            definition,
-            client,
-            machine_id,
-            cancellation,
-            progress,
-        )
-        .await
-    }
-
     /// Build this capture through the shared runner, without reading the
     /// original sources again.
     ///
@@ -598,8 +639,19 @@ impl CapturedBuild {
                 .to_string_lossy()
                 .into_owned(),
         );
+        let retention = BuildRetention::Local {
+            _tags: Arc::new(
+                ployz_build::ImageRetention::new(
+                    self.retained_tags.values().cloned().collect(),
+                    docker,
+                    environment.clone(),
+                )
+                .map_err(|error| invalid_build(&error.to_string()))?,
+            ),
+        };
         let images = ployz_build::execute(
             &ployz_build::Request {
+                image_contexts: &BTreeMap::new(),
                 compose_file: Path::new("compose.yaml"),
                 working_dir: self.inputs.root(),
                 environment: &environment,
@@ -629,9 +681,12 @@ impl CapturedBuild {
             .iter()
             .zip(images)
             .map(|(service, built)| BuiltService {
+                name: service.name.clone(),
+                location: BuildLocation::Local,
                 image: service.image.clone(),
                 machines: service.machines.clone(),
                 built,
+                _retention: Some(retention.clone()),
             })
             .collect())
     }
@@ -853,7 +908,6 @@ fn include_service<'a>(
         return Ok(());
     }
     visiting.insert(name);
-    selected.push(name);
     if let Some(build) = project.builds.get(name) {
         for dependency in build.additional_services() {
             include_service(project, dependency, deps, visiting, seen, selected)?;
@@ -871,6 +925,7 @@ fn include_service<'a>(
             )?;
         }
     }
+    selected.push(name);
     visiting.remove(name);
     seen.insert(name);
     Ok(())
@@ -949,6 +1004,8 @@ mod tests {
             let plan = plan_build(&project, &options).unwrap();
             let captured = capture_build(&plan, &options, &mut project).unwrap();
             let definition = ployz_build::remote::Definition {
+                image_contexts: Default::default(),
+                retained_tags: Vec::new(),
                 targets: captured.targets,
                 output: options.output,
                 no_cache: options.no_cache,

@@ -163,7 +163,12 @@ pub(crate) async fn deploy_project(
 ) -> Result<(), Failure> {
     let machines =
         crate::cancellation::read(cancellation, async { Ok(client.machines().await?) }).await?;
-    let outcome = push_project_images(client, builds, &machines, cancellation).await?;
+    let preview = crate::cancellation::read(
+        cancellation,
+        plan_project(client, candidate, machines.clone()),
+    )
+    .await?;
+    let outcome = push_project_images(client, builds, &machines, &preview, cancellation).await?;
     print_pushed_images(&outcome);
     if !outcome.failures.is_empty() {
         return Err(Failure::usage(format!(
@@ -171,8 +176,6 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview =
-        crate::cancellation::read(cancellation, plan_project(client, candidate, machines)).await?;
     println!("Captured candidate {}", candidate.id());
     print_warnings(&preview);
     confirm_and_execute(client, &preview, gate, cancellation).await

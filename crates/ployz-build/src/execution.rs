@@ -228,12 +228,14 @@ impl Admission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn restart_removes_abandoned_uploads_but_keeps_unknown_ownership_unavailable() {
         let root =
             std::env::temp_dir().join(format!("ployz-build-restart-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let policy = HostPolicy {
             state_directory: root.clone(),
             docker: root.join("docker"),
@@ -302,6 +304,7 @@ mod tests {
     fn expired_admission_and_docker_report_configured_budget() {
         let root = std::env::temp_dir().join(format!("ployz-budget-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let policy = HostPolicy {
             state_directory: root.clone(),
             active_timeout: Duration::from_secs(5),
@@ -332,6 +335,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("ployz-upload-cancel-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("build-upload")).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(root.join("build-upload/existing"), "capture").unwrap();
         let policy = HostPolicy {
             state_directory: root.clone(),

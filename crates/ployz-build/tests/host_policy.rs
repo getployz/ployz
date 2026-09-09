@@ -159,6 +159,7 @@ exit 0
         refresh_cache: false,
     }];
     let request = Request {
+        image_contexts: &BTreeMap::new(),
         compose_file: &host.file("compose.yaml"),
         working_dir: &host.policy.state_directory,
         environment: &BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
@@ -186,6 +187,7 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
     }];
     let error = execute_admitted(
         &Request {
+            image_contexts: &BTreeMap::new(),
             compose_file: &host.file("compose.yaml"),
             working_dir: &host.policy.state_directory,
             environment: &BTreeMap::new(),
@@ -316,6 +318,7 @@ echo "$*" >> "$root/mutations"
         ]);
         let error = execute_admitted(
             &Request {
+                image_contexts: &BTreeMap::new(),
                 compose_file: &host.file("compose.yaml"),
                 working_dir: &host.policy.state_directory,
                 environment: &environment,

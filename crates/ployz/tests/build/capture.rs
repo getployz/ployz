@@ -576,3 +576,47 @@ fn ssh_docker_hosts_are_refused_but_git_contexts_keep_the_captured_agent_socket(
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn completed_local_build_keeps_temporary_tags_until_the_last_image_is_released() {
+    let root = std::env::temp_dir().join(format!("ployz-local-retention-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
+    fs::write(root.join("image"), "example.test/api:built").unwrap();
+    let mut project = parse_normalized(
+        "services: {api: {image: 'example.test/api:built', build: ./src}}",
+        &root,
+    )
+    .unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+    let images = capture_build(&plan, &options, &mut project)
+        .unwrap()
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    let clone = images.clone();
+    drop(images);
+    assert!(
+        !fs::read_to_string(root.join("calls"))
+            .unwrap()
+            .lines()
+            .any(|call| call.starts_with("image rm"))
+    );
+    drop(clone);
+    let calls = fs::read_to_string(root.join("calls")).unwrap();
+    let removed = calls
+        .lines()
+        .find(|call| call.starts_with("image rm"))
+        .expect("temporary tag leaked");
+    assert!(removed.contains(":ployz-build-"), "{removed}");
+    assert!(!removed.contains("example.test/api:built"), "{removed}");
+    let captured_root = fs::read_to_string(root.join("capture-root")).unwrap();
+    assert!(
+        !Path::new(captured_root.trim()).exists(),
+        "capture leaked after tag cleanup"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

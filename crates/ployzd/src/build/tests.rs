@@ -17,6 +17,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 struct Fixture {
+    shutdown: tokio_util::sync::CancellationToken,
     root: PathBuf,
     policy: HostPolicy,
     cluster: tokio::task::JoinHandle<()>,
@@ -71,7 +72,8 @@ impl Fixture {
             ..Default::default()
         };
         update(&mut policy);
-        service.builds = Runner::new(policy.clone(), Default::default()).unwrap();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        service.builds = Runner::new(policy.clone(), shutdown.clone()).unwrap();
         write_docker(&policy.docker, &root);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -80,6 +82,7 @@ impl Fixture {
             Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
         );
         Self {
+            shutdown,
             root,
             policy,
             cluster,
@@ -99,6 +102,8 @@ impl Fixture {
         sender
             .send(
                 remote::encode(&Input::Start(Definition {
+                    retained_tags: Vec::new(),
+                    image_contexts: Default::default(),
                     targets: vec![ployz_build::Target {
                         name: "api".into(),
                         platforms: Vec::new(),
@@ -318,6 +323,7 @@ case "$1 $2" in
       previous=$arg
     done
     if [ -f "$root/fail-after-output" ]; then exit 1; fi ;;
+  'image rm') printf '%s\n' "$*" >> "$root/released-tags" ;;
   'image inspect') printf '%s\n' '{{"Os":"linux","Architecture":"amd64","Descriptor":{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}"}}}}' ;;
   *) exit 1 ;;
 esac
@@ -378,6 +384,8 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
     let (sender, receiver) = mpsc::channel(2);
     sender
         .send(Ok(remote::encode(&Input::Start(Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
             targets: vec![ployz_build::Target {
                 name: "api".into(),
                 platforms: Vec::new(),
@@ -467,7 +475,12 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
         if failure != "fail-cleanup" {
             assert_eq!(
                 work.0.get("web"),
-                Some(&ployz_build::TargetEvidence::Unknown)
+                Some(&if failure == "fail-after-output" {
+                    // The next target is never submitted after this step fails.
+                    ployz_build::TargetEvidence::Unattempted
+                } else {
+                    ployz_build::TargetEvidence::Unknown
+                })
             );
         }
     }
@@ -679,4 +692,63 @@ async fn host_configuration_and_cache_clearing_share_remote_admission() {
         }
     ));
     assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+}
+
+#[tokio::test]
+async fn dropping_completed_build_releases_only_its_temporary_tags() {
+    for stopping in [false, true] {
+        let fixture = Fixture::new().await;
+        let client = ployz::connect::connect(
+            Path::new("/missing-test-config"),
+            Some(&fixture.address.replace("http://", "tcp://")),
+            None,
+        )
+        .await
+        .unwrap();
+        let images = fixture
+            .capture()
+            .execute_remote_images(
+                &client,
+                fixture.machine.id,
+                tokio_util::sync::CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        // Holding completed images must not occupy the Machine's active Build slot.
+        let next = tokio::time::timeout(
+            Duration::from_secs(5),
+            fixture.capture().execute_remote_images(
+                &client,
+                fixture.machine.id,
+                tokio_util::sync::CancellationToken::new(),
+                |_| {},
+            ),
+        )
+        .await
+        .expect("image retention held queue admission")
+        .unwrap();
+        assert!(!fixture.root.join("released-tags").exists());
+        drop(next);
+        if stopping {
+            fixture.shutdown.cancel();
+        } else {
+            drop(images);
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while fs::read_to_string(fixture.root.join("released-tags"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+                < 2
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("completed Build leaked its retention tag");
+        let released = fs::read_to_string(fixture.root.join("released-tags")).unwrap();
+        assert!(released.contains(":ployz-build-"), "{released}");
+        assert!(!released.contains("example.test/api:built"), "{released}");
+    }
 }

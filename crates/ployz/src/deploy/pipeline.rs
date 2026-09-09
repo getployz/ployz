@@ -281,12 +281,32 @@ pub(super) async fn push_project_images(
     client: &mut Client,
     builds: &[BuiltService],
     machines: &[MachineObservation],
+    preview: &DeployPlan,
     cancellation: &CancellationToken,
 ) -> Result<PushOutcome, Failure> {
     let mut pushed = Vec::new();
     let mut failures = Vec::new();
-    for service in builds {
-        match push_image(client, service, machines, cancellation).await {
+    // Check every actual destination before any image or application changes.
+    let deliveries = builds.iter().map(|service| {
+        let targets = preview.operations.iter()
+            .filter(|row| row.operation.spec().is_some_and(|spec| spec.name.as_str() == service.name))
+            .map(|row| row.machine_id).collect::<BTreeSet<_>>();
+        for target in &targets {
+            let architecture = machines.iter().find(|machine| machine.machine.id == *target)
+                .map(|machine| machine.machine.runtime.architecture.as_str());
+            let compatible = architecture.is_some_and(|architecture|
+                service.built.platforms.iter().any(|platform| crate::image::platform_compatible(platform, architecture)));
+            if !compatible {
+                return Err(Failure::usage(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
+            }
+        }
+        Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
+    }).collect::<Result<Vec<_>, Failure>>()?;
+    for (service, targets) in deliveries {
+        if targets.is_empty() {
+            continue;
+        }
+        match push_image(client, service, machines, &targets, cancellation).await {
             Ok((images, service_failures)) => {
                 pushed.extend(images);
                 failures.extend(service_failures);
@@ -529,23 +549,42 @@ async fn push_image(
     client: &mut Client,
     service: &BuiltService,
     machines: &[MachineObservation],
+    targets: &[String],
     cancellation: &CancellationToken,
 ) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
-    let targets = service
-        .machines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    // Deliver the content this command built, not whatever the tag now holds.
-    let result = crate::image::push_using_machines(
-        client,
-        service.content(),
-        None,
-        &targets,
-        machines,
-        cancellation,
-    )
-    .await?;
+    let result = match service.location {
+        crate::compose::BuildLocation::Local => {
+            // Retain each digest even when multiple Services requested one tag.
+            let tag = service
+                .built
+                .repository_reference()
+                .map_err(|error| crate::image::PushError::InvalidReference {
+                    reference: service.built.reference.clone(),
+                    message: error.to_string(),
+                })?
+                .replace("@sha256:", ":ployz-sha256-");
+            crate::image::push_using_machines(
+                client,
+                crate::image::ImageContent::built(&tag, &service.built.reference),
+                None,
+                targets,
+                machines,
+                cancellation,
+            )
+            .await?
+        }
+        crate::compose::BuildLocation::Machine(source) => {
+            crate::image::push_from_machine_using_machines(
+                client,
+                &service.built,
+                source,
+                targets,
+                machines,
+                cancellation,
+            )
+            .await?
+        }
+    };
     let pushed = result
         .successes
         .iter()

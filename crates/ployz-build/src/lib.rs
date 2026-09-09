@@ -12,10 +12,13 @@
 
 mod builder;
 mod execution;
+mod image_contexts;
 mod index;
 mod policy;
 pub use policy::clear_cache;
 mod received_recipe;
+mod retention;
+pub use retention::{ImageRetention, RetainedImages};
 pub mod remote;
 mod upload;
 
@@ -61,6 +64,8 @@ pub fn builder_name() -> String {
 /// Paths point into the caller's private capture; nothing here is read from
 /// the original sources again.
 pub struct Request<'a> {
+    /// Completed Service image contexts served from their actual Build hosts.
+    pub image_contexts: &'a BTreeMap<String, ImageContext>,
     /// Captured Compose file describing every target of this Build.
     pub compose_file: &'a Path,
     /// Private directory the build runs in, so no stray file can join it.
@@ -119,6 +124,39 @@ pub struct BuiltImage {
     pub platforms: Vec<String>,
     /// Docker endpoint holding this content.
     pub location: String,
+}
+
+impl BuiltImage {
+    /// Name this manifest in the repository used by its Build.
+    /// # Errors
+    /// Rejects missing or malformed repository evidence.
+    pub fn repository_reference(&self) -> Result<String, BuildError> {
+        let tag = self
+            .tags
+            .first()
+            .ok_or_else(|| BuildError::Result("Build image has no tags".into()))?;
+        let reference = tag
+            .parse::<oci_client::Reference>()
+            .map_err(|error| BuildError::Result(error.to_string()))?;
+        Ok(format!(
+            "{}/{}@{}",
+            reference.registry(),
+            reference.repository(),
+            self.reference
+        ))
+    }
+}
+
+/// An immutable named image context, delivered by the existing Machine image
+/// server. It carries no Machine selection or Deploy policy into the host.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageContext {
+    /// Repository reference pinned to the completed manifest’s SHA-256 digest.
+    pub reference: String,
+    /// Platforms actually available in that completed image.
+    pub platforms: Vec<String>,
+    /// Open serving endpoint of the Machine containing that exact content.
+    pub source: ployz_core::ImageIngestDestination,
 }
 
 /// Why a Build Attempt did not produce the image it was asked for.
@@ -277,6 +315,7 @@ pub fn execute_admitted(
     docker
         .require_local()
         .and_then(|()| docker.run("check Buildx", &["buildx", "version"], Streams::Captured))
+        .and_then(|_| image_contexts::prepare(request))
         .map_err(|error| {
             let error = error.at(Stage::Preparation);
             if !error.is_unknown()

@@ -5,7 +5,7 @@ use ployz_core::{ComposePruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
-        BuildOptions, BuiltService, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
+        BuildOptions, CapturedBuild, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
         capture_build, compose_identity, has_explicit_nondefault_compose_file, load_project,
         plan_build,
     },
@@ -42,6 +42,13 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let remote = matches.get_one::<String>("remote");
+    if remote.is_some_and(String::is_empty) {
+        return Err(Error::usage(
+            "select a Build Machine with --remote=<Machine>; automatic selection is not available",
+        ));
+    }
+    let remote = remote.map(ployz_core::MachineTarget::parse).transpose()?;
     let load = deploy_load(matches);
     let resolved = resolve_from_compose_load(matches, &load)?;
     let project = load_project(&load)?;
@@ -57,12 +64,42 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let mut options = plan_options(force_recreate, skip_health_monitor);
     options.selected = selected_attempts(&project, &string_values(matches, "service"))?;
     let cancellation = crate::cancellation::listen()?;
-    let (candidate, builds) =
-        prepare_deploy(matches, &load, project, &resolved, options, &cancellation)?;
+    let (mut candidate, captured_build) =
+        prepare_deploy(matches, &load, project, &resolved, options)?;
     runtime()?.block_on(async {
         let mut client =
             crate::cancellation::read(&cancellation, connect_client(root, context.as_deref()))
                 .await?;
+        // Every required Build finishes before preparation or application changes.
+        let builds = match captured_build {
+            Some(build) => match remote {
+                Some(target) => {
+                    let machine = super::build::select_build_machine(&mut client, &target).await?;
+                    let result = build
+                        .execute_remote_images(
+                            &client,
+                            machine.id,
+                            cancellation.clone(),
+                            super::build::progress,
+                        )
+                        .await;
+                    let cancelled = cancellation.is_cancelled();
+                    if cancelled {
+                        return Err(Error::usage(
+                            "Build cancelled. No Service, hook, or volume change was attempted.",
+                        ));
+                    }
+                    result.map_err(crate::deploy::DeployError::from)?
+                }
+                None => build
+                    .execute(load.docker.as_deref(), &cancellation)
+                    .map_err(crate::deploy::DeployError::from)?,
+            },
+            None => Vec::new(),
+        };
+        candidate
+            .bind_builds(&builds)
+            .map_err(crate::deploy::DeployError::from)?;
         deploy_project(
             &mut client,
             &candidate,
@@ -262,8 +299,7 @@ fn prepare_deploy(
     mut project: ComposeProject,
     resolved: &ResolvedProject,
     options: ployz_core::PlanOptions,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<(CapturedCompose, Vec<BuiltService>), Error> {
+) -> Result<(CapturedCompose, Option<CapturedBuild>), Error> {
     let selected = string_values(matches, "service");
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
@@ -277,13 +313,13 @@ fn prepare_deploy(
         build_args: string_values(matches, "build-arg"),
         deps: true,
         no_cache: matches.get_flag("no-cache"),
-        // A Deploy needs the image on this host, so it always loads it.
+        // A Deploy needs the image in its execution host’s image store.
         output: ployz_build::Output::Load,
         pull: matches.get_flag("build-pull"),
         services: build_names,
     };
     let builds = plan_build(&project, &build_options)?;
-    let captured_build = if matches.get_flag("no-build") {
+    let captured_build = if matches.get_flag("no-build") || builds.is_empty() {
         None
     } else {
         Some(capture_build(&builds, &build_options, &mut project)?)
@@ -297,14 +333,7 @@ fn prepare_deploy(
         hints.compose_refusal,
         load.files.clone(),
     );
-    // Every required Build finishes before any application change begins.
-    let built = match captured_build {
-        Some(build) => build
-            .execute(load.docker.as_deref(), cancellation)
-            .map_err(crate::deploy::DeployError::from)?,
-        None => Vec::new(),
-    };
-    Ok((candidate, built))
+    Ok((candidate, captured_build))
 }
 
 fn selected_attempts(
@@ -364,3 +393,7 @@ use input::{parse_u32, run_spec};
 #[cfg(test)]
 #[path = "deploy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "deploy_remote_tests.rs"]
+mod remote_tests;

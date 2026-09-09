@@ -432,6 +432,7 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
             refresh_cache: false,
         }];
         let request = Request {
+            image_contexts: &BTreeMap::new(),
             compose_file: &root.join("compose.yaml"),
             working_dir: &root,
             environment: &BTreeMap::from([("PATH".into(), std::env::var("PATH").unwrap())]),
@@ -560,6 +561,7 @@ fn multi_platform_failures_preserve_output_stage_and_completed_image_evidence() 
         ..HostPolicy::default()
     };
     let request = Request {
+        image_contexts: &BTreeMap::new(),
         compose_file: &capture.join("compose.yaml"),
         working_dir: &capture,
         environment: &environment,

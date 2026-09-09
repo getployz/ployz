@@ -71,43 +71,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         return runtime()?.block_on(async {
             let cancellation = super::cancellation_on_ctrl_c();
             let mut client = connect_client(matches, context.as_deref()).await?;
-            let machine = client.build_machine(&target).await?;
-            println!("Selected Build Machine {} ({})", machine.name, machine.id);
-            let contract = client
-                .invoke::<ployz_core::op::DescribeContract>(
-                    ployz_core::DescribeContractRequest {},
-                    &ployz_core::MachineTarget::from(&machine.id),
-                    Some(std::time::Duration::from_secs(5)),
-                )
-                .await?;
-            if contract.machine_id != machine.id || !contract.supports(ployz_core::BUILD_CAPABILITY)
-            {
-                return Err(Error::usage(format!(
-                    "Machine {} does not support remote Builds",
-                    machine.id
-                )));
-            }
-            eprintln!("Build Machine: {}", machine.id);
+            let machine = select_build_machine(&mut client, &target).await?;
             let captured = capture_build(&plan, &options, &mut project)?;
             let outcome = captured
-                .execute_remote(&client, machine.id, cancellation.clone(), |event| {
-                    use std::io::Write as _;
-                    match event {
-                        ployz_build::Progress::Stage(stage) => eprintln!("Build: {stage:?}"),
-                        ployz_build::Progress::Target { .. } => {}
-                        ployz_build::Progress::Timing {
-                            queue_wait,
-                            execution,
-                        } => eprintln!(
-                            "Build queue wait: {:.2}s; execution: {:.2}s",
-                            queue_wait.as_secs_f64(),
-                            execution.as_secs_f64()
-                        ),
-                        ployz_build::Progress::Output(bytes) => {
-                            let _ = std::io::stderr().write_all(&bytes);
-                        }
-                    }
-                })
+                .execute_remote(&client, machine.id, cancellation.clone(), progress)
                 .await;
             cancellation.cancel();
             report_remote(outcome)
@@ -170,6 +137,48 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::usage(failures.join("; ")))
+    }
+}
+
+pub(super) async fn select_build_machine(
+    client: &mut crate::connect::Client,
+    target: &ployz_core::MachineTarget,
+) -> Result<ployz_core::Machine, Error> {
+    let machine = client.build_machine(target).await?;
+    println!("Selected Build Machine {} ({})", machine.name, machine.id);
+    eprintln!("Build Machine: {}", machine.id);
+    let contract = client
+        .invoke::<ployz_core::op::DescribeContract>(
+            ployz_core::DescribeContractRequest {},
+            &ployz_core::MachineTarget::from(&machine.id),
+            Some(std::time::Duration::from_secs(5)),
+        )
+        .await?;
+    if contract.machine_id != machine.id || !contract.supports(ployz_core::BUILD_CAPABILITY) {
+        return Err(Error::usage(format!(
+            "Machine {} does not support remote Builds",
+            machine.id
+        )));
+    }
+    Ok(machine)
+}
+
+pub(super) fn progress(event: ployz_build::Progress) {
+    use std::io::Write as _;
+    match event {
+        ployz_build::Progress::Stage(stage) => eprintln!("Build: {stage:?}"),
+        ployz_build::Progress::Target { .. } => {}
+        ployz_build::Progress::Timing {
+            queue_wait,
+            execution,
+        } => eprintln!(
+            "Build queue wait: {:.2}s; execution: {:.2}s",
+            queue_wait.as_secs_f64(),
+            execution.as_secs_f64()
+        ),
+        ployz_build::Progress::Output(bytes) => {
+            let _ = std::io::stderr().write_all(&bytes);
+        }
     }
 }
 

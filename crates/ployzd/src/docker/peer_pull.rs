@@ -23,53 +23,99 @@ pub(crate) async fn pull_from_ingest(
     image: &str,
     source: ImageIngestDestination,
 ) -> Result<(), Error> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|error| Error::PeerPull(error.to_string()))?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| Error::PeerPull(error.to_string()))?
-        .port();
-    let source_addr = SocketAddr::from((source.management_address.0, source.port));
-    let proxy = tokio::spawn(proxy_to_source(listener, source_addr));
-    let pulled = localhost_registry_reference(port, image);
-    let result = async {
-        docker_cli(["pull", &pulled]).await?;
-        docker_cli(["tag", &pulled, image]).await?;
-        let _ = docker_cli(["image", "rm", &pulled]).await;
-        Ok(())
+    let retained = if image.contains('@') {
+        ployz_build::remote::validate_remote_context(&format!("docker-image://{image}"))
+            .map_err(|error| Error::PeerPull(error.to_string()))?;
+        if !super::LocalDocker::connect()?
+            .uses_containerd_store()
+            .await?
+        {
+            return Err(Error::UnsupportedImageStore);
+        }
+        Some(image.replace("@sha256:", ":ployz-sha256-"))
+    } else {
+        None
+    };
+    let proxy = ImageProxy::open(source).await?;
+    let pulled = localhost_registry_reference(proxy.port, image);
+    docker_cli(["pull", &pulled]).await?;
+    // Docker cannot tag repository@digest. A content-specific tag retains
+    // that repository's digest without another client's tag overwriting it.
+    docker_cli(["tag", &pulled, retained.as_deref().unwrap_or(image)]).await?;
+    if let Some((_, digest)) = image.split_once('@') {
+        let descriptor = docker_cli([
+            "image",
+            "inspect",
+            image,
+            "--format",
+            "{{json .Descriptor}}",
+        ])
+        .await?;
+        let descriptor: serde_json::Value = serde_json::from_str(&descriptor)?;
+        if descriptor.get("digest").and_then(serde_json::Value::as_str) != Some(digest) {
+            return Err(Error::PeerPull(format!(
+                "the image store did not retain {image}"
+            )));
+        }
     }
-    .await;
-    proxy.abort();
-    result
+    let _ = docker_cli(["image", "rm", &pulled]).await;
+    Ok(())
 }
 
 fn localhost_registry_reference(port: u16, image: &str) -> String {
     format!("127.0.0.1:{port}/{image}")
 }
 
-async fn proxy_to_source(listener: TcpListener, source: SocketAddr) {
-    loop {
-        let Ok((mut inbound, _)) = listener.accept().await else {
-            break;
-        };
-        tokio::spawn(async move {
-            let Ok(mut outbound) = TcpStream::connect(source).await else {
-                return;
-            };
-            let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
+/// A connection-scoped loopback bridge to a Machine image server. Both Docker
+/// and BuildKit accept loopback HTTP without changing global registry policy.
+pub(crate) struct ImageProxy {
+    pub(crate) port: u16,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ImageProxy {
+    pub(crate) async fn open(source: ImageIngestDestination) -> Result<Self, Error> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| Error::PeerPull(error.to_string()))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| Error::PeerPull(error.to_string()))?
+            .port();
+        let source = SocketAddr::from((source.management_address.0, source.port));
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let Ok((mut inbound, _)) = accepted else { break };
+                        connections.spawn(async move {
+                            if let Ok(mut outbound) = TcpStream::connect(source).await {
+                                let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
+                            }
+                        });
+                    }
+                    _ = connections.join_next(), if !connections.is_empty() => {}
+                }
+            }
         });
+        Ok(Self { port, task })
+    }
+}
+impl Drop for ImageProxy {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
-async fn docker_cli<const N: usize>(args: [&str; N]) -> Result<(), Error> {
+async fn docker_cli<const N: usize>(args: [&str; N]) -> Result<String, Error> {
     let output = Command::new("docker")
         .args(args)
         .output()
         .await
         .map_err(|error| Error::PeerPull(error.to_string()))?;
     if output.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         Err(Error::PeerPull(
             String::from_utf8_lossy(&output.stderr).trim().into(),
