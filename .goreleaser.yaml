@@ -26,13 +26,21 @@ builds:
 
   # zig 0.13 segfaults linking the CLI's Apple targets, so the macOS runner links
   # them with its own toolchain; zig stays only for the musl targets.
-  - id: ployz-darwin
+  - id: ployz-darwin-amd64
     builder: rust
     command: build
     binary: ployz
-    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-darwin") }}'
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-darwin-amd64") }}'
     targets:
       - x86_64-apple-darwin
+    flags: *ployz-flags
+
+  - id: ployz-darwin-arm64
+    builder: rust
+    command: build
+    binary: ployz
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-darwin-arm64") }}'
+    targets:
       - aarch64-apple-darwin
     flags: *ployz-flags
 
@@ -82,7 +90,7 @@ builds:
 
 archives:
   - id: ployz
-    builds: [ployz-linux-amd64, ployz-linux-arm64, ployz-darwin]
+    builds: [ployz-linux-amd64, ployz-linux-arm64, ployz-darwin-amd64, ployz-darwin-arm64]
     format: tar.gz
     name_template: >-
       ployz_

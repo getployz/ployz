@@ -127,10 +127,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Build native SDK for Node-backed tests
-        run: cargo build -p ployz-sdk --locked --timings
-      - name: Compile Rust tests
-        run: cargo test --workspace --all-features --locked --no-run --timings
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Build native SDK and Rust tests together
+        run: cargo build --workspace --all-targets --all-features --profile test --locked --timings
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
@@ -142,7 +143,8 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo test --workspace --all-features --locked
+          cargo nextest run --workspace --all-features --locked
+          cargo test --doc --workspace --all-features --locked
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/target/debug/ployz

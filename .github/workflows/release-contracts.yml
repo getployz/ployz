@@ -124,9 +124,17 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rust_target: x86_64-apple-darwin
+          - arch: arm64
+            rust_target: aarch64-apple-darwin
     runs-on: macos-15
     env:
-      RELEASE_ID: ployz-darwin
+      RELEASE_ID: ployz-darwin-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -140,7 +148,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
+          targets: ${{ matrix.rust_target }}
       - uses: actions/cache@v4
         with:
           path: |
@@ -157,8 +165,8 @@ jobs:
           s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
           s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
           s3-prefix: ployz2/kache-v1
-          manifest-key: release-${{ runner.os }}-${{ runner.arch }}
-          cache-key-prefix: kache-release-${{ runner.os }}
+          manifest-key: release-ployz-darwin-${{ matrix.arch }}-${{ runner.os }}-${{ runner.arch }}
+          cache-key-prefix: kache-release-darwin-${{ matrix.arch }}
           cache-dir: ${{ runner.temp }}/kache
           cache-executables: true
           cache-c-cpp: true
@@ -171,16 +179,29 @@ jobs:
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
           args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
-      - run: softwareupdate --install-rosetta --agree-to-license
-      - run: scripts/verify-release.sh macos
       - uses: actions/upload-artifact@v4
         with:
-          name: release-darwin
-          path: dist
+          name: release-darwin-${{ matrix.arch }}
+          path: dist/*.tar.gz
           if-no-files-found: error
 
+  macos-smoke:
+    needs: [build-macos]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release-tag || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-darwin-*
+          merge-multiple: true
+          path: dist
+      - run: softwareupdate --install-rosetta --agree-to-license
+      - run: scripts/verify-release.sh macos
+
   pack:
-    needs: [build-linux, build-macos]
+    needs: [build-linux, macos-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -197,7 +218,8 @@ jobs:
           path: linux
       - uses: actions/download-artifact@v4
         with:
-          name: release-darwin
+          pattern: release-darwin-*
+          merge-multiple: true
           path: darwin
       - run: |
           mkdir -p dist
