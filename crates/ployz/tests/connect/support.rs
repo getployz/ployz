@@ -140,6 +140,7 @@ fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event:
 
 #[derive(Clone)]
 pub(super) struct DiscoveryService {
+    pub(super) builds: Option<Arc<BuildRecorder>>,
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
@@ -176,6 +177,7 @@ pub(super) struct DiscoveryService {
 impl DiscoveryService {
     pub(super) fn new(description: ContractDescription) -> Self {
         Self {
+            builds: None,
             description,
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
@@ -285,6 +287,77 @@ impl Connector for CountingConnector {
 #[tonic::async_trait]
 impl MachineRpc for DiscoveryService {
     type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type BuildStream = ReceiverStream<Result<OpaquePayload, Status>>;
+
+    async fn build(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::BuildStream>, Status> {
+        let recorder = self
+            .builds
+            .clone()
+            .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?;
+        recorder
+            .routes
+            .lock()
+            .unwrap()
+            .push(ployz_core::routing_from_metadata(request.metadata()).unwrap());
+        let machine_id = self.description.machine_id;
+        let (sender, receiver) = mpsc::channel(2);
+        tokio::spawn(async move {
+            use ployz_build::{
+                Output,
+                remote::{self, Event, Input, Outcome},
+            };
+            let mut request = request.into_inner();
+            let first = request.message().await.unwrap().unwrap();
+            let Input::Start(definition) = remote::decode(&first).unwrap() else {
+                panic!("expected Build definition")
+            };
+            recorder.targets.lock().unwrap().push(
+                definition
+                    .targets
+                    .iter()
+                    .map(|target| target.name.clone())
+                    .collect(),
+            );
+            sender
+                .send(Ok(remote::encode(&Event::Admitted { machine_id }).unwrap()))
+                .await
+                .unwrap();
+            let mut upload = remote::Upload::new().unwrap();
+            loop {
+                let payload = request.message().await.unwrap().unwrap();
+                let frame: Input = remote::decode(&payload).unwrap();
+                let finish = matches!(frame, Input::Finish);
+                upload.accept(frame).unwrap();
+                if finish {
+                    break;
+                }
+            }
+            recorder.uploads.fetch_add(1, Ordering::SeqCst);
+            let outcome = match definition.output {
+                Output::Validate => Outcome::Validated { machine_id },
+                Output::Registry => Outcome::Published { machine_id },
+                Output::Load => Outcome::Images {
+                    machine_id,
+                    images: definition
+                        .targets
+                        .iter()
+                        .map(|_| ployz_build::BuiltImage {
+                            reference: format!("example.test/api@sha256:{}", "1".repeat(64)),
+                            tags: vec!["example.test/api:built".into()],
+                            platform: "linux/amd64".into(),
+                        })
+                        .collect(),
+                },
+            };
+            let _ = sender
+                .send(Ok(remote::encode(&Event::Finished(outcome)).unwrap()))
+                .await;
+        });
+        Ok(Response::new(ReceiverStream::new(receiver)))
+    }
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
@@ -1011,4 +1084,13 @@ pub(super) async fn connected_client(
     .await
     .unwrap();
     (client, server, connects)
+}
+
+/// Records the owned Build transport. It never invokes a build tool and makes
+/// no claim that its synthetic image exists; informing tests establish that.
+#[derive(Default)]
+pub(super) struct BuildRecorder {
+    pub(super) routes: Mutex<Vec<ployz_core::RoutingRequest>>,
+    pub(super) targets: Mutex<Vec<Vec<String>>>,
+    pub(super) uploads: AtomicUsize,
 }

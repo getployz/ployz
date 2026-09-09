@@ -261,7 +261,7 @@ async fn wait_for_machines<'a>(
 
 fn request(header: &str, target: &str, body: Vec<u8>) -> http::Request<Body> {
     http::Request::builder()
-        .uri("/test.Echo/Call")
+        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
         .header("content-type", "application/grpc")
         .header(header, target)
         .body(Body::new(Full::new(Bytes::from(body))))

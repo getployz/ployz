@@ -143,6 +143,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.logs.v1",
             "ployz.machine.logs.v1",
             "ployz.container.exec.v1",
+            "ployz.build.v1",
         ]
     );
     assert_eq!(

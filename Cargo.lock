@@ -2159,11 +2159,16 @@ dependencies = [
 name = "ployz-build"
 version = "0.1.2-beta.35"
 dependencies = [
+ "oci-client",
+ "ployz-core",
  "rustix",
  "serde",
  "serde_json",
+ "serde_norway",
  "sha2",
  "thiserror 2.0.20",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2264,6 +2269,7 @@ dependencies = [
  "netlink-packet-wireguard",
  "nix",
  "ployz",
+ "ployz-build",
  "ployz-core",
  "ployz-relay",
  "ployz-testkit",

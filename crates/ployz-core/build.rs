@@ -25,7 +25,19 @@ fn main() {
         .client_streaming()
         .server_streaming()
         .build();
-    let machine_rpc = rpc_catalog!(build_service).method(exec).build();
+    let build = tonic_build::manual::Method::builder()
+        .name("build")
+        .route_name("Build")
+        .input_type("crate::rpc::OpaquePayload")
+        .output_type("crate::rpc::OpaquePayload")
+        .codec_path("tonic::codec::ProstCodec")
+        .client_streaming()
+        .server_streaming()
+        .build();
+    let machine_rpc = rpc_catalog!(build_service)
+        .method(exec)
+        .method(build)
+        .build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);
 }
 

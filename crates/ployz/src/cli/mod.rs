@@ -141,6 +141,16 @@ fn project_name(short: Option<char>) -> Arg {
 
 fn build() -> Command {
     base("build", "Build service images")
+        .arg(
+            Arg::new("remote")
+                .long("remote")
+                .num_args(0..=1)
+                .require_equals(true)
+                .default_missing_value("")
+                .value_name("MACHINE")
+                .conflicts_with("local"),
+        )
+        .arg(switch("local", None))
         .arg(repeated("build-arg"))
         .arg(switch("check", None))
         .arg(switch("deps", None))

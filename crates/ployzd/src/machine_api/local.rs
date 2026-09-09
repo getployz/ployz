@@ -44,6 +44,7 @@ pub struct MachineService {
     allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     runtime_watch: Arc<RuntimeWatch>,
+    pub(crate) build_policy: ployz_build::HostPolicy,
 }
 
 impl MachineService {
@@ -63,6 +64,7 @@ impl MachineService {
             allocator_endpoint: None,
             cloud_pairing: None,
             runtime_watch: Arc::default(),
+            build_policy: ployz_build::HostPolicy::default(),
         }
     }
 
@@ -251,6 +253,7 @@ impl MachineService {
 #[tonic::async_trait]
 impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
+    type BuildStream = RpcStream;
     type ContainerLogsStream = RpcStream;
     type MachineLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
@@ -583,6 +586,19 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(VolumeRemoved {}),
             Err(error) => respond(RpcError::from(&error)),
         }
+    }
+
+    async fn build(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::BuildStream>, Status> {
+        self.containers()
+            .map_err(|error| Status::unavailable(error.message))?;
+        Ok(Response::new(crate::build::start(
+            self.local_record()?.id(),
+            request.into_inner(),
+            self.build_policy.clone(),
+        )))
     }
 
     async fn exec(

@@ -5,6 +5,7 @@ mod convert;
 mod loader;
 mod model;
 mod ports;
+mod remote_build;
 mod secrets;
 
 pub use build::{

@@ -79,3 +79,35 @@ fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {
     assert!(!first_line.is_empty());
     assert_eq!(child.wait().unwrap().signal(), Some(13));
 }
+
+#[test]
+fn remote_build_target_requires_equals_and_preserves_positional_service() {
+    for (args, target, service) in [
+        (
+            vec!["ployz", "build", "--remote=tower", "api"],
+            "tower",
+            "api",
+        ),
+        (vec!["ployz", "build", "--remote", "api"], "", "api"),
+    ] {
+        let matches = ployz::cli::command().try_get_matches_from(args).unwrap();
+        let build = matches.subcommand_matches("build").unwrap();
+        assert_eq!(
+            build.get_one::<String>("remote").map(String::as_str),
+            Some(target)
+        );
+        assert_eq!(
+            build
+                .get_many::<String>("service")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [service]
+        );
+    }
+    assert!(
+        ployz::cli::command()
+            .try_get_matches_from(["ployz", "build", "--local", "--remote=tower"])
+            .is_err()
+    );
+}
