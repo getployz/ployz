@@ -319,6 +319,10 @@ fn join(path: &Path) {
     let details = inspect(path);
     let peer_key = ployzd::network::WireGuardPrivateKey::generate().public_key();
     let assigned = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("joined").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -328,6 +332,10 @@ fn join(path: &Path) {
         runtime: Default::default(),
     };
     let peer = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("peer").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),

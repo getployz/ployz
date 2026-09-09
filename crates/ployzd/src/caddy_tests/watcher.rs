@@ -462,6 +462,10 @@ struct WatcherFixture {
 
 async fn watcher_fixture() -> WatcherFixture {
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("a".repeat(32)).unwrap(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),

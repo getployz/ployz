@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, num::NonZeroU16};
 
 use crate::{
-    ContainerPath, ContainerResources, HostBind, IngressProxyFragment, MachinePath, MachineTarget,
-    Placement, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
+    ContainerPath, ContainerResources, HostBind, IngressProxyFragment, MachinePath, Placement,
+    PlacementConstraint, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode,
     ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol,
     UpdateConfig,
@@ -29,14 +29,14 @@ pub struct IngressProxyServiceSpecError;
 #[must_use]
 pub fn caddy_service_spec(
     image: String,
-    machines: Vec<MachineTarget>,
+    constraints: std::collections::BTreeSet<PlacementConstraint>,
     fragment: Option<IngressProxyFragment>,
 ) -> RequestedServiceSpec {
     RequestedServiceSpec {
         name: QualifiedService::system_ingress().name,
         mode: ServiceMode::Global,
         container: caddy_container(image),
-        placement: Placement { machines },
+        placement: Placement { constraints },
         ports: caddy_ports(),
         mount_graph: crate::ServiceMountGraph::parse(caddy_volume_graph(), Default::default())
             .expect("built-in Caddy mounts are valid"),
@@ -56,7 +56,7 @@ pub fn validate_requested_ingress_service_spec(
 ) -> Result<(), IngressProxyServiceSpecError> {
     let expected = caddy_service_spec(
         spec.container.image.clone(),
-        spec.placement.machines.clone(),
+        spec.placement.constraints.clone(),
         spec.ingress_proxy_fragment.clone(),
     );
     (expected == *spec)
@@ -77,7 +77,7 @@ pub fn validate_ingress_service_spec(
     }
     let expected = caddy_service_spec(
         spec.container.image.clone(),
-        spec.placement.machines.clone(),
+        spec.placement.constraints.clone(),
         spec.ingress_proxy_fragment.clone(),
     )
     .to_resolved(spec.service_id, spec.update.clone())
@@ -178,7 +178,7 @@ mod tests {
     use std::num::NonZeroU32;
 
     use crate::{
-        ConfigSpec, MachineTarget, ResolvedUpdateConfig, ServiceConfigGraph, ServiceId,
+        ConfigSpec, PlacementConstraint, ResolvedUpdateConfig, ServiceConfigGraph, ServiceId,
         ServiceMode, ServiceName, ServiceVolumeGraph, UpdateOrder,
     };
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn caddy_wiring_round_trips_through_both_validators() {
-        let machines = vec![MachineTarget::parse("edge").unwrap()];
+        let machines = [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
         let requested = caddy_service_spec("example.test/ingress:override".into(), machines, None);
 
         assert!(validate_requested_ingress_service_spec(&requested).is_ok());
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn validators_reject_noncanonical_whole_spec_fields() {
-        let requested = caddy_service_spec("caddy:test".into(), Vec::new(), None);
+        let requested = caddy_service_spec("caddy:test".into(), Default::default(), None);
 
         let mut wrong_mode = requested.clone();
         wrong_mode.mode = ServiceMode::Replicated {

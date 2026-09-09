@@ -337,6 +337,10 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
 fn machine() -> ployz_core::MachineObservation {
     ployz_core::MachineObservation::new(
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-1").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),

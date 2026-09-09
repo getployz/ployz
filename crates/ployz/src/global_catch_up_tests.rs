@@ -8,8 +8,8 @@ use std::{
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, DockerVolumeName, HealthObservation, Machine, MachineId,
-    MachineName, MachineTarget, Placement, ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+    MachineName, Placement, PlacementConstraint, ProjectName, ProvisionedVolumeMaximumBytes,
+    PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, WireGuardPublicKey,
     service_containers,
@@ -43,9 +43,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             },
             omissions: if failed { Vec::new() } else { vec![peer.id] },
         };
-        let error = catch_up_globals(&mut client, &joiner, false)
-            .await
-            .unwrap_err();
+        let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
         let message = joined_catch_up_error(error);
         assert!(
             message.contains("partial Service observations"),
@@ -84,7 +82,7 @@ async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
         storage: Ok(None),
     };
 
-    assert!(catch_up_globals(&mut client, &joiner, true).await.is_err());
+    assert!(catch_up_globals(&mut client, &joiner).await.is_err());
     assert_eq!(client.ensure_calls.get(), 0);
 }
 
@@ -108,9 +106,7 @@ async fn successful_ensure_is_reobserved_before_success() {
         storage: Ok(None),
     };
 
-    let error = catch_up_globals(&mut client, &joiner, true)
-        .await
-        .unwrap_err();
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert_eq!(client.ensure_calls.get(), 1);
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
@@ -136,9 +132,7 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         storage: Ok(None),
     };
 
-    let error = catch_up_globals(&mut client, &joiner, true)
-        .await
-        .unwrap_err();
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -177,9 +171,7 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         storage: Ok(None),
     };
 
-    let error = catch_up_globals(&mut client, &joiner, true)
-        .await
-        .unwrap_err();
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -211,9 +203,7 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         storage: Ok(None),
     };
 
-    let error = catch_up_globals(&mut client, &joiner, true)
-        .await
-        .unwrap_err();
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert_eq!(client.ensure_calls.get(), 1);
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
@@ -245,9 +235,7 @@ async fn another_projects_matching_shape_does_not_satisfy_catch_up() {
         storage: Ok(None),
     };
 
-    let error = catch_up_globals(&mut client, &joiner, true)
-        .await
-        .unwrap_err();
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert_eq!(client.ensure_calls.get(), 1);
     assert_eq!(error.unresolved, [qualified("prod", "api")]);
 }
@@ -332,8 +320,8 @@ fn two_joiners_each_plan_only_their_own_slot() {
         running_on(&founder, 'a'),
     );
 
-    let first_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &first, None, false);
-    let second_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &second, None, false);
+    let first_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &first, None);
+    let second_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &second, None);
 
     assert_eq!(identities(&first_slots), ["ployz-system/ingress"]);
     assert_eq!(identities(&second_slots), ["ployz-system/ingress"]);
@@ -349,12 +337,7 @@ fn two_joiners_each_plan_only_their_own_slot() {
 fn add_machine_inherits_observed_caddy_ingress_spec() {
     let founder = machine('f', "founder");
     let joiner = machine('1', "joiner");
-    let slots = plan_global_catch_up(
-        &[observed_caddy_ingress(&founder, 'c')],
-        &joiner,
-        None,
-        false,
-    );
+    let slots = plan_global_catch_up(&[observed_caddy_ingress(&founder, 'c')], &joiner, None);
     assert_eq!(slots.len(), 1);
     assert_eq!(
         slots.first().unwrap().resolved_spec().container.command,
@@ -363,66 +346,42 @@ fn add_machine_inherits_observed_caddy_ingress_spec() {
 }
 
 #[test]
-fn skip_ingress_omits_system_ingress_and_keeps_other_globals() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let services = [
-        global_service(
-            QualifiedService::system_ingress(),
-            'c',
-            Placement::default(),
-            running_on(&founder, 'a'),
-        ),
-        global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&founder, 'b'),
-        ),
-    ];
-
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None, true)),
-        ["app/api"]
-    );
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None, false)),
-        ["ployz-system/ingress", "app/api"]
-    );
-}
-
-#[test]
-fn x_machines_excluding_this_joiner_plans_no_slot() {
+fn constraints_excluding_this_joiner_plans_no_slot() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
     let services = [global_service(
         qualified("app", "api"),
         'a',
         Placement {
-            machines: vec![MachineTarget::parse("founder").unwrap()],
+            constraints: [
+                PlacementConstraint::parse(format!("node.id == {}", founder.id)).unwrap(),
+            ]
+            .into(),
         },
         running_on(&founder, 'a'),
     )];
-    assert!(plan_global_catch_up(&services, &joiner, None, false).is_empty());
+    assert!(plan_global_catch_up(&services, &joiner, None).is_empty());
 }
 
 #[test]
-fn x_machines_including_this_joiner_plans_a_slot() {
+fn constraints_including_this_joiner_plans_a_slot() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
     let services = [global_service(
         qualified("app", "api"),
         'a',
         Placement {
-            machines: vec![
-                MachineTarget::parse("founder").unwrap(),
-                MachineTarget::parse("joiner").unwrap(),
-            ],
+            constraints: [PlacementConstraint::parse(format!(
+                "node.id != {}",
+                machine('2', "other").id
+            ))
+            .unwrap()]
+            .into(),
         },
         running_on(&founder, 'a'),
     )];
     assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None, false)),
+        identities(&plan_global_catch_up(&services, &joiner, None)),
         ["app/api"]
     );
 }
@@ -440,7 +399,6 @@ fn catch_up_never_names_a_peer_machine() {
         )],
         &joiner,
         None,
-        false,
     );
     let spec = &slots
         .first()
@@ -473,7 +431,7 @@ fn machine_add_places_user_globals_not_only_ingress() {
         ),
     ];
     assert_eq!(
-        identities(&plan_global_catch_up(&services, &added, None, false)),
+        identities(&plan_global_catch_up(&services, &added, None)),
         ["ployz-system/ingress", "shop/worker"]
     );
 }
@@ -488,7 +446,7 @@ fn created_not_started_on_this_machine_is_still_a_slot() {
         created_on(&joiner, 'a'),
     )];
     assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None, false)),
+        identities(&plan_global_catch_up(&services, &joiner, None)),
         ["app/api"]
     );
 }
@@ -502,7 +460,7 @@ fn running_on_this_machine_is_not_a_slot() {
         Placement::default(),
         running_on(&joiner, 'a'),
     )];
-    assert!(plan_global_catch_up(&services, &joiner, None, false).is_empty());
+    assert!(plan_global_catch_up(&services, &joiner, None).is_empty());
 }
 
 #[test]
@@ -519,7 +477,7 @@ fn replicated_services_are_not_catch_up_slots() {
             .expect("volume graph is scoped"),
         running_on(&founder, 'a'),
     )];
-    assert!(plan_global_catch_up(&services, &joiner, None, false).is_empty());
+    assert!(plan_global_catch_up(&services, &joiner, None).is_empty());
 }
 
 #[tokio::test]
@@ -604,7 +562,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
             failures: Vec::new(),
             omissions: Vec::new(),
         };
-        let result = catch_up_globals(&mut client, &joiner, false).await;
+        let result = catch_up_globals(&mut client, &joiner).await;
         assert_eq!(client.ensure_calls.get(), expected_calls + 1);
         assert_eq!(result.is_err(), incomplete);
         if let Err(error) = result {
@@ -619,7 +577,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
 }
 
 fn observed_caddy_ingress(machine: &Machine, id: char) -> ServiceObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None)
+    let spec = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
         .to_resolved(service_id(id), ResolvedUpdateConfig::default())
         .expect("volume graph is scoped");
     let mut container = running_on(machine, id);
@@ -638,6 +596,10 @@ fn identities(slots: &[ObservedGlobalSlotSpec]) -> Vec<String> {
 
 fn machine(hex: char, name: &str) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
@@ -888,4 +850,40 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
             server.abort();
         }
     }
+}
+
+#[test]
+fn joiner_evaluates_stored_labels_and_independent_acceptance() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    let services = [
+        observed_caddy_ingress(&founder, 'c'),
+        global_service(
+            qualified("app", "api"),
+            'a',
+            Placement {
+                constraints: [PlacementConstraint::parse("node.labels.tier == runtime").unwrap()]
+                    .into(),
+            },
+            running_on(&founder, 'a'),
+        ),
+    ];
+    assert_eq!(
+        identities(&plan_global_catch_up(&services, &joiner, None)),
+        ["ployz-system/ingress"]
+    );
+    joiner
+        .labels
+        .insert("tier".parse().unwrap(), "RUNTIME".parse().unwrap());
+    joiner.accepts_ingress = false;
+    assert_eq!(
+        identities(&plan_global_catch_up(&services, &joiner, None)),
+        ["app/api"]
+    );
+    joiner.accepts_services = false;
+    joiner.accepts_ingress = true;
+    assert_eq!(
+        identities(&plan_global_catch_up(&services, &joiner, None)),
+        ["ployz-system/ingress"]
+    );
 }

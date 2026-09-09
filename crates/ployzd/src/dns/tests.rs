@@ -19,6 +19,10 @@ const SUBNET: &str = "10.210.1.0/24";
 #[tokio::test]
 async fn run_reports_subscription_failure() {
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: SUBNET.parse().unwrap(),

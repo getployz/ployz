@@ -376,6 +376,7 @@ impl Cluster {
             client
                 .initialize(
                     op::Initialize::into_request(InitializeRequest {
+                        initial_policy: Default::default(),
                         name: MachineName::parse("machine-1")?,
                         cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
                         public_ip: None,
@@ -1045,6 +1046,10 @@ mod tests {
 
         fn machine(name: &str, key: u8) -> Machine {
             Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: MachineId::random(),
                 name: MachineName::parse(name).unwrap(),
                 subnet: format!("10.210.{key}.0/24").parse().unwrap(),

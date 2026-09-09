@@ -1,7 +1,7 @@
 //! Ingress Proxy identity and deployment boundaries.
 
 use ployz_core::{
-    ContainerObservation, IngressProxyFragment, MachineTarget, QualifiedService,
+    ContainerObservation, IngressProxyFragment, PlacementConstraint, QualifiedService,
     RequestedServiceSpec, caddy_service_spec,
 };
 
@@ -15,14 +15,14 @@ pub use caddy::IngressImageError;
 /// Returns when the Caddy image cannot be discovered.
 pub async fn service_spec(
     image: Option<String>,
-    machines: Vec<MachineTarget>,
+    constraints: std::collections::BTreeSet<PlacementConstraint>,
     fragment: Option<IngressProxyFragment>,
 ) -> Result<RequestedServiceSpec, IngressImageError> {
     let image = match image {
         Some(image) => image,
         None => caddy::latest_image().await?,
     };
-    Ok(caddy_service_spec(image, machines, fragment))
+    Ok(caddy_service_spec(image, constraints, fragment))
 }
 
 /// True when this observation is the reserved Ingress Proxy Service.
@@ -33,16 +33,17 @@ pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{IngressProxyFragment, MachineTarget, ServiceMode};
+    use ployz_core::{IngressProxyFragment, PlacementConstraint, ServiceMode};
 
     use super::*;
 
     #[tokio::test]
     async fn builds_the_caddy_service_spec() {
-        let machines = vec![MachineTarget::parse("edge").unwrap()];
+        let constraints: std::collections::BTreeSet<_> =
+            [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
         let caddy = service_spec(
             Some("registry.test/caddy@sha256:caddy".into()),
-            machines.clone(),
+            constraints.clone(),
             Some(IngressProxyFragment::parse("{ admin off }").unwrap()),
         )
         .await
@@ -50,7 +51,7 @@ mod tests {
 
         assert_eq!(caddy.name, QualifiedService::system_ingress().name);
         assert_eq!(caddy.mode, ServiceMode::Global);
-        assert_eq!(caddy.placement.machines, machines);
+        assert_eq!(caddy.placement.constraints, constraints);
         assert_eq!(
             caddy.container.command,
             ["caddy", "run", "-c", "/config/caddy/Caddyfile"]

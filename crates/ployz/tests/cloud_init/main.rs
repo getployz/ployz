@@ -4,6 +4,7 @@ mod catch_up;
 mod daemon_sync;
 mod founder_resumption;
 mod harness;
+mod policy;
 
 use harness::{
     CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, RelayListen,
@@ -93,7 +94,8 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
 
 #[tokio::test]
 async fn cloud_zfs_rejects_a_remote_machine_before_join() {
-    let registration = registration();
+    let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
     let pairing = CloudPairing::parse(
         "https://relay.example.invalid",
         PairingCredential::parse(PAIRING).unwrap(),
@@ -175,7 +177,10 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
             "10.210.0.0/16",
             "--wg-mtu",
             "1400",
-            "--no-ingress",
+            "--accepts-services=false",
+            "--accepts-ingress=false",
+            "--label-add",
+            "pool=build",
             "--no-dns",
             "--yes",
         ])
@@ -196,6 +201,24 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
 
     let initialized = daemon.initialize_request();
     assert_eq!(initialized.name.as_str(), "founder");
+    assert!(
+        !initialized.initial_policy.accepts_services,
+        "Initialize must carry the complete initial policy"
+    );
+    assert!(!initialized.initial_policy.accepts_ingress);
+    assert_eq!(
+        initialized
+            .initial_policy
+            .labels
+            .get("pool")
+            .unwrap()
+            .as_str(),
+        "build"
+    );
+    assert_eq!(
+        enroll.posts().first().unwrap().get("initialPolicy"),
+        Some(&serde_json::to_value(&initialized.initial_policy).unwrap())
+    );
     assert_eq!(initialized.cluster_network.to_string(), "10.210.0.0/16");
     assert_eq!(initialized.wireguard_mtu, Some(1400));
     assert!(
@@ -351,7 +374,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
             &enroll.url,
             "--name",
             "founder",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--yes",
         ])
         .output()
@@ -502,7 +525,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
             &enroll.url,
             "--name",
             "founder",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
             "--yes",
         ])
@@ -555,7 +578,7 @@ async fn init_cloud(
         enroll_url,
         "--name",
         name,
-        "--no-ingress",
+        "--accepts-ingress=false",
         "--no-dns",
     ]);
     if reset {
@@ -625,6 +648,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     client
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -680,6 +704,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         .await
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -707,7 +732,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
             "not-a-cidr",
             "--reset",
             "--yes",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
         ])
         .output()
@@ -727,6 +752,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
 async fn reset_enroll_posts_the_rotated_public_key() {
     let local = registration();
     let mut assigned = local.clone();
+    assigned.assigned_machine.accepts_ingress = false;
     assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
     let relay = RelayListen::start().await;
     let pairing =
@@ -746,6 +772,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     client
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: local.assigned_machine.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -795,6 +822,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
 async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
     let local = registration();
     let mut assigned = local.clone();
+    assigned.assigned_machine.accepts_ingress = false;
     assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
     assigned.assigned_machine.name = ployz_core::MachineName::parse("rejoined").unwrap();
     let relay = RelayListen::start().await;
@@ -813,6 +841,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
     client
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: local.assigned_machine.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -882,6 +911,7 @@ async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
     client
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: founder.name.clone(),
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -925,6 +955,7 @@ async fn set_cloud_pairing_none_leaves_relay_list() {
     client
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: founder.name.clone(),
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -1054,9 +1085,10 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
 }
 
 #[tokio::test]
-async fn join_no_ingress_skips_ingress_and_still_places_other_globals() {
+async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     let founder = founder_machine();
     let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
     registration.visible_peers = vec![founder.clone()];
     let relay = RelayListen::start().await;
     let pairing =
@@ -1085,7 +1117,7 @@ async fn join_no_ingress_skips_ingress_and_still_places_other_globals() {
             &enroll.url,
             "--name",
             "joiner",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--yes",
         ])
         .output()
@@ -1099,6 +1131,15 @@ async fn join_no_ingress_skips_ingress_and_still_places_other_globals() {
     );
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("app", "api")]);
+    assert!(daemon.containers().iter().all(|container| {
+        container.machine_id == founder.id || container.resolved_spec.name.as_str() != "ingress"
+    }));
+    let details = connect_daemon(machine_addr)
+        .await
+        .call::<op::Inspect>(InspectRequest::default(), None)
+        .await
+        .unwrap();
+    assert!(!details.machine.unwrap().accepts_ingress);
 }
 
 #[tokio::test]

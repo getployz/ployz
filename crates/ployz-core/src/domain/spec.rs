@@ -14,12 +14,13 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    ByteQuantity, CpuNanos, ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph,
+    ByteQuantity, CpuNanos, Placement, ServiceConfigGraph, ServiceSpecGraphError,
+    ServiceVolumeGraph,
 };
 use crate::{
     ClusterDomainLabel, ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost,
-    MachinePath, MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName,
-    ServiceVolume, ValueError,
+    MachinePath, PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName, ServiceVolume,
+    ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -194,13 +195,6 @@ pub struct ConfigMount {
     pub gid: Option<u64>,
     #[serde(default)]
     pub mode: Option<u32>,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct Placement {
-    /// Machine Targets. An empty list remains every eligible Machine.
-    #[serde(default)]
-    pub machines: Vec<MachineTarget>,
 }
 
 /// Docker's healthcheck disable token. Configured commands cannot begin with it.

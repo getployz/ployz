@@ -28,7 +28,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
     let project = ProjectName::parse("app").unwrap();
     let mut ineligible = spec_with_sources(Vec::new());
     ineligible.placement = ployz_core::Placement {
-        machines: vec![ployz_core::MachineTarget::parse("other").unwrap()],
+        constraints: ["node.labels.target==other".parse().unwrap()].into(),
     };
 
     let ordinary = runtime
@@ -162,7 +162,11 @@ async fn observer_eligible_target_ineligible_retires_the_existing_global_slot() 
     let project = ProjectName::parse("app").unwrap();
     install_existing_global_slot(&runtime, &fake, &spec, "running").await;
     assert!(matches!(
-        spec.placement_eligibility(&machine, Some(&MachineStorageObservation::Ready)),
+        spec.placement_eligibility_in_project(
+            &project,
+            &machine,
+            Some(&MachineStorageObservation::Ready)
+        ),
         ServicePlacementEligibility::Eligible
     ));
 
@@ -245,7 +249,11 @@ async fn observer_ineligible_target_eligible_ensures_and_starts_the_existing_glo
     let project = ProjectName::parse("app").unwrap();
     install_existing_global_slot(&runtime, &fake, &spec, "exited").await;
     assert!(matches!(
-        spec.placement_eligibility(&machine, Some(&MachineStorageObservation::Stateless)),
+        spec.placement_eligibility_in_project(
+            &project,
+            &machine,
+            Some(&MachineStorageObservation::Stateless)
+        ),
         ServicePlacementEligibility::Ineligible(_)
     ));
 

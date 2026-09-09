@@ -244,6 +244,10 @@ fn volume_snapshot_rejects_duplicate_and_contradictory_evidence() {
 fn machine(hex: char) -> MachineObservation {
     MachineObservation::new(
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: machine_id(hex),
             name: MachineName::parse(format!("machine-{hex}")).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())

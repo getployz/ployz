@@ -214,6 +214,33 @@ macro_rules! validated_string_newtype {
     };
 }
 
+pub(crate) fn is_swarm_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"_-.".contains(&byte)
+}
+
+pub(crate) fn is_swarm_value_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b":-_ \t\r\n\x0c.*()?+[]\\^$|/".contains(&byte)
+}
+
+validated_string_newtype!(
+    /// A nonempty ASCII Machine Label key selectable by a placement constraint.
+    MachineLabelKey, "Machine Label key", "nonempty ASCII letters, digits, '_', '.', or '-'",
+    |value| !value.is_empty() && value.bytes().all(is_swarm_key_byte)
+);
+validated_string_newtype!(
+    /// A nonempty printable Swarm value with no leading or trailing whitespace.
+    MachineLabelValue, "Machine Label value", "a nonempty printable ASCII Swarm value without leading or trailing whitespace",
+    |value| !value.is_empty()
+        && value.trim() == value
+        && value.bytes().all(|byte| !byte.is_ascii_control() && is_swarm_value_byte(byte))
+);
+
+impl std::borrow::Borrow<str> for MachineLabelKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 hex_id_newtype!(
     MachineId,
     "Machine ID",

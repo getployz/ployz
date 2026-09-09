@@ -11,6 +11,7 @@ use crate::{
 
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let policy = super::enrollment_policy(matches)?;
     if matches.get_one::<String>("connect").is_some() {
         return Err(Error::usage(
             "machine init creates a new context; do not use --connect",
@@ -85,6 +86,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         let machine = helpers::initialize(
             &mut target,
             InitializeRequest {
+                initial_policy: policy,
                 name,
                 cluster_network,
                 public_ip: token.public_ip,
@@ -111,7 +113,6 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         println!("Switched context to '{current_context}'");
     }
     println!("Initialised Machine {} ({})", machine.name, machine.id);
-    let want_ingress = !matches.get_flag("no-ingress");
     let want_dns = !matches.get_flag("no-dns");
     let ingress_recovery =
         super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
@@ -136,8 +137,8 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             })?;
             println!("Reserved Cluster domain: {domain}");
         }
-        if want_ingress {
-            let requested = crate::ingress::service_spec(None, Vec::new(), None).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
+        if machine.accepts_ingress {
+            let requested = crate::ingress::service_spec(None, Default::default(), None).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
             crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
                 let error: Error = error.into();
                 Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))

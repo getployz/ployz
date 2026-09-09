@@ -416,6 +416,10 @@ mod tests {
 
     fn machine(id: char, subnet: u8) -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(id.to_string()).unwrap(),
             subnet: format!("10.210.{subnet}.0/24").parse().unwrap(),

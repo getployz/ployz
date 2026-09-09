@@ -23,34 +23,6 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
     cluster.initialize_two().await.unwrap();
     let address = cluster.api_socket_address(0).unwrap();
 
-    assert_success(ployz(
-        address,
-        [
-            "run",
-            "--mode",
-            "global",
-            "--machine",
-            "machine-1",
-            SERVICE_CONTAINER_IMAGE,
-            "sleep",
-            "60",
-        ],
-    ));
-    assert_success(ployz(
-        address,
-        [
-            "run",
-            "--name",
-            "scaled-workflow",
-            "--machine",
-            "machine-1",
-            SERVICE_CONTAINER_IMAGE,
-            "sleep",
-            "60",
-        ],
-    ));
-    assert_success(ployz(address, ["scale", "--yes", "scaled-workflow", "2"]));
-
     let mut client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
@@ -71,6 +43,35 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         .collect::<BTreeMap<_, _>>();
     let machine_1 = machine_ids.get("machine-1").unwrap();
     let machine_2 = machine_ids.get("machine-2").unwrap();
+
+    assert_success(ployz(
+        address,
+        [
+            "run",
+            "--mode",
+            "global",
+            "--constraint",
+            &format!("node.id=={machine_1}"),
+            SERVICE_CONTAINER_IMAGE,
+            "sleep",
+            "60",
+        ],
+    ));
+    assert_success(ployz(
+        address,
+        [
+            "run",
+            "--name",
+            "scaled-workflow",
+            "--constraint",
+            &format!("node.id=={machine_1}"),
+            SERVICE_CONTAINER_IMAGE,
+            "sleep",
+            "60",
+        ],
+    ));
+    assert_success(ployz(address, ["scale", "--yes", "scaled-workflow", "2"]));
+
     let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 3).await;
     let scaled = observed_service(&initial_run, "scaled-workflow");
     assert_eq!(scaled.containers.len(), 2);
@@ -136,7 +137,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
     fs::write(
         root.join("missing.yaml"),
         format!(
-            "services:\n  impossible:\n    image: {SERVICE_CONTAINER_IMAGE}\n    x-machines: [missing-machine]\n"
+            "services:\n  impossible:\n    image: {SERVICE_CONTAINER_IMAGE}\n    deploy: {{placement: {{constraints: [node.labels.missing==true]}}}}\n"
         ),
     )
     .unwrap();
@@ -150,12 +151,12 @@ services:
   database:
     image: {SERVICE_CONTAINER_IMAGE}
     command: [sleep, "60"]
-    x-machines: [machine-1]
+    deploy: {{placement: {{constraints: [node.id=={machine_1}]}}}}
   api:
     image: {SERVICE_CONTAINER_IMAGE}
     command: [sleep, "60"]
     depends_on: [database]
-    x-machines: [machine-2]
+    deploy: {{placement: {{constraints: [node.id=={machine_2}]}}}}
     x-ports: [18080:8080/tcp@host]
     x-pre_deploy: {{command: [sh, -c, "exit 0"]}}
     configs: [{{source: message, target: /message.txt}}]
@@ -264,11 +265,22 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         assert_success(ployz(
             address,
             [
+                "machine",
+                "update",
+                "machine-2",
+                "--label-add",
+                "fixture=machine-2",
+            ],
+        ));
+
+        assert_success(ployz(
+            address,
+            [
                 "run",
                 "--name",
                 "replicated",
-                "--machine",
-                "machine-2",
+                "--constraint",
+                "node.labels.fixture==machine-2",
                 "--skip-health",
                 SERVICE_CONTAINER_IMAGE,
                 "sleep",

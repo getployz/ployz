@@ -166,7 +166,7 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
             .into_rpc_error();
         assert_eq!(error.details.get("code").unwrap(), "volume_size_conflict");
         for service in &mut services {
-            service.placement.machines = vec![MachineTarget::parse("empty").unwrap()];
+            service.placement.constraints = [label_constraint("empty")].into();
         }
         assert!(
             preview_deploy(&intent(&services), &snapshot, IngressContext::default()).is_err(),
@@ -209,7 +209,7 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
         assert_eq!(error.details.get("machine").unwrap(), "unobserved-owner");
         let mut targeted = intent();
         for service in &mut targeted.target {
-            service.placement.machines = vec![MachineTarget::parse("empty").unwrap()];
+            service.placement.constraints = [label_constraint("empty")].into();
         }
         assert!(preview_deploy(&targeted, &snapshot, IngressContext::default()).is_err());
     }
@@ -291,7 +291,7 @@ fn placement_budgets_include_observed_pinned_commitments() {
                 make_provisioned(&mut service, volume, 30 * STORAGE_GIB);
                 if matches!(usage, Usage::Global) && volume == "data" {
                     service.mode = ServiceMode::Global;
-                    service.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+                    service.placement.constraints = [label_constraint("first")].into();
                 }
                 service
             })

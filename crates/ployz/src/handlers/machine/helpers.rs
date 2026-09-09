@@ -137,6 +137,7 @@ pub(in crate::handlers) async fn initialize(
         .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
         .await?;
     let name = request.name.clone();
+    let initial_policy = request.initial_policy.clone();
     match client.call_unretried::<op::Initialize>(request, None).await {
         Ok(initialized) => Ok(initialized),
         Err(error) if error.is_setup_retryable() => {
@@ -159,11 +160,15 @@ pub(in crate::handlers) async fn initialize(
                     "Initialization outcome belongs to a different Machine identity; inspect the Machine before retrying; do not reset it",
                 ));
             }
-            Ok(ployz_core::Initialized {
-                machine: details
-                    .machine
-                    .expect("observed predicate verified the initialized Machine"),
-            })
+            let machine = details
+                .machine
+                .expect("observed predicate verified the initialized Machine");
+            if !initial_policy.matches(&machine) {
+                return Err(Error::usage(
+                    "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+                ));
+            }
+            Ok(ployz_core::Initialized { machine })
         }
         Err(error) => Err(error.into()),
     }
@@ -194,19 +199,35 @@ pub(in crate::handlers) async fn join(
     client: &mut Client,
     request: ployz_core::JoinRequest,
 ) -> Result<(), Error> {
-    let assigned = request.registration.assigned_machine.id;
+    let assigned = &request.registration.assigned_machine;
+    let initial_policy = ployz_core::InitialMachinePolicy {
+        labels: assigned.labels.clone(),
+        accepts_builds: assigned.accepts_builds,
+        accepts_services: assigned.accepts_services,
+        accepts_ingress: assigned.accepts_ingress,
+    };
+    let assigned = assigned.id;
     match client.call_unretried::<op::Join>(request, None).await {
         Ok(_) => Ok(()),
         Err(error) if error.is_setup_retryable() => {
-            observe_mutation(client, "Join", &error, MACHINE_START_WAIT, |details| {
+            let details = observe_mutation(client, "Join", &error, MACHINE_START_WAIT, |details| {
                 details.id == assigned
                     && matches!(
                         details.phase,
                         LocalMachinePhase::Joining | LocalMachinePhase::Participating
                     )
             })
-            .await
-            .map(drop)
+            .await?;
+            if !details
+                .machine
+                .as_ref()
+                .is_some_and(|machine| initial_policy.matches(machine))
+            {
+                return Err(Error::usage(
+                    "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+                ));
+            }
+            Ok(())
         }
         Err(error) => Err(error.into()),
     }

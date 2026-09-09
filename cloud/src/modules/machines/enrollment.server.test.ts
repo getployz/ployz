@@ -14,6 +14,12 @@ import {
 const preferred = Schema.decodeUnknownSync(rustMachineIdSchema)("a".repeat(32));
 const other = Schema.decodeUnknownSync(rustMachineIdSchema)("b".repeat(32));
 const identity: RegisterRequest = {
+  initial_policy: {
+    labels: {},
+    accepts_builds: true,
+    accepts_services: true,
+    accepts_ingress: true,
+  },
   name: "node-1",
   storage: "none",
   public_key: Array.from<number>({ length: 32 }).fill(2),

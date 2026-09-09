@@ -1026,6 +1026,10 @@ pub(super) fn skip_health() -> PlanOptions {
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
     MachineObservation::new(
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())

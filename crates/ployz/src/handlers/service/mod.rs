@@ -79,7 +79,11 @@ fn service_counts(service: &ServiceObservation, machines: &[MachineObservation])
         .iter()
         .filter(|machine| machine.membership == MembershipObservation::Up)
     {
-        match spec.placement_eligibility(&machine.machine, machine.storage.as_ref()) {
+        match spec.placement_eligibility_in_project(
+            &service.identity.project,
+            &machine.machine,
+            machine.storage.as_ref(),
+        ) {
             ServicePlacementEligibility::Eligible => eligible += 1,
             ServicePlacementEligibility::Unknown(_) => unknown += 1,
             ServicePlacementEligibility::Ineligible(_) => {}

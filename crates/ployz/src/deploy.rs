@@ -6,7 +6,7 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
-    MachineName, MachineObservation, MachineTarget, PartialResult, ProjectName,
+    MachineName, MachineObservation, PartialResult, PlacementConstraint, ProjectName,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
@@ -330,7 +330,10 @@ fn affects_required(
 pub enum EliminatingConstraint {
     NoMachines,
     UnknownPlacement {
-        targets: Vec<MachineTarget>,
+        targets: Vec<PlacementConstraint>,
+    },
+    WorkNotAccepted {
+        names: Vec<MachineName>,
     },
     MachineDown {
         names: Vec<MachineName>,
@@ -342,11 +345,11 @@ pub enum EliminatingConstraint {
     VolumeConflictsWithPlacement {
         volume: DockerVolumeName,
         located_on: Vec<MachineName>,
-        requested: Vec<MachineTarget>,
+        requested: Vec<PlacementConstraint>,
     },
     SharedVolumeNoCommonMachine {
         volume: DockerVolumeName,
-        requested: Vec<MachineTarget>,
+        requested: Vec<PlacementConstraint>,
     },
 }
 
@@ -399,9 +402,13 @@ impl fmt::Display for EliminatingConstraint {
         match self {
             Self::NoMachines => f.write_str("no Machines in the Deploy Snapshot"),
             Self::UnknownPlacement { targets } => {
-                f.write_str("x-machines ")?;
+                f.write_str("placement constraints ")?;
                 write_quoted(f, targets)?;
                 f.write_str(" matched no Machine")
+            }
+            Self::WorkNotAccepted { names } => {
+                write_machine_names(f, names)?;
+                f.write_str(" do not accept this work")
             }
             Self::MachineDown { names } => {
                 write_machine_names(f, names)?;
@@ -422,11 +429,11 @@ impl fmt::Display for EliminatingConstraint {
             } => {
                 write!(f, "Docker Volume '{volume}' is already on ")?;
                 write_machine_names(f, located_on)?;
-                f.write_str(", which conflicts with x-machines ")?;
+                f.write_str(", which conflicts with placement constraints ")?;
                 write_quoted(f, requested)
             }
             Self::SharedVolumeNoCommonMachine { volume, requested } => {
-                f.write_str("x-machines ")?;
+                f.write_str("placement constraints ")?;
                 write_quoted(f, requested)?;
                 write!(f, " have no Machine in common for Docker Volume '{volume}'")
             }

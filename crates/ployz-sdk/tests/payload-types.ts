@@ -88,7 +88,7 @@ const web: RequestedServiceSpec = {
   name: "web" as ServiceName,
   mode: { mode: "replicated", replicas: 1 },
   container,
-  placement: { machines: [] },
+  placement: { constraints: [] },
   ports: [],
   volumes: [],
   mounts: [],
@@ -210,6 +210,12 @@ connect(connectOptions) satisfies Promise<Client>;
 listHeld("https://relay.example", "bearer", "pairing") satisfies Promise<HeldRegister[]>;
 const identity: RegisterRequest = {
   name: "machine",
+  initial_policy: {
+    labels: {},
+    accepts_builds: true,
+    accepts_services: true,
+    accepts_ingress: true,
+  },
   storage: "none",
   public_key: [],
   public_ip: null,

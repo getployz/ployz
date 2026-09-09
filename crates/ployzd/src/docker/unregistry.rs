@@ -345,6 +345,10 @@ mod tests {
 
     fn machine() -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-2").unwrap(),
             subnet: "10.210.2.0/24".parse().unwrap(),

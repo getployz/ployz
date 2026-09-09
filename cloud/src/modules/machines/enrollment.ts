@@ -76,9 +76,30 @@ const NonnegativeSafeInteger = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
 );
 
+const MachineLabelKey = Schema.String.check(
+  Schema.isTrimmed(),
+  Schema.isPattern(/^[A-Za-z0-9_.-]+$/u),
+);
+const MachineLabelValue = Schema.String.check(
+  Schema.isTrimmed(),
+  Schema.isPattern(/^[A-Za-z0-9:_ .()*?+[\]\\^$|/-]+$/u),
+);
+const initialMachinePolicySchema = Schema.Struct({
+  labels: Schema.Record(Schema.String, MachineLabelValue).check(
+    Schema.makeFilter(
+      (labels) => Object.keys(labels).every(Schema.is(MachineLabelKey)),
+      { message: "Machine Label keys must contain only ASCII letters, digits, '_', '.', or '-'." },
+    ),
+  ),
+  accepts_builds: Schema.Boolean,
+  accepts_services: Schema.Boolean,
+  accepts_ingress: Schema.Boolean,
+});
+
 export const enrollmentIdentitySchema = Schema.Struct({
   protocolVersion: Schema.Literal(ENROLLMENT_PROTOCOL_VERSION),
   name: NonEmptyString,
+  initialPolicy: initialMachinePolicySchema,
   publicKey: NonEmptyString.check(
     Schema.makeFilter((value) => wireGuardPublicKeyFromDisplay(value) !== null, {
       message: "publicKey must be a WireGuard Display base64 key.",
@@ -106,6 +127,7 @@ export function registerRequestFromEnrollmentIdentity(
   }
   return {
     name: identity.name,
+    initial_policy: identity.initialPolicy,
     storage: identity.requestedStorage,
     public_key: publicKey,
     public_ip: identity.publicIp ?? null,

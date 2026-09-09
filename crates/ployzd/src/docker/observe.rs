@@ -406,12 +406,13 @@ mod tests {
 
     #[test]
     fn publication_keeps_caddy_admin_so_redacted_caddy_stays_valid() {
-        let mut spec = ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None)
-            .to_resolved(
-                ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
-                ployz_core::ResolvedUpdateConfig::default(),
-            )
-            .expect("volume graph is scoped");
+        let mut spec =
+            ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
+                .to_resolved(
+                    ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                    ployz_core::ResolvedUpdateConfig::default(),
+                )
+                .expect("volume graph is scoped");
         spec.container
             .environment
             .insert("TOKEN".into(), "service-secret".into());

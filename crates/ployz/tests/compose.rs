@@ -209,10 +209,13 @@ fn normalized_surface_reaches_requested_specs() {
         }
     );
     assert_eq!(
-        api.placement.machines.first().unwrap().as_str(),
-        "machine-1"
+        api.placement.constraints.first().unwrap().as_str(),
+        "node.labels.Region==eu-west"
     );
-    assert_eq!(api.placement.machines.get(1).unwrap().as_str(), "machine-2");
+    assert_eq!(
+        api.placement.constraints.iter().nth(1).unwrap().as_str(),
+        "node.labels.disk!=slow"
+    );
     assert_eq!(api.update.order, Some(UpdateOrder::StopFirst));
     assert_eq!(api.update.monitor_millis, Some(45_000));
     assert!(matches!(api.mode, ServiceMode::Replicated { replicas } if replicas.get() == 3));
@@ -659,22 +662,13 @@ fn compose_normalizes_an_omitted_ordinary_volume_driver_to_local() {
 
 #[test]
 fn singular_ployz_extensions_warn_and_remain_ignored() {
-    for (typo, correction) in [("x-port", "x-ports"), ("x-machine", "x-machines")] {
-        let project = parse_normalized(
-            &format!("services: {{app: {{image: app, {typo}: ignored}}}}"),
-            ".",
-        )
-        .unwrap();
-
-        assert_eq!(
-            project.warnings,
-            [format!(
-                "service 'app': unsupported feature '{typo}'; use {correction}"
-            )]
-        );
-        assert!(service(&project, "app").ports.is_empty());
-        assert!(service(&project, "app").placement.machines.is_empty());
-    }
+    let project = parse_normalized("services: {app: {image: app, x-port: ignored}}", ".").unwrap();
+    assert_eq!(
+        project.warnings,
+        ["service 'app': unsupported feature 'x-port'; use x-ports"]
+    );
+    assert!(service(&project, "app").ports.is_empty());
+    assert!(service(&project, "app").placement.constraints.is_empty());
 }
 
 #[test]
@@ -684,7 +678,7 @@ fn extension_namespace_stays_open() {
 services:
   app:
     image: app
-    x-machines: one
+    deploy: {placement: {constraints: ["node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}}
     x-ports: [80/http]
     x-caddy: {}
     x-pre_deploy: {command: [echo, ready]}
@@ -719,12 +713,12 @@ fn pre_deploy_rejects_every_unknown_key() {
 }
 
 #[test]
-fn extensions_accept_machine_scalar_and_list_and_preserve_external_volumes() {
+fn compose_constraints_are_canonical_and_preserve_external_volumes() {
     let project = parse_normalized(
         r#"
 services:
-  scalar: {image: app, x-machines: one, volumes: [{type: volume, source: shared, target: /data}]}
-  list: {image: app, x-machines: [two, three]}
+  scalar: {image: app, deploy: {placement: {constraints: ["node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}}, volumes: [{type: volume, source: shared, target: /data}]}
+  list: {image: app, deploy: {placement: {constraints: ["node.id!=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "node.labels.disk!=slow"]}}}
 volumes:
   shared: {name: shared, external: true}
 "#,
@@ -734,20 +728,23 @@ volumes:
     assert_eq!(
         service(&project, "scalar")
             .placement
-            .machines
+            .constraints
             .first()
             .unwrap()
             .as_str(),
-        "one"
+        "node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
     assert_eq!(
         service(&project, "list")
             .placement
-            .machines
+            .constraints
             .iter()
             .map(|machine| machine.as_str())
             .collect::<Vec<_>>(),
-        ["two", "three"]
+        [
+            "node.id!=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "node.labels.disk!=slow"
+        ]
     );
     assert!(matches!(
         service(&project, "scalar")
@@ -1074,26 +1071,21 @@ volumes:
 }
 
 #[test]
-fn x_machines_rejects_star_and_keeps_all_as_identity() {
-    let rejected =
-        parse_normalized("services: {api: {image: app, x-machines: [\"*\"]}}", ".").unwrap_err();
-    assert!(
-        rejected
-            .to_string()
-            .contains("a non-empty Machine identity that is not a wildcard")
-    );
-
-    let project =
-        parse_normalized("services: {api: {image: app, x-machines: [all]}}", ".").unwrap();
-    assert_eq!(
-        service(&project, "api")
-            .placement
-            .machines
-            .first()
-            .unwrap()
-            .as_str(),
-        "all"
-    );
+fn compose_rejects_legacy_and_unsupported_placement() {
+    for yaml in [
+        "services: {api: {image: app, x-machines: [all]}}",
+        "services: {api: {image: app, x-machines: []}}",
+        "services: {api: {image: app, x-machine: edge}}",
+        "services: {api: {image: app, deploy: {placement: {constraints: [\"node.hostname==edge\"]}}}}",
+        "services: {api: {image: app, deploy: {placement: {constraints: [\"node.id=x\"]}}}}",
+        "services: {api: {image: app, deploy: {placement: {preferences: [{spread: node.labels.zone}]}}}}",
+    ] {
+        let error = parse_normalized(yaml, ".").unwrap_err().to_string();
+        assert!(
+            error.contains("placement") || error.contains("constraint"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -1898,8 +1890,8 @@ fn compose_plan_anchors_shared_replicated_volumes_and_rejects_mixed_modes() {
         r#"
 name: demo
 services:
-  first: {image: app, x-machines: [one, two], volumes: [{type: volume, source: data, target: /first}]}
-  second: {image: app, x-machines: two, volumes: [{type: volume, source: data, target: /second}]}
+  first: {image: app, volumes: [{type: volume, source: data, target: /first}]}
+  second: {image: app, deploy: {placement: {constraints: ["node.id==bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]}}, volumes: [{type: volume, source: data, target: /second}]}
 volumes: {data: {name: demo_data}}
 "#,
         ".",
@@ -1944,11 +1936,10 @@ volumes: {data: {name: demo_data}}
     let connected = parse_normalized(
         r#"
 services:
-  a-peer: {image: app, x-machines: [one, two], volumes: [{type: volume, source: a, target: /a}]}
-  b-peer: {image: app, x-machines: two, volumes: [{type: volume, source: b, target: /b}]}
+  a-peer: {image: app, volumes: [{type: volume, source: a, target: /a}]}
+  b-peer: {image: app, deploy: {placement: {constraints: ["node.id==bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]}}, volumes: [{type: volume, source: b, target: /b}]}
   flexible:
     image: app
-    x-machines: [one, two]
     volumes:
       - {type: volume, source: a, target: /a}
       - {type: volume, source: b, target: /b}
@@ -2051,8 +2042,8 @@ volumes: {data: {name: shared}}
     let disjoint = parse_normalized(
         r#"
 services:
-  first: {image: app, x-machines: one, volumes: [{type: volume, source: data, target: /first}]}
-  second: {image: app, x-machines: two, volumes: [{type: volume, source: data, target: /second}]}
+  first: {image: app, deploy: {placement: {constraints: ["node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}}, volumes: [{type: volume, source: data, target: /first}]}
+  second: {image: app, deploy: {placement: {constraints: ["node.id==bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]}}, volumes: [{type: volume, source: data, target: /second}]}
 volumes: {data: {name: shared}}
 "#,
         ".",
@@ -2074,7 +2065,7 @@ volumes: {data: {name: shared}}
                                 requested,
                             }]
                                 if volume.as_str() == "app_data"
-                                    && requested.iter().map(|target| target.as_str()).eq(["one", "two"])
+                                    && requested.iter().map(|target| target.as_str()).eq(["node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "node.id==bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"])
                         )
                 )
         ),
@@ -2082,7 +2073,7 @@ volumes: {data: {name: shared}}
     );
     assert!(
         display.contains(
-            "x-machines 'one', 'two' have no Machine in common for Docker Volume 'app_data'"
+            "placement constraints 'node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'node.id==bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' have no Machine in common for Docker Volume 'app_data'"
         ),
         "{display}"
     );

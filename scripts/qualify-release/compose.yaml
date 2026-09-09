@@ -7,7 +7,9 @@ services:
       - test -s /data/identity || printf 'qualify-persistent-data\n' > /data/identity; exec httpd -f -p 8080 -h /data
     volumes:
       - qualify-data:/data
-    x-machines: [qualify-1]
+    deploy:
+      placement:
+        constraints: [node.labels.qualify == primary]
     x-ports: [18082:8080/tcp@host]
 x-volumes:
   qualify-data: 256M

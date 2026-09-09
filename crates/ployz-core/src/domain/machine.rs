@@ -12,9 +12,9 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::{NameMatches, RelayEndpoint};
 use crate::{
-    AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
-    ManagementAddress, PairingCredential, Placement, SelectedEndpoint, ValueError,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
+    MachineSubnet, MachineTarget, ManagementAddress, PairingCredential, Placement,
+    SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -34,9 +34,54 @@ pub(super) fn resolve_machine_text<'a>(
     exact_id.map_or_else(|| NameMatches::from_matches(names), NameMatches::One)
 }
 
+/// Complete admission policy committed with a Machine's initial assignment.
+/// Every field is required on the wire; defaults are explicit caller choices.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct InitialMachinePolicy {
+    /// Operator classifications used by placement constraints.
+    pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
+    /// Whether to admit new Builds; revocation preserves existing work.
+    pub accepts_builds: bool,
+    /// Whether to admit new application Services; revocation preserves existing work.
+    pub accepts_services: bool,
+    /// Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
+    pub accepts_ingress: bool,
+}
+
+impl InitialMachinePolicy {
+    /// Whether this complete policy matches the currently observed Machine.
+    #[must_use]
+    pub fn matches(&self, machine: &Machine) -> bool {
+        self.labels == machine.labels
+            && self.accepts_builds == machine.accepts_builds
+            && self.accepts_services == machine.accepts_services
+            && self.accepts_ingress == machine.accepts_ingress
+    }
+}
+
+impl Default for InitialMachinePolicy {
+    fn default() -> Self {
+        Self {
+            labels: BTreeMap::new(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+        }
+    }
+}
+
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
+    /// Operator classifications used by placement constraints.
+    pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
+    /// Whether to admit new Builds; revocation preserves existing work.
+    pub accepts_builds: bool,
+    /// Whether to admit new application Services; revocation preserves existing work.
+    pub accepts_services: bool,
+    /// Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
+    pub accepts_ingress: bool,
     pub id: MachineId,
     pub name: MachineName,
     pub subnet: MachineSubnet,
@@ -204,33 +249,62 @@ pub enum PublicIpUpdate {
     Set(IpAddr),
 }
 
+/// One atomic metadata edit; omitted fields and Label keys preserve current values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineUpdate {
+    /// One change per Label key: a value sets it, `None` removes it.
+    #[serde(default)]
+    pub label_changes: BTreeMap<MachineLabelKey, Option<MachineLabelValue>>,
+    /// Change Build acceptance independently; `None` preserves it and existing work remains.
+    #[serde(default)]
+    pub accepts_builds: Option<bool>,
+    /// Change application Service acceptance independently; `None` preserves it.
+    #[serde(default)]
+    pub accepts_services: Option<bool>,
+    /// Change trusted Ingress acceptance independently; `None` preserves it.
+    #[serde(default)]
+    pub accepts_ingress: Option<bool>,
+    /// Replace the Machine Name, or preserve it when omitted.
     #[serde(default)]
     pub name: Option<MachineName>,
+    /// Explicitly preserve, remove, or replace the advertised public IP.
     #[serde(default)]
     pub public_ip: PublicIpUpdate,
+    /// Replace all Advertised Endpoints, or preserve them when omitted.
     #[serde(default)]
     pub advertised_endpoints: Option<Vec<AdvertisedEndpoint>>,
 }
 
 impl MachineUpdate {
+    /// Whether the patch requests no metadata changes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.name.is_none()
+        self.label_changes.is_empty()
+            && self.accepts_builds.is_none()
+            && self.accepts_services.is_none()
+            && self.accepts_ingress.is_none()
+            && self.name.is_none()
             && self.public_ip == PublicIpUpdate::Keep
             && self.advertised_endpoints.is_none()
     }
 }
 
+/// A metadata edit that cannot be applied to the observed Machine set.
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum MachineUpdateError {
+    /// Another observed Machine already uses the requested Name.
     #[error("Machine name is already visible on another Machine")]
     DuplicateName,
+    /// Replacing Advertised Endpoints with an empty list is not allowed.
     #[error("at least one Advertised Endpoint is required")]
     MissingEndpoints,
 }
 
+/// Apply one complete edit without modifying the source Machine.
+///
+/// # Errors
+/// Rejects a Name used by another visible Machine or an empty endpoint replacement.
 pub fn apply_machine_update(
     machine: &Machine,
     visible: &[Machine],
@@ -253,6 +327,22 @@ pub fn apply_machine_update(
     }
 
     let mut updated = machine.clone();
+    for (key, value) in update.label_changes {
+        if let Some(value) = value {
+            updated.labels.insert(key, value);
+        } else {
+            updated.labels.remove(&key);
+        }
+    }
+    if let Some(accepts) = update.accepts_builds {
+        updated.accepts_builds = accepts;
+    }
+    if let Some(accepts) = update.accepts_services {
+        updated.accepts_services = accepts;
+    }
+    if let Some(accepts) = update.accepts_ingress {
+        updated.accepts_ingress = accepts;
+    }
     if let Some(name) = update.name {
         updated.name = name;
     }
@@ -321,14 +411,13 @@ pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool
     machine.id.as_str() == target.as_str() || machine.name.as_str() == target.as_str()
 }
 
-/// Empty Placement is every Machine; otherwise any Machine Target matches.
+/// Empty Placement is every Machine; otherwise every constraint must match.
 #[must_use]
-pub(crate) fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
-    placement.machines.is_empty()
-        || placement
-            .machines
-            .iter()
-            .any(|target| machine_matches_target(machine, target))
+pub fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
+    placement
+        .constraints
+        .iter()
+        .all(|constraint| constraint.matches(machine))
 }
 
 /// Resolve fan-out selection to visible Machines. `*` selects every visible Machine;
@@ -725,14 +814,16 @@ mod cloud_pairing_tests {
 #[cfg(test)]
 mod placement_tests {
 
-    use crate::{
-        MachineId, MachineName, MachineSubnet, MachineTarget, Placement, WireGuardPublicKey,
-    };
+    use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
 
     use super::{Machine, machine_matches_placement};
 
     fn machine(hex: char, name: &str) -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: MachineSubnet::parse("10.210.0.0/24").unwrap(),
@@ -750,19 +841,33 @@ mod placement_tests {
     }
 
     #[test]
-    fn placement_targets_match_by_name_or_id() {
-        let first = machine('a', "first");
-        let by_name = Placement {
-            machines: vec![MachineTarget::parse("first").unwrap()],
-        };
-        let by_id = Placement {
-            machines: vec![MachineTarget::parse(first.id.as_str()).unwrap()],
-        };
-        let other = Placement {
-            machines: vec![MachineTarget::parse("other").unwrap()],
-        };
-        assert!(machine_matches_placement(&first, &by_name));
-        assert!(machine_matches_placement(&first, &by_id));
-        assert!(!machine_matches_placement(&first, &other));
+    fn placement_constraints_follow_swarm_matching() {
+        let mut first = machine('a', "first");
+        first
+            .labels
+            .insert("Region".parse().unwrap(), "EU-West".parse().unwrap());
+        for (expressions, expected) in [
+            (vec!["node.labels.Region==eu-WEST"], true),
+            (vec!["node.labels.region==eu-west"], false),
+            (vec!["node.labels.missing!=anything"], true),
+            (vec!["node.labels.missing==anything"], false),
+            (vec!["node.labels.Region==eu-*"], false),
+            (
+                vec![
+                    "node.labels.Region==eu-west",
+                    "node.id!=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                false,
+            ),
+            (vec!["node.id==AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], true),
+        ] {
+            let placement = Placement {
+                constraints: expressions
+                    .into_iter()
+                    .map(|text| crate::PlacementConstraint::parse(text).unwrap())
+                    .collect(),
+            };
+            assert_eq!(machine_matches_placement(&first, &placement), expected);
+        }
     }
 }

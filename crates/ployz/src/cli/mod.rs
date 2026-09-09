@@ -144,8 +144,9 @@ fn build_remote() -> Arg {
         .long("remote")
         .num_args(0..=1)
         .require_equals(true)
-        .default_missing_value(crate::build_location::AUTOMATIC)
+        .default_missing_value("")
         .value_name("MACHINE")
+        .help("Build remotely: choose automatically, or pin with --remote=MACHINE")
         .conflicts_with("local")
 }
 
@@ -169,7 +170,11 @@ fn build() -> Command {
 fn deploy() -> Command {
     base("deploy", "Deploy services from a Compose file")
         .arg(build_remote().conflicts_with("no-build"))
-        .arg(switch("local", None))
+        .arg(
+            switch("local", None)
+                .conflicts_with("no-build")
+                .help("Build on this CLI host instead of an automatically selected Machine"),
+        )
         .arg(repeated("build-arg"))
         .arg(switch("build-pull", None))
         .arg(many("file", Some('f')).default_value("compose.yaml"))
@@ -205,7 +210,7 @@ fn ingress() -> Command {
             base("deploy", "Deploy the Ingress Proxy")
                 .arg(value("caddyfile", None).value_hint(ValueHint::FilePath))
                 .arg(value("image", None))
-                .arg(many("machine", Some('m')))
+                .arg(many("constraint", None))
                 .arg(switch("recreate", None))
                 .arg(switch("skip-health", None)),
         )
@@ -289,7 +294,7 @@ fn cloud() -> Command {
 }
 
 fn cloud_enroll() -> Command {
-    base("enroll", "Found or join a Cluster through Cloud")
+    machine_policy_flags(base("enroll", "Found or join a Cluster through Cloud"))
         .arg(positional("token", true))
         .arg(value("name", Some('n')))
         .arg(
@@ -302,12 +307,7 @@ fn cloud_enroll() -> Command {
                 .default_value("none")
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
         )
-        .arg(switch("no-ingress", None))
-        .arg(
-            value("ingress-image", None)
-                .help("Caddy image to deploy when founding a Cluster")
-                .conflicts_with("no-ingress"),
-        )
+        .arg(value("ingress-image", None).help("Caddy image to deploy when founding a Cluster"))
         .arg(switch("no-dns", None))
         .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
@@ -382,7 +382,8 @@ fn machine() -> Command {
         .subcommand(base("rtt", "Show round-trip times"))
         .subcommand(machine_upgrade())
         .subcommand(
-            base("update", "Update machine configuration")
+            machine_policy_flags(base("update", "Update machine configuration"))
+                .arg(many("label-rm", None).value_name("KEY"))
                 .arg(value("name", None))
                 .arg(value("public-ip", None))
                 .arg(many("wg-endpoint", None))
@@ -417,10 +418,18 @@ fn machine_upgrade() -> Command {
         )
 }
 
-fn provisioning_flags(command: Command) -> Command {
+fn machine_policy_flags(command: Command) -> Command {
     command
+        .arg(many("label-add", None).value_name("KEY=VALUE"))
+        .args(
+            ["accepts-builds", "accepts-services", "accepts-ingress"]
+                .map(|name| value(name, None).value_parser(clap::value_parser!(bool))),
+        )
+}
+
+fn provisioning_flags(command: Command) -> Command {
+    machine_policy_flags(command)
         .arg(value("name", Some('n')))
-        .arg(switch("no-ingress", None))
         .arg(switch("no-install", None))
         .arg(
             value("storage", None)
@@ -535,7 +544,7 @@ fn run(name: &'static str) -> Command {
         .arg(value("cpu", None))
         .arg(value("entrypoint", None))
         .arg(many("env", Some('e')))
-        .arg(many("machine", Some('m')))
+        .arg(many("constraint", None))
         .arg(value("memory", None))
         .arg(value("mode", None).default_value("replicated"))
         .arg(value("name", Some('n')))

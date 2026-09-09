@@ -39,6 +39,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
         "id": "b".repeat(32),
         "name": "joining",
         "subnet": "10.210.1.0/24",
+        "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
         "public_key": public_key.0,
         "advertised_endpoints": ["192.0.2.1:51820"],
     }))
@@ -381,6 +382,7 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         "id": "b".repeat(32),
         "name": "machine",
         "subnet": "10.210.1.0/24",
+        "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
         "public_key": crate::network::WireGuardPrivateKey::from_bytes([0; 32]).public_key(),
         "advertised_endpoints": ["192.0.2.1:51820"],
     }))
@@ -626,7 +628,8 @@ async fn machine_reads_reject_document_identity_different_from_row_key() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(include_str!("schema.sql")).unwrap();
     let key = MachineId::parse("a".repeat(32)).unwrap();
-    let document = json!({"id": "b".repeat(32), "name": "peer", "subnet": "10.210.1.0/24", "public_key": vec![1; 32], "advertised_endpoints": []}).to_string();
+    let document = json!({"id": "b".repeat(32), "name": "peer", "subnet": "10.210.1.0/24", "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+        "public_key": vec![1; 32], "advertised_endpoints": []}).to_string();
     db.execute(
         "INSERT INTO machines (id, info) VALUES (?, ?)",
         rusqlite::params![key.as_str(), document],
@@ -756,6 +759,7 @@ async fn volume_reads_reject_machine_qualified_identity_mismatches() {
 async fn store_preserves_published_identities_and_keyed_incomplete_rows() {
     let machine: Machine = serde_json::from_value(json!({
         "id": "a".repeat(32), "name": "peer", "subnet": "10.210.1.0/24",
+        "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
         "public_key": vec![1; 32], "advertised_endpoints": []
     }))
     .unwrap();

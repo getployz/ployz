@@ -59,12 +59,12 @@ pub(super) use ployz_core::{
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, MembershipObservation,
-    PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook, ProjectName,
-    ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig,
-    RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
-    UpdateOrder, WireGuardPublicKey,
+    MachineId, MachineName, MachineObservation, MachinePath, MembershipObservation,
+    PROJECT_NAME_LABEL, PidMode, Placement, PlacementConstraint, PortPublication, PreDeployHook,
+    ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
+    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
+    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, WireGuardPublicKey,
 };
 pub(super) fn spec(name: &str) -> RequestedServiceSpec {
     let mut requested = requested(ServiceMode::Replicated {
@@ -117,6 +117,10 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         Machine {
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
+            labels: BTreeMap::from([("fixture".parse().unwrap(), name.parse().unwrap())]),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
                 .parse()
                 .unwrap(),
@@ -286,4 +290,8 @@ pub(super) fn container(
         labels: Default::default(),
     })
     .unwrap()
+}
+
+pub(super) fn label_constraint(value: &str) -> PlacementConstraint {
+    PlacementConstraint::parse(format!("node.labels.fixture == {value}")).unwrap()
 }

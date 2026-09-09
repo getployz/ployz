@@ -53,6 +53,7 @@ pub struct JoinDaemon {
 
 struct JoinInner {
     registration: Registered,
+    current_machine: Mutex<Machine>,
     public_key: Mutex<WireGuardPublicKey>,
     daemon_version: Mutex<String>,
     joined: AtomicBool,
@@ -60,6 +61,7 @@ struct JoinInner {
     join_attempts: AtomicUsize,
     lose_lifecycle_reply: AtomicBool,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
+    register_request: Mutex<Option<ployz_core::RegisterRequest>>,
     lose_initialize_reply: AtomicBool,
     startup_inspect_failures: AtomicUsize,
     replace_identity_on_initialize: AtomicBool,
@@ -96,6 +98,7 @@ impl JoinDaemon {
         Self {
             inner: Arc::new(JoinInner {
                 public_key: Mutex::new(registration.assigned_machine.public_key),
+                current_machine: Mutex::new(registration.assigned_machine.clone()),
                 registration,
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
@@ -103,6 +106,7 @@ impl JoinDaemon {
                 join_attempts: AtomicUsize::new(0),
                 lose_lifecycle_reply: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
+                register_request: Mutex::new(None),
                 lose_initialize_reply: AtomicBool::new(false),
                 startup_inspect_failures: AtomicUsize::new(0),
                 replace_identity_on_initialize: AtomicBool::new(false),
@@ -158,6 +162,15 @@ impl JoinDaemon {
 
     pub fn initialize_requests(&self) -> Vec<InitializeRequest> {
         self.inner.initialize_requests.lock().unwrap().clone()
+    }
+
+    pub fn register_request(&self) -> ployz_core::RegisterRequest {
+        self.inner
+            .register_request
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Register was called")
     }
 
     pub fn reset_count(&self) -> usize {
@@ -388,7 +401,7 @@ impl MachineRpc for JoinDaemon {
             } else {
                 LocalMachinePhase::Uninitialized
             },
-            machine: joined.then(|| self.inner.registration.assigned_machine.clone()),
+            machine: joined.then(|| self.inner.current_machine.lock().unwrap().clone()),
             public_key: *self.inner.public_key.lock().unwrap(),
             advertised_endpoints: self
                 .inner
@@ -452,6 +465,7 @@ impl MachineRpc for JoinDaemon {
             )
             .await?;
         }
+        *self.inner.current_machine.lock().unwrap() = join.registration.assigned_machine.clone();
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
         if self
@@ -529,8 +543,13 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected Initialize"));
         };
         let pairing = init.cloud_pairing.clone();
-        let mut machine = self.inner.registration.assigned_machine.clone();
+        let mut machine = self.inner.current_machine.lock().unwrap().clone();
         machine.name = init.name.clone();
+        machine.labels = init.initial_policy.labels.clone();
+        machine.accepts_builds = init.initial_policy.accepts_builds;
+        machine.accepts_services = init.initial_policy.accepts_services;
+        machine.accepts_ingress = init.initial_policy.accepts_ingress;
+        *self.inner.current_machine.lock().unwrap() = machine.clone();
         self.inner.initialize_requests.lock().unwrap().push(init);
         self.record("initialize");
         self.inner.joined.store(true, Ordering::SeqCst);
@@ -574,10 +593,40 @@ impl MachineRpc for JoinDaemon {
         }
         rpc_ok(Initialized { machine })
     }
+    async fn update_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        self.record("update_machine");
+        let RpcRequestBody::UpdateMachine(request) = decoded.body else {
+            return Err(Status::invalid_argument("expected UpdateMachine"));
+        };
+        let mut current = self.inner.current_machine.lock().unwrap();
+        let machine = ployz_core::apply_machine_update(
+            &current,
+            &self.inner.registration.visible_peers,
+            request.update,
+        )
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        *current = machine.clone();
+        rpc_ok(ployz_core::MachineUpdated { machine })
+    }
     async fn register(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::Register(request) = decoded.body else {
+            return Err(Status::invalid_argument("expected Register"));
+        };
+        *self.inner.register_request.lock().unwrap() = Some(request);
         rpc_ok(self.inner.registration.clone())
     }
     async fn list_machines(
@@ -585,7 +634,7 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let assigned = MachineObservation::new(
-            self.inner.registration.assigned_machine.clone(),
+            self.inner.current_machine.lock().unwrap().clone(),
             self.inner.assigned_membership.lock().unwrap().clone(),
         );
         let mut machines = vec![assigned];
@@ -757,6 +806,29 @@ impl MachineRpc for JoinDaemon {
             .lock()
             .unwrap()
             .push(ensure.clone());
+        let machine = self.inner.current_machine.lock().unwrap().clone();
+        let eligibility = ensure.resolved_spec.placement_eligibility_in_project(
+            &ensure.project_name,
+            &machine,
+            None,
+        );
+        if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
+            if matches!(
+                eligibility,
+                ployz_core::ServicePlacementEligibility::Ineligible(_)
+            ) {
+                self.inner.containers.lock().unwrap().retain(|container| {
+                    container.machine_id != machine.id
+                        || container.project_name != ensure.project_name
+                        || container.resolved_spec.name != ensure.resolved_spec.name
+                });
+            }
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "target Global slot is ineligible or unknown".into(),
+                details: serde_json::Value::Null,
+            });
+        }
         let n = self.inner.ensure_requests.lock().unwrap().len();
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let machine_id = self.inner.registration.assigned_machine.id;
@@ -968,12 +1040,6 @@ impl MachineRpc for JoinDaemon {
         }
         rpc_ok(ResetAccepted {})
     }
-    async fn update_machine(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn remove_local_machine(
         &self,
         _request: Request<OpaquePayload>,
@@ -1027,17 +1093,7 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec: ployz_core::RequestedServiceSpec = serde_json::from_value(serde_json::json!({
-        "name": "ingress",
-        "mode": { "mode": "global" },
-        "container": {
-            "image": "caddy:2.10.0",
-            "pull_policy": "missing",
-            "command": ["caddy", "run", "-c", "/config/caddy/Caddyfile"],
-            "environment": { "CADDY_ADMIN": "unix//run/ingress/caddy/admin.sock" }
-        }
-    }))
-    .unwrap();
+    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default(), None);
     let spec = spec
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
@@ -1068,6 +1124,10 @@ fn up_machine(machine: Machine) -> MachineObservation {
 
 fn joiner_machine() -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
         name: MachineName::parse("joiner").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -1080,6 +1140,10 @@ fn joiner_machine() -> Machine {
 
 pub fn founder_machine() -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
         name: MachineName::parse("founder").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),

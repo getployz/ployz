@@ -16,6 +16,12 @@ const token = "pmet_secret";
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const identity = {
   protocolVersion: 2 as const,
+  initialPolicy: {
+    labels: {},
+    accepts_builds: true,
+    accepts_services: true,
+    accepts_ingress: true,
+  },
   name: "node-1",
   publicKey: "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=",
   advertisedEndpoints: ["10.0.0.1:51820"],
@@ -185,10 +191,48 @@ describe("machine enrollment routes", () => {
     expect(mocks.enroll).toHaveBeenCalledWith({ token, identity });
   });
 
+  it("rejects missing or unselectable initial policy before enrollment side effects", async () => {
+    mocks.enroll.mockReturnValue(Effect.succeed({ kind: "not_yet", retryAfter: 2 }));
+    const complete = {
+      labels: { pool: "build" },
+      accepts_builds: true,
+      accepts_services: false,
+      accepts_ingress: false,
+    };
+    const invalidBodies: JsonValue[] = [
+      {
+        protocolVersion: identity.protocolVersion,
+        name: identity.name,
+        publicKey: identity.publicKey,
+        advertisedEndpoints: identity.advertisedEndpoints,
+      },
+      { ...identity, initialPolicy: { labels: complete.labels, accepts_services: false, accepts_ingress: false } },
+      { ...identity, initialPolicy: { ...complete, labels: { "rack/zone": "west" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { "région": "west" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: " west" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "west " } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "é" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "🦀" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "west\n" } } },
+    ];
+    for (const body of invalidBodies) {
+      const response = await join(body);
+      expect(response.status, JSON.stringify(body)).toBe(422);
+    }
+    expect(mocks.enroll).not.toHaveBeenCalled();
+  });
+
   it("rejects incomplete or non-Display publicKey identity bodies", async () => {
     for (const response of [
       await join({
         protocolVersion: 2,
+        initialPolicy: {
+          labels: {},
+          accepts_builds: true,
+          accepts_services: true,
+          accepts_ingress: true,
+        },
         name: identity.name,
         publicKey: identity.publicKey,
       }),
@@ -232,6 +276,12 @@ describe("machine enrollment routes", () => {
 
     const response = await join({
       protocolVersion: 2,
+      initialPolicy: {
+        labels: {},
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+      },
       name: identity.name,
       publicKey: identity.publicKey,
       advertisedEndpoints: identity.advertisedEndpoints,
@@ -242,6 +292,12 @@ describe("machine enrollment routes", () => {
       token,
       identity: {
         protocolVersion: 2,
+        initialPolicy: {
+          labels: {},
+          accepts_builds: true,
+          accepts_services: true,
+          accepts_ingress: true,
+        },
         name: identity.name,
         publicKey: identity.publicKey,
         advertisedEndpoints: identity.advertisedEndpoints,

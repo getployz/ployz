@@ -681,6 +681,9 @@ pub enum Error {
     /// The complete Resolved Service Spec does not permit this target Machine.
     #[error("this Machine does not satisfy the resolved Service placement")]
     ServicePlacementMismatch,
+    /// The target Machine no longer accepts this kind of Service work.
+    #[error("this Machine does not accept this Service role")]
+    WorkNotAccepted,
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -731,7 +734,8 @@ impl Error {
             | Self::VolumeShapeMismatch { .. }
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
-            | Self::ServicePlacementMismatch => RpcErrorCode::Conflict,
+            | Self::ServicePlacementMismatch
+            | Self::WorkNotAccepted => RpcErrorCode::Conflict,
             Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
             | Self::StorageUnobservable

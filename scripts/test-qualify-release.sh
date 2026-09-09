@@ -61,19 +61,21 @@ case "$1" in
         [ "$2" = enroll ] || { echo "unexpected cloud action: $2" >&2; exit 1; }
         token=$3
         shift 3
-        name= storage= context= cloud_url= no_dns=no no_ingress=no
+        name= storage= context= cloud_url= no_dns=no no_ingress=no label=
         while [ "$#" -gt 0 ]; do
             case "$1" in
                 --name) name=$2; shift ;;
                 --storage) storage=$2; shift ;;
                 --context) context=$2; shift ;;
                 --cloud-url) cloud_url=$2; shift ;;
+                --label-add) label=$2; shift ;;
                 --no-dns) no_dns=yes ;;
-                --no-ingress) no_ingress=yes ;;
+                --accepts-ingress=false) no_ingress=yes ;;
                 *) echo "unexpected cloud enroll argument: $1" >&2; exit 1 ;;
             esac
             shift
         done
+        [ "$label" = qualify=primary ] || { echo "resumed enrollment policy differs from founder label" >&2; exit 1; }
         printf 'cloud-enroll token=%s name=%s storage=%s context=%s cloud_url=%s no_dns=%s no_ingress=%s\n' "$token" "$name" "$storage" "$context" "$cloud_url" "$no_dns" "$no_ingress" >>"$LOG"
         python3 - "$cloud_url" "$token" <<'PY'
 import json
@@ -106,7 +108,7 @@ PY
         shift 2
         case "$action" in
             init|add)
-                reset=no key= target= context= no_install=no version= storage= name= no_dns=no no_ingress=no
+                reset=no key= target= context= no_install=no version= storage= name= no_dns=no no_ingress=no label=
                 while [ "$#" -gt 0 ]; do
                     case "$1" in
                         --yes) reset=yes ;;
@@ -115,14 +117,16 @@ PY
                         --version) version=$2; shift ;;
                         --storage) storage=$2; shift ;;
                         --name) name=$2; shift ;;
+                        --label-add) label=$2; shift ;;
                         --no-install) no_install=yes ;;
                         --no-dns) no_dns=yes ;;
-                        --no-ingress) no_ingress=yes ;;
+                        --accepts-ingress=false) no_ingress=yes ;;
                         root@*) target=$1 ;;
                         *) echo "unexpected machine argument: $1" >&2; exit 1 ;;
                     esac
                     shift
                 done
+                [ "$action" != init ] || [ "$label" = qualify=primary ] || { echo "missing primary placement label" >&2; exit 1; }
                 printf '%s target=%s reset=%s key=%s context=%s no_install=%s version=%s storage=%s name=%s no_dns=%s no_ingress=%s release=%s\n' "$action" "$target" "$reset" "$key" "$context" "$no_install" "$version" "$storage" "$name" "$no_dns" "$no_ingress" "${PLOYZ_RELEASE_DIR:-}" >>"$LOG"
                 ;;
             upgrade)

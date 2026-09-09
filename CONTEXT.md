@@ -26,6 +26,14 @@ _Avoid_: Controller, leader, source of Cluster truth
 A durable participant identity in a Cluster. Its local lifecycle and its membership as observed by another Machine are separate facts.
 _Avoid_: Node, host, member
 
+**Machine Label**:
+An operator-assigned key/value classification of a Machine used to select placement candidates. It is metadata, not evidence of runtime capability or permission to accept work.
+_Avoid_: Machine tag, Machine Role
+
+**Machine Role**:
+One of a Machine's independently enabled permissions to accept Builds, application Services, or the Ingress Proxy. These roles may be combined; an explicit placement target does not override their permissions.
+_Avoid_: Swarm manager/worker role, runtime capability, Machine Label
+
 **Machine ID**:
 The durable opaque identity of one Machine. It is distinct from its mutable Machine Name. Uniqueness is within one Cluster and one Pairing Credential's slots, not across organizations.
 _Avoid_: Machine Name, hostname, globally unique Machine ID

@@ -563,10 +563,9 @@ impl MachineRpc for MachineService {
         self.containers()
             .map_err(|error| Status::unavailable(error.message))?;
         Ok(Response::new(crate::build::start(
-            self.local_record()?.id(),
+            self.local.clone(),
             request.into_inner(),
             self.builds.clone(),
-            self.local.clone(),
         )))
     }
 
@@ -917,7 +916,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::KeyAlreadyNamed | LocalMachineError::NameTaken => respond(RpcError {
+        LocalMachineError::KeyAlreadyNamed
+        | LocalMachineError::NameTaken
+        | LocalMachineError::InitialPolicyMismatch => respond(RpcError {
             code: RpcErrorCode::Conflict,
             message: error.to_string(),
             details: Value::Null,

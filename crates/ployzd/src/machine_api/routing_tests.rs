@@ -251,6 +251,10 @@ fn fanout(value: &str) -> FanoutSelector {
 
 fn machine(id: char, name: &str, subnet: u8) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{subnet}.0/24").parse().unwrap(),

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 use clap::ArgMatches;
 use ployz_core::{
     ByteQuantity, ContainerPath, ContainerResources, CpuNanos, DockerVolumeName,
-    IngressProxyFragment, MachineTarget, Placement, PortPublication, PullPolicy,
+    IngressProxyFragment, Placement, PlacementConstraint, PortPublication, PullPolicy,
     RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
     ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, Ulimit,
     UpdateConfig,
@@ -112,10 +112,11 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
             restart: RestartPolicy::No,
         },
         placement: Placement {
-            machines: string_values(matches, "machine")
+            constraints: string_values(matches, "constraint")
                 .into_iter()
-                .map(MachineTarget::parse)
-                .collect::<Result<_, _>>()?,
+                .map(PlacementConstraint::parse)
+                .collect::<Result<_, _>>()
+                .map_err(|error| Error::usage(error.to_string()))?,
         },
         ports,
         mount_graph: ployz_core::ServiceMountGraph::parse(volume_graph, Default::default())

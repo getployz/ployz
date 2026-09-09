@@ -248,6 +248,7 @@ async fn updates_removes_and_inspects_machine_network_state() {
                 name: Some("renamed-by-id".parse().unwrap()),
                 public_ip: PublicIpUpdate::Set("203.0.113.9".parse().unwrap()),
                 advertised_endpoints: Some(vec![endpoint]),
+                ..Default::default()
             },
         )
         .await

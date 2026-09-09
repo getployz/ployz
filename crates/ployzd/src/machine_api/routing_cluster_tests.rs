@@ -270,6 +270,10 @@ fn request(header: &str, target: &str, body: Vec<u8>) -> http::Request<Body> {
 
 fn machine(id: char, name: &str, _address: &str) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{}.0/24", id.to_digit(10).unwrap())

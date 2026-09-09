@@ -66,9 +66,35 @@ describe("organization enrollment server-function inputs", () => {
 });
 
 describe("versioned enrollment identity", () => {
+  it.each(["West", "EU west:/alpha.*()?+[]\\^$|_-"])("carries selectable initial policy %s into registration", (value) => {
+    const initialPolicy = {
+      labels: { "rack.zone": value },
+      accepts_builds: true,
+      accepts_services: false,
+      accepts_ingress: false,
+    };
+    const identity = Schema.decodeUnknownSync(enrollmentIdentitySchema)({
+      protocolVersion: 2,
+      name: "builder",
+      publicKey: display,
+      advertisedEndpoints: ["203.0.113.10:51820"],
+      requestedStorage: "none",
+      initialPolicy,
+    });
+    expect(registerRequestFromEnrollmentIdentity(identity).initial_policy).toEqual(
+      initialPolicy,
+    );
+  });
+
   it("requires protocol version 2 and a rust Machine identity", () => {
     const valid = {
       protocolVersion: 2,
+      initialPolicy: {
+        labels: {},
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+      },
       name: "node-1",
       publicKey: display,
       advertisedEndpoints: ["203.0.113.10:51820"],
@@ -98,6 +124,12 @@ describe("versioned enrollment identity", () => {
   it.each([null, "203.0.113.10"])("maps enrollment public IP %s without Cloud allocation", (publicIp) => {
     const request = registerRequestFromEnrollmentIdentity({
       protocolVersion: 2,
+      initialPolicy: {
+        labels: {},
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+      },
       name: "node-1",
       publicKey: display,
       advertisedEndpoints: ["203.0.113.10:51820"],

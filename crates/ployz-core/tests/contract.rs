@@ -1460,6 +1460,7 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
                 name: Some(MachineName::parse("renamed").unwrap()),
                 public_ip: PublicIpUpdate::Remove,
                 advertised_endpoints: None,
+                ..Default::default()
             },
         }),
         op::RemoveLocalMachine::into_request(RemoveLocalMachineRequest::default()),

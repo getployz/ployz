@@ -77,6 +77,8 @@ pub enum Kind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Input {
+    /// Verify every command target before selecting this worker; no source follows.
+    Check(Vec<Target>),
     Start(Definition),
     Entry {
         path: Vec<u8>,
@@ -102,6 +104,10 @@ pub enum Event {
 /// Terminal evidence, including known work when execution fails.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Outcome {
+    /// Worker and host capabilities were checked, without validating or executing a recipe.
+    CapabilitiesChecked {
+        machine_id: MachineId,
+    },
     Images {
         machine_id: MachineId,
         images: Vec<BuiltImage>,
@@ -152,7 +158,10 @@ impl Outcome {
     pub fn with_work(mut self, evidence: crate::WorkEvidence) -> Self {
         match &mut self {
             Self::Failed { work, .. } | Self::Unknown { work, .. } => *work = evidence,
-            Self::Images { .. } | Self::Validated { .. } | Self::Published { .. } => {}
+            Self::CapabilitiesChecked { .. }
+            | Self::Images { .. }
+            | Self::Validated { .. }
+            | Self::Published { .. } => {}
         }
         self
     }

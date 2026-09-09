@@ -211,6 +211,10 @@ fn expected_frame() -> RuntimeWatchFrame {
             }),
             ..MachineObservation::new(
                 Machine {
+                                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: MachineId::parse(MACHINE_ID).unwrap(),
                 name: MachineName::parse("edge").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),

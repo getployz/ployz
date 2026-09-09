@@ -55,6 +55,7 @@ impl Cluster {
             client
                 .register(
                     op::Register::into_request(RegisterRequest {
+                        initial_policy: Default::default(),
                         name: MachineName::parse(name)?,
                         storage: ployz_core::StorageChoice::None,
                         public_key: token.public_key,

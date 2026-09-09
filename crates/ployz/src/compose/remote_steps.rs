@@ -211,7 +211,7 @@ impl CapturedBuild {
                     completed.push(BuiltService {
                         name: service.name.clone(),
                         image: service.image.clone(),
-                        machines: service.machines.clone(),
+                        placement: service.placement.clone(),
                         location: BuildLocation::Machine(machine_id),
                         built: image,
                         _retention: Some(BuildRetention::Remote { _stream: stream }),
@@ -229,7 +229,10 @@ impl CapturedBuild {
                     return Err(outcome.with_work(work));
                 }
                 super::super::remote_build::Completion::Report(
-                    Outcome::Validated { .. } | Outcome::Published { .. } | Outcome::Images { .. },
+                    Outcome::CapabilitiesChecked { .. }
+                    | Outcome::Validated { .. }
+                    | Outcome::Published { .. }
+                    | Outcome::Images { .. },
                 ) => {
                     unreachable!("adapter validated output disposition")
                 }
@@ -255,7 +258,10 @@ pub(super) fn remote_error(outcome: Outcome) -> ComposeError {
         } => invalid_build(&format!(
             "Build outcome unknown during {stage:?}: {message}; target evidence: {work:?}"
         )),
-        Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
+        Outcome::CapabilitiesChecked { .. }
+        | Outcome::Images { .. }
+        | Outcome::Validated { .. }
+        | Outcome::Published { .. } => {
             invalid_build("Build produced no image available for Direct Image Transfer")
         }
     }

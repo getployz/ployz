@@ -33,16 +33,15 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     let docker = LocalDocker::connect().unwrap();
     let mut local = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
     let machine_id = local
-        .initialize(
-            MachineName::parse("observer").unwrap(),
-            crate::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("observer").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap()
         .id;
     let local = Arc::new(Mutex::new(local));

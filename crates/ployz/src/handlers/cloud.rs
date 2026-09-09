@@ -44,6 +44,7 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
+    let initial_policy = super::machine::enrollment_policy(matches)?;
     let token = CloudEnrollToken::parse(required(matches, "token")?)?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
@@ -66,10 +67,18 @@ where
         if matches.get_flag("reset") {
             client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
         }
-        let (details, machine_token, name, outcome) =
-            enroll_current_identity(&mut client, requested_name, requested_storage, &url).await?;
+        let (details, machine_token, name, outcome) = enroll_current_identity(
+            &mut client,
+            requested_name,
+            requested_storage,
+            &initial_policy,
+            &url,
+        )
+        .await?;
         match outcome {
-            Outcome::Join(join) => enroll_join(matches, client, details, *join, install).await,
+            Outcome::Join(join) => {
+                enroll_join(matches, client, details, *join, &initial_policy, install).await
+            }
             Outcome::Initialize {
                 mode,
                 pairing,
@@ -81,6 +90,7 @@ where
                     details,
                     machine_token,
                     name,
+                    initial_policy,
                     cluster_network,
                     mode,
                     pairing,
@@ -107,6 +117,7 @@ async fn enroll_current_identity(
     client: &mut Client,
     requested_name: Option<MachineName>,
     requested_storage: StorageChoice,
+    initial_policy: &ployz_core::InitialMachinePolicy,
     url: &str,
 ) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
     let details = client
@@ -116,8 +127,12 @@ async fn enroll_current_identity(
         .call_repeatable::<op::MachineToken>(MachineTokenRequest::default(), None)
         .await?;
     let name = crate::handlers::machine::machine_name(requested_name, &machine_token)?;
-    let identity =
-        EnrollIdentity::from_machine_token(name.clone(), &machine_token, requested_storage);
+    let identity = EnrollIdentity::from_machine_token(
+        name.clone(),
+        &machine_token,
+        requested_storage,
+        initial_policy.clone(),
+    );
     let outcome = cloud_enroll::enroll(url, &identity).await?;
     Ok((details, machine_token, name, outcome))
 }
@@ -127,6 +142,7 @@ async fn enroll_join<Install, InstallFuture>(
     mut client: Client,
     details: MachineDetails,
     join: Join,
+    initial_policy: &ployz_core::InitialMachinePolicy,
     install: &Install,
 ) -> Result<(), Error>
 where
@@ -134,6 +150,19 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let assigned = join.registration.assigned_machine.clone();
+    if !initial_policy.matches(&assigned)
+        || (already_assigned(&details, &assigned)
+            && !initial_policy.matches(
+                details
+                    .machine
+                    .as_ref()
+                    .expect("already assigned Machine exists"),
+            ))
+    {
+        return Err(Error::usage(
+            "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+        ));
+    }
     if already_assigned(&details, &assigned) {
         println!("Initialised Machine {} ({})", assigned.name, assigned.id);
         return Ok(());
@@ -162,13 +191,7 @@ where
         "joined Machine did not become ready",
     )
     .await?;
-    if let Err(error) = crate::global_catch_up::catch_up_globals(
-        &mut ready,
-        &assigned,
-        matches.get_flag("no-ingress"),
-    )
-    .await
-    {
+    if let Err(error) = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
         )));
@@ -192,6 +215,7 @@ async fn enroll_founder<Install, InstallFuture>(
     details: MachineDetails,
     machine_token: MachineToken,
     name: MachineName,
+    initial_policy: ployz_core::InitialMachinePolicy,
     cluster_network: Ipv4Net,
     mode: InitializeMode,
     pairing: CloudPairing,
@@ -225,13 +249,23 @@ where
             )));
         }
     };
-    let no_ingress = matches.get_flag("no-ingress");
+    if let FounderLocalState::Resume { machine } = &state
+        && !initial_policy.matches(machine)
+    {
+        return Err(Error::usage(
+            "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+        ));
+    }
+    let accepts_ingress = match &state {
+        FounderLocalState::Resume { machine } => machine.accepts_ingress,
+        FounderLocalState::Initialize => initial_policy.accepts_ingress,
+    };
     let no_dns = matches.get_flag("no-dns");
     let ingress_image = matches.get_one::<String>("ingress-image").cloned();
-    let ingress = if no_ingress {
+    let ingress = if !accepts_ingress {
         None
     } else {
-        Some(crate::ingress::service_spec(ingress_image, Vec::new(), None).await?)
+        Some(crate::ingress::service_spec(ingress_image, Default::default(), None).await?)
     };
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => (*machine, client),
@@ -247,6 +281,7 @@ where
             let initialized = crate::handlers::machine::initialize(
                 &mut client,
                 InitializeRequest {
+                    initial_policy,
                     name,
                     cluster_network,
                     public_ip: machine_token.public_ip,
@@ -272,7 +307,9 @@ where
                 .await.map_err(|error| Error::usage(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
         println!("Reserved Cluster domain: {domain}");
     }
-    if let Some(requested) = ingress {
+    if machine.accepts_ingress
+        && let Some(requested) = ingress
+    {
         // An interrupted Apply may have completed mutations. Do not replay it.
         crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
             let error: Error = error.into();

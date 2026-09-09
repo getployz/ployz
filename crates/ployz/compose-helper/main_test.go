@@ -53,3 +53,29 @@ func TestProvisionedVolumeMaximumBytesIsAJsonNumber(t *testing.T) {
 		t.Fatalf("got %d", bytes)
 	}
 }
+
+func TestPlacementConstraintsAndRejectedLegacyInputs(t *testing.T) {
+	for _, tc := range []struct{ yaml, diagnostic string }{
+		{`services: {app: {image: app, deploy: {placement: {constraints: ["node.labels.Region == EU-West"]}}}}`, ""},
+		{`services: {app: {image: app, x-machines: edge}}`, "deploy.placement.constraints"},
+		{`services: {app: {image: app, deploy: {placement: {preferences: [{spread: node.labels.zone}]}}}}`, "preferences"},
+	} {
+		result, err := run(context.Background(), request{Version: 1, YAML: tc.yaml, WorkingDir: t.TempDir()})
+		if tc.diagnostic != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.diagnostic) {
+				t.Fatalf("%s: %v", tc.yaml, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(encoded), `"constraints":["node.labels.Region == EU-West"]`) {
+			t.Fatalf("missing constraints: %s", encoded)
+		}
+	}
+}

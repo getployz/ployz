@@ -33,6 +33,10 @@ fn projection(
     certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> IngressProjection {
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: *local_machine,
         name: MachineName::parse(machine_name).unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -1104,6 +1108,10 @@ async fn failed_load_preserves_the_last_caddyfile() {
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(&path, "last loaded").unwrap();
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("a".repeat(32)).unwrap(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -1135,6 +1143,10 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     let path = directory.join(CONFIG_FILE);
     std::fs::create_dir_all(&directory).unwrap();
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("a".repeat(32)).unwrap(),
         name: MachineName::parse("node-a").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),

@@ -225,3 +225,117 @@ fn remote_build_target_requires_equals_and_preserves_positional_service() {
         );
     }
 }
+
+#[test]
+fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rejected() {
+    for path in [
+        vec!["machine", "update", "node"],
+        vec!["machine", "init"],
+        vec!["machine", "add", "root@node"],
+        vec!["cloud", "enroll", "pmet_test"],
+    ] {
+        let mut args = vec!["ployz"];
+        args.extend(path);
+        let mut valid = args.clone();
+        valid.extend([
+            "--accepts-builds=true",
+            "--accepts-services=false",
+            "--accepts-ingress=true",
+            "--label-add",
+            "region=west",
+            "--label-add",
+            "disk=ssd",
+        ]);
+        let matches = ployz::cli::command().try_get_matches_from(valid).unwrap();
+        let mut leaf = &matches;
+        while let Some((_, child)) = leaf.subcommand() {
+            leaf = child;
+        }
+        assert_eq!(leaf.get_one::<bool>("accepts-builds"), Some(&true));
+        assert_eq!(leaf.get_one::<bool>("accepts-services"), Some(&false));
+        assert_eq!(leaf.get_one::<bool>("accepts-ingress"), Some(&true));
+        assert_eq!(leaf.get_many::<String>("label-add").unwrap().count(), 2);
+        let mut removal = args.clone();
+        removal.extend(["--label-rm", "retired"]);
+        assert_eq!(
+            ployz::cli::command().try_get_matches_from(removal).is_ok(),
+            args.get(2) == Some(&"update")
+        );
+        for invalid in [
+            "--no-ingress",
+            "--accepts-services",
+            "--accepts-builds=maybe",
+        ] {
+            let mut invalid_args = args.clone();
+            invalid_args.push(invalid);
+            assert!(
+                ployz::cli::command()
+                    .try_get_matches_from(invalid_args)
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn ingress_deploy_accepts_repeated_constraints_and_rejects_legacy_machine_selection() {
+    let matches = ployz::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "ingress",
+            "deploy",
+            "--constraint",
+            "node.labels.region==west",
+            "--constraint",
+            "node.labels.retired!=true",
+        ])
+        .unwrap();
+    let deploy = matches
+        .subcommand_matches("ingress")
+        .unwrap()
+        .subcommand_matches("deploy")
+        .unwrap();
+    assert_eq!(
+        deploy
+            .get_many::<String>("constraint")
+            .unwrap()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["node.labels.region==west", "node.labels.retired!=true"]
+    );
+    assert!(
+        ployz::cli::command()
+            .try_get_matches_from(["ployz", "ingress", "deploy", "--machine", "edge",])
+            .is_err()
+    );
+}
+
+#[test]
+fn deploy_build_choices_preserve_services_and_reject_conflicting_overrides() {
+    for choice in ["--remote", "--remote=tower", "--local"] {
+        let matches = ployz::cli::command()
+            .try_get_matches_from(["ployz", "deploy", choice, "api"])
+            .unwrap();
+        let deploy = matches.subcommand_matches("deploy").unwrap();
+        assert_eq!(
+            deploy
+                .get_many::<String>("service")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["api"]
+        );
+    }
+    for choices in [
+        ["--local", "--remote"],
+        ["--local", "--no-build"],
+        ["--remote", "--no-build"],
+    ] {
+        assert!(
+            ployz::cli::command()
+                .try_get_matches_from(["ployz", "deploy", choices[0], choices[1]])
+                .is_err(),
+            "{choices:?}"
+        );
+    }
+}

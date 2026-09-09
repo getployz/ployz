@@ -18,6 +18,7 @@ use tonic::{Request, Response, Status};
 pub struct BuildFixture {
     pub terminal: Mutex<Option<Outcome>>,
     pub platforms: Mutex<Option<Vec<String>>>,
+    pub workers: Mutex<BTreeMap<MachineId, Vec<String>>>,
     pub definitions: Mutex<Vec<remote::Definition>>,
     pub stores: Mutex<BTreeMap<MachineId, MachineImages>>,
     pub opened: Mutex<Vec<MachineId>>,
@@ -76,9 +77,42 @@ impl BuildFixture {
         let (sender, receiver) = mpsc::channel(2);
         tokio::spawn(async move {
             let mut request = request.into_inner();
-            let Input::Start(definition) =
-                remote::decode(&request.message().await.unwrap().unwrap()).unwrap()
-            else {
+            let frame = remote::decode(&request.message().await.unwrap().unwrap()).unwrap();
+            if let Input::Check(targets) = frame {
+                let workers = self
+                    .workers
+                    .lock()
+                    .unwrap()
+                    .get(&machine_id)
+                    .cloned()
+                    .unwrap_or_else(|| vec!["linux/amd64".into()]);
+                let unsupported = targets
+                    .iter()
+                    .flat_map(|target| &target.platforms)
+                    .find(|platform| !workers.contains(platform));
+                let outcome =
+                    unsupported.map_or(Outcome::CapabilitiesChecked { machine_id }, |platform| {
+                        Outcome::Failed {
+                            stage: ployz_build::Stage::Preparation,
+                            message: format!("the running BuildKit worker cannot build {platform}"),
+                            work: Default::default(),
+                        }
+                    });
+                sender
+                    .send(Ok(remote::encode(&Event::Admitted {
+                        machine_id,
+                        active_timeout: ployz_build::EXECUTION_TIMEOUT,
+                    })
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                sender
+                    .send(Ok(remote::encode(&Event::Finished(outcome)).unwrap()))
+                    .await
+                    .unwrap();
+                return;
+            }
+            let Input::Start(definition) = frame else {
                 panic!("expected Build definition");
             };
             let offset = {

@@ -53,7 +53,7 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             cloud_url,
             "--name",
             "joiner",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
             "--yes",
         ])
@@ -95,7 +95,8 @@ async fn enroll_locally_with_storage(
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
 ) {
-    let registration = registration();
+    let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();

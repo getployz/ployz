@@ -152,7 +152,7 @@ fn explicitly_targeted_provisioned_deploy(
     let mut service = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    service.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+    service.placement.constraints = [label_constraint("first")].into();
     add_named_volume(&mut service, "data");
     make_provisioned(&mut service, "data", 1_073_741_824);
     add_named_volume(&mut service, "cache");
@@ -266,7 +266,7 @@ fn ordinary_volume_does_not_adopt_an_existing_provisioned_volume() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    requested.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+    requested.placement.constraints = [label_constraint("first")].into();
     add_named_volume(&mut requested, "data");
     let mut existing = observed_volume(machine_id('1'), "data");
     existing.storage = DockerVolumeStorageObservation::Provisioned {
@@ -576,7 +576,7 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     unchanged.name = ServiceName::parse("storage").unwrap();
-    unchanged.placement.machines = vec![MachineTarget::parse("stateless").unwrap()];
+    unchanged.placement.constraints = [label_constraint("stateless")].into();
     add_named_volume(&mut unchanged, "data");
     make_provisioned(&mut unchanged, "data", 1_073_741_824);
     let intent = DeployIntent::apply_all(
@@ -613,7 +613,7 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
 fn global_service(name: &str, machine_name: &str, bytes: u64) -> RequestedServiceSpec {
     let mut service = requested(ServiceMode::Global);
     service.name = ServiceName::parse(name).unwrap();
-    service.placement.machines = vec![MachineTarget::parse(machine_name).unwrap()];
+    service.placement.constraints = [label_constraint(machine_name)].into();
     add_named_volume(&mut service, "data");
     make_provisioned(&mut service, "data", bytes);
     service

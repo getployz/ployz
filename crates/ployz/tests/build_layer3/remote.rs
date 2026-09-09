@@ -394,7 +394,7 @@ async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry
     fs::create_dir_all(root.join("app")).unwrap();
     let image = format!("registry.invalid/ployz-803-{}:shared", std::process::id());
     fs::write(root.join("compose.yaml"), format!(
-        "name: remote\nservices:\n  base:\n    image: {image}\n    build: ./base\n    profiles: [build-only]\n  app:\n    image: {image}\n    pull_policy: never\n    x-machines: [{destination}]\n    build:\n      context: ./app\n      additional_contexts:\n        base: service:base\n"
+        "name: remote\nservices:\n  base:\n    image: {image}\n    build: ./base\n    profiles: [build-only]\n  app:\n    image: {image}\n    pull_policy: never\n    deploy: {{placement: {{constraints: [node.id=={destination}]}}}}\n    build:\n      context: ./app\n      additional_contexts:\n        base: service:base\n"
     )).unwrap();
     fs::write(
         root.join("base/Dockerfile"),
@@ -564,15 +564,6 @@ async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local(
     let machines = cluster.initialize_two().await.unwrap();
     let first = machines.first().unwrap().id;
     let second = machines.get(1).unwrap().id;
-    // Automatic selection breaks the tie between equally capable Machines on
-    // Machine ID alone, so the expected candidate is known before the run.
-    let (automatic, automatic_index) = if first.as_str() <= second.as_str() {
-        (first, 0)
-    } else {
-        (second, 1)
-    };
-    let pinned_index = 1 - automatic_index;
-    let pinned = *[first, second].get(pinned_index).unwrap();
     let address = cluster.api_address(0).unwrap();
     let root = std::env::temp_dir().join(format!("ployz-build-804-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -597,7 +588,7 @@ async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local(
         fs::write(
             root.join("compose.yaml"),
             format!(
-                "name: remote\n{preference}services:\n  app:\n    image: {image}\n    pull_policy: never\n    x-machines: [{first}]\n    build: .\n"
+                "name: remote\n{preference}services:\n  app:\n    image: {image}\n    pull_policy: never\n    deploy:\n      placement:\n        constraints: [node.id == {first}]\n    build: .\n"
             ),
         )
         .unwrap();
@@ -632,7 +623,12 @@ async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local(
     // Plain --remote selects a compatible Machine and leaves the image there.
     compose("");
     let stdout = succeed(vec!["build".into(), "--remote".into(), "app".into()]).await;
-    assert!(stdout.contains(automatic.as_str()), "{stdout}");
+    let automatic_index = [first, second]
+        .iter()
+        .position(|id| stdout.contains(&format!("({id})")))
+        .expect("selected Machine is one of the two eligible builders");
+    let pinned_index = 1 - automatic_index;
+    let pinned = *[first, second].get(pinned_index).unwrap();
     let built = stdout
         .split_whitespace()
         .find(|word| word.starts_with("sha256:"))

@@ -138,16 +138,15 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     let address = listener.local_addr().unwrap();
     let mut machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();
     let machine = machine_store
-        .initialize(
-            MachineName::parse("stream-test").unwrap(),
-            crate::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![ployz_core::AdvertisedEndpoint(address)],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("stream-test").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(address)],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap();
     let machine_store = Arc::new(Mutex::new(machine_store));
     let specs = MachineSpecStore::open(root.0.join("machine.db"))

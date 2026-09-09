@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
+use std::time::Duration;
 
 use clap::ArgMatches;
 
+use crate::connect::ConnectError;
 use ployz_build::Output;
-use ployz_core::MachineId;
-
-use crate::build_location::{self, Candidate, Evidence, Location, Selection};
+use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, RpcErrorCode, op};
+use serde_json::Value;
 
 use crate::compose::{
     BuildOptions, LoadOptions, capture_build, execute_build, load_project, plan_build,
@@ -28,6 +28,12 @@ pub(super) fn clear_cache(matches: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
+    let remote = leaf.get_one::<String>("remote");
+    if remote.is_some() && leaf.get_flag("push") && !leaf.get_flag("check") {
+        return Err(Error::usage(
+            "remote build --push is not supported yet; remote build leaves the image on its selected Machine, or --push-registry publishes explicitly",
+        ));
+    }
     let load = LoadOptions {
         command: "build".into(),
         files: string_values(leaf, "file")
@@ -49,37 +55,34 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
-    let location = Location::requested(
-        leaf.get_one::<String>("remote").map(String::as_str),
-        leaf.get_flag("local"),
-    )
-    .map_err(|error| Error::usage(error.to_string()))?;
-    if matches!(location, Location::Remote(_)) && leaf.get_flag("push") && !leaf.get_flag("check") {
-        return Err(Error::usage(
-            "--push is not supported yet for a Build on a Machine; that Build leaves its image on the selected Machine, --push-registry publishes explicitly, and --local builds here",
-        ));
-    }
     let plan = plan_build(&project, &options)?;
     if plan.is_empty() {
         println!("No buildable services selected.");
         return Ok(());
     }
-    if let Location::Remote(selection) = location {
+    if let Some(target) = remote {
+        let target = (!target.is_empty())
+            .then(|| ployz_core::MachineTarget::parse(target))
+            .transpose()?;
         let context = project
             .selected_context(
                 leaf.get_one::<String>("context").map(String::as_str),
                 matches.get_one::<String>("connect").map(String::as_str),
             )
             .map(str::to_owned);
-        // Capture first: the platforms it fixes decide which Machines can run it.
-        let captured = capture_build(&plan, &options, &mut project)?;
-        let required = captured.platforms();
         return runtime()?.block_on(async {
             let cancellation = super::cancellation_on_ctrl_c();
             let mut client = connect_client(matches, context.as_deref()).await?;
-            let machine = resolve_build_machine(&mut client, &selection, &required).await?;
+            let captured = capture_build(&plan, &options, &mut project)?;
+            let machine = select_build_machine(
+                &mut client,
+                target.as_ref(),
+                captured.targets(),
+                &cancellation,
+            )
+            .await?;
             let outcome = captured
-                .execute_remote(&client, machine, cancellation.clone(), progress)
+                .execute_remote(&client, machine.id, cancellation.clone(), progress)
                 .await;
             cancellation.cancel();
             report_remote(outcome)
@@ -122,7 +125,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
             crate::cancellation::read(&cancellation, connect_client(matches, context)).await?;
         let mut failures = Vec::new();
         for service in &built {
-            let targets = push_targets(&explicit, &service.machines);
+            let machines =
+                crate::cancellation::read(&cancellation, async { Ok(client.machines().await?) })
+                    .await?;
+            let targets = push_targets(&explicit, &service.placement, &machines)?;
             match crate::image::push(
                 &mut client,
                 service.content(),
@@ -145,171 +151,86 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-/// One resolved Build Machine, with the evidence this client could not confirm.
-struct Resolved {
-    name: ployz_core::MachineName,
-    id: MachineId,
-    /// Required platforms this client could not confirm run natively.
-    unconfirmed: Vec<String>,
-    /// Visible Machines whose Build capability could not be observed.
-    unresolved: Vec<String>,
-}
-
-impl Resolved {
-    /// Name the Machine before any source leaves this client, then everything
-    /// the selection rests on but could not verify.
-    fn report(&self) {
-        let Self {
-            name,
-            id,
-            unconfirmed,
-            unresolved,
-        } = self;
-        println!("Selected Build Machine {name} ({id})");
-        eprintln!("Build Machine: {id}");
-        if !unconfirmed.is_empty() {
-            // Neither emulation support nor an unreported architecture is
-            // observable here, so claim only what was actually established.
-            eprintln!(
-                "Build Machine {name} is not confirmed to run {} natively; the Machine admits or refuses the Build itself",
-                unconfirmed.join(", ")
-            );
-        }
-        if !unresolved.is_empty() {
-            // A silent Machine may have been the better candidate. Say so
-            // rather than let the choice look better evidenced than it is.
-            eprintln!(
-                "Build capability was not observed for {}",
-                unresolved.join("; ")
-            );
-        }
+pub(super) async fn select_build_machine(
+    client: &mut crate::connect::Client,
+    target: Option<&ployz_core::MachineTarget>,
+    targets: &[ployz_build::Target],
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<ployz_core::Machine, Error> {
+    let visible = client.machines().await?;
+    // Resolve pins before filtering so policy cannot hide Name Ambiguity.
+    let mut candidates = if let Some(target) = target {
+        vec![crate::cluster::visible_machine(target, &visible).map_err(ConnectError::Remote)?]
+    } else {
+        visible.iter().collect::<Vec<_>>()
+    };
+    if target.is_none() {
+        candidates.sort_by_cached_key(|_| uuid::Uuid::new_v4());
     }
-}
-
-/// Resolve the Machine this Build runs on and report it before any upload.
-///
-/// # Errors
-///
-/// Fails when a named Machine is not visible, ambiguous, or cannot build, and
-/// when no observed Machine can run an automatic Build.
-pub(super) async fn resolve_build_machine(
-    client: &mut crate::connect::Client,
-    selection: &Selection,
-    required: &BTreeSet<String>,
-) -> Result<MachineId, Error> {
-    let resolved = match selection {
-        Selection::Pinned(target) => {
-            let machine = client.build_machine(target).await?;
-            let contract = describe(client, machine.id).await?;
-            if !contract.supports(ployz_core::BUILD_CAPABILITY) {
-                return Err(Error::usage(format!(
-                    "Machine {} ({}) does not support remote Builds; name another with --remote=<Machine>, or build here with --local",
-                    machine.name, machine.id
-                )));
-            }
-            Resolved {
-                unconfirmed: build_location::unconfirmed(&machine.runtime.architecture, required),
-                name: machine.name,
-                id: machine.id,
-                unresolved: Vec::new(),
-            }
+    let mut reasons = Vec::new();
+    for observed in candidates {
+        if cancellation.is_cancelled() {
+            reasons.push("Build selection cancelled".into());
+            break;
         }
-        Selection::Automatic => {
-            let candidates = observe_build_candidates(client).await?;
-            let choice = build_location::choose(&candidates, required).map_err(no_machine)?;
-            Resolved {
-                name: choice.machine.name.clone(),
-                id: choice.machine.id,
-                unconfirmed: choice.unconfirmed,
-                unresolved: choice.unresolved,
-            }
-        }
-    };
-    resolved.report();
-    Ok(resolved.id)
-}
-
-/// The command that fixes an automatic selection with nothing to select.
-fn no_machine(error: build_location::NoBuildMachine) -> Error {
-    let action = match error {
-        build_location::NoBuildMachine::Invisible => {
-            "add one with `ployz machine add`, or build here with --local"
-        }
-        build_location::NoBuildMachine::Inconclusive { .. } => {
-            "wait for those Machines and retry, name one with --remote=<Machine>, or build here with --local"
-        }
-        build_location::NoBuildMachine::Incapable { .. } => {
-            "upgrade a Machine, name one with --remote=<Machine>, or build here with --local"
-        }
-    };
-    Error::usage(format!("{error}; {action}"))
-}
-
-/// Ask every visible Machine what it can build, keeping unanswered evidence.
-///
-// ponytail: one concurrent probe per visible Machine, matching the Cluster
-// fan-out in `cluster.rs`. Bound the concurrency if a Cluster ever grows past
-// the handful of Machines the product targets; sequential probing would cost
-// the 5s describe timeout per Machine on every automatic Build.
-async fn observe_build_candidates(
-    client: &mut crate::connect::Client,
-) -> Result<Vec<Candidate>, Error> {
-    let mut candidates = Vec::new();
-    let mut probes = Vec::new();
-    for observation in client.machines().await? {
-        let machine = observation.machine;
-        if !observation.membership.invites_rpc() {
-            candidates.push(Candidate {
-                id: machine.id,
-                name: machine.name,
-                evidence: Evidence::Ineligible(format!(
-                    "has membership {} and does not invite an RPC",
-                    observation.membership.as_str()
-                )),
-            });
-            continue;
-        }
-        let probe = client.clone();
-        probes.push(async move {
-            let evidence = match describe(&probe, machine.id).await {
-                Ok(contract) if contract.supports(ployz_core::BUILD_CAPABILITY) => {
-                    Evidence::Builds {
-                        architecture: machine.runtime.architecture,
-                    }
+        let machine = &observed.machine;
+        let reason = if !observed.membership.invites_rpc() {
+            format!("membership is {:?}", observed.membership)
+        } else if !machine.accepts_builds {
+            "does not accept Builds".into()
+        } else {
+            match client
+                .invoke::<op::DescribeContract>(
+                    DescribeContractRequest {},
+                    &MachineTarget::from(&machine.id),
+                    Some(Duration::from_secs(5)),
+                )
+                .await
+            {
+                Ok(contract) if contract.machine_id != machine.id => format!(
+                    "contract identifies a different Machine ({})",
+                    contract.machine_id
+                ),
+                Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => {
+                    "does not support remote Builds".into()
                 }
-                Ok(_) => Evidence::Refuses,
-                Err(error) => Evidence::Unanswered(error.to_string()),
-            };
-            Candidate {
-                id: machine.id,
-                name: machine.name,
-                evidence,
+                Ok(_) => match client
+                    .check_build_capabilities(machine.id, targets, cancellation)
+                    .await
+                {
+                    Ok(()) => {
+                        if !reasons.is_empty() {
+                            eprintln!(
+                                "Build eligibility was not confirmed for {}",
+                                reasons.join("; ")
+                            );
+                        }
+                        println!("Selected Build Machine {} ({})", machine.name, machine.id);
+                        eprintln!("Build Machine: {}", machine.id);
+                        return Ok(machine.clone());
+                    }
+                    Err(error) => format!("Build capability could not be verified: {error}"),
+                },
+                Err(error) => format!("Build capability could not be verified: {error}"),
             }
-        });
+        };
+        reasons.push(format!(
+            "Machine {} ({}): {reason}",
+            machine.name, machine.id
+        ));
     }
-    candidates.extend(futures_util::future::join_all(probes).await);
-    Ok(candidates)
-}
-
-/// Read one Machine's advertised contract, refusing an answer from another Machine.
-async fn describe(
-    client: &crate::connect::Client,
-    machine_id: MachineId,
-) -> Result<ployz_core::ContractDescription, Error> {
-    let contract = client
-        .invoke::<ployz_core::op::DescribeContract>(
-            ployz_core::DescribeContractRequest {},
-            &ployz_core::MachineTarget::from(&machine_id),
-            Some(std::time::Duration::from_secs(5)),
-        )
-        .await?;
-    if contract.machine_id != machine_id {
-        return Err(Error::usage(format!(
-            "Machine {machine_id} was answered by Machine {}",
-            contract.machine_id
-        )));
-    }
-    Ok(contract)
+    Err(ConnectError::Remote(RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: format!(
+            "no eligible Build Machine: {}; retry after resolving these observations, pin with --remote=<Machine>, or build here with --local",
+            if reasons.is_empty() {
+                "no Machines observed".into()
+            } else {
+                reasons.join("; ")
+            }
+        ),
+        details: Value::Null,
+    }).into())
 }
 
 pub(super) fn progress(event: ployz_build::Progress) {
@@ -364,13 +285,27 @@ pub(super) fn report_push(
 
 pub(super) fn push_targets(
     explicit: &[String],
-    configured: &[ployz_core::MachineTarget],
-) -> Vec<String> {
-    if explicit.is_empty() {
-        configured.iter().map(ToString::to_string).collect()
-    } else {
-        explicit.to_vec()
+    placement: &ployz_core::Placement,
+    machines: &[ployz_core::MachineObservation],
+) -> Result<Vec<String>, Error> {
+    if !explicit.is_empty() {
+        return Ok(explicit.to_vec());
     }
+    let targets: Vec<_> = machines
+        .iter()
+        .filter(|observed| {
+            observed.membership == ployz_core::MembershipObservation::Up
+                && observed.machine.accepts_services
+                && ployz_core::machine_matches_placement(&observed.machine, placement)
+        })
+        .map(|observed| observed.machine.id.to_string())
+        .collect();
+    if targets.is_empty() {
+        return Err(Error::usage(
+            "no responsive Service-accepting Machine matches the Service constraints for image prewarming",
+        ));
+    }
+    Ok(targets)
 }
 
 fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, Error> {
@@ -385,6 +320,9 @@ fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, E
 fn report_remote(outcome: ployz_build::remote::Outcome) -> Result<(), Error> {
     use ployz_build::remote::Outcome;
     match outcome {
+        Outcome::CapabilitiesChecked { .. } => Err(Error::usage(
+            "Build returned only a capability check; execution was not observed",
+        )),
         Outcome::Images { machine_id, images } => {
             for image in images {
                 println!(
@@ -425,19 +363,58 @@ fn report_remote(outcome: ployz_build::remote::Outcome) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::MachineTarget;
-
     use super::*;
 
     #[test]
-    fn explicit_push_targets_override_service_targets_and_empty_means_all() {
-        let configured = [MachineTarget::parse("service-machine").unwrap()];
+    fn local_prewarming_filters_runtime_destinations_but_explicit_transfer_does_not() {
+        use ployz_core::{MachineObservation, MembershipObservation, Placement};
+        let mut machines: Vec<_> = ('a'..='d')
+            .map(|id| {
+                MachineObservation::new(
+                    ployz_core::Machine {
+                        id: ployz_core::MachineId::parse(id.to_string().repeat(32)).unwrap(),
+                        name: ployz_core::MachineName::parse(format!("node-{id}")).unwrap(),
+                        subnet: "10.210.1.0/24".parse().unwrap(),
+                        public_key: ployz_core::WireGuardPublicKey([1; 32]),
+                        labels: [("region".parse().unwrap(), "eu".parse().unwrap())].into(),
+                        accepts_builds: true,
+                        accepts_services: true,
+                        accepts_ingress: true,
+                        public_ip: None,
+                        advertised_endpoints: Vec::new(),
+                        runtime: Default::default(),
+                    },
+                    MembershipObservation::Up,
+                )
+            })
+            .collect();
+        machines.get_mut(1).unwrap().machine.accepts_services = false;
+        machines
+            .get_mut(2)
+            .unwrap()
+            .machine
+            .labels
+            .insert("region".parse().unwrap(), "us".parse().unwrap());
+        machines.get_mut(3).unwrap().membership = MembershipObservation::Down;
+        let placement: Placement = serde_json::from_value(serde_json::json!({
+            "constraints": ["node.labels.region == EU"]
+        }))
+        .unwrap();
         assert_eq!(
-            push_targets(&["explicit-machine".into()], &configured),
-            ["explicit-machine"]
+            push_targets(&[], &placement, &machines).unwrap(),
+            ["a".repeat(32)]
         );
-        assert_eq!(push_targets(&[], &configured), ["service-machine"]);
-        assert!(push_targets(&[], &[]).is_empty());
+        assert_eq!(
+            push_targets(&["node-b".into()], &placement, &machines).unwrap(),
+            ["node-b"]
+        );
+        machines.first_mut().unwrap().machine.accepts_services = false;
+        assert!(
+            push_targets(&[], &placement, &machines)
+                .unwrap_err()
+                .to_string()
+                .contains("no responsive Service-accepting Machine")
+        );
     }
 
     #[test]

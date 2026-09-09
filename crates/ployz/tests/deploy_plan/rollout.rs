@@ -303,7 +303,7 @@ fn two_projects_can_each_own_the_same_service_name() {
 #[test]
 fn unmatched_placement_returns_no_eligible_machines() {
     let mut requested = requested(ServiceMode::Global);
-    requested.placement.machines = vec![MachineTarget::parse("missing").unwrap()];
+    requested.placement.constraints = [label_constraint("missing")].into();
 
     assert_no_eligible(
         plan_deploy(
@@ -315,9 +315,9 @@ fn unmatched_placement_returns_no_eligible_machines() {
             PlanOptions::default(),
         ),
         &[EliminatingConstraint::UnknownPlacement {
-            targets: vec![MachineTarget::parse("missing").unwrap()],
+            targets: vec![label_constraint("missing")],
         }],
-        &["x-machines 'missing' matched no Machine"],
+        &["placement constraints 'node.labels.fixture==missing' matched no Machine"],
     );
 }
 

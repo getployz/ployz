@@ -305,18 +305,23 @@ func classify(name string, raw, extensions object) ([]string, error) {
 	if raw["security_opt"] != nil {
 		return nil, fmt.Errorf("service '%s': unsupported feature 'security_opt'; remove the unsupported setting", name)
 	}
-	if mapping(raw["deploy"])["placement"] != nil {
-		return nil, fmt.Errorf("service '%s': unsupported feature 'deploy.placement'; use x-machines", name)
+	for _, key := range []string{"x-machine", "x-machines"} {
+		if _, ok := extensions[key]; ok {
+			return nil, fmt.Errorf("service '%s': %s has been replaced by deploy.placement.constraints", name, key)
+		}
+	}
+	for key := range mapping(mapping(raw["deploy"])["placement"]) {
+		if key != "constraints" {
+			return nil, fmt.Errorf("service '%s': unsupported feature 'deploy.placement.%s'; only constraints are supported", name, key)
+		}
 	}
 	for _, key := range []string{"dns", "dns_opt", "dns_search", "group_add", "ipc", "links", "network_mode", "oom_kill_disable", "pids_limit", "runtime", "storage_opt", "tmpfs", "userns_mode", "uts", "volumes_from"} {
 		if raw[key] != nil {
 			warnings = append(warnings, fmt.Sprintf("service '%s': unsupported feature '%s'", name, key))
 		}
 	}
-	for _, pair := range [][2]string{{"x-port", "x-ports"}, {"x-machine", "x-machines"}} {
-		if _, ok := extensions[pair[0]]; ok {
-			warnings = append(warnings, fmt.Sprintf("service '%s': unsupported feature '%s'; use %s", name, pair[0], pair[1]))
-		}
+	if _, ok := extensions["x-port"]; ok {
+		warnings = append(warnings, fmt.Sprintf("service '%s': unsupported feature 'x-port'; use x-ports", name))
 	}
 	for _, key := range []string{"mem_swappiness", "memswap_limit"} {
 		if n, _ := strconv.ParseFloat(fmt.Sprint(raw[key]), 64); n > 0 {
@@ -334,7 +339,7 @@ func classify(name string, raw, extensions object) ([]string, error) {
 	}
 	deployKeys := []string{}
 	for key, value := range mapping(raw["deploy"]) {
-		if value != nil && key != "mode" && key != "replicas" && key != "resources" && key != "update_config" && !strings.HasPrefix(key, "x-") && key != "#extensions" {
+		if value != nil && key != "mode" && key != "replicas" && key != "resources" && key != "update_config" && key != "placement" && !strings.HasPrefix(key, "x-") && key != "#extensions" {
 			deployKeys = append(deployKeys, key)
 		}
 	}

@@ -482,6 +482,10 @@ mod tests {
     fn machine_json_projection_includes_the_derived_gateway() {
         let observation = MachineObservation::new(
             ployz_core::Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: "0".repeat(32).parse().unwrap(),
                 name: "node-a".parse().unwrap(),
                 subnet: "10.210.7.0/24".parse().unwrap(),

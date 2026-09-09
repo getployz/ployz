@@ -244,19 +244,57 @@ export type IngressHostname = { "kind": "cluster_domain", label: ClusterDomainLa
 
 export type IngressProxyFragment = string;
 
+export type InitialMachinePolicy = {
+/**
+ * Operator classifications used by placement constraints.
+ */
+labels: { [key in MachineLabelKey]: MachineLabelValue },
+/**
+ * Whether to admit new Builds; revocation preserves existing work.
+ */
+accepts_builds: boolean,
+/**
+ * Whether to admit new application Services; revocation preserves existing work.
+ */
+accepts_services: boolean,
+/**
+ * Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
+ */
+accepts_ingress: boolean, };
+
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
 export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogDriver = { name: string, options: { [key in string]: string }, };
 
-export type Machine = { id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+export type Machine = {
+/**
+ * Operator classifications used by placement constraints.
+ */
+labels: { [key in MachineLabelKey]: MachineLabelValue },
+/**
+ * Whether to admit new Builds; revocation preserves existing work.
+ */
+accepts_builds: boolean,
+/**
+ * Whether to admit new application Services; revocation preserves existing work.
+ */
+accepts_services: boolean,
+/**
+ * Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
+ */
+accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 
 export type MachineId = string & { readonly __brand: "MachineId" };
+
+export type MachineLabelKey = string;
+
+export type MachineLabelValue = string;
 
 export type MachineName = string;
 
@@ -358,9 +396,11 @@ export type PidMode = string;
 
 export type Placement = {
 /**
- * Machine Targets. An empty list remains every eligible Machine.
+ * Empty adds no selector restriction.
  */
-machines: Array<MachineTarget>, };
+constraints: Array<PlacementConstraint>, };
+
+export type PlacementConstraint = string;
 
 export type PlanOptions = {
 /**
@@ -408,7 +448,11 @@ export type PullPolicy = "always" | "missing" | "never";
 
 export type QualifiedService = string;
 
-export type RegisterRequest = { name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+export type RegisterRequest = {
+/**
+ * Complete policy committed in the first Machine assignment, before participation.
+ */
+initial_policy: InitialMachinePolicy, name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
 export type Registered = { assigned_machine: Machine, visible_peers: Array<Machine>, target_versions: { [key in string]: number }, };
 

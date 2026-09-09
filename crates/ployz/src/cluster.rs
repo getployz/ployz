@@ -293,17 +293,6 @@ impl Client {
             .into_inner())
     }
 
-    pub(crate) async fn build_machine(
-        &mut self,
-        target: &MachineTarget,
-    ) -> Result<Machine, ConnectError> {
-        let visible = self.machines().await?;
-        Ok(visible_machine(target, &visible)
-            .map_err(ConnectError::Remote)?
-            .machine
-            .clone())
-    }
-
     pub(crate) async fn exec_stream(
         &self,
         target: &MachineTarget,
@@ -879,7 +868,11 @@ async fn refuse_last_cloud_paired(
     })
 }
 
-fn visible_machine<'list>(
+/// Resolve a Machine Target without hiding Name Ambiguity in the visible observations.
+///
+/// # Errors
+/// Returns NotFound or Ambiguous when the target does not resolve to one Machine.
+pub(crate) fn visible_machine<'list>(
     machine: &MachineTarget,
     machines: &'list [MachineObservation],
 ) -> Result<&'list MachineObservation, RpcError> {

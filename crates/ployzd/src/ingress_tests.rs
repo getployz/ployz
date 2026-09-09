@@ -27,6 +27,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
     };
     IngressProjection {
         machine: Machine {
+                        labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: machine_id,
             name: MachineName::parse("node-a").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),

@@ -44,9 +44,9 @@ services:
     sysctls: {net.ipv4.ip_forward: "1"}
     deploy:
       replicas: 3
+      placement: {constraints: ["node.labels.Region == EU-West", "node.labels.disk!=slow"]}
       update_config: {order: stop-first, monitor: 45s}
     depends_on: {db: {condition: service_started}}
-    x-machines: "machine-1, machine-2"
     x-ports: [api.example.com:8443:8080/https, 5000:3000/tcp@host]
     x-pre_deploy:
       command: [sh, -c, migrate]

@@ -20,6 +20,7 @@ fn update_mapping_preserves_omissions_and_applies_one_atomic_patch() {
             name: Some(MachineName::parse("renamed").unwrap()),
             public_ip: PublicIpUpdate::Set("203.0.113.9".parse().unwrap()),
             advertised_endpoints: Some(endpoints.clone()),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -209,6 +210,10 @@ fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
 
 fn machine(id: char, name: &str, seed: u8) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -244,4 +249,104 @@ fn machine_management_address_is_derived_after_decode_and_key_update() {
     );
     decoded.public_key = WireGuardPublicKey([0; 32]);
     assert_eq!(decoded.management_address().0.to_string(), "fdcc::");
+}
+
+#[test]
+fn label_and_role_patch_preserves_unrelated_metadata() {
+    let mut original = machine('1', "first", 1);
+    original.labels = BTreeMap::from([
+        ("zone".parse().unwrap(), "west".parse().unwrap()),
+        ("keep".parse().unwrap(), "yes".parse().unwrap()),
+        ("remove".parse().unwrap(), "old".parse().unwrap()),
+    ]);
+    let patch: MachineUpdate = serde_json::from_value(serde_json::json!({
+        "label_changes": {"zone": "east", "remove": null, "missing": null},
+        "accepts_services": false
+    }))
+    .unwrap();
+    assert!(!patch.is_empty());
+    let updated = apply_machine_update(&original, &[], patch).unwrap();
+    assert_eq!(
+        updated.labels,
+        BTreeMap::from([
+            ("zone".parse().unwrap(), "east".parse().unwrap()),
+            ("keep".parse().unwrap(), "yes".parse().unwrap())
+        ])
+    );
+    assert!(updated.accepts_builds && updated.accepts_ingress);
+    assert!(!updated.accepts_services);
+    assert_eq!(updated.name, original.name);
+}
+
+#[test]
+fn malformed_machine_labels_are_rejected_at_the_wire_boundary() {
+    let valid: MachineUpdate = serde_json::from_value(
+        serde_json::json!({"label_changes": {"Region": "East", "region": "west"}}),
+    )
+    .unwrap();
+    let updated = apply_machine_update(&machine('1', "first", 1), &[], valid).unwrap();
+    assert_eq!(
+        serde_json::to_value(&updated)
+            .unwrap()
+            .get("labels")
+            .unwrap(),
+        &serde_json::json!({"Region": "East", "region": "west"})
+    );
+    let wire = serde_json::to_value(machine('1', "first", 1)).unwrap();
+    for labels in [
+        serde_json::json!({"bad key": "value"}),
+        serde_json::json!({"rack/zone": "west"}),
+        serde_json::json!({"région": "west"}),
+        serde_json::json!({"key": ""}),
+        serde_json::json!({"key": " west"}),
+        serde_json::json!({"key": "west "}),
+        serde_json::json!({"key": "é"}),
+        serde_json::json!({"key": "🦀"}),
+        serde_json::json!({"key": "K"}),
+        serde_json::json!({"key": "ſ"}),
+        serde_json::json!({"key": "a=b"}),
+        serde_json::json!({"key": "a,b"}),
+        serde_json::json!({"key": "a\tb"}),
+        serde_json::json!({"key": "bad\nvalue"}),
+    ] {
+        let mut wire = wire.clone();
+        *wire.get_mut("labels").unwrap() = labels.clone();
+        assert!(serde_json::from_value::<Machine>(wire).is_err(), "{labels}");
+        assert!(serde_json::from_value::<ployz_core::InitialMachinePolicy>(serde_json::json!({
+            "labels": labels.clone(), "accepts_builds": true, "accepts_services": true, "accepts_ingress": true
+        })).is_err(), "{labels}");
+        assert!(
+            serde_json::from_value::<MachineUpdate>(serde_json::json!({"label_changes": labels}))
+                .is_err()
+        );
+    }
+    assert!(
+        serde_json::from_value::<MachineUpdate>(serde_json::json!({"label_changes": {" ": null}}))
+            .is_err()
+    );
+}
+
+#[test]
+fn admitted_machine_labels_are_selectable_by_literal_swarm_constraints() {
+    for (key, value) in [
+        ("rack.zone-1_A", "West"),
+        ("Region", r"EU west:/alpha.*()?+[]\^$|_-"),
+    ] {
+        let patch: MachineUpdate =
+            serde_json::from_value(serde_json::json!({"label_changes": {key: value}})).unwrap();
+        let selected = apply_machine_update(&machine('1', "first", 1), &[], patch).unwrap();
+        let constraint =
+            ployz_core::PlacementConstraint::parse(format!("node.labels.{key}=={value}")).unwrap();
+        assert!(constraint.matches(&selected));
+        let insensitive = ployz_core::PlacementConstraint::parse(format!(
+            "node.labels.{key}=={}",
+            value.to_ascii_uppercase()
+        ))
+        .unwrap();
+        assert!(insensitive.matches(&selected));
+        let missing =
+            ployz_core::PlacementConstraint::parse(format!("node.labels.missing!={value}"))
+                .unwrap();
+        assert!(missing.matches(&selected));
+    }
 }

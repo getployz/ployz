@@ -1,9 +1,11 @@
 //! Owned transport tests. The Docker stand-in proves orchestration and
 //! termination evidence; the informing test proves a real remote image.
 
+mod admission;
+
 use super::*;
 use crate::{
-    machine::{FoundingCluster, LocalMachineStore},
+    machine::LocalMachineStore,
     machine_api::{MachineApi, MachineService},
 };
 use ployz_core::MachineRpcClient;
@@ -42,25 +44,25 @@ impl Fixture {
         .unwrap();
         let mut store = LocalMachineStore::open(root.join("machine")).unwrap();
         let machine = store
-            .initialize(
-                ployz_core::MachineName::parse("builder").unwrap(),
-                FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                },
-                None,
-                vec![ployz_core::AdvertisedEndpoint(
+            .initialize(ployz_core::InitializeRequest {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("builder").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                     "127.0.0.1:7569".parse().unwrap(),
                 )],
-                None,
-                None,
-            )
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            })
             .unwrap();
         let (restart, _) = tokio::sync::watch::channel(false);
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
+        let store = Arc::new(Mutex::new(store));
         let mut service = MachineService::with_cluster(
-            Arc::new(Mutex::new(store)),
+            store,
             restart,
             Some((replicated, crate::corrosion::AdminClient::new("/no/admin"))),
         )
@@ -98,27 +100,28 @@ impl Fixture {
         &self,
         output: Output,
     ) -> (mpsc::Sender<OpaquePayload>, tonic::Streaming<OpaquePayload>) {
+        self.request_frame(Input::Start(Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            targets: vec![ployz_build::Target {
+                name: "api".into(),
+                platforms: Vec::new(),
+            }],
+            output,
+            no_cache: false,
+            pull: false,
+        }))
+        .await
+    }
+    async fn request_frame(
+        &self,
+        frame: Input,
+    ) -> (mpsc::Sender<OpaquePayload>, tonic::Streaming<OpaquePayload>) {
         let mut client = MachineRpcClient::connect(self.address.clone())
             .await
             .unwrap();
         let (sender, receiver) = mpsc::channel(2);
-        sender
-            .send(
-                remote::encode(&Input::Start(Definition {
-                    retained_tags: Vec::new(),
-                    image_contexts: Default::default(),
-                    targets: vec![ployz_build::Target {
-                        name: "api".into(),
-                        platforms: Vec::new(),
-                    }],
-                    output,
-                    no_cache: false,
-                    pull: false,
-                }))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
+        sender.send(remote::encode(&frame).unwrap()).await.unwrap();
         let response = client
             .build(ReceiverStream::new(receiver))
             .await
@@ -208,6 +211,31 @@ async fn active_build_refuses_an_upgrade_request() {
     let (sender, mut response) = fixture.request(Output::Load).await;
     assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
 
+    let updated = tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.local.update(
+            serde_json::from_value(serde_json::json!({
+                "update": {
+                    "label_changes": {"pool": "build"},
+                    "accepts_builds": false,
+                    "accepts_services": false,
+                    "accepts_ingress": false
+                }
+            }))
+            .unwrap(),
+        ),
+    )
+    .await
+    .expect("policy update waited for active Build")
+    .unwrap();
+    assert!(!updated.machine.accepts_builds);
+    assert!(!updated.machine.accepts_services);
+    assert!(!updated.machine.accepts_ingress);
+    assert_eq!(
+        serde_json::to_value(&updated.machine.labels).unwrap(),
+        serde_json::json!({"pool": "build"})
+    );
+
     let error = fixture
         .local
         .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
@@ -221,6 +249,15 @@ async fn active_build_refuses_an_upgrade_request() {
         crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
     ));
 
+    let mut rename = Box::pin(fixture.local.update(
+        serde_json::from_value(serde_json::json!({"update": {"name": "renamed"}})).unwrap(),
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rename.as_mut())
+            .await
+            .is_err(),
+        "ordinary Machine update ran concurrently with active Build execution"
+    );
     let mut ordinary = Box::pin(fixture.local.set_cloud_pairing(None));
     assert!(
         tokio::time::timeout(Duration::from_millis(100), ordinary.as_mut())
@@ -230,6 +267,10 @@ async fn active_build_refuses_an_upgrade_request() {
     );
     drop(sender);
     let _ = terminal(&mut response).await;
+    tokio::time::timeout(Duration::from_secs(2), rename)
+        .await
+        .expect("Machine rename stayed blocked after Build execution ended")
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(2), ordinary)
         .await
         .expect("ordinary mutation stayed blocked after Build execution ended")
@@ -242,15 +283,40 @@ async fn durable_upgrade_marker_refuses_build_before_execution() {
     let marker = fixture.root.join("machine/.upgrade-active");
     fs::write(&marker, "active-upgrade").unwrap();
 
-    let (_sender, mut rejected) = fixture.request(Output::Load).await;
+    let policy = serde_json::from_value(serde_json::json!({
+        "update": {"label_changes": {"pool": "build"}, "accepts_builds": false, "accepts_services": false, "accepts_ingress": false}
+    }))
+    .unwrap();
     assert!(matches!(
-        terminal(&mut rejected).await,
-        Outcome::Failed {
-            stage: Stage::Admission,
-            ..
-        }
+        fixture.local.update(policy).await,
+        Err(crate::machine::LocalMachineError::Admission(
+            crate::mutation::Error::Busy
+        ))
     ));
-    assert!(!fixture.root.join("executed").exists());
+
+    for input in [
+        Input::Start(Definition {
+            targets: vec![ployz_build::Target {
+                name: "api".into(),
+                platforms: vec!["linux/amd64".into()],
+            }],
+            output: Output::Load,
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            no_cache: false,
+            pull: false,
+        }),
+        Input::Check(vec![ployz_build::Target {
+            name: "api".into(),
+            platforms: vec!["linux/amd64".into()],
+        }]),
+    ] {
+        let (_sender, mut rejected) = fixture.request_frame(input).await;
+        assert!(matches!(terminal(&mut rejected).await,
+            Outcome::Failed { stage: Stage::Admission, message, .. }
+                if message.contains("installation or upgrade is active")));
+        assert!(!fixture.root.join("executed").exists());
+    }
 
     fs::remove_file(marker).unwrap();
     let (sender, mut admitted) = fixture.request(Output::Load).await;
@@ -401,11 +467,14 @@ case "$1 $2" in
   'context show') echo default ;;
   'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
-    if [ -f "$root/fail-cleanup" ] && [ -f "$root/executed" ]; then exit 1; fi ;;
-  'buildx version'|'buildx create'|'buildx inspect') exit 0 ;;
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
+  'buildx version'|'buildx create') exit 0 ;;
+  'buildx inspect')
+    if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
+    while [ -f "$root/hold-build" ]; do sleep 0.01; done
     if [ -f "$root/registry-attempt" ]; then
       for arg in "$@"; do
         case "$arg" in
@@ -502,10 +571,9 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         .await
         .unwrap();
     let mut responses = start(
-        fixture.machine.id,
+        fixture.local.clone(),
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
-        fixture.local.clone(),
     );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),
@@ -568,7 +636,8 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
         let work = match result {
             Outcome::Unknown { work, .. } if failure == "fail-cleanup" => work,
             Outcome::Failed { work, .. } if failure != "fail-cleanup" => work,
-            other @ (Outcome::Images { .. }
+            other @ (Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. }
             | Outcome::Failed { .. }

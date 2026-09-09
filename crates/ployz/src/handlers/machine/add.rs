@@ -10,7 +10,7 @@ use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let deploy_ingress = !matches.get_flag("no-ingress");
+    let policy = super::enrollment_policy(matches)?;
     let options = ConnectionOptions::from_matches(root)?;
     let (mut config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
@@ -67,6 +67,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let registration = entry
             .call_repeatable::<op::Register>(
                 RegisterRequest {
+                    initial_policy: policy,
                     name,
                     storage,
                     public_key: token.public_key,
@@ -109,9 +110,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
     let catch_up = runtime.block_on(async {
         let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-        Ok::<_, Error>(
-            crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_ingress).await,
-        )
+        Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
     })?;
     if let Err(error) = catch_up {
         let recovery =
@@ -244,6 +243,10 @@ mod tests {
 
     fn assigned_machine(name: &str, seed: char) -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),

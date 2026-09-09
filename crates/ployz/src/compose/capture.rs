@@ -138,7 +138,7 @@ fn deploy_binds_each_service_to_its_build_when_requested_tags_are_shared() {
         name: name.into(),
         _retention: None,
         image: "example.test/shared:latest".into(),
-        machines: vec![],
+        placement: Default::default(),
         location: BuildLocation::Machine(ployz_core::MachineId::parse("a".repeat(32)).unwrap()),
         built: ployz_build::BuiltImage {
             reference: digest.into(),

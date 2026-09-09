@@ -349,6 +349,109 @@ mod tests {
     use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore};
 
     #[tokio::test]
+    async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
+        use crate::docker::test_support::{FakeDocker, fake_runtime_with};
+        use ployz_core::{AdvertisedEndpoint, ContainerKind, MachineName};
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-role-admission-{}", MachineId::random()));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        store
+            .initialize(ployz_core::InitializeRequest {
+                initial_policy: Default::default(),
+                name: MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            })
+            .unwrap();
+        let store = Arc::new(Mutex::new(store));
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(Arc::new(tokio::sync::Barrier::new(1))),
+            ..Default::default()
+        })
+        .await;
+        let local = LocalMachine::new(store.clone(), tokio::sync::watch::channel(false).0)
+            .with_containers(Some(runtime.clone()));
+        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+            "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
+            "container": {"image":"example.test/api", "pull_policy":"missing"}
+        })).unwrap();
+        let project = ProjectName::parse("app").unwrap();
+        let existing = local
+            .create_container(ContainerKind::ServiceContainer, &project, &spec)
+            .await
+            .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .update(
+                serde_json::from_value(json!({
+                    "accepts_services": false, "accepts_ingress": true, "accepts_builds": true
+                }))
+                .unwrap(),
+                &[],
+            )
+            .unwrap();
+        for kind in [
+            ContainerKind::ServiceContainer,
+            ContainerKind::PreDeployHook,
+        ] {
+            let error = local
+                .create_container(kind, &project, &spec)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("accept"), "{error}");
+        }
+        let error = local
+            .prepare_volumes(vec![ployz_core::ServiceStorageSpec::from(&spec)])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("accept"), "{error}");
+        let labels = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .get("Labels")
+            .unwrap()
+            .clone();
+        fake.existing_container.lock().unwrap().as_mut().unwrap()["Config"] =
+            json!({"Labels": labels});
+        runtime.start(&existing.container_id).await.unwrap();
+        runtime
+            .stop(&existing.container_id, None, None)
+            .await
+            .unwrap();
+        runtime
+            .remove(&existing.container_id, false, false)
+            .await
+            .unwrap();
+        assert!(fake.existing_container.lock().unwrap().is_none());
+        let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
+            .to_resolved(ServiceId::random(), Default::default())
+            .unwrap();
+        let error = local
+            .create_container(ContainerKind::ServiceContainer, &project, &ingress)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("accept"), "{error}");
+        local
+            .create_container(
+                ContainerKind::ServiceContainer,
+                &ProjectName::system(),
+                &ingress,
+            )
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn cancelled_create_finishes_before_reset_cleanup() {
         for before_create in [false, true] {
             use crate::docker::test_support::{FakeDocker, fake_runtime_with};
@@ -357,16 +460,17 @@ mod tests {
                 std::env::temp_dir().join(format!("ployzd-admission-{}", MachineId::random()));
             let mut store = LocalMachineStore::open(&data_dir).unwrap();
             store
-                .initialize(
-                    MachineName::parse("local").unwrap(),
-                    crate::machine::FoundingCluster {
-                        network: "10.210.0.0/16".parse().unwrap(),
-                    },
-                    None,
-                    vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-                    None,
-                    None,
-                )
+                .initialize(ployz_core::InitializeRequest {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                    wireguard_mtu: None,
+                    cloud_pairing: None,
+                })
                 .unwrap();
             let barrier = Arc::new(tokio::sync::Barrier::new(2));
             let (runtime, fake) = fake_runtime_with(FakeDocker {
@@ -465,6 +569,10 @@ mod tests {
         {
             let mut store = store.lock().unwrap();
             let machine = Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: store.record().id(),
                 name: MachineName::parse("joining").unwrap(),
                 subnet: "10.210.0.0/24".parse().unwrap(),
@@ -508,16 +616,15 @@ mod tests {
             std::env::temp_dir().join(format!("ployzd-removal-admission-{}", MachineId::random()));
         let mut store = LocalMachineStore::open(&data_dir).unwrap();
         store
-            .initialize(
-                MachineName::parse("local").unwrap(),
-                crate::machine::FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                },
-                None,
-                vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-                None,
-                None,
-            )
+            .initialize(ployz_core::InitializeRequest {
+                initial_policy: Default::default(),
+                name: MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            })
             .unwrap();
         let (replicated, server) = fake_cluster::store().await;
         server.abort();

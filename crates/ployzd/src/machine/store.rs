@@ -4,7 +4,6 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    net::IpAddr,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -198,21 +197,36 @@ impl LocalMachineStore {
         })
     }
 
+    /// Persist the first participating assignment with its complete admission policy.
+    ///
+    /// # Errors
+    /// Rejects an initialized Machine, missing endpoints, invalid network, or a failed save.
     pub fn initialize(
         &mut self,
-        name: ployz_core::MachineName,
-        founding_cluster: FoundingCluster,
-        public_ip: Option<IpAddr>,
-        advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
-        wireguard_mtu: Option<u32>,
-        cloud_pairing: Option<CloudPairing>,
+        request: ployz_core::InitializeRequest,
     ) -> Result<Machine, StoreError> {
+        let ployz_core::InitializeRequest {
+            initial_policy,
+            name,
+            cluster_network,
+            public_ip,
+            advertised_endpoints,
+            wireguard_mtu,
+            cloud_pairing,
+        } = request;
+        let founding_cluster = FoundingCluster {
+            network: cluster_network,
+        };
         self.require_uninitialized()?;
         if advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
         let public_key = self.record.wireguard_private_key.public_key();
         let machine = Machine {
+            labels: initial_policy.labels,
+            accepts_builds: initial_policy.accepts_builds,
+            accepts_services: initial_policy.accepts_services,
+            accepts_ingress: initial_policy.accepts_ingress,
             id: self.record.id(),
             name,
             subnet: allocate_machine_subnet(founding_cluster.network, [])

@@ -133,7 +133,6 @@ pub fn plan_global_catch_up(
     services: &[ServiceObservation],
     this_machine: &Machine,
     storage: Option<&MachineStorageObservation>,
-    skip_ingress: bool,
 ) -> Vec<ObservedGlobalSlotSpec> {
     services
         .iter()
@@ -141,7 +140,6 @@ pub fn plan_global_catch_up(
             let slot = eligible_catch_up_slot(service, this_machine, storage)?;
             (!slot.is_running_on(&service.containers, this_machine)).then_some(slot)
         })
-        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .collect()
 }
 
@@ -151,8 +149,11 @@ fn eligible_catch_up_slot(
     storage: Option<&MachineStorageObservation>,
 ) -> Option<ObservedGlobalSlotSpec> {
     let slot = service.observed_global_slot()?;
-    (slot.resolved_spec().placement_eligibility(machine, storage)
-        == ServicePlacementEligibility::Eligible)
+    (slot.resolved_spec().placement_eligibility_in_project(
+        &service.identity.project,
+        machine,
+        storage,
+    ) == ServicePlacementEligibility::Eligible)
         .then_some(slot)
 }
 
@@ -165,7 +166,6 @@ fn eligible_catch_up_slot(
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
-    skip_ingress: bool,
 ) -> Result<(), CatchUpError> {
     let live = client
         .live_services()
@@ -183,11 +183,14 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let services = live.services();
     let needs_storage = services
         .iter()
-        .filter(|service| !skip_ingress || service.identity != QualifiedService::system_ingress())
-        .filter_map(ServiceObservation::observed_global_slot_spec)
-        .any(|spec| {
+        .filter_map(ServiceObservation::observed_global_slot)
+        .any(|slot| {
             matches!(
-                spec.placement_eligibility(this_machine, None),
+                slot.resolved_spec().placement_eligibility_in_project(
+                    &slot.identity().project,
+                    this_machine,
+                    None
+                ),
                 ServicePlacementEligibility::Unknown(_)
             )
         });
@@ -200,11 +203,13 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let unknown = services
         .iter()
         .filter_map(ServiceObservation::observed_global_slot)
-        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .filter(|slot| {
             matches!(
-                slot.resolved_spec()
-                    .placement_eligibility(this_machine, storage),
+                slot.resolved_spec().placement_eligibility_in_project(
+                    &slot.identity().project,
+                    this_machine,
+                    storage
+                ),
                 ServicePlacementEligibility::Unknown(_)
             )
         })
@@ -213,10 +218,9 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let initially_eligible = services
         .iter()
         .filter_map(|service| eligible_catch_up_slot(service, this_machine, storage))
-        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .map(|slot| (slot.identity().clone(), slot))
         .collect::<BTreeMap<_, _>>();
-    let slots = plan_global_catch_up(&services, this_machine, storage, skip_ingress);
+    let slots = plan_global_catch_up(&services, this_machine, storage);
     let initially_missing: Vec<_> = slots
         .iter()
         .map(|slot| slot.identity().clone())

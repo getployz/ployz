@@ -229,6 +229,7 @@ async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
 
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
+        initial_policy: Default::default(),
         name: MachineName::parse("joiner").unwrap(),
         storage: StorageChoice::Zfs,
         public_key: WireGuardPublicKey([1; 32]),

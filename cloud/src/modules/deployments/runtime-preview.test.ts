@@ -114,7 +114,7 @@ describe("compileSdkDeployIntent", () => {
         {
           name: "api",
           mode: { mode: "replicated", replicas: 1 },
-          placement: { machines: [] },
+          placement: { constraints: [] },
           configs: [], pre_deploy: null, ingress_proxy_fragment: null,
           update: { order: null, monitor_millis: null },
           container: {

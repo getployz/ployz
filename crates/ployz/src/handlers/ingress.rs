@@ -48,10 +48,11 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .map(|config| IngressProxyFragment::parse(&config))
         .transpose()
         .map_err(|error| Error::usage(error.to_string()))?;
-    let machines = string_values(matches, "machine")
+    let constraints = string_values(matches, "constraint")
         .into_iter()
-        .map(MachineTarget::parse)
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(ployz_core::PlacementConstraint::parse)
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()
+        .map_err(|error| Error::usage(error.to_string()))?;
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
@@ -61,7 +62,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             .unwrap_or("default");
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
-        let requested = crate::ingress::service_spec(image, machines, fragment).await?;
+        let requested = crate::ingress::service_spec(image, constraints, fragment).await?;
         crate::deploy::deploy_spec(
             &mut client,
             &requested,

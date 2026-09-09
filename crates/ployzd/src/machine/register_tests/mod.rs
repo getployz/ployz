@@ -23,6 +23,7 @@ use crate::{
 };
 
 mod harness;
+mod policy;
 use harness::*;
 
 #[tokio::test]
@@ -283,6 +284,10 @@ async fn register_returns_the_committed_row_when_this_machine_is_not_the_allocat
         .await
         .unwrap();
     let peer = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("peer").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),

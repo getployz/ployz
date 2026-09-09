@@ -5,7 +5,7 @@ use ployz_core::{
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
     same_service_mode_kind,
 };
 
@@ -369,11 +369,15 @@ fn assemble_plan(
     mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
-    warnings.extend(storage_eligibility_warnings(&requested, snapshot));
+    warnings.extend(storage_eligibility_warnings(
+        &requested,
+        &intent.project_name,
+        snapshot,
+    ));
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let mut volume_plan = VolumePlan::new(snapshot, &target, &requested)?;
+    let mut volume_plan = VolumePlan::new(snapshot, &intent.project_name, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut reservations = PlacementReservations::new(snapshot);
@@ -590,7 +594,7 @@ fn plan_one_service<'snapshot>(
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    let mut machines = eligible_machines(requested, snapshot, options)?;
+    let mut machines = eligible_machines(requested, project_name, snapshot, options)?;
     let identity = QualifiedService::new(project_name.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
@@ -689,14 +693,19 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
 
 fn eligible_machines<'snapshot>(
     requested: &RequestedServiceSpec,
+    project_name: &ProjectName,
     snapshot: &'snapshot DeploySnapshot,
     options: &PlanOptions,
 ) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
-    let candidates = placement_candidates(requested, snapshot)?;
+    let candidates = placement_candidates(requested, project_name, snapshot)?;
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
     for machine in &candidates {
-        match requested.placement_eligibility(&machine.machine, machine.storage.as_ref()) {
+        match requested.placement_eligibility_in_project(
+            project_name,
+            &machine.machine,
+            machine.storage.as_ref(),
+        ) {
             ServicePlacementEligibility::Eligible => machines.push(*machine),
             ServicePlacementEligibility::Unknown(_) => {
                 unknown.push(machine.machine.name.clone());
@@ -708,7 +717,7 @@ fn eligible_machines<'snapshot>(
         if !unknown.is_empty() {
             return Err(PlanError::ProvisionedVolumeStorageUnknown { names: unknown });
         }
-        if requested.placement.machines.len() == 1 && candidates.len() == 1 {
+        if !requested.placement.constraints.is_empty() && candidates.len() == 1 {
             return Err(PlanError::ProvisionedVolumeStorageRequired {
                 machine: candidates
                     .first()
@@ -729,6 +738,7 @@ fn eligible_machines<'snapshot>(
 
 fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
+    project_name: &ProjectName,
     snapshot: &'snapshot DeploySnapshot,
 ) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
     let candidates = snapshot
@@ -737,21 +747,27 @@ fn placement_candidates<'snapshot>(
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| {
             !matches!(
-                requested.placement_eligibility(&machine.machine, machine.storage.as_ref()),
+                requested.placement_eligibility_in_project(
+                    project_name,
+                    &machine.machine,
+                    machine.storage.as_ref()
+                ),
                 ServicePlacementEligibility::Ineligible(
                     ServicePlacementIneligibleReason::PlacementMismatch
+                        | ServicePlacementIneligibleReason::WorkNotAccepted
                 )
             )
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        return Err(placement_error(requested, snapshot));
+        return Err(placement_error(requested, project_name, snapshot));
     }
     Ok(candidates)
 }
 
 fn storage_eligibility_warnings(
     requested: &[RequestedServiceSpec],
+    project_name: &ProjectName,
     snapshot: &DeploySnapshot,
 ) -> Vec<DeployWarning> {
     let mut warned = BTreeSet::new();
@@ -764,7 +780,11 @@ fn storage_eligibility_warnings(
                 .filter(|machine| machine.membership != MembershipObservation::Down)
                 .filter(move |machine| {
                     matches!(
-                        spec.placement_eligibility(&machine.machine, machine.storage.as_ref()),
+                        spec.placement_eligibility_in_project(
+                            project_name,
+                            &machine.machine,
+                            machine.storage.as_ref()
+                        ),
                         ServicePlacementEligibility::Unknown(_)
                     )
                 })
@@ -776,47 +796,48 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
-fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> PlanError {
+fn placement_error(
+    spec: &RequestedServiceSpec,
+    project_name: &ProjectName,
+    snapshot: &DeploySnapshot,
+) -> PlanError {
     if snapshot.machines.is_empty() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
     }
-    let targets = &spec.placement.machines;
-    if targets.is_empty() {
-        let names = snapshot
-            .machines
-            .iter()
-            .filter(|machine| machine.membership == MembershipObservation::Down)
-            .map(|machine| machine.machine.name.clone())
-            .collect::<Vec<_>>();
-        return PlanError::no_eligible_machines(vec![EliminatingConstraint::MachineDown { names }]);
+    let matched = snapshot
+        .machines
+        .iter()
+        .filter(|machine| machine_matches_placement(&machine.machine, &spec.placement))
+        .collect::<Vec<_>>();
+    if matched.is_empty() {
+        return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {
+            targets: spec.placement.constraints.iter().cloned().collect(),
+        }]);
     }
-    let mut unknown = Vec::new();
     let mut down = Vec::new();
-    for target in targets {
-        let matched = snapshot
-            .machines
-            .iter()
-            .filter(|machine| machine_matches_target(&machine.machine, target))
-            .collect::<Vec<_>>();
-        if matched.is_empty() {
-            unknown.push(target.clone());
-        } else if matched
-            .iter()
-            .all(|machine| machine.membership == MembershipObservation::Down)
-        {
-            for machine in matched {
-                if !down.contains(&machine.machine.name) {
-                    down.push(machine.machine.name.clone());
-                }
-            }
+    let mut refused = Vec::new();
+    for machine in matched {
+        if machine.membership == MembershipObservation::Down {
+            down.push(machine.machine.name.clone());
+        } else if matches!(
+            spec.placement_eligibility_in_project(
+                project_name,
+                &machine.machine,
+                machine.storage.as_ref()
+            ),
+            ServicePlacementEligibility::Ineligible(
+                ServicePlacementIneligibleReason::WorkNotAccepted
+            )
+        ) {
+            refused.push(machine.machine.name.clone());
         }
     }
     let mut constraints = Vec::new();
-    if !unknown.is_empty() {
-        constraints.push(EliminatingConstraint::UnknownPlacement { targets: unknown });
-    }
     if !down.is_empty() {
         constraints.push(EliminatingConstraint::MachineDown { names: down });
+    }
+    if !refused.is_empty() {
+        constraints.push(EliminatingConstraint::WorkNotAccepted { names: refused });
     }
     PlanError::no_eligible_machines(constraints)
 }

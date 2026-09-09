@@ -122,7 +122,7 @@ async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_ta
         "name": "api",
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": { "image": "busybox", "pull_policy": "always" },
-        "placement": { "machines": ["one"] },
+        "placement": { "constraints": ["node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] },
         "volumes": [{
             "reference": "data",
             "source": { "kind": "provisioned", "name": "data", "maximum_bytes": 1024 }

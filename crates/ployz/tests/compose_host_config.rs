@@ -35,7 +35,7 @@ fn compose_refuses_security_opt() {
 }
 
 #[test]
-fn compose_refuses_deploy_placement_and_points_at_x_machines() {
+fn compose_refuses_unsupported_placement_selector() {
     let error = parse_normalized(
         "services: {app: {image: app, deploy: {placement: {constraints: [\"node.hostname == a\"]}}}}",
         ".",
@@ -43,11 +43,8 @@ fn compose_refuses_deploy_placement_and_points_at_x_machines() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("service 'app'"), "{error}");
-    assert!(
-        error.contains("unsupported feature 'deploy.placement'"),
-        "{error}"
-    );
-    assert!(error.contains("use x-machines"), "{error}");
+    assert!(error.contains("invalid placement constraint"), "{error}");
+    assert!(error.contains("node.labels.KEY"), "{error}");
 }
 
 #[test]

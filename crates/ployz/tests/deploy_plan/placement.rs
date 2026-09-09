@@ -362,9 +362,9 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
 }
 
 #[test]
-fn placement_by_ambiguous_machine_name_keeps_every_match() {
+fn placement_by_shared_label_keeps_every_match() {
     let mut requested = requested(ServiceMode::Global);
-    requested.placement.machines = vec![MachineTarget::parse("edge").unwrap()];
+    requested.placement.constraints = [label_constraint("edge")].into();
     let snapshot = DeploySnapshot {
         machines: vec![
             machine('1', "edge"),
@@ -395,7 +395,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
 }
 
 #[test]
-fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
+fn empty_placement_keeps_every_eligible_machine_and_all_is_a_label_value() {
     let requested = requested(ServiceMode::Global);
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "all"), machine('2', "edge")],
@@ -423,7 +423,7 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
     assert_eq!(targets(&plan), vec![machine_id('1'), machine_id('2')]);
 
     let mut named_all = requested;
-    named_all.placement.machines = vec![MachineTarget::parse("all").unwrap()];
+    named_all.placement.constraints = [label_constraint("all")].into();
     let plan = plan_deploy([&named_all], &snapshot, PlanOptions::default()).unwrap();
     assert_eq!(targets(&plan), vec![machine_id('1')]);
 }
@@ -879,11 +879,11 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
 }
 
 #[test]
-fn unknown_x_machines_names_the_missing_target() {
+fn unmatched_constraints_name_the_missing_label() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    requested.placement.machines = vec![MachineTarget::parse("missing-machine").unwrap()];
+    requested.placement.constraints = [label_constraint("missing-machine")].into();
 
     assert_no_eligible(
         plan_deploy(
@@ -895,18 +895,18 @@ fn unknown_x_machines_names_the_missing_target() {
             PlanOptions::default(),
         ),
         &[EliminatingConstraint::UnknownPlacement {
-            targets: vec![MachineTarget::parse("missing-machine").unwrap()],
+            targets: vec![label_constraint("missing-machine")],
         }],
-        &["x-machines 'missing-machine' matched no Machine"],
+        &["placement constraints 'node.labels.fixture==missing-machine' matched no Machine"],
     );
 }
 
 #[test]
-fn down_x_machines_names_the_down_machine() {
+fn constraints_name_the_down_machine() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    requested.placement.machines = vec![MachineTarget::parse("ord1").unwrap()];
+    requested.placement.constraints = [label_constraint("ord1")].into();
     let mut ord1 = machine('2', "ord1");
     ord1.membership = MembershipObservation::Down;
 
@@ -931,7 +931,7 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    requested.placement.machines = vec![MachineTarget::parse("ord1").unwrap()];
+    requested.placement.constraints = [label_constraint("ord1")].into();
     add_named_volume(&mut requested, "data");
 
     assert_no_eligible(
@@ -951,10 +951,10 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
         &[EliminatingConstraint::VolumeConflictsWithPlacement {
             volume: app_volume("data"),
             located_on: vec![MachineName::parse("ewr1").unwrap()],
-            requested: vec![MachineTarget::parse("ord1").unwrap()],
+            requested: vec![label_constraint("ord1")],
         }],
         &[
-            "Docker Volume 'app_data' is already on Machine 'ewr1', which conflicts with x-machines 'ord1'",
+            "Docker Volume 'app_data' is already on Machine 'ewr1', which conflicts with placement constraints 'node.labels.fixture==ord1'",
         ],
     );
 }
@@ -1573,4 +1573,141 @@ fn replicated_socket_repair_keeps_explicit_order_and_foreign_claims() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn next_deploy_relocates_after_policy_edits_but_preserves_volume_locality() {
+    for revoke_role in [false, true] {
+        let mut service = replicated("api", 1);
+        service.placement.constraints = [label_constraint("runtime")].into();
+        let mut first = machine('1', "first");
+        let mut second = machine('2', "second");
+        first
+            .machine
+            .labels
+            .insert("fixture".parse().unwrap(), "runtime".parse().unwrap());
+        second
+            .machine
+            .labels
+            .insert("fixture".parse().unwrap(), "runtime".parse().unwrap());
+        let mut snapshot = DeploySnapshot {
+            machines: vec![first, second],
+            containers: vec![container('a', '1', &service, &service_id('a'))],
+            ..Default::default()
+        };
+        assert!(
+            plan_deploy([&service], &snapshot, PlanOptions::default())
+                .unwrap()
+                .operations
+                .is_empty()
+        );
+        if revoke_role {
+            snapshot
+                .machines
+                .first_mut()
+                .unwrap()
+                .machine
+                .accepts_services = false;
+        } else {
+            snapshot
+                .machines
+                .first_mut()
+                .unwrap()
+                .machine
+                .labels
+                .remove("fixture");
+        }
+        let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
+        assert!(matches!(operations(&plan).as_slice(), [
+            DeployOperation::RunContainer { machine_id: destination, .. },
+            DeployOperation::RemoveContainer { machine_id: previous, .. },
+        ] if *destination == machine_id('2') && *previous == machine_id('1')));
+
+        add_named_volume(&mut service, "data");
+        snapshot.containers = vec![container('a', '1', &service, &service_id('a'))];
+        snapshot.volume_snapshot =
+            VolumeSnapshot::try_from_observations([observed_volume(machine_id('1'), "data")])
+                .unwrap();
+        let failure = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap_err();
+        assert!(failure.to_string().contains("app_data"));
+    }
+}
+
+#[test]
+fn explicit_id_constraint_cannot_bypass_service_acceptance() {
+    let mut service = replicated("api", 1);
+    service.placement.constraints =
+        [PlacementConstraint::parse(format!("node.id == {}", machine_id('1'))).unwrap()].into();
+    let mut target = machine('1', "builder");
+    target.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![target],
+        ..Default::default()
+    };
+    assert_no_eligible(
+        plan_deploy([&service], &snapshot, PlanOptions::default()),
+        &[EliminatingConstraint::WorkNotAccepted {
+            names: vec![MachineName::parse("builder").unwrap()],
+        }],
+        &["do not accept this work"],
+    );
+}
+
+#[test]
+fn equivalent_constraint_formatting_keeps_running_containers() {
+    let mut service = replicated("api", 1);
+    service.placement.constraints =
+        [PlacementConstraint::parse("node.labels.fixture==FIRST").unwrap()].into();
+    let current = container('a', '1', &service, &service_id('a'));
+    service.placement.constraints =
+        [PlacementConstraint::parse(" node.labels.fixture == first ").unwrap()].into();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![current],
+        ..Default::default()
+    };
+    assert!(
+        plan_deploy([&service], &snapshot, PlanOptions::default())
+            .unwrap()
+            .operations
+            .is_empty()
+    );
+}
+
+#[test]
+fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
+    let service = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None);
+    let mut target = machine('1', "edge");
+    target.machine.accepts_services = false;
+    let mut snapshot = DeploySnapshot {
+        machines: vec![target],
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_all(
+        ployz_core::QualifiedService::system_ingress().project,
+        [&service],
+        PlanOptions::default(),
+    );
+    let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    assert!(
+        matches!(operations(&plan).as_slice(), [DeployOperation::RunContainer { machine_id: destination, .. }] if *destination == machine_id('1'))
+    );
+    snapshot
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .accepts_services = true;
+    snapshot
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .accepts_ingress = false;
+    assert!(
+        preview_deploy(&intent, &snapshot, IngressContext::default())
+            .unwrap_err()
+            .to_string()
+            .contains("do not accept this work")
+    );
 }

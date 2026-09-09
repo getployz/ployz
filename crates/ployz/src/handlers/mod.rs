@@ -427,7 +427,7 @@ mod tests {
                 "--storage",
                 "none",
                 "--no-dns",
-                "--no-ingress",
+                "--accepts-ingress=false",
                 "--context",
                 "local-init",
             ])
@@ -455,7 +455,7 @@ mod tests {
                 "--storage",
                 "none",
                 "--no-dns",
-                "--no-ingress",
+                "--accepts-ingress=false",
                 "--context",
                 "local-init-no-install",
             ])
@@ -500,6 +500,24 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn ingress_deploy_rejects_unsupported_constraints_before_connecting() {
+        let mut command = command();
+        let matches = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "ingress",
+                "deploy",
+                "--constraint",
+                "node.hostname==edge",
+            ])
+            .unwrap();
+        let error = dispatch(&matches, &mut command).unwrap_err().to_string();
+        assert!(error.contains("invalid placement constraint"), "{error}");
+        assert!(error.contains("node.hostname"), "{error}");
     }
 
     #[test]
@@ -556,7 +574,7 @@ mod tests {
                 "10.220.0.0/16",
                 "--storage",
                 "zfs",
-                "--no-ingress",
+                "--accepts-ingress=false",
                 "--no-dns",
                 "--reset",
                 "--yes",
@@ -580,7 +598,7 @@ mod tests {
             enroll.get_one::<ployz_core::StorageChoice>("storage"),
             Some(&ployz_core::StorageChoice::Zfs)
         );
-        assert!(enroll.get_flag("no-ingress"));
+        assert_eq!(enroll.get_one::<bool>("accepts-ingress"), Some(&false));
         assert!(enroll.get_flag("reset"));
         assert!(enroll.get_flag("no-dns"));
         assert!(enroll.get_flag("yes"));

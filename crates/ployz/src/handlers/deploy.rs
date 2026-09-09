@@ -42,14 +42,14 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let remote = matches.get_one::<String>("remote");
+    let remote = remote
+        .filter(|target| !target.is_empty())
+        .map(ployz_core::MachineTarget::parse)
+        .transpose()?;
     let load = deploy_load(matches);
     let resolved = resolve_from_compose_load(matches, &load)?;
     let project = load_project(&load)?;
-    let location = crate::build_location::Location::requested(
-        matches.get_one::<String>("remote").map(String::as_str),
-        matches.get_flag("local"),
-    )
-    .map_err(|error| Error::usage(error.to_string()))?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -70,18 +70,19 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         // Every required Build finishes before preparation or application changes.
         let builds = match captured_build {
-            Some(build) => match &location {
-                crate::build_location::Location::Remote(selection) => {
-                    let machine = super::build::resolve_build_machine(
+            Some(build) => {
+                if !matches.get_flag("local") {
+                    let machine = super::build::select_build_machine(
                         &mut client,
-                        selection,
-                        &build.platforms(),
+                        remote.as_ref(),
+                        build.targets(),
+                        &cancellation,
                     )
                     .await?;
                     let result = build
                         .execute_remote_images(
                             &client,
-                            machine,
+                            machine.id,
                             cancellation.clone(),
                             super::build::progress,
                         )
@@ -93,11 +94,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                         ));
                     }
                     result.map_err(crate::deploy::DeployError::from)?
+                } else {
+                    build
+                        .execute(load.docker.as_deref(), &cancellation)
+                        .map_err(crate::deploy::DeployError::from)?
                 }
-                crate::build_location::Location::Local => build
-                    .execute(load.docker.as_deref(), &cancellation)
-                    .map_err(crate::deploy::DeployError::from)?,
-            },
+            }
             None => Vec::new(),
         };
         candidate

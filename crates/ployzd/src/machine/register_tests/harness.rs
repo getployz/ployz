@@ -58,16 +58,15 @@ pub(super) fn open_store(
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
     let founder = store
-        .initialize(
-            MachineName::parse("edge").unwrap(),
-            crate::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("edge").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap();
     (data_dir, Arc::new(Mutex::new(store)), founder)
 }
@@ -93,6 +92,10 @@ pub(super) async fn publish_peers(replicated: &ReplicatedStore, count: usize) ->
     for index in 0..count {
         let seed = u8::try_from(index + 10).expect("peer seeds fit u8");
         let machine = Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::random(),
             name: MachineName::parse(format!("peer-{seed}")).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -167,6 +170,10 @@ pub(super) async fn write_admin_frame(stream: &mut UnixStream, data: &[u8]) -> i
 
 pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id,
         name: MachineName::parse("allocator").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),
@@ -179,6 +186,7 @@ pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
 
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
+        initial_policy: Default::default(),
         name: MachineName::parse(name).unwrap(),
         storage: ployz_core::StorageChoice::None,
         public_key,

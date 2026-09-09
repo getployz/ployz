@@ -300,11 +300,7 @@ impl MachineRpc for DiscoveryService {
             .builds
             .clone()
             .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?;
-        recorder
-            .routes
-            .lock()
-            .unwrap()
-            .push(ployz_core::routing_from_metadata(request.metadata()).unwrap());
+        let route = ployz_core::routing_from_metadata(request.metadata()).unwrap();
         let machine_id = self.description.machine_id;
         let (sender, receiver) = mpsc::channel(2);
         tokio::spawn(async move {
@@ -314,16 +310,22 @@ impl MachineRpc for DiscoveryService {
             };
             let mut request = request.into_inner();
             let first = request.message().await.unwrap().unwrap();
-            let Input::Start(definition) = remote::decode(&first).unwrap() else {
-                panic!("expected Build definition")
+            let frame = remote::decode(&first).unwrap();
+            let targets = match &frame {
+                Input::Start(definition) => &definition.targets,
+                Input::Check(targets) => targets,
+                Input::Entry { .. } | Input::Data(_) | Input::Finish | Input::Cancel => {
+                    panic!("expected Build start or capability check")
+                }
             };
-            recorder.targets.lock().unwrap().push(
-                definition
+            if matches!(frame, Input::Start(_)) {
+                recorder.routes.lock().unwrap().push(route);
+                recorder
                     .targets
-                    .iter()
-                    .map(|target| target.name.clone())
-                    .collect(),
-            );
+                    .lock()
+                    .unwrap()
+                    .push(targets.iter().map(|target| target.name.clone()).collect());
+            }
             if recorder.queued {
                 sender
                     .send(Ok(remote::encode(&Event::Progress(
@@ -339,7 +341,9 @@ impl MachineRpc for DiscoveryService {
                     "client uploaded before admission"
                 );
             }
-            if let Some(outcome) = &recorder.admission_outcome {
+            if matches!(frame, Input::Start(_))
+                && let Some(outcome) = &recorder.admission_outcome
+            {
                 let _ = sender
                     .send(Ok(
                         remote::encode(&Event::Finished(outcome.clone())).unwrap()
@@ -355,6 +359,16 @@ impl MachineRpc for DiscoveryService {
                 .unwrap()))
                 .await
                 .unwrap();
+            let Input::Start(definition) = frame else {
+                sender
+                    .send(Ok(remote::encode(&Event::Finished(
+                        Outcome::CapabilitiesChecked { machine_id },
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                return;
+            };
             let mut upload = remote::Upload::new().unwrap();
             loop {
                 let payload = request.message().await.unwrap().unwrap();
@@ -494,6 +508,10 @@ impl MachineRpc for DiscoveryService {
             return Err(Status::invalid_argument("expected Register"));
         };
         let assigned_machine = Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
             name: body.name,
             subnet: "10.210.1.0/24".parse().unwrap(),
@@ -1054,6 +1072,10 @@ fn created_container_id() -> ContainerId {
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
     MachineObservation::new(
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())

@@ -53,6 +53,47 @@ pub struct AdmittedUpload {
     admission: Admission,
 }
 
+impl Admission {
+    /// Verify every command target against the running worker under exclusive ownership.
+    /// Uses owned staging without receiving source or executing a recipe.
+    /// # Errors
+    /// Reports unsupported host/worker capabilities and preserves uncertain ownership.
+    pub fn check_capabilities(
+        mut self,
+        program: &Path,
+        targets: &[crate::Target],
+    ) -> Result<(), BuildError> {
+        let _ownership = self.lock.clone();
+        let mut upload = Upload::owned(self.lock.directory.join("build-upload"))
+            .map_err(|error| BuildError::Prerequisite(error.to_string()))?;
+        let environment = environment(&upload.root);
+        let docker = crate::Docker {
+            program,
+            environment: &environment,
+            working_dir: &upload.root,
+            deadline: self.deadline,
+            cancellation: Some(&self.cancellation),
+            progress: None,
+        };
+        let result = (|| {
+            self.lock.quarantine()?;
+            if let Err(error) = docker.require_local() {
+                if !error.is_unknown() {
+                    self.lock.clear()?;
+                }
+                return Err(error);
+            }
+            let builder = crate::builder::Builder::acquire(&docker, self.lock, &self.resources)?;
+            let result = builder
+                .native_platform(targets, &self.resources)
+                .map(|_| ());
+            builder.finish(result)
+        })();
+        upload.retain = result.as_ref().is_err_and(BuildError::is_unknown);
+        result
+    }
+}
+
 impl AdmittedUpload {
     pub(crate) fn new(admission: Admission) -> Result<Self, InputError> {
         admission
@@ -253,7 +294,7 @@ impl Upload {
                 self.state = UploadState::Finished;
                 Ok(())
             }
-            Input::Start(_) | Input::Cancel | Input::Data(_) => {
+            Input::Check(_) | Input::Start(_) | Input::Cancel | Input::Data(_) => {
                 Err("unexpected Build upload frame".into())
             }
         }

@@ -126,9 +126,9 @@
       ]
     },
     "placement": {
-      "machines": [
-        "machine-1",
-        "machine-2"
+      "constraints": [
+        "node.labels.Region==eu-west",
+        "node.labels.disk!=slow"
       ]
     },
     "ports": [
@@ -307,7 +307,7 @@
       "config_mounts": []
     },
     "placement": {
-      "machines": []
+      "constraints": []
     },
     "ports": [
       {
@@ -376,7 +376,7 @@
       "config_mounts": []
     },
     "placement": {
-      "machines": []
+      "constraints": []
     },
     "ports": [],
     "volumes": [],

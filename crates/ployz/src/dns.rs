@@ -952,7 +952,8 @@ mod tests {
             "id": seed.to_string().repeat(32),
             "name": format!("machine-{seed}"),
             "subnet": format!("10.210.{}.0/24", seed.to_digit(10).unwrap()),
-            "public_key": vec![seed as u8; 32],
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+        "public_key": vec![seed as u8; 32],
         }))
         .unwrap();
         machine.public_ip = Some(public_ip.parse::<IpAddr>().unwrap());

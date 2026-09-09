@@ -5,6 +5,10 @@
         "id": "0123456789abcdef0123456789abcdef",
         "name": "edge",
         "subnet": "10.210.1.0/24",
+        "labels": {},
+        "accepts_builds": true,
+        "accepts_services": true,
+        "accepts_ingress": true,
         "public_key": [
           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0

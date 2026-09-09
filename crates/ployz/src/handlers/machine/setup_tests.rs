@@ -23,6 +23,10 @@ async fn starting_machine() -> (
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("founder").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),
@@ -41,10 +45,10 @@ async fn starting_machine() -> (
         async move {
             #[expect(
                 clippy::wildcard_enum_match_arm,
-                reason = "this fixture rejects every RPC except Initialize and Inspect"
+                reason = "this fixture rejects every RPC except Initialize, Join, and Inspect"
             )]
             match request.into_inner().decode_request().unwrap().body {
-                RpcRequestBody::Initialize(_) => {
+                RpcRequestBody::Initialize(_) | RpcRequestBody::Join(_) => {
                     calls.fetch_add(1, Ordering::SeqCst);
                     std::future::pending::<Result<Response<OpaquePayload>, Status>>().await
                 }
@@ -81,6 +85,7 @@ async fn starting_machine() -> (
 
 fn initialize_request(machine: &Machine) -> InitializeRequest {
     InitializeRequest {
+        initial_policy: Default::default(),
         name: machine.name.clone(),
         cluster_network: "10.210.0.0/16".parse().unwrap(),
         public_ip: None,
@@ -126,4 +131,44 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     assert_eq!(Instant::now() - started, Duration::from_secs(60));
     assert!(error.to_string().contains("Machine setup read timed out"));
     server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn lost_creation_replies_refuse_an_observed_policy_mismatch() {
+    for joining in [false, true] {
+        let (mut client, machine, calls, server) = starting_machine().await;
+        let result = if joining {
+            let mut assigned = machine.clone();
+            assigned.accepts_services = false;
+            super::join(
+                &mut client,
+                ployz_core::JoinRequest {
+                    registration: ployz_core::Registered {
+                        assigned_machine: assigned,
+                        visible_peers: Vec::new(),
+                        target_versions: Default::default(),
+                    },
+                    wireguard_mtu: None,
+                    cloud_pairing: None,
+                },
+            )
+            .await
+        } else {
+            let mut request = initialize_request(&machine);
+            request.initial_policy.accepts_services = false;
+            super::initialize(&mut client, request).await.map(drop)
+        };
+        assert!(
+            result.is_err(),
+            "matching identity cannot prove a different initial policy completed"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("initial policy differs")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
 }

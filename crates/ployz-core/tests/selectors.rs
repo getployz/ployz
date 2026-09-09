@@ -99,26 +99,52 @@ fn fanout_resolution_treats_star_as_all_and_all_as_a_name() {
 }
 
 #[test]
-fn placement_accepts_only_machine_identities() {
-    let placement = Placement {
-        machines: vec![MachineTarget::parse("all").unwrap()],
-    };
-    assert_eq!(placement.machines.first().unwrap().as_str(), "all");
-    assert!(Placement::default().machines.is_empty());
-    assert!(serde_json::from_value::<Placement>(json!({"machines": ["*"]})).is_err());
-    assert_eq!(
-        serde_json::from_value::<Placement>(json!({"machines": ["all"]}))
-            .unwrap()
-            .machines
-            .first()
-            .unwrap()
-            .as_str(),
-        "all"
-    );
+fn placement_constraints_are_validated_and_canonical_on_the_wire() {
+    let placement: Placement = serde_json::from_value(json!({
+        "constraints": [" NODE.LABELS.Region == EU-West ", "node.id!=abc"]
+    }))
+    .unwrap();
     assert_eq!(
         serde_json::to_value(&placement).unwrap(),
-        json!({"machines": ["all"]})
+        json!({
+            "constraints": ["node.id!=abc", "node.labels.Region==eu-west"]
+        })
     );
+    let equivalent: Placement = serde_json::from_value(json!({
+        "constraints": ["node.id != ABC", "node.labels.Region==eu-west", "node.id!=abc"]
+    }))
+    .unwrap();
+    let mut programmatic = equivalent.clone();
+    programmatic
+        .constraints
+        .insert(programmatic.constraints.first().unwrap().clone());
+    assert_eq!(placement, programmatic);
+    assert_eq!(
+        serde_json::to_value(&placement).unwrap(),
+        serde_json::to_value(&programmatic).unwrap()
+    );
+    assert_eq!(placement, equivalent);
+    assert_eq!(
+        serde_json::to_value(&placement).unwrap(),
+        serde_json::to_value(&equivalent).unwrap()
+    );
+    for expression in [
+        "",
+        "node.hostname==edge",
+        "node.labels.==x",
+        "node.id=x",
+        "node.id===x",
+        "node.id==",
+        "node.labels.x > y",
+        "node.id==x && node.id==y",
+        "node.labels.x==é",
+    ] {
+        assert!(
+            serde_json::from_value::<Placement>(json!({"constraints": [expression]})).is_err(),
+            "{expression}"
+        );
+    }
+    assert!(serde_json::from_value::<Placement>(json!({"machines": ["edge"]})).is_err());
 }
 
 #[test]
@@ -315,6 +341,10 @@ fn container_selector_uses_exact_id_then_display_name_then_prefix() {
 
 fn machine(id: char, name: &str, seed: u8) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),

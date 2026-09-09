@@ -538,6 +538,10 @@ fn container_selector(value: &str) -> ContainerSelector {
 fn machine_observation(seed: u8, name: &str) -> MachineObservation {
     MachineObservation::new(
         ployz_core::Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),

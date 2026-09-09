@@ -134,7 +134,7 @@ impl ContainerRuntime {
             "create container"
         );
         require_eligible(
-            self.admit_and_ensure_volumes(machine, spec, storage)
+            self.admit_and_ensure_volumes(machine, project_name, spec, storage)
                 .await
                 .map_err(E::from)?,
         )
@@ -179,7 +179,7 @@ impl ContainerRuntime {
             })
             .collect::<Vec<_>>();
         match self
-            .admit_and_ensure_volumes(machine, spec, storage)
+            .admit_and_ensure_volumes(machine, project_name, spec, storage)
             .await
             .map_err(E::from)?
         {
@@ -350,6 +350,7 @@ impl ContainerRuntime {
     async fn admit_and_ensure_volumes(
         &self,
         machine: &Machine,
+        project: &ProjectName,
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
     ) -> Result<ServicePlacementEligibility, Error> {
@@ -358,7 +359,7 @@ impl ContainerRuntime {
         } else {
             None
         };
-        let eligibility = spec.placement_eligibility(machine, storage.as_ref());
+        let eligibility = spec.placement_eligibility_in_project(project, machine, storage.as_ref());
         if matches!(eligibility, ServicePlacementEligibility::Eligible) {
             self.ensure_mounted_volumes(&machine.id, spec).await?;
         }
@@ -594,6 +595,7 @@ pub(crate) fn require_eligible(eligibility: ServicePlacementEligibility) -> Resu
 
 fn ineligible_error(reason: ServicePlacementIneligibleReason) -> Error {
     match reason {
+        ServicePlacementIneligibleReason::WorkNotAccepted => Error::WorkNotAccepted,
         ServicePlacementIneligibleReason::PlacementMismatch => Error::ServicePlacementMismatch,
         ServicePlacementIneligibleReason::ProvisionedStorageUnsupported => {
             Error::ProvisionedStorageUnsupported
@@ -613,6 +615,10 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
 
     let [a, b, c, _] = gateway.0.octets();
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: machine_id,
         name: MachineName::parse("docker-test").unwrap(),
         subnet: format!("{a}.{b}.{c}.0/24").parse().unwrap(),

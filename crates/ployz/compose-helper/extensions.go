@@ -19,11 +19,11 @@ import (
 )
 
 func extensions(p *types.Project, s types.ServiceConfig, provisioned, spec object) error {
-	machines, err := stringList(s.Extensions["x-machines"])
-	if err != nil {
-		return err
+	constraints := []string{}
+	if s.Deploy != nil {
+		constraints = append(constraints, s.Deploy.Placement.Constraints...)
 	}
-	spec["placement"] = object{"machines": machines}
+	spec["placement"] = object{"constraints": constraints}
 	publications := []any{}
 	if x, ok := s.Extensions["x-ports"]; ok {
 		if len(s.Ports) > 0 {

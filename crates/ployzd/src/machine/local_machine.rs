@@ -20,7 +20,7 @@ use ployz_core::{
 use thiserror::Error;
 use tokio::sync::{OwnedMutexGuard, watch};
 
-use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
+use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
@@ -99,6 +99,11 @@ pub enum Error {
     KeyAlreadyNamed,
     #[error("Machine Name is already used by another public key")]
     NameTaken,
+    #[error(
+        "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine"
+    )]
+    /// Enrollment policy differs from the current assignment and cannot overwrite it.
+    InitialPolicyMismatch,
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("local Machine record lock poisoned")]
@@ -409,16 +414,7 @@ impl LocalMachine {
     /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
     /// and [`Error::Store`] when initialize is not legal in the current phase.
     fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        let machine = self.lock_store()?.initialize(
-            request.name,
-            FoundingCluster {
-                network: request.cluster_network,
-            },
-            request.public_ip,
-            request.advertised_endpoints,
-            request.wireguard_mtu,
-            request.cloud_pairing,
-        )?;
+        let machine = self.lock_store()?.initialize(request)?;
         tracing::info!(
             name = machine.name.as_str(),
             id = machine.id.as_str(),
@@ -499,6 +495,9 @@ impl LocalMachine {
         let Some(machine) = recognize(request.public_key, &request.name, &machines)? else {
             return Ok(None);
         };
+        if !request.initial_policy.matches(machine) {
+            return Err(Error::InitialPolicyMismatch);
+        }
         let assigned_machine = machine.clone();
         Ok(Some(registered(
             assigned_machine,
@@ -540,6 +539,9 @@ impl LocalMachine {
             if let Some(machine) =
                 recognize(request.public_key, &request.name, &snapshot.observations)?
             {
+                if !request.initial_policy.matches(machine) {
+                    return Err(Error::InitialPolicyMismatch);
+                }
                 machine.clone()
             } else {
                 let me = self.record()?.id();
@@ -552,6 +554,10 @@ impl LocalMachine {
                 }
                 let network = replicated.cluster_network().await?;
                 let assigned_machine = Machine {
+                    labels: request.initial_policy.labels,
+                    accepts_builds: request.initial_policy.accepts_builds,
+                    accepts_services: request.initial_policy.accepts_services,
+                    accepts_ingress: request.initial_policy.accepts_ingress,
                     id: MachineId::random(),
                     name: request.name,
                     subnet: allocate_machine_subnet(
@@ -686,6 +692,19 @@ impl LocalMachine {
     /// when listing visible Machines fails.
     pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
         let local = self.clone();
+        // Policy edits affect new admission without waiting for active Builds.
+        // Ordinary mutations remain serialized; all updates exclude installation.
+        if request.update.name.is_none()
+            && request.update.public_ip == ployz_core::PublicIpUpdate::Keep
+            && request.update.advertised_endpoints.is_none()
+        {
+            let installation = self.lock_store()?.mutation_gate.try_mutation()?;
+            return tokio::spawn(async move {
+                let _installation = installation;
+                local.update_admitted(request).await
+            })
+            .await?;
+        }
         self.finish_mutation(async move { local.update_admitted(request).await })
             .await
     }
@@ -1097,6 +1116,10 @@ mod tests {
 
     fn machine(name: &str, id: &str, seed: u8) -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(id).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),

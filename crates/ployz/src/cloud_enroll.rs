@@ -65,6 +65,7 @@ pub(crate) struct EnrollIdentity {
     advertised_endpoints: Vec<AdvertisedEndpoint>,
     public_ip: Option<IpAddr>,
     requested_storage: StorageChoice,
+    initial_policy: ployz_core::InitialMachinePolicy,
     memory_total_bytes: Option<u64>,
     disk_total_bytes: Option<u64>,
     disk_available_bytes: Option<u64>,
@@ -85,6 +86,7 @@ impl EnrollIdentity {
         name: MachineName,
         token: &MachineToken,
         requested_storage: StorageChoice,
+        initial_policy: ployz_core::InitialMachinePolicy,
     ) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -93,6 +95,7 @@ impl EnrollIdentity {
             advertised_endpoints: token.advertised_endpoints.clone(),
             public_ip: token.public_ip,
             requested_storage,
+            initial_policy,
             memory_total_bytes: token.memory_total_bytes,
             disk_total_bytes: token.disk_total_bytes,
             disk_available_bytes: token.disk_available_bytes,
@@ -381,6 +384,10 @@ mod tests {
     fn registration() -> Registered {
         Registered {
             assigned_machine: Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
                 name: MachineName::parse("joiner").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),
@@ -584,6 +591,7 @@ mod tests {
                 disk_available_bytes: None,
             },
             StorageChoice::None,
+            Default::default(),
         )
     }
 
@@ -780,6 +788,7 @@ mod tests {
                 disk_available_bytes: Some(85_899_345_920),
             },
             StorageChoice::Zfs,
+            Default::default(),
         );
         let json = serde_json::to_value(&identity).unwrap();
         assert_eq!(json.get("protocolVersion"), Some(&serde_json::json!(2)));

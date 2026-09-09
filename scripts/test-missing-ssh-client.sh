@@ -20,7 +20,7 @@ fi
 set +e
 output=$(
     PATH="$TMP/empty" PLOYZ_CONFIG="$TMP/config.yaml" \
-        "$BIN" machine init user@host --yes --no-dns --no-ingress --context missing-ssh 2>&1
+        "$BIN" machine init user@host --yes --no-dns --accepts-ingress=false --context missing-ssh 2>&1
 )
 status=$?
 set -e

@@ -16,6 +16,57 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+impl Client {
+    /// Check all command targets before selecting this Machine or sending source.
+    /// # Errors
+    /// Returns target-local refusals, transport failures, or cancellation.
+    pub(crate) async fn check_build_capabilities(
+        &self,
+        machine_id: MachineId,
+        targets: &[ployz_build::Target],
+        cancellation: &CancellationToken,
+    ) -> Result<(), remote::InputError> {
+        let mut admitted = match open_and_admit(
+            self,
+            Input::Check(targets.to_vec()),
+            machine_id,
+            cancellation,
+            &mut |_| {},
+            &Default::default(),
+        )
+        .await
+        {
+            Ok(admitted) => admitted,
+            Err(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => {
+                return Err(message.into());
+            }
+            Err(
+                Outcome::CapabilitiesChecked { .. }
+                | Outcome::Images { .. }
+                | Outcome::Validated { .. }
+                | Outcome::Published { .. },
+            ) => unreachable!("admission returns only terminal failures"),
+        };
+        // Keep the admitted sender alive: closing it would cancel the worker check.
+        let deadline =
+            tokio::time::Instant::now() + admitted.active_timeout + Duration::from_secs(70);
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err("Build selection cancelled".into()),
+            () = tokio::time::sleep_until(deadline) => Err("Build capability deadline expired".into()),
+            response = admitted.responses.message() => {
+                let payload = response.map_err(|error| remote::InputError::from(error.to_string()))?
+                    .ok_or_else(|| remote::InputError::from("Build capability response ended early"))?;
+                match remote::decode::<Event>(&payload)? {
+                    Event::Finished(Outcome::CapabilitiesChecked { machine_id: actual }) if actual == machine_id => Ok(()),
+                    Event::Finished(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => Err(message.into()),
+                    Event::Admitted { .. } | Event::Progress(_) | Event::Finished(_) => Err("invalid Build capability response".into()),
+                }
+            }
+        }
+    }
+}
+
 pub(super) enum Completion {
     Images {
         machine_id: MachineId,
@@ -79,6 +130,84 @@ pub(super) async fn execute(
     outcome
 }
 
+/// A validated admission keeps its request stream open until the continuation ends.
+struct Admitted {
+    sender: mpsc::Sender<ployz_core::OpaquePayload>,
+    responses: tonic::Streaming<ployz_core::OpaquePayload>,
+    active_timeout: Duration,
+}
+
+async fn open_and_admit(
+    client: &Client,
+    request: Input,
+    machine_id: MachineId,
+    cancellation: &CancellationToken,
+    progress: &mut impl FnMut(Progress),
+    evidence: &ployz_build::WorkEvidence,
+) -> Result<Admitted, Outcome> {
+    let (sender, receiver) = mpsc::channel(2);
+    let start = match remote::encode(&request) {
+        Ok(start) => start,
+        Err(message) => return Err(failed(Stage::Admission, message.to_string())),
+    };
+    sender.send(start).await.expect("request receiver is owned");
+    let target = MachineTarget::from(&machine_id);
+    let mut responses = match tokio::time::timeout(
+        Duration::from_secs(10),
+        client.build_stream(&target, ReceiverStream::new(receiver)),
+    )
+    .await
+    {
+        Ok(Ok(responses)) => responses,
+        Ok(Err(error)) => {
+            return Err(failed(
+                Stage::Admission,
+                format!("Machine {machine_id} cannot accept the Build: {error}"),
+            ));
+        }
+        Err(_) => {
+            return Err(failed(
+                Stage::Admission,
+                format!("Machine {machine_id} did not answer; source was not uploaded"),
+            ));
+        }
+    };
+    let waiting_since = tokio::time::Instant::now();
+    let mut admission_deadline = waiting_since + Duration::from_secs(10);
+    let mut queued = false;
+    let active_timeout = loop {
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                // No source has left this client. Dropping the stream removes
+                // its connection-scoped waiter, even if admission raced cancellation.
+                return Err(failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence.clone()));
+            }
+            result = responses.message() => match result {
+                Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
+                    Ok(Event::Admitted { machine_id: admitted, active_timeout })
+                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
+                    Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
+                        queued = true;
+                        // The Machine's validated local policy is bounded at 24h.
+                        admission_deadline = waiting_since + Duration::from_secs(86410);
+                        progress(Progress::Stage(Stage::Queued));
+                    }
+                    Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return Err(outcome.with_work(evidence.clone())),
+                    _ => return Err(failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence.clone())),
+                },
+                _ => return Err(failed(Stage::Admission, "Build admission was not observed; source was not uploaded").with_work(evidence.clone())),
+            },
+            () = tokio::time::sleep_until(admission_deadline) => return Err(failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence.clone())),
+        }
+    };
+    Ok(Admitted {
+        sender,
+        responses,
+        active_timeout,
+    })
+}
+
 async fn execute_attempt(
     inputs: BuildInputs,
     definition: Definition,
@@ -95,61 +224,16 @@ async fn execute_attempt(
         }
         let expected = definition.targets.len();
         let output = definition.output;
-        let (sender, receiver) = mpsc::channel(2);
-        let start = match remote::encode(&Input::Start(definition)) {
-            Ok(start) => start,
-            Err(message) => return failed(Stage::Admission, message.to_string()),
-        };
-        sender.send(start).await.expect("request receiver is owned");
-        let target = MachineTarget::from(&machine_id);
-        let mut responses = match tokio::time::timeout(
-            Duration::from_secs(10),
-            client.build_stream(&target, ReceiverStream::new(receiver)),
-        )
-        .await
-        {
-            Ok(Ok(responses)) => responses,
-            Ok(Err(error)) => {
-                return failed(
-                    Stage::Admission,
-                    format!("Machine {machine_id} cannot accept the Build: {error}"),
-                );
-            }
-            Err(_) => {
-                return failed(
-                    Stage::Admission,
-                    format!("Machine {machine_id} did not answer; source was not uploaded"),
-                );
-            }
-        };
-        let waiting_since = tokio::time::Instant::now();
-        let mut admission_deadline = waiting_since + Duration::from_secs(10);
-        let mut queued = false;
-        let active_timeout = loop {
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => {
-                    // No source has left this client. Dropping the stream removes
-                    // its connection-scoped waiter, even if admission raced cancellation.
-                    return failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence);
-                }
-                result = responses.message() => match result {
-                    Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
-                        Ok(Event::Admitted { machine_id: admitted, active_timeout })
-                            if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
-                        Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
-                            queued = true;
-                            // The Machine's validated local policy is bounded at 24h.
-                            admission_deadline = waiting_since + Duration::from_secs(86410);
-                            progress(Progress::Stage(Stage::Queued));
-                        }
-                        Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return outcome.with_work(evidence),
-                        _ => return failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence),
-                    },
-                    _ => return failed(Stage::Admission, "Build admission was not observed; source was not uploaded").with_work(evidence),
-                },
-                () = tokio::time::sleep_until(admission_deadline) => return failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence),
-            }
+        let Admitted { sender, mut responses, active_timeout } = match open_and_admit(
+            client,
+            Input::Start(definition),
+            machine_id,
+            &cancellation,
+            &mut progress,
+            &evidence,
+        ).await {
+            Ok(admitted) => admitted,
+            Err(outcome) => return outcome,
         };
         progress(Progress::Stage(Stage::Upload));
         let stop = cancellation.child_token();
@@ -228,7 +312,8 @@ async fn execute_attempt(
                 retained.expect("validated loaded images retain their response stream"),
             )),
         },
-        outcome @ (Outcome::Validated { .. }
+        outcome @ (Outcome::CapabilitiesChecked { .. }
+        | Outcome::Validated { .. }
         | Outcome::Published { .. }
         | Outcome::Failed { .. }
         | Outcome::Unknown { .. }) => Completion::Report(outcome),
@@ -284,7 +369,10 @@ fn validate_outcome(
         Outcome::Published { machine_id }
             if *machine_id == expected && output == ployz_build::Output::Registry => {}
         Outcome::Failed { .. } | Outcome::Unknown { .. } => {}
-        Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
+        Outcome::CapabilitiesChecked { .. }
+        | Outcome::Images { .. }
+        | Outcome::Validated { .. }
+        | Outcome::Published { .. } => {
             return unknown(
                 Stage::Output,
                 "Build result does not match the admitted request",
@@ -343,6 +431,7 @@ mod tests {
                 images: Vec::new(),
             },
             Outcome::Validated { machine_id },
+            Outcome::CapabilitiesChecked { machine_id },
             Outcome::Images {
                 machine_id,
                 images: vec![BuiltImage {

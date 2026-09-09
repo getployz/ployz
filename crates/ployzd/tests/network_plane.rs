@@ -140,6 +140,10 @@ async fn explicit_public_ip_is_added_without_a_reachability_probe() {
 
 fn machine(seed: u8) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(format!("{seed:032x}")).unwrap(),
         name: MachineName::parse(format!("machine-{seed}")).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),

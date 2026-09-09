@@ -53,6 +53,12 @@ const enrollmentSettings = {
 function identity(index: number) {
   return {
     protocolVersion: 2 as const,
+    initialPolicy: {
+      labels: {},
+      accepts_builds: true,
+      accepts_services: true,
+      accepts_ingress: true,
+    },
     name: `node-${index}`,
     publicKey: Buffer.alloc(32, index + 1).toString("base64"),
     advertisedEndpoints: [`10.0.0.${index + 1}:51820`],
