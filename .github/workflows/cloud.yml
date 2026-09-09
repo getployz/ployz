@@ -1,21 +1,25 @@
 name: Cloud
 
 on:
-  pull_request:
-    paths:
-      - "cloud/**"
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/cloud.yml"
-  push:
-    branches: [main]
-    paths:
-      - "cloud/**"
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/cloud.yml"
+  workflow_call:
+    secrets:
+      KACHE_S3_ACCESS_KEY_ID:
+        required: false
+      KACHE_S3_SECRET_ACCESS_KEY:
+        required: false
+      KACHE_S3_READ_ACCESS_KEY_ID:
+        required: false
+      KACHE_S3_READ_SECRET_ACCESS_KEY:
+        required: false
+  workflow_dispatch:
+
+concurrency:
+  group: cloud-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
 
 defaults:
   run:
@@ -38,53 +42,98 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  check:
+  static:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-cloud
+      - name: Typecheck
+        run: pnpm pr:check typecheck
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: pnpm pr:check lint
 
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: cloud/package.json
-
+  sdk:
+    name: Prepare matching SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: cloud/pnpm-lock.yaml
-
-      - name: Install actionlint
-        run: |
-          scripts/install-actionlint.sh "$RUNNER_TEMP/ployz-tools"
-          echo "$RUNNER_TEMP/ployz-tools" >> "$GITHUB_PATH"
-
-      - run: pnpm install --frozen-lockfile
-
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: sdk-cache
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-downloads-
-      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+            crates/ployz-sdk/ployz-sdk.node
+            crates/ployz-sdk/generated/config-wasm.mjs
+          # No restore prefix: a binding from different source is not valid evidence.
+          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/**', 'crates/**', '!crates/*/tests/**', '!crates/ployzd/**', '!crates/ployz-testkit/**', 'scripts/build-cloud-sdk.sh', 'scripts/build-config-browser.sh', '.github/actions/setup-rust/action.yml') }}
+      - uses: ./.github/actions/setup-rust
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
-          version: 0.18.0
-          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
-          s3-region: ${{ env.KACHE_S3_REGION }}
-          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
-          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
-          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
-          s3-prefix: ployz2/kache-v1
-          manifest-key: cloud-sdk-${{ runner.os }}-${{ runner.arch }}
-          cache-key-prefix: kache-cloud-sdk
-          cache-dir: ${{ runner.temp }}/kache
-          cache-executables: true
-          cache-c-cpp: true
-          warm: true
-          sync: false
-          pr-comment: false
-      - run: pnpm pr:check
+          cache-key: cloud-sdk
+      - uses: taiki-e/install-action@v2
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        with:
+          tool: wasm-bindgen@0.2.127
+      - name: Build SDK when its inputs changed
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: bash scripts/pr-check.sh sdk
+      - name: Verify native and browser config agree
+        run: node ../crates/ployz-sdk/tests/config-contract.mjs
+      - uses: actions/cache/save@v4
+        if: steps.sdk-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected
+        with:
+          path: |
+            crates/ployz-sdk/ployz-sdk.node
+            crates/ployz-sdk/generated/config-wasm.mjs
+          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloud-sdk
+          path: |
+            crates/ployz-sdk/ployz-sdk.node
+            crates/ployz-sdk/generated/config-wasm.mjs
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  build:
+    needs: sdk
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-cloud
+      - uses: actions/download-artifact@v4
+        with:
+          name: cloud-sdk
+          path: crates/ployz-sdk
+      - name: Build and verify frontend package
+        run: pnpm pr:check build
+
+  test:
+    needs: sdk
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-cloud
+      - uses: actions/download-artifact@v4
+        with:
+          name: cloud-sdk
+          path: crates/ployz-sdk
+      - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
+        run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-test-results
+          path: cloud/test-results
+          retention-days: 7
+          if-no-files-found: ignore

@@ -308,11 +308,28 @@ case " $* " in
         esac ;;
     *) echo 'test invocation must collect all binary failures' >&2; exit 1 ;;
 esac
+case " $* " in
+    *' --test build_layer3 '*) exit "${CARGO_SUITE_EXIT:-0}" ;;
+esac
 CARGO
 chmod 0755 "$TMP/bin/cargo"
 : >"$LOG"
-PATH="$TMP/bin:$PATH" "$ROOT/scripts/run-layer3-tests.sh"
+PATH="$TMP/bin:$PATH" PLOYZ_LAYER3_LOG_DIR="$TMP/layer3-logs" GITHUB_STEP_SUMMARY="$TMP/layer3-summary.md" \
+    "$ROOT/scripts/run-layer3-tests.sh" >/dev/null
 grep -Eq -- '--(include-)?ignored' "$LOG" || fail "layer3 runner did not execute tests"
+
+for status in 1 124; do
+    : >"$LOG"
+    if PATH="$TMP/bin:$PATH" PLOYZ_LAYER3_LOG_DIR="$TMP/layer3-logs" GITHUB_STEP_SUMMARY="$TMP/layer3-summary.md" CARGO_SUITE_EXIT="$status" \
+        "$ROOT/scripts/run-layer3-tests.sh" >/dev/null; then
+        fail "layer3 runner hid suite failure $status"
+    fi
+    [ "$(wc -l < "$LOG")" -eq 13 ] || fail "layer3 runner skipped or retried suites after failure"
+    [ "$(grep -c -- '--test build_layer3 ' "$LOG")" -eq 1 ] || fail "failed suite was rerun"
+    grep -Fq 'deploy_execution_preserves_partial_effects' "$LOG" || fail "last suite did not run after failure"
+    grep -Fq "failed (exit $status)" "$TMP/layer3-logs/results.md" || fail "suite failure was not reported"
+    grep -Fq "failed (exit $status)" "$TMP/layer3-summary.md" || fail "suite failure was missing from the job summary"
+done
 
 output=$(
     PLOYZ_QUALIFY_HOSTS='root@192.0.2.10 root@192.0.2.11' PLOYZ_ARTIFACT_DIR="$SOURCE" \

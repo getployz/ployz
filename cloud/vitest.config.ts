@@ -33,7 +33,7 @@ export default defineConfig({
           ...sharedTestConfig,
           name: "postgres",
           include: ["src/**/*.postgres.test.ts"],
-          maxWorkers: 1,
+          maxWorkers: 2,
           sequence: { groupOrder: 1 },
         },
       },

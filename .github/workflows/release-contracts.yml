@@ -8,9 +8,9 @@ on:
       KACHE_S3_SECRET_ACCESS_KEY:
         required: false
       KACHE_S3_READ_ACCESS_KEY_ID:
-        required: true
+        required: false
       KACHE_S3_READ_SECRET_ACCESS_KEY:
-        required: true
+        required: false
     inputs:
       goreleaser-args:
         type: string
@@ -21,41 +21,7 @@ on:
       release-tag:
         type: string
         default: ''
-  # Populate release artifacts in S3 from a protected-branch push.
-  push:
-    branches: [main]
-    paths:
-      - 'crates/**'
-      - Cargo.toml
-      - Cargo.lock
-      - .goreleaser.yaml
-      - .github/workflows/release-contracts.yml
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/release.yml
-      - .github/workflows/release-published.yml
-      - .github/workflows/publish-sdk.yml
-      - .github/workflows/release-contracts.yml
-      - .goreleaser.yaml
-      - install.sh
-      - scripts/uninstall.sh
-      - scripts/verify-release.sh
-      - scripts/pack-release.sh
-      - scripts/release-artifacts-needed.sh
-      - scripts/publish-github-release.sh
-      - scripts/check-release-tag.sh
-      - scripts/release-tag.sh
-      - scripts/homebrew-formula.sh
-      - scripts/promote-release.sh
-      - scripts/pack-sdk-package.sh
-      - scripts/publish-sdk-package.sh
-      - scripts/test-cli-installer.sh
-      - scripts/test-daemon-lifecycle.sh
-      - crates/ployz-relay/Dockerfile
-      - scripts/build-relay-image.sh
-      - scripts/verify-relay-image.sh
-      - scripts/publish-relay-image.sh
 
 concurrency:
   group: release-contracts-${{ github.event.pull_request.number || inputs.release-tag || github.ref }}
@@ -83,27 +49,7 @@ env:
   GORELEASER_VERSION: 2.6.0
 
 jobs:
-  decide:
-    runs-on: ubuntu-latest
-    outputs:
-      artifacts: ${{ steps.decide.outputs.artifacts }}
-    steps:
-      - uses: actions/checkout@v4
-        if: github.event_name == 'pull_request'
-        with:
-          fetch-depth: 0
-      - id: decide
-        run: |
-          if [ "${{ github.event_name }}" != pull_request ]; then
-            echo "artifacts=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          mapfile -t files < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
-          echo "artifacts=$(bash scripts/release-artifacts-needed.sh pull_request "${files[@]}")" >> "$GITHUB_OUTPUT"
-
   build-linux:
-    needs: [decide]
-    if: needs.decide.outputs.artifacts == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -162,6 +108,7 @@ jobs:
           cache-c-cpp: true
           warm: true
           sync: false
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
           pr-comment: false
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -177,8 +124,6 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    needs: [decide]
-    if: needs.decide.outputs.artifacts == 'true'
     runs-on: macos-15
     env:
       RELEASE_ID: ployz-darwin
@@ -219,6 +164,7 @@ jobs:
           cache-c-cpp: true
           warm: true
           sync: false
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
           pr-comment: false
       - uses: goreleaser/goreleaser-action@v6
         with:

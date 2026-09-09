@@ -1,0 +1,16 @@
+name: Prepare Cloud checks
+description: Install the pinned Node and pnpm dependencies
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v6
+      with:
+        package_json_file: cloud/package.json
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 22
+        cache: pnpm
+        cache-dependency-path: cloud/pnpm-lock.yaml
+    - shell: bash
+      working-directory: cloud
+      run: pnpm install --frozen-lockfile

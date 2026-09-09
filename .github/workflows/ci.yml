@@ -4,8 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  schedule:
-    - cron: "23 3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -32,56 +30,107 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  workspace:
+  changes:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
+    timeout-minutes: 5
+    outputs:
+      jobs: ${{ steps.select.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: select
+        name: Select checks from the complete change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
+
+  contracts:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate workflow YAML
+        run: |
+          bash cloud/scripts/install-actionlint.sh "$RUNNER_TEMP/ployz-tools"
+          "$RUNNER_TEMP/ployz-tools/actionlint"
+      - name: Check routing and the required result
+        run: python3 scripts/test-ci.py
+      - run: bash scripts/check-layer3-runner.sh
+      - run: python3 scripts/test-cloud-sdk-version.py
+      - run: python3 scripts/check-cloud-sdk-version.py
+      - run: bash scripts/test-cli-installer.sh
+      - run: bash scripts/test-daemon-lifecycle.sh
+      - run: bash scripts/test-qualify-release.sh
+      - run: bash scripts/test-qualify-clean-init.sh
+      - uses: dtolnay/rust-toolchain@1.97.1
+        if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+        if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
+
+  compose:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'compose')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: crates/ployz/compose-helper/go.mod
           cache-dependency-path: crates/ployz/compose-helper/go.sum
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          components: clippy, rustfmt
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-downloads-
-      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
-        with:
-          version: 0.18.0
-          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
-          s3-region: ${{ env.KACHE_S3_REGION }}
-          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
-          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
-          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
-          s3-prefix: ployz2/kache-v1
-          manifest-key: workspace-${{ runner.os }}-${{ runner.arch }}
-          cache-key-prefix: kache-workspace
-          cache-dir: ${{ runner.temp }}/kache
-          cache-executables: true
-          cache-c-cpp: true
-          warm: true
-          sync: false
-          pr-comment: false
       - name: Check Compose helper
         working-directory: crates/ployz/compose-helper
         run: |
           test -z "$(gofmt -l ./*.go)"
           go vet ./...
           go test ./...
-      - run: cargo fmt --all -- --check
-      - run: bash scripts/check-layer3-runner.sh
-      - run: python3 scripts/test-cloud-sdk-version.py
-      - run: python3 scripts/check-cloud-sdk-version.py
+
+  rust-lint:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: workspace-lint
+          components: clippy
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo build -p ployz-sdk --locked
+      - name: Check the daemon stays outside the CLI graph
+        run: |
+          if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then
+            echo 'ployz must not depend on the Linux-only ployzd crate'
+            exit 1
+          fi
+
+  rust-tests:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: workspace-tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build native SDK for Node-backed tests
+        run: cargo build -p ployz-sdk --locked --timings
+      - name: Compile Rust tests
+        run: cargo test --workspace --all-features --locked --no-run --timings
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
@@ -94,157 +143,70 @@ jobs:
                 - tcp: 127.0.0.1:1
           EOF
           cargo test --workspace --all-features --locked
+      - name: Check the missing SSH prerequisite
+        env:
+          PLOYZ_BIN: ${{ github.workspace }}/target/debug/ployz
+        run: bash scripts/test-missing-ssh-client.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-build-timings
+          path: target/cargo-timings/*.html
+          retention-days: 7
+          if-no-files-found: ignore
+
+  sdk-types:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'sdk-types')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: bash scripts/check-sdk-types.sh
-      - run: bash scripts/test-cli-installer.sh
-      - run: bash scripts/test-missing-ssh-client.sh
-      - run: bash scripts/test-daemon-lifecycle.sh
-      - run: bash scripts/test-qualify-release.sh
-      - run: bash scripts/test-qualify-clean-init.sh
-      - name: Check the daemon stays outside the CLI graph
-        run: |
-          if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then
-            echo 'ployz must not depend on the Linux-only ployzd crate'
-            exit 1
-          fi
 
   macos-cli:
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'macos-cli')
     runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-rust
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-downloads-
-      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
-        with:
-          version: 0.18.0
-          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
-          s3-region: ${{ env.KACHE_S3_REGION }}
-          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
-          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
-          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
-          s3-prefix: ployz2/kache-v1
-          manifest-key: macos-cli-${{ runner.os }}-${{ runner.arch }}
-          cache-key-prefix: kache-macos-cli
-          cache-dir: ${{ runner.temp }}/kache
-          cache-executables: true
-          cache-c-cpp: true
-          warm: true
-          sync: false
-          pr-comment: false
+          cache-key: macos-cli
       - run: cargo check --package ployz --all-targets --locked
 
-  layer3-image-amd64:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+  cloud:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
+    uses: ./.github/workflows/cloud.yml
     permissions:
       contents: read
-      packages: write
       actions: write
+    secrets: inherit
+
+  release-contracts:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'release-contracts')
+    uses: ./.github/workflows/release-contracts.yml
+    permissions:
+      contents: read
+      actions: write
+      packages: write
+    secrets: inherit
+
+  ready:
+    name: CI ready
+    if: always()
+    needs: [changes, contracts, compose, rust-lint, rust-tests, sdk-types, macos-cli, cloud, release-contracts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-testkit-image
-        with:
-          arch: amd64
-
-  layer3-image-arm64:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-      packages: write
-      actions: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-testkit-image
-        with:
-          arch: arm64
-
-  layer3:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    needs: layer3-image-amd64
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-      actions: write
-    env:
-      PLOYZ_TESTKIT_IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-          key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-downloads-
-      - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
-        with:
-          version: 0.18.0
-          s3-bucket: ${{ env.KACHE_S3_BUCKET }}
-          s3-region: ${{ env.KACHE_S3_REGION }}
-          s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
-          s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
-          s3-secret-access-key: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
-          s3-prefix: ployz2/kache-v1
-          manifest-key: layer3-${{ runner.os }}-${{ runner.arch }}
-          cache-key-prefix: kache-layer3
-          cache-dir: ${{ runner.temp }}/kache
-          cache-executables: true
-          cache-c-cpp: true
-          warm: true
-          sync: false
-          pr-comment: false
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Run ignored Cluster suite, retrying one failed attempt
-        run: bash scripts/run-layer3-tests.sh
-
-  layer3-manifest:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    needs: [layer3-image-amd64, layer3-image-arm64]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the multi-arch manifest
+      - name: Require every selected check to pass
         env:
-          AMD64: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
-          ARM64: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-arm64
-          SHA: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}
-          MAIN: ghcr.io/getployz/ployz2-testkit:main
-        run: |
-          docker buildx imagetools create -t "$SHA" "$AMD64" "$ARM64"
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            docker buildx imagetools create -t "$MAIN" "$AMD64" "$ARM64"
-          fi
-          platforms=$(docker buildx imagetools inspect --raw "$SHA" | jq -r '.manifests[] | select(.platform.os == "linux") | "\(.platform.os)/\(.platform.architecture)"' | sort)
-          test "$platforms" = $'linux/amd64\nlinux/arm64'
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci.py ready

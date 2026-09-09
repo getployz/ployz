@@ -34,7 +34,7 @@ if len(names) != text.count('ignore = "informing'):
     sys.exit("cannot identify every informing library test")
 for name in names:
     if not any(
-        command[:3] == ["retry_once", "cargo", "test"]
+        command[:1] == ["run_suite"] and command[2:4] == ["cargo", "test"]
         and "--package" in command and command[command.index("--package") + 1:][:1] == [package]
         and "--lib" in command and "--exact" in command and "--ignored" in command and "--" in command
         and any(argument.endswith("::" + name) for argument in command[:command.index("--")])
