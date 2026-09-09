@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::PermissionsExt, process::Command as StdCommand, time::Duration};
+use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Duration};
 
 use super::*;
 use crate::context::SshDestination;
@@ -32,11 +32,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
 
 #[tokio::test]
 async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
-    let root = std::env::temp_dir().join(format!("ployz-ssh-retry-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    let program = root.join("ssh");
-    fs::write(&program, "#!/bin/sh\ncase \"$*\" in *transient*) echo 'Connection refused' >&2;; *) echo 'Permission denied (publickey)' >&2;; esac\nexit 255\n").unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh");
     for (hosts, retryable) in [
         (["user@transient", "user@permanent"], true),
         (["user@permanent", "user@transient"], true),
@@ -50,7 +46,7 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
                 .collect(),
         };
         let error =
-            match connect_selected_with(selected, Arc::new(SystemConnector::new(&program))).await {
+            match connect_selected_with(selected, Arc::new(SystemConnector::new(program))).await {
                 Err(error) => error,
                 Ok(_) => panic!("script must reject every connection"),
             };
@@ -62,7 +58,6 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
             );
         }
     }
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -215,15 +210,13 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let program = root.join("ssh");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    // Startup deliberately exceeds the old 50 ms cancellation deadline.
-    fs::write(
+    symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh"),
         &program,
-        "#!/bin/sh\nsleep 0.1\necho $$ > \"$0.pid\"\nexec sleep 30\n",
     )
     .unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
     let connector = SystemConnector::new(&program);
-    let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
+    let connection = Connection::ssh(SshDestination::parse("user@cancel").unwrap());
 
     let pid = tokio::time::timeout(Duration::from_secs(5), async {
         // Finishing the readiness branch drops the pending connection and its SSH child.
@@ -307,31 +300,16 @@ async fn missing_ssh_client_survives_connection_selection() {
 
 #[tokio::test]
 async fn stalled_ssh_probe_obeys_configured_timeout() {
-    let root = std::env::temp_dir().join(format!("ployz-ssh-timeout-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    let program = root.join("ssh");
-    fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-    let connector = SystemConnector::new(&program).with_ssh_timeout(Duration::from_millis(100));
-    let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
-    let result = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let result = connector.connect(&connection).await;
-            // Concurrent process creation can briefly inherit the script's write descriptor.
-            if matches!(&result, Err(ConnectError::Io(error)) if error.kind() == io::ErrorKind::ExecutableFileBusy) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-            break result;
-        }
-    })
-    .await
-    .expect("SSH setup must stop at its own deadline");
+    let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh");
+    let connector = SystemConnector::new(program).with_ssh_timeout(Duration::from_millis(100));
+    let connection = Connection::ssh(SshDestination::parse("user@timeout").unwrap());
+    let result = tokio::time::timeout(Duration::from_secs(2), connector.connect(&connection))
+        .await
+        .expect("SSH setup must stop at its own deadline");
     assert!(
         matches!(result, Err(ConnectError::Io(ref error)) if error.kind() == io::ErrorKind::TimedOut),
         "{result:?}"
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

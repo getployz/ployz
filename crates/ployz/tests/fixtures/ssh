@@ -1,0 +1,16 @@
+#!/bin/sh
+# Checked in so concurrent test forks cannot inherit a writable script handle.
+for argument do
+    case "$argument" in
+        user@transient) echo 'Connection refused' >&2; exit 255 ;;
+        user@permanent) echo 'Permission denied (publickey)' >&2; exit 255 ;;
+        user@cancel)
+            # Startup deliberately exceeds the old 50 ms cancellation deadline.
+            sleep 0.1
+            echo $$ > "$0.pid"
+            exec sleep 30
+            ;;
+        user@timeout) exec sleep 30 ;;
+    esac
+done
+exit 64
