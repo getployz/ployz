@@ -19,11 +19,18 @@ pub(crate) async fn prepare_image(
         },
     };
     if pull {
+        // Docker pulls every tag when the reference has no tag or digest.
+        let image =
+            if !image.contains('@') && !image.rsplit('/').next().unwrap_or(image).contains(':') {
+                std::borrow::Cow::Owned(format!("{image}:latest"))
+            } else {
+                std::borrow::Cow::Borrowed(image)
+            };
         docker
             .create_image(
                 Some(
                     CreateImageOptionsBuilder::default()
-                        .from_image(image)
+                        .from_image(image.as_ref())
                         .build(),
                 ),
                 None,
@@ -53,6 +60,50 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[tokio::test]
+    async fn pulls_only_the_requested_tag_or_digest() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let app = Router::new().fallback(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                let image = reqwest::Url::parse(&format!("http://docker{uri}"))
+                    .unwrap()
+                    .query_pairs()
+                    .find(|(key, _)| key == "fromImage")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                captured.lock().unwrap().push(image);
+                (StatusCode::OK, "{}\n")
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let docker = Docker::connect_with_http(
+            &format!("http://{address}"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        for (image, expected) in [
+            ("whoami", "whoami:latest"),
+            ("traefik/whoami", "traefik/whoami:latest"),
+            ("localhost:5000/app", "localhost:5000/app:latest"),
+            ("localhost:5000/app:v1", "localhost:5000/app:v1"),
+            ("[::1]:5000/app", "[::1]:5000/app:latest"),
+            ("app@sha256:abcd", "app@sha256:abcd"),
+            ("app:v1@sha256:abcd", "app:v1@sha256:abcd"),
+        ] {
+            prepare_image(&docker, image, PullPolicy::Always)
+                .await
+                .unwrap();
+            assert_eq!(requests.lock().unwrap().pop().as_deref(), Some(expected));
+        }
+        server.abort();
+    }
 
     #[tokio::test]
     async fn pull_policies_preserve_errors_and_drain_the_stream() {
