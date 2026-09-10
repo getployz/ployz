@@ -11,6 +11,15 @@ brew install getployz/ployz/ployz
 
 Release process: [docs/RELEASE.md](docs/RELEASE.md).
 
+`ployz machine add` saves subnet assignments beside its configuration file in
+`<config-stem>.enrollment/` before publishing or joining. Commands using that
+store serialize allocation, including pending work; retry with the same identity
+and inputs to resume after a network failure. Context aliases and renames share
+history through observed durable Machine identities. Disjoint observations
+cannot establish a shared scope. Different computers, configuration stores, and
+Cloud remain independent operators and can still choose overlapping subnets;
+there is no automatic reclamation, cross-store synchronization, or subnet repair.
+
 ## Workspace
 
 - `crates/ployz-core`: domain and wire contracts shared by both binaries

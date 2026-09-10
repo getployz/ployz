@@ -12,13 +12,13 @@ import { DatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 
 const InfrastructureLive = Layer.mergeAll(
-  DatabaseLive,
   SecretEncryptionLive,
   PolarLive,
   InngestLive,
   EnrollmentRelayLive,
   GithubApiLive,
 ).pipe(
+  Layer.provideMerge(DatabaseLive),
   Layer.provideMerge(PloyzLive),
   Layer.provideMerge(AppConfig.layer),
 );

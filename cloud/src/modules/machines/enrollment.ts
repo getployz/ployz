@@ -100,6 +100,7 @@ export const enrollmentIdentitySchema = Schema.Struct({
   protocolVersion: Schema.Literal(ENROLLMENT_PROTOCOL_VERSION),
   name: NonEmptyString,
   initialPolicy: initialMachinePolicySchema,
+  machineId: rustMachineIdSchema,
   publicKey: NonEmptyString.check(
     Schema.makeFilter((value) => wireGuardPublicKeyFromDisplay(value) !== null, {
       message: "publicKey must be a WireGuard Display base64 key.",
@@ -129,6 +130,8 @@ export function registerRequestFromEnrollmentIdentity(
     name: identity.name,
     initial_policy: identity.initialPolicy,
     storage: identity.requestedStorage,
+    machine_id: identity.machineId,
+    assigned_subnet: null,
     public_key: publicKey,
     public_ip: identity.publicIp ?? null,
     advertised_endpoints: [...identity.advertisedEndpoints],

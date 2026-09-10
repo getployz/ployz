@@ -1,3 +1,4 @@
+import type { EnrollmentAssignment } from "@ployz/sdk";
 import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
@@ -164,5 +165,22 @@ export const machineEnrollmentToken = pgTable(
       "machine_enrollment_token_hash_check",
       sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
     ),
+  ],
+);
+
+/** Cloud's allocation history, not runtime Cluster membership. */
+export const enrollmentAllocation = pgTable(
+  "enrollment_allocation",
+  {
+    organizationId: uuid("organization_id").notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    // The pairing credential identifies the current Cloud Cluster generation.
+    clusterKey: text("cluster_key").notNull(),
+    assignments: jsonb("assignments").notNull().$type<EnrollmentAssignment[]>(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.clusterKey] }),
+    check("enrollment_allocation_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
+    check("enrollment_allocation_assignments_check", sql`jsonb_typeof(${table.assignments}) = 'array'`),
   ],
 );

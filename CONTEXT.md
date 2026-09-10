@@ -155,7 +155,7 @@ A bounded membership-command operation that establishes this Machine's running S
 _Avoid_: scheduler, Cluster-wide Deploy
 
 **Global slot convergence**:
-One bounded, target-local decision for a dispatched Global slot: ensure it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown.
+A bounded client attempt for a dispatched Global slot: establish it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown. Its observations and lifecycle actions are separate operations, not one atomic decision.
 _Avoid_: Background maintenance, Cluster-wide reconciler, scheduler
 
 **Observed Global Slot Spec**:
@@ -223,12 +223,12 @@ An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Do
 _Avoid_: Docker Volume, Provisioned Volume, persistent volume
 
 **Machine Subnet**:
-The IPv4 /24 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
+The IPv4 /24 subnet selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet when operators use independent allocation histories.
 _Avoid_: Reserved subnet, globally allocated subnet
 
-**Allocator**:
-The Machine named in cluster KV as the one that may assign Machine Subnets. It is a Replicated Observation, not Cluster truth.
-_Avoid_: leader, master, IPAM, Cloud IPAM
+**Operator Allocation History**:
+An operator’s saved Machine assignments, including enrollments not yet visible in a Cluster Observation. It coordinates that operator’s enrollment attempts, not independent operators, and is not Cluster truth.
+_Avoid_: allocator role, global reservation, Cluster IPAM
 
 **Cloud Enroll Token**:
 Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Dial Credential.

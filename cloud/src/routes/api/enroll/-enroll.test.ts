@@ -16,6 +16,7 @@ const token = "pmet_secret";
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const identity = {
   protocolVersion: 2 as const,
+  machineId: "c".repeat(32),
   initialPolicy: {
     labels: {},
     accepts_builds: true,
@@ -227,6 +228,7 @@ describe("machine enrollment routes", () => {
     for (const response of [
       await join({
         protocolVersion: 2,
+      machineId: "c".repeat(32),
         initialPolicy: {
           labels: {},
           accepts_builds: true,
@@ -276,6 +278,7 @@ describe("machine enrollment routes", () => {
 
     const response = await join({
       protocolVersion: 2,
+      machineId: "c".repeat(32),
       initialPolicy: {
         labels: {},
         accepts_builds: true,
@@ -292,6 +295,7 @@ describe("machine enrollment routes", () => {
       token,
       identity: {
         protocolVersion: 2,
+      machineId: "c".repeat(32),
         initialPolicy: {
           labels: {},
           accepts_builds: true,

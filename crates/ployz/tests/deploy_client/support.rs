@@ -297,6 +297,7 @@ impl MachineRpc for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         encoded(RpcResponse::from(MachineList {
+            enrollment: None,
             machines: self.machines.clone(),
         }))
     }
@@ -427,14 +428,6 @@ impl MachineRpc for DeployService {
             container_id,
             display_name: format!("{}-{n}", create.resolved_spec.name),
         }))
-    }
-
-    async fn ensure_global_slot(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
     }
 
     async fn start_container(

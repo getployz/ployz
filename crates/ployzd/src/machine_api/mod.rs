@@ -28,7 +28,7 @@ use crate::{
 pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route};
 
 #[cfg(test)]
-pub(crate) use local::{MachineService, REGISTER_FORWARDED_METADATA};
+pub(crate) use local::MachineService;
 
 /// A servable Machine API. Every request it serves is routed.
 #[derive(Clone)]

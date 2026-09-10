@@ -1,11 +1,16 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import type { MachineId, RegisterRequest } from "@ployz/sdk";
-import { eq } from "drizzle-orm";
+import { createRequire } from "node:module";
+import type * as PloyzSdk from "@ployz/sdk";
+import type { EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
+import { and, eq } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
-import { machineEnrollmentToken as schemaMachineEnrollmentToken } from "#/modules/machines/tables";
+import {
+  enrollmentAllocation,
+  machineEnrollmentToken as schemaMachineEnrollmentToken,
+} from "#/modules/machines/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
-import type { EncryptedSecretValue, JsonValue } from "#/db/tables";
+import type { EncryptedSecretValue } from "#/db/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import {
@@ -235,9 +240,53 @@ export function heldMachineIds(listed: readonly unknown[]): MachineId[] {
   });
 }
 
+// SAFETY: the SDK exports this synchronous Rust policy through CommonJS.
+const { allocateEnrollment } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
+  typeof PloyzSdk, "allocateEnrollment"
+>;
+
+export const reserveEnrollmentAssignment = Effect.fn(
+  "MachineEnrollment.reserveAssignment",
+)(function* (input: {
+  organizationId: string;
+  pairing: string;
+  identity: RegisterRequest;
+  snapshot: EnrollmentSnapshot;
+}) {
+  const database = yield* Database;
+  const clusterKey = crypto.createHash("sha256").update(input.pairing).digest("hex");
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const scope = and(
+      eq(enrollmentAllocation.organizationId, input.organizationId),
+      eq(enrollmentAllocation.clusterKey, clusterKey),
+    );
+    yield* drizzle.insert(enrollmentAllocation).values({
+      organizationId: input.organizationId, clusterKey, assignments: [],
+    }).onConflictDoNothing();
+    const [history] = yield* drizzle.select().from(enrollmentAllocation)
+      .where(scope).for("update");
+    if (!history) return yield* Effect.die("Enrollment allocation history disappeared");
+    const assignment = yield* Effect.try({
+      try: () => allocateEnrollment(input.identity, input.snapshot, history.assignments),
+      catch: () => new Conflict({
+        message: "Enrollment inputs conflict with saved assignments or the observed subnet pool is exhausted.",
+      }),
+    });
+    if (!history.assignments.some((saved) => saved.machine.id === assignment.machine.id)) {
+      // ponytail: rewrite the scoped history; normalize rows if enrollment volume makes this costly.
+      yield* drizzle.update(enrollmentAllocation).set({
+        assignments: [...history.assignments, assignment],
+      }).where(scope);
+    }
+    return assignment;
+  }));
+});
+
 export const registerThroughHeldList = Effect.fn(
   "MachineEnrollment.registerThroughHeldList",
 )(function* (input: {
+  organizationId: string;
   relayUrl: string;
   bearer: string;
   pairing: string;
@@ -245,28 +294,36 @@ export const registerThroughHeldList = Effect.fn(
   identity: RegisterRequest;
 }) {
   const ployz = yield* Ployz;
-  const attempts = input.held.map((machineId) =>
-    ployz
-      .registerHeldMachine(
-        input.relayUrl,
-        input.bearer,
-        input.pairing,
-        machineId,
-        input.identity,
-      )
-      .pipe(
-        Effect.map((registration) => ({
-          kind: "registered" as const,
-          registration,
-        })),
-      ),
-  );
-  if (attempts.length === 0) {
-    return { kind: "not_yet" as const };
+  if (input.held.length === 0) return { kind: "not_yet" as const };
+  const snapshot = yield* Effect.firstSuccessOf(input.held.map((machineId) =>
+    ployz.observeEnrollment(input.relayUrl, input.bearer, input.pairing, machineId),
+  )).pipe(Effect.option);
+  if (Option.isNone(snapshot)) return { kind: "not_yet" as const };
+  const assignment = yield* reserveEnrollmentAssignment({ ...input, snapshot: snapshot.value });
+  // The transaction has committed before any publication or joining response.
+  for (const machineId of input.held) {
+    const registration = yield* ployz.publishEnrollment(
+      input.relayUrl, input.bearer, input.pairing, machineId, assignment,
+    ).pipe(
+      Effect.map(Option.some),
+      Effect.catch((error): Effect.Effect<Option.Option<never>, Conflict | PloyzProviderError> => {
+        const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(error.cause);
+        if (Option.isSome(rpc)) {
+          if (rpc.value.code === "conflict") {
+            return Effect.fail(new Conflict({
+              message: "The saved enrollment assignment conflicts with the Entry Machine's current observation.",
+            }));
+          }
+          if (rpc.value.code !== "unavailable") return Effect.fail(error);
+        }
+        return Effect.succeed(Option.none());
+      }),
+    );
+    if (Option.isSome(registration)) {
+      return { kind: "registered" as const, registration: registration.value };
+    }
   }
-  return yield* Effect.firstSuccessOf(attempts).pipe(
-    Effect.catch(() => Effect.succeed({ kind: "not_yet" as const })),
-  );
+  return { kind: "not_yet" as const };
 });
 
 type EnrollmentRelayInput = {
@@ -280,6 +337,7 @@ type EnrollmentRelayHolding =
   | { readonly kind: "held"; readonly held: readonly MachineId[] };
 
 type EnrollmentRelayRegistrationInput = EnrollmentRelayInput & {
+  organizationId: string;
   held: readonly MachineId[];
   identity: RegisterRequest;
 };
@@ -291,8 +349,8 @@ export interface EnrollmentRelayService {
   readonly registerAvailable: (
     input: EnrollmentRelayRegistrationInput,
   ) => Effect.Effect<
-    | { readonly kind: "not_yet" }
-    | { readonly kind: "registered"; readonly registration: JsonValue }
+    Effect.Success<ReturnType<typeof registerThroughHeldList>>,
+    Effect.Error<ReturnType<typeof registerThroughHeldList>>
   >;
   readonly revokeIfEmpty: (
     input: EnrollmentRelayInput,
@@ -331,8 +389,9 @@ export const EnrollmentRelayLive = Layer.effect(
   EnrollmentRelay,
   Effect.gen(function* () {
     const ployz = yield* Ployz;
-    const withPloyz = <A, E>(effect: Effect.Effect<A, E, Ployz>) =>
-      effect.pipe(Effect.provideService(Ployz, ployz));
+    const database = yield* Database;
+    const withPloyz = <A, E>(effect: Effect.Effect<A, E, Ployz | Database>) =>
+      effect.pipe(Effect.provideService(Ployz, ployz), Effect.provideService(Database, database));
     return {
       inspectHolding: (input) => withPloyz(inspectRelayHolding(input)),
       registerAvailable: (input) => withPloyz(registerThroughHeldList(input)),
@@ -477,12 +536,14 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
 
 const joinFromHeldList = Effect.fn("MachineEnrollment.joinFromHeldList")(
   function* (input: {
+    organizationId: string;
     request: RegisterRequest;
     listed: HeldRelayList;
   }) {
     const relay = yield* EnrollmentRelay;
     const settings = yield* loadEnrollmentSettings();
     const outcome = yield* relay.registerAvailable({
+      organizationId: input.organizationId,
       relayUrl: settings.deploymentDialUrl,
       bearer: input.listed.bearer,
       pairing: input.listed.pairing.secret,
@@ -522,6 +583,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     if (list.kind === "indeterminate") return yield* list.error;
     if (list.kind !== "held") return waitForFounder();
     return yield* joinFromHeldList({
+      organizationId: token.organizationId,
       request,
       listed: list,
     });

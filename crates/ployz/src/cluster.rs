@@ -681,9 +681,11 @@ impl Client {
         kind: ContainerKind,
         project_name: ProjectName,
         resolved_spec: ResolvedServiceSpec,
+        creation_key: Option<String>,
     ) -> Result<ContainerCreated, RpcError> {
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
+                creation_key,
                 kind,
                 project_name,
                 resolved_spec,
@@ -1193,3 +1195,12 @@ fn accept_stop_result(
 #[cfg(test)]
 #[path = "cluster_tests.rs"]
 mod tests;
+
+/// One Global revision per target; Project and kind are scoped by CreateContainer.
+pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
+    format!(
+        "global:{}:{}",
+        spec.service_id,
+        spec.serving_shape().token()
+    )
+}

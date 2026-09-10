@@ -38,6 +38,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
                 ContainerKind::ServiceContainer,
                 ProjectName::parse("app").unwrap(),
                 spec.clone(),
+                None,
             )
             .await
             .unwrap();

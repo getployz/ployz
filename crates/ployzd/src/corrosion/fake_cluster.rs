@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     convert::Infallible,
     sync::{Arc, Mutex},
 };
@@ -16,11 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::broadcast};
 
-use super::store::{AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR};
 use super::{ApiClient, ReplicatedStore};
-use ployz_core::MachineId;
-
-const PUSH_ALLOCATOR_READ: &str = "INSERT INTO allocator_script (value) VALUES (?)";
 
 #[derive(Clone)]
 struct ClusterKv {
@@ -29,8 +25,6 @@ struct ClusterKv {
     containers: BTreeMap<String, (String, String)>,
     container_changes: broadcast::Sender<()>,
     container_subscriptions: bool,
-    allocator: Option<(String, bool)>,
-    allocator_script: VecDeque<(String, bool)>,
 }
 
 #[derive(Deserialize)]
@@ -40,24 +34,15 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, false).await
+    bind(false).await
 }
 
 pub(crate) async fn store_with_container_changes() -> (ReplicatedStore, tokio::task::JoinHandle<()>)
 {
-    bind(None, true).await
+    bind(true).await
 }
 
-pub(crate) async fn store_with_allocator_value(
-    value: &str,
-) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(Some((value.to_owned(), true)), false).await
-}
-
-async fn bind(
-    allocator: Option<(String, bool)>,
-    container_subscriptions: bool,
-) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+async fn bind(container_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (container_changes, _) = broadcast::channel(16);
@@ -67,8 +52,6 @@ async fn bind(
         containers: BTreeMap::new(),
         container_changes,
         container_subscriptions,
-        allocator,
-        allocator_script: VecDeque::new(),
     }));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -134,7 +117,7 @@ async fn subscriptions(
 }
 
 fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
-    let mut kv = kv.lock().unwrap();
+    let kv = kv.lock().unwrap();
     match statement.query.as_str() {
         "SELECT id, info FROM machines ORDER BY name" => events(
             &["id", "info"],
@@ -167,17 +150,6 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
-        ALLOCATOR_ROW => {
-            if let Some(row) = kv.allocator_script.pop_front() {
-                kv.allocator = Some(row);
-            }
-            events(
-                &["allocator", "quiet"],
-                kv.allocator
-                    .iter()
-                    .map(|(id, quiet)| vec![json!(id), json!(u8::from(*quiet))]),
-            )
-        }
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
@@ -189,22 +161,6 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
     let mut kv = kv.lock().unwrap();
     for statement in &statements {
         match statement.query.as_str() {
-            CLAIM_FOUNDER_ALLOCATOR => {
-                let id = text_param(&statement.params, 0).to_owned();
-                kv.allocator.get_or_insert((id, true));
-            }
-            STEAL_ALLOCATOR => {
-                kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
-            }
-            AGE_ALLOCATOR => {
-                if let Some((_, quiet)) = &mut kv.allocator {
-                    *quiet = true;
-                }
-            }
-            PUSH_ALLOCATOR_READ => {
-                kv.allocator_script
-                    .push_back((text_param(&statement.params, 0).to_owned(), true));
-            }
             query if query.starts_with("INSERT INTO machines (id, info,") => {
                 kv.machines.insert(
                     text_param(&statement.params, 0).to_owned(),
@@ -246,29 +202,4 @@ pub(crate) fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>
     }
     body.extend(br#"{"eoq":{"time":0.0}}"#);
     body.into()
-}
-
-pub(crate) async fn age_allocator(store: &ReplicatedStore) {
-    store
-        .api()
-        .execute([super::Statement::new(AGE_ALLOCATOR, [])])
-        .await
-        .unwrap();
-}
-
-/// Next `allocator()` reads: `current`, `current`, then `then` (quiet).
-pub(crate) async fn name_allocator_on_reread(
-    store: &ReplicatedStore,
-    current: &MachineId,
-    then: &MachineId,
-) {
-    store
-        .api()
-        .execute([
-            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(current)]),
-            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(current)]),
-            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(then)]),
-        ])
-        .await
-        .unwrap();
 }

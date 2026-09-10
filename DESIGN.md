@@ -98,7 +98,7 @@ per-target detail into one boolean.
 **The bet.** Entities (Machines, Containers) are entity-keyed: their creator mints
 an opaque durable ID unilaterally, and Machine Name or Service Name collisions
 coexist forever — Name Ambiguity is preserved, never repaired. Declared,
-replicated facts (allocator role, certificates, service groupings) are name-keyed:
+replicated facts (certificates, service groupings) are name-keyed:
 concurrent writes converge to one last-writer-wins winner, losing a merge silently
 is expected, and the winner's generated ID endures as the handle that lineage and
 history attach to.
@@ -118,12 +118,17 @@ non-existence.
 **The bet.** Volumes, subnets, and addresses belong to one Machine; their names
 are meaningful only together with that Machine. Allocation is optimistic —
 concurrent changes may produce overlapping Machine Subnets — and conflicts are
-tolerated and repaired opportunistically, never prevented by a mandatory global
-allocation step.
+possible across independent operators, never prevented by a mandatory global
+allocation step. An operator serializes its own enrollment commands with durable
+allocation history, including assignments not yet visible in an observation.
+History is saved before publication and Join and retained after failures; it is
+not runtime truth and has no automatic expiry or reclamation.
 
 **Why.** A global allocator that must answer before a Machine can act is a
-consistency dependency in disguise; it turns every partition into an outage. The
-Allocator that does exist is itself only a Replicated Observation.
+consistency dependency in disguise; it turns every partition into an outage.
+Different computers, independent stores, and direct CLI and Cloud operators can
+still select overlapping subnets from incomplete observations. No cross-store
+synchronization or subnet repair system is provided.
 
 **Red flags:** a resource identity meaningful without its Machine, a required
 round trip to an allocator, refusing to operate because an allocator is
@@ -196,10 +201,12 @@ current eligibility before replacement, including Machine-local Volume locality.
 Build admission checks Build acceptance again after queue wait; already-admitted
 Builds may finish.
 Observer-side eligibility remains advisory, including an Unknown safe hold. A
-dispatched Global catch-up operation makes exactly one fresh target-local
-eligibility decision: ensure eligible slots, retire definitely ineligible slots,
-or hold unknown slots unchanged. These checks admit work for an already-selected
-target; they do not schedule work across Machines.
+Global catch-up client reads fresh target evidence, creates and starts eligible
+slots, retires definitely ineligible slots, and holds unknown slots unchanged.
+These separate observation and lifecycle calls are not atomic; new creation and
+storage preparation independently enforce fresh Machine-local admission.
+These checks admit work for an already-selected target; they do not schedule
+work across Machines.
 
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers.

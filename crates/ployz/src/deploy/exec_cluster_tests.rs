@@ -237,6 +237,7 @@ async fn assert_replacement_health_compensation(
                 ContainerKind::ServiceContainer,
                 ProjectName::parse("app").unwrap(),
                 old_spec.clone(),
+                None,
             )
             .await
             .unwrap();

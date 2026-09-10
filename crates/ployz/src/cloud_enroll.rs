@@ -57,6 +57,7 @@ impl Error {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnrollIdentity {
+    machine_id: MachineId,
     protocol_version: u8,
     name: MachineName,
     // Cloud enroll HTTP expects Display/base64, not the RPC `number[]` wire.
@@ -89,6 +90,7 @@ impl EnrollIdentity {
         initial_policy: ployz_core::InitialMachinePolicy,
     ) -> Self {
         Self {
+            machine_id: token.id,
             protocol_version: PROTOCOL_VERSION,
             name,
             public_key: token.public_key,
@@ -582,6 +584,7 @@ mod tests {
         EnrollIdentity::from_machine_token(
             MachineName::parse("joiner").unwrap(),
             &MachineToken {
+                id: MachineId::random(),
                 public_key: WireGuardPublicKey([1; 32]),
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
@@ -774,6 +777,7 @@ mod tests {
         let identity = EnrollIdentity::from_machine_token(
             MachineName::parse("ployz-c1").unwrap(),
             &MachineToken {
+                id: MachineId::random(),
                 public_key: WireGuardPublicKey([
                     93, 8, 112, 97, 17, 191, 217, 250, 110, 95, 143, 145, 148, 219, 136, 176, 78,
                     82, 126, 17, 157, 176, 106, 76, 85, 91, 240, 187, 92, 182, 2, 77,

@@ -22,9 +22,9 @@ use ployz_core::{
     MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
     MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
     PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, op,
+    RemoveMachineRequest, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RuntimeWatchFrame, RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure,
+    VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -138,8 +138,16 @@ fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event:
     let _ = sender.try_send(item);
 }
 
+#[derive(Default)]
+pub(super) struct EnrollmentTrace {
+    pub events: Vec<&'static str>,
+    pub published: Option<Registered>,
+    pub joined: Option<ployz_core::JoinRequest>,
+}
+
 #[derive(Clone)]
 pub(super) struct DiscoveryService {
+    pub(super) enrollment: Option<Arc<Mutex<EnrollmentTrace>>>,
     pub(super) builds: Option<Arc<BuildRecorder>>,
     description: ContractDescription,
     /// Contracts answered per routed Machine. Absent Machines answer `description`.
@@ -179,6 +187,7 @@ pub(super) struct DiscoveryService {
 impl DiscoveryService {
     pub(super) fn new(description: ContractDescription) -> Self {
         Self {
+            enrollment: None,
             builds: None,
             description,
             descriptions: BTreeMap::new(),
@@ -512,9 +521,9 @@ impl MachineRpc for DiscoveryService {
             accepts_builds: true,
             accepts_services: true,
             accepts_ingress: true,
-            id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            id: body.machine_id,
             name: body.name,
-            subnet: "10.210.1.0/24".parse().unwrap(),
+            subnet: body.assigned_subnet.expect("client supplies subnet"),
             public_key: body.public_key,
             public_ip: body.public_ip,
             advertised_endpoints: body.advertised_endpoints,
@@ -525,22 +534,51 @@ impl MachineRpc for DiscoveryService {
             .iter()
             .map(|observation| observation.machine.clone())
             .collect();
+        let registered = Registered {
+            assigned_machine,
+            visible_peers,
+            target_versions: BTreeMap::new(),
+        };
+        if let Some(trace) = &self.enrollment {
+            let mut trace = trace.lock().unwrap();
+            trace.events.push("publish");
+            trace.published = Some(registered.clone());
+        }
         Ok(Response::new(
-            RpcResponse::from(Registered {
-                assigned_machine,
-                visible_peers,
-                target_versions: BTreeMap::new(),
-            })
-            .encode()
-            .unwrap(),
+            RpcResponse::from(registered).encode().unwrap(),
         ))
     }
 
     async fn join(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let trace = self
+            .enrollment
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("unused"))?;
+        let request =
+            op::Join::from_request_body(request.into_inner().decode_request().unwrap().body)
+                .unwrap();
+        let mut trace = trace.lock().unwrap();
+        assert_eq!(
+            trace.published.as_ref(),
+            Some(&request.registration),
+            "publication must precede Join"
+        );
+        trace.events.push("join");
+        let already_accepted = trace.joined.is_some();
+        trace.joined = Some(request);
+        if !already_accepted {
+            return Err(Status::internal(
+                "lost Join response after durable acceptance",
+            ));
+        }
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::JoinAccepted { already_accepted })
+                .encode()
+                .unwrap(),
+        ))
     }
 
     async fn set_cloud_pairing(
@@ -556,16 +594,29 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         let removed = self.removed_machines.lock().unwrap().clone();
-        let machines = self
+        let machines: Vec<_> = self
             .machines
             .iter()
             .filter(|observation| !removed.contains(&observation.machine.id))
             .cloned()
             .collect();
         Ok(Response::new(
-            RpcResponse::from(MachineList { machines })
-                .encode()
-                .unwrap(),
+            RpcResponse::from(MachineList {
+                enrollment: self
+                    .enrollment
+                    .as_ref()
+                    .map(|_| ployz_core::EnrollmentSnapshot {
+                        network: "10.210.0.0/16".parse().unwrap(),
+                        machines: machines
+                            .iter()
+                            .map(|observation| observation.machine.clone())
+                            .collect(),
+                        target_versions: BTreeMap::new(),
+                    }),
+                machines,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
 
@@ -795,13 +846,6 @@ impl MachineRpc for DiscoveryService {
             .encode()
             .unwrap(),
         ))
-    }
-
-    async fn ensure_global_slot(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 
     async fn remove_volume(

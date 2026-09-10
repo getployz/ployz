@@ -80,6 +80,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ProjectName>();
     declarations.add::<RegisterRequest>();
     declarations.add::<Registered>();
+    declarations.add::<ployz_core::EnrollmentAssignment>();
+    declarations.add::<ployz_core::EnrollmentSnapshot>();
     declarations.add::<RemoveVolumesRequest>();
     declarations.add::<RequestedServiceSpec>();
     declarations.add::<RpcError>();

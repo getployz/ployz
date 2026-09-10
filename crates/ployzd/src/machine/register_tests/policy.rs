@@ -4,12 +4,14 @@ use super::*;
 
 #[tokio::test]
 async fn registration_publishes_initial_policy_and_join_persists_it() {
-    let (allocator, replicated, _founder, data_dir, server) = participating().await;
+    let (entry, replicated, _founder, data_dir, server) = participating().await;
     let joiner_dir =
         std::env::temp_dir().join(format!("ployzd-policy-join-{}", MachineId::random()));
     let joiner_store = LocalMachineStore::open(&joiner_dir).unwrap();
     let public_key = joiner_store.record().private_key().public_key();
-    let mut wire = serde_json::to_value(request("builder", public_key)).unwrap();
+    let mut identity = request("builder", public_key);
+    identity.machine_id = joiner_store.record().id();
+    let mut wire = serde_json::to_value(identity).unwrap();
     wire.as_object_mut().unwrap().insert(
         "initial_policy".into(),
         serde_json::json!({
@@ -19,7 +21,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
             "accepts_ingress": false
         }),
     );
-    let registration = allocator
+    let registration = entry
         .register(serde_json::from_value(wire).unwrap())
         .await
         .unwrap();
@@ -62,7 +64,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
     assert_eq!(persisted.accepts_services, expected.accepts_services);
     assert_eq!(persisted.accepts_ingress, expected.accepts_ingress);
     server.abort();
-    drop(allocator);
+    drop(entry);
     let _ = std::fs::remove_dir_all(data_dir);
     let _ = std::fs::remove_dir_all(joiner_dir);
 }

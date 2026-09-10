@@ -11,7 +11,7 @@ const relayUrl = process.env.PLOYZ_RELAY_URL;
 const bearer = process.env.PLOYZ_BEARER;
 const pairing = process.env.PLOYZ_PAIRING;
 const machineId = process.env.PLOYZ_MACHINE_ID;
-const notQuietMachineId = process.env.PLOYZ_NOT_QUIET_MACHINE_ID;
+const isolatedMachineId = process.env.PLOYZ_ISOLATED_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
 
 if (
@@ -21,7 +21,7 @@ if (
   !bearer ||
   !pairing ||
   !machineId ||
-  !notQuietMachineId ||
+  !isolatedMachineId ||
   !unknownMachineId
 ) {
   throw new Error("Node register smoke is missing environment");
@@ -47,6 +47,8 @@ async function expectRpc(fn, code) {
 
 function joinerIdentity() {
   return {
+    machine_id: "11111111111111111111111111111111",
+    assigned_subnet: "10.210.1.0/24",
     name: "joiner",
     initial_policy: {
       labels: {},
@@ -97,13 +99,13 @@ function joinerIdentity() {
     throw new Error("second register must reuse a closed Dial");
   }
 
-  const notQuiet = await expectRpc(
+  const isolated = await expectRpc(
     () =>
-      sdk.register(relayUrl, bearer, pairing, notQuietMachineId, joinerIdentity()),
+      sdk.register(relayUrl, bearer, pairing, isolatedMachineId, joinerIdentity()),
     "unavailable",
   );
-  if (notQuiet.message !== "Allocator is not quiet") {
-    throw new Error(`expected Allocator not-quiet, got ${notQuiet.message}`);
+  if (isolated.message !== "this Machine is isolation-locked") {
+    throw new Error(`expected isolation lock, got ${isolated.message}`);
   }
 
   await expectRpc(

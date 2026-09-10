@@ -45,9 +45,7 @@ use tokio::sync::Mutex;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
-pub(crate) use lifecycle::{
-    ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest, require_eligible,
-};
+pub(crate) use lifecycle::{ContainerRequest, require_eligible};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -690,7 +688,7 @@ pub enum Error {
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
     ContainerNotFound(ContainerId),
-    #[error("Docker name '{0}' is occupied by a different Serving Shape")]
+    #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,

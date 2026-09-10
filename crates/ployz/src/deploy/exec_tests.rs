@@ -73,6 +73,7 @@ struct Step(Call, Reply);
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
+    replacing: Mutex<Vec<Option<ContainerId>>>,
     cancel_on_prepare: Option<CancellationToken>,
 }
 
@@ -81,6 +82,7 @@ impl Scripted {
         Self {
             steps: Mutex::new(steps.into()),
             observations: None,
+            replacing: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
         }
     }
@@ -148,7 +150,9 @@ impl MachineOperations for Scripted {
         kind: ContainerKind,
         _project_name: &ProjectName,
         _spec: &ResolvedServiceSpec,
+        replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
+        self.replacing.lock().unwrap().push(replacing);
         match self.next(Call::Create(*machine_id, kind)) {
             Reply::Created(container_id) => Ok(ContainerCreated {
                 display_name: container_id.to_string(),

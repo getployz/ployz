@@ -1,4 +1,6 @@
-import { ConfigProvider, Effect, Exit, Layer, Result } from "effect";
+import type { EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
+import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
+import { ConfigProvider, Effect, Exit, Layer, Result, Schema } from "effect";
 import { Inngest } from "inngest";
 import {
   afterAll,
@@ -15,6 +17,8 @@ import {
 import {
   completeMachineEnrollment,
   enrollMachine,
+  registerThroughHeldList,
+  reserveEnrollmentAssignment,
   EnrollmentRelay,
   hashEnrollmentToken,
   heldMachineIds,
@@ -24,7 +28,7 @@ import {
   tryRevokeOrganizationRelayPairing,
   type EnrollmentRelayService,
 } from "#/modules/machines/enrollment.server";
-import { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -44,6 +48,7 @@ const registration = {
   visible_peers: [heldMachineId],
   target_versions: {},
 };
+const snapshot: EnrollmentSnapshot = { network: "10.42.0.0/16", machines: [], target_versions: {} };
 const enrollmentSettings = {
   publicRelayUrl: "https://relay.example.test/",
   deploymentDialBearer: "pdial_test",
@@ -53,6 +58,7 @@ const enrollmentSettings = {
 function identity(index: number) {
   return {
     protocolVersion: 2 as const,
+    machineId: Schema.decodeUnknownSync(rustMachineIdSchema)((index + 1).toString(16).padStart(32, "0")),
     initialPolicy: {
       labels: {},
       accepts_builds: true,
@@ -72,7 +78,8 @@ function fakeRelay(database: GithubPostgresTestHarness["database"]) {
   let registerCalls = 0;
   const revokedPairings: string[] = [];
   const held: unknown[] = [];
-  const fail = { list: false, revoke: false };
+  const fail = { list: false, revoke: false, publish: false, conflict: false };
+  const published: EnrollmentAssignment[] = [];
   const inspectHolding: EnrollmentRelayService["inspectHolding"] = () =>
     Effect.gen(function* () {
       listCalls += 1;
@@ -94,11 +101,20 @@ function fakeRelay(database: GithubPostgresTestHarness["database"]) {
     });
   const relay: EnrollmentRelayService = {
     inspectHolding,
-    registerAvailable: () =>
-      Effect.sync(() => {
-        registerCalls += 1;
-        return { kind: "registered" as const, registration };
-      }),
+    registerAvailable: (input) => registerThroughHeldList(input).pipe(
+      Effect.provideService(Database, database),
+      Effect.provide(makePloyzLayer({
+        connect: async () => { throw new Error("unused"); },
+        observeEnrollment: async () => snapshot,
+        publishEnrollment: async (_url, _bearer, _pairing, _entry, assignment) => {
+          registerCalls += 1;
+          published.push(assignment);
+          if (fail.conflict) throw Object.assign(new Error("Assignment conflicts"), { code: "conflict" });
+          if (fail.publish) throw new Error("Lost publication response");
+          return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
+        },
+      })),
+    ),
     revokeIfEmpty: (input) =>
       Effect.gen(function* () {
         const holding = yield* inspectHolding(input);
@@ -126,6 +142,7 @@ function fakeRelay(database: GithubPostgresTestHarness["database"]) {
   const coordinator = enrollmentTestClient(database, relay);
   return {
     coordinator,
+    published,
     held,
     fail,
     revokedPairings,
@@ -372,6 +389,10 @@ describe("organization enrollment coordinator", () => {
       ),
     ).toBe(true);
     expect(fake.registerCalls()).toBe(19);
+    expect(new Set(fake.published.map((a) => a.machine.subnet)).size).toBe(19);
+    expect(fake.published.map((a) => a.machine.id).sort()).toEqual(
+      Array.from({ length: 19 }, (_, index) => identity(index + 1).machineId).sort(),
+    );
 
     const state = await harness.pool.query<{
       founder_machine_id: string | null;
@@ -398,6 +419,92 @@ describe("organization enrollment coordinator", () => {
     expect(Result.isFailure(indeterminate)).toBe(true);
     if (!Result.isFailure(indeterminate)) return;
     expect(indeterminate.failure._tag).toBe("PloyzProviderError");
+  });
+
+  it("retains the committed assignment after publication failure and conflicts on changed retry inputs", async () => {
+    const fake = fakeRelay(harness.database);
+    const founder = await fake.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(0) });
+    if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
+    fake.held.push({ machineId: heldMachineId });
+    await fake.coordinator.completeFounding({ token: (tokens[0] ?? ""), machineId: heldMachineId, pairingCredential: founder.success.pairing.secret });
+    fake.fail.publish = true;
+    const failed = await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: identity(1) });
+    expect(failed).toMatchObject({ success: { kind: "not_yet" } });
+    const saved = await harness.pool.query("select assignments from enrollment_allocation");
+    expect(saved.rows[0].assignments).toEqual(fake.published);
+    fake.fail.publish = false;
+    // A fresh coordinator has no worker-local retry state.
+    const fresh = fakeRelay(harness.database);
+    fresh.held.push({ machineId: heldMachineId });
+    const resumed = await fresh.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(1) });
+    expect(resumed).toMatchObject({ success: { kind: "join" } });
+    expect(fresh.published).toEqual(fake.published);
+    const changed = await fresh.coordinator.enroll({ token: (tokens[0] ?? ""), identity: { ...identity(1), requestedStorage: "zfs" } });
+    expect(changed).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fresh.published).toHaveLength(1);
+  });
+
+  it("returns a permanent publication conflict without trying a stale Entry or freeing the assignment", async () => {
+    const fake = fakeRelay(harness.database);
+    const founder = await fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
+    if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
+    fake.held.push({ machineId: heldMachineId });
+    await fake.coordinator.completeFounding({ token: tokens[0] ?? "", machineId: heldMachineId, pairingCredential: founder.success.pairing.secret });
+    fake.held.push({ machineId: identity(0).machineId });
+    fake.fail.conflict = true;
+
+    const outcome = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+
+    expect(outcome).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.registerCalls()).toBe(1);
+    const saved = await harness.pool.query("select assignments from enrollment_allocation");
+    expect(saved.rows[0].assignments).toEqual(fake.published);
+    const retry = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    expect(retry).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.registerCalls()).toBe(2);
+    expect(fake.published[1]).toEqual(fake.published[0]);
+  });
+
+  it("serializes identical requests and keeps organization and Cluster histories independent", async () => {
+    const reserve = (organizationId: string, pairing: string, index: number) => harness.runEffect(
+      reserveEnrollmentAssignment({ organizationId, pairing, identity: registerRequestFromEnrollmentIdentity(identity(index)), snapshot }),
+    );
+    const identical = await Promise.all(Array.from({ length: 20 }, () => reserve(organizationId, "cluster-a", 1)));
+    expect(identical.every((assignment) => JSON.stringify(assignment) === JSON.stringify(identical[0]))).toBe(true);
+    const next = await reserve(organizationId, "cluster-a", 2);
+    expect(next.machine.subnet).not.toBe(identical[0]?.machine.subnet);
+    const otherOrganization = "00000000-0000-4000-8000-000000000403";
+    await harness.pool.query("insert into organization (id,name,slug) values ($1,'Other','other')", [otherOrganization]);
+    const [otherCluster, otherOrg] = await Promise.all([
+      reserve(organizationId, "cluster-b", 1), reserve(otherOrganization, "cluster-a", 1),
+    ]);
+    expect(otherCluster.machine.subnet).toBe(identical[0]?.machine.subnet);
+    expect(otherOrg.machine.subnet).toBe(identical[0]?.machine.subnet);
+    const histories = await harness.pool.query("select jsonb_array_length(assignments) as count from enrollment_allocation order by count");
+    expect(histories.rows).toEqual([{ count: 1 }, { count: 1 }, { count: 2 }]);
+  });
+
+  it("releases transaction locks before publication and falls back to another held Entry", async () => {
+    const tried: string[] = [];
+    const assignment = await harness.runEffect(registerThroughHeldList({
+      organizationId, relayUrl: "https://relay.example.test", bearer: "dial", pairing: "cluster-a",
+      held: [heldMachine, identity(0).machineId], identity: registerRequestFromEnrollmentIdentity(identity(1)),
+    }).pipe(Effect.provide(makePloyzLayer({
+      connect: async () => { throw new Error("unused"); },
+      observeEnrollment: async () => snapshot,
+      publishEnrollment: async (_url, _bearer, pairing, entry, assignment) => {
+        tried.push(entry);
+        // Independent transaction must proceed while the network call is in flight.
+        const next = await harness.runEffect(reserveEnrollmentAssignment({
+          organizationId, pairing, identity: registerRequestFromEnrollmentIdentity(identity(2)), snapshot,
+        }));
+        expect(next.machine.subnet).not.toBe(assignment.machine.subnet);
+        if (entry === heldMachine) throw new Error("Entry unreachable");
+        return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
+      },
+    }))));
+    expect(assignment.kind).toBe("registered");
+    expect(tried).toEqual([heldMachine, identity(0).machineId]);
   });
 
   it("accepts both exact completions when concurrent callbacks race the ready CAS", async () => {

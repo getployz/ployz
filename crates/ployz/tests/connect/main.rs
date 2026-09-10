@@ -30,6 +30,7 @@ use tonic::{
     transport::{Channel, Endpoint, Server},
 };
 
+mod enrollment;
 mod machine_storage;
 mod relay;
 mod removal_cli;

@@ -613,6 +613,7 @@ async fn create_and_start(
             ContainerKind::ServiceContainer,
             ProjectName::parse("app").unwrap(),
             spec,
+            None,
         )
         .await
         .unwrap();

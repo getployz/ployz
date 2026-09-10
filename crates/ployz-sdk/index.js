@@ -229,6 +229,11 @@ async function connect(options) {
 
 module.exports = {
   configRequest: native.configRequest,
+  allocateEnrollment: (...args) => {
+    try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
+  },
+  observeEnrollment: (...args) => withRpcError(native.observeEnrollment(...args)),
+  publishEnrollment: (...args) => withRpcError(native.publishEnrollment(...args)),
   connect,
   listHeld: (...args) => withRpcError(native.listHeld(...args)),
   register: (...args) => withRpcError(native.register(...args)),

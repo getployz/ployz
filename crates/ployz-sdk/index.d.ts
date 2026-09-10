@@ -16,6 +16,8 @@ import type {
   ProjectName,
   RegisterRequest,
   Registered,
+  EnrollmentAssignment,
+  EnrollmentSnapshot,
   RemoveVolumesRequest,
   RequestedServiceSpec,
   RpcError,
@@ -125,3 +127,7 @@ export declare class Client {
   destroyCluster(confirmDataLoss: DataLossConfirmation): Promise<ClusterTeardown>;
   close(): Promise<void>;
 };
+
+export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;
+export declare function observeEnrollment(relayUrl: string, bearer: string, pairing: string, machineId: MachineId): Promise<EnrollmentSnapshot>;
+export declare function publishEnrollment(relayUrl: string, bearer: string, pairing: string, machineId: MachineId, assignment: EnrollmentAssignment): Promise<Registered>;

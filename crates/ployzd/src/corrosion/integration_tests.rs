@@ -19,9 +19,7 @@ use super::{
     ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
     run_machine_publisher, wait_for_catch_up,
 };
-use crate::machine::{
-    LocalMachineBody, LocalMachineRecord, LocalMachineStore, ParticipationOrigin,
-};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
 use crate::network::WireGuardPrivateKey;
 
 #[tokio::test]
@@ -196,18 +194,6 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase(), LocalMachinePhase::Participating);
     assert!(persisted.min_store_version().is_empty());
     assert!(*participating_rx.borrow());
-    let allocator = store
-        .api()
-        .query(Statement::new(
-            "SELECT value FROM cluster WHERE key = 'allocator'",
-            [],
-        ))
-        .await
-        .unwrap();
-    assert!(
-        allocator.rows(["value"]).unwrap().is_empty(),
-        "Join path does not write the Allocator row"
-    );
 
     let interrupted_dir = root.0.join("interrupted-machine");
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);
@@ -408,65 +394,6 @@ async fn replicated_volumes_round_trip_incomplete_additive_and_machine_removal()
     assert!(store.volume(&gone_volume.id).await.unwrap().is_none());
     assert!(store.volume(&incomplete_id).await.unwrap().is_none());
 
-    running.cleanup().await.unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires Docker and the pinned Corrosion image"]
-async fn founder_publisher_backdates_allocator() {
-    let root = TestRoot::new();
-    let mut running = CorrosionConfig::new(
-        root.0.join("data"),
-        root.0.join("run"),
-        unused_address(),
-        unused_address(),
-        format!("ployz-corrosion-allocator-{}", MachineId::random()),
-    )
-    .start()
-    .await
-    .unwrap();
-    let store = running.store().clone();
-    let local_dir = root.0.join("local-machine");
-    let published = machine("founder", 1);
-    write_record(
-        &local_dir,
-        &LocalMachineRecord::parse(
-            LocalMachineBody::Participating {
-                machine: published.clone(),
-                origin: ParticipationOrigin::Founder {
-                    cluster: crate::machine::FoundingCluster {
-                        network: "10.210.0.0/16".parse().unwrap(),
-                    },
-                },
-            },
-            WireGuardPrivateKey::from_bytes([1; 32]),
-        )
-        .unwrap(),
-    );
-    let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
-    let shutdown = CancellationToken::new();
-    let (participating, _) = tokio::sync::watch::channel(true);
-    let publisher = tokio::spawn(run_machine_publisher(
-        Some(store.clone()),
-        Arc::clone(&local),
-        participating,
-        shutdown.clone(),
-    ));
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Ok(Some(row)) = store.allocator().await
-                && row.machine_id == published.id
-                && row.quiet
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
-    shutdown.cancel();
-    publisher.await.unwrap().unwrap();
     running.cleanup().await.unwrap();
 }
 

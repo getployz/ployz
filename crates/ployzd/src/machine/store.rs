@@ -250,6 +250,7 @@ impl LocalMachineStore {
         Ok(machine)
     }
 
+    /// Returns true when this assignment was already durably accepted.
     pub fn join(
         &mut self,
         mut assigned_machine: Machine,
@@ -257,8 +258,10 @@ impl LocalMachineStore {
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
         cloud_pairing: Option<CloudPairing>,
-    ) -> Result<(), StoreError> {
-        self.require_uninitialized()?;
+    ) -> Result<bool, StoreError> {
+        if self.record.id() != assigned_machine.id {
+            return Err(StoreError::IdentityMismatch);
+        }
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
@@ -269,6 +272,22 @@ impl LocalMachineStore {
             return Err(StoreError::MissingEndpoints);
         }
         assigned_machine.runtime = local_runtime();
+        match &self.record.body {
+            LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating {
+                machine,
+                origin: ParticipationOrigin::Join { .. },
+            } if machine == &assigned_machine
+                && self.record.wireguard_mtu == wireguard_mtu
+                && self.record.cloud_pairing == cloud_pairing =>
+            {
+                return Ok(true);
+            }
+            LocalMachineBody::Uninitialized { .. } => {}
+            LocalMachineBody::Joining { .. }
+            | LocalMachineBody::Participating { .. }
+            | LocalMachineBody::Resetting { .. } => return Err(StoreError::AlreadyInitialized),
+        }
         let mut joining = self.record.clone();
         joining.body = LocalMachineBody::Joining {
             machine: assigned_machine,
@@ -279,7 +298,7 @@ impl LocalMachineStore {
         joining.cloud_pairing = cloud_pairing;
         save(&self.data_dir, &joining)?;
         self.record = joining;
-        Ok(())
+        Ok(false)
     }
 
     pub fn update(
@@ -448,6 +467,8 @@ pub enum StoreError {
     MissingPeers,
     #[error("assigned public key does not match this Machine")]
     KeyMismatch,
+    #[error("assignment does not match the local durable Machine ID")]
+    IdentityMismatch,
     #[error("invalid Cluster network: {0}")]
     InvalidNetwork(String),
     #[error(transparent)]

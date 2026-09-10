@@ -26,6 +26,8 @@ import type {
   QualifiedService,
   RegisterRequest,
   Registered,
+  EnrollmentAssignment,
+  EnrollmentSnapshot,
   RequestedServiceSpec,
   ResolvedVolumeSource,
   RestartPolicy,
@@ -45,6 +47,9 @@ import {
   listHeld,
   packageName,
   register,
+  allocateEnrollment,
+  observeEnrollment,
+  publishEnrollment,
   RpcError,
 } from "../index";
 import type { HeldRegister, PreparedDeploy } from "../index";
@@ -209,6 +214,8 @@ const connectOptions = {
 connect(connectOptions) satisfies Promise<Client>;
 listHeld("https://relay.example", "bearer", "pairing") satisfies Promise<HeldRegister[]>;
 const identity: RegisterRequest = {
+  machine_id: "machine" as MachineId,
+  assigned_subnet: null,
   name: "machine",
   initial_policy: {
     labels: {},
@@ -253,3 +260,8 @@ watchFrame.services satisfies ServiceObservation[];
 [] satisfies PreDeployCommand;
 
 packageName() satisfies "@ployz/sdk";
+
+declare const enrollmentSnapshot: EnrollmentSnapshot;
+const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfies EnrollmentAssignment;
+observeEnrollment("https://relay.example", "bearer", "pairing", "machine" as MachineId) satisfies Promise<EnrollmentSnapshot>;
+publishEnrollment("https://relay.example", "bearer", "pairing", "machine" as MachineId, assignment) satisfies Promise<Registered>;

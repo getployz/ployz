@@ -16,26 +16,10 @@ use tonic::Request;
 use super::super::{LocalMachine, LocalMachineStore};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore, fake_cluster},
-    machine_api::{MachineService, REGISTER_FORWARDED_METADATA},
+    machine_api::MachineService,
 };
 
 pub(super) async fn participating() -> (
-    LocalMachine,
-    ReplicatedStore,
-    Machine,
-    std::path::PathBuf,
-    tokio::task::JoinHandle<()>,
-) {
-    let setup = participating_without_allocator().await;
-    setup
-        .1
-        .publish_founder_allocator(&setup.2.id)
-        .await
-        .unwrap();
-    setup
-}
-
-pub(super) async fn participating_without_allocator() -> (
     LocalMachine,
     ReplicatedStore,
     Machine,
@@ -168,24 +152,10 @@ pub(super) async fn write_admin_frame(stream: &mut UnixStream, data: &[u8]) -> i
     stream.write_all(data).await
 }
 
-pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
-    Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id,
-        name: MachineName::parse("allocator").unwrap(),
-        subnet: "10.210.0.0/24".parse().unwrap(),
-        public_key: WireGuardPublicKey([3; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.3:51820".parse().unwrap())],
-        runtime: MachineRuntime::default(),
-    }
-}
-
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
+        machine_id: MachineId::random(),
+        assigned_subnet: Some("10.210.1.0/24".parse().unwrap()),
         initial_policy: Default::default(),
         name: MachineName::parse(name).unwrap(),
         storage: ployz_core::StorageChoice::None,
@@ -199,15 +169,8 @@ pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterReq
 pub(super) async fn rpc_register(
     service: &MachineService,
     body: RegisterRequest,
-    forwarded: bool,
 ) -> Result<Registered, RpcError> {
-    let mut request = Request::new(op::Register::into_request(body).encode().unwrap());
-    if forwarded {
-        request.metadata_mut().insert(
-            REGISTER_FORWARDED_METADATA,
-            "1".parse().expect("ASCII metadata"),
-        );
-    }
+    let request = Request::new(op::Register::into_request(body).encode().unwrap());
     let response = service
         .register(request)
         .await

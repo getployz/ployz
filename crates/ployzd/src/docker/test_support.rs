@@ -23,6 +23,7 @@ use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, Volume
 
 #[derive(Clone, Default)]
 pub(crate) struct FakeDocker {
+    pub(crate) named_containers: Option<Arc<Mutex<BTreeMap<String, serde_json::Value>>>>,
     pub(crate) requests: Arc<Mutex<Vec<(Method, String)>>>,
     pub(crate) request_bodies: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     pub(crate) volumes: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
@@ -51,6 +52,60 @@ async fn fake_docker(
             path.clone(),
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         ));
+    }
+    if let Some(containers) = &fake.named_containers {
+        let mut containers = containers.lock().unwrap();
+        if method == Method::POST && path.ends_with("/containers/create") {
+            let name = uri
+                .query()
+                .unwrap()
+                .split('&')
+                .find_map(|part| part.strip_prefix("name="))
+                .unwrap();
+            if containers.contains_key(name) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"message":"name in use"})),
+                )
+                    .into_response();
+            }
+            let id = format!("{}{}", MachineId::random(), MachineId::random());
+            let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "State":{"Status":"created"}}));
+            return (
+                StatusCode::CREATED,
+                Json(serde_json::json!({"Id":id,"Warnings":[]})),
+            )
+                .into_response();
+        }
+        if path.contains("/containers/") && !path.ends_with("/containers/json") {
+            let selector = path
+                .split("/containers/")
+                .nth(1)
+                .unwrap()
+                .split('/')
+                .next()
+                .unwrap();
+            let found = containers
+                .iter()
+                .find(|(name, container)| name.as_str() == selector || container["Id"] == selector)
+                .map(|(name, container)| (name.clone(), container.clone()));
+            let Some((name, container)) = found else {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"message":"no such container"})),
+                )
+                    .into_response();
+            };
+            if method == Method::GET {
+                return Json(container).into_response();
+            }
+            if method == Method::DELETE {
+                containers.remove(&name);
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            panic!("unexpected implicit lifecycle action: {method} {path}");
+        }
     }
     let response = if method == Method::POST
         && path.ends_with("/containers/create")
@@ -327,6 +382,7 @@ pub(super) fn container_request<'spec, Storage>(
     storage: Storage,
 ) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
+        creation_key: None,
         kind,
         project_name,
         spec,
@@ -335,20 +391,7 @@ pub(super) fn container_request<'spec, Storage>(
     }
 }
 
-pub(super) fn global_slot_request<'spec, Storage>(
-    project_name: &'spec ProjectName,
-    spec: &'spec ResolvedServiceSpec,
-    storage: Storage,
-) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
-    GlobalSlotRequest {
-        project_name,
-        spec,
-        admission: std::future::ready(Ok(())),
-        storage,
-    }
-}
-
-pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
+pub(crate) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
     let mut source = ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse(name).unwrap(),
         maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
@@ -362,7 +405,7 @@ pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource
     source
 }
 
-pub(super) fn ordinary_source(name: &str) -> VolumeSource {
+pub(crate) fn ordinary_source(name: &str) -> VolumeSource {
     let mut source = ployz_core::RawVolumeSource::Ordinary {
         name: DockerVolumeName::parse(name).unwrap(),
         driver: ployz_core::VolumeDriver::parse(
@@ -378,7 +421,7 @@ pub(super) fn ordinary_source(name: &str) -> VolumeSource {
     source
 }
 
-pub(super) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSpec {
+pub(crate) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSpec {
     let mut spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ployz_core::ServiceId::random(),
         "name": "api",

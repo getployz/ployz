@@ -1,14 +1,11 @@
 //! Tests for bounded Global catch-up and target storage eligibility.
 
-use std::{
-    cell::Cell,
-    num::{NonZeroU32, NonZeroU64},
-};
+use std::num::NonZeroU64;
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, DockerVolumeName, HealthObservation, Machine, MachineId,
-    MachineName, Placement, PlacementConstraint, ProjectName, ProvisionedVolumeMaximumBytes,
+    MachineName, MachineStorageObservation, Placement, ProjectName, ProvisionedVolumeMaximumBytes,
     PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, WireGuardPublicKey,
@@ -26,9 +23,8 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             machine_id: joiner.id,
             services: Vec::new(),
             target_services: None,
-            capacity: None,
-            storage: Ok(None),
-            ensure_calls: Cell::new(0),
+            create_result: Ok(Some(created())),
+            create_calls: Vec::new(),
             failures: if failed {
                 vec![ployz_core::MachineFailure {
                     machine_id: peer.id,
@@ -50,40 +46,8 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             "{message}"
         );
         assert!(message.contains(peer.id.as_str()), "{message}");
-        assert_eq!(client.ensure_calls.get(), 0);
+        assert!(client.create_calls.is_empty());
     }
-}
-
-#[tokio::test]
-async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let stale = global_service(
-        qualified("app", "api"),
-        'a',
-        Placement::default(),
-        created_on(&joiner, 'a'),
-    );
-    let current = global_service_with_image(
-        qualified("app", "api"),
-        'b',
-        Placement::default(),
-        running_on(&founder, 'b'),
-        "ghcr.io/getployz/api:2",
-    );
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![stale, current],
-        target_services: None,
-        capacity: None,
-        ensure_calls: Cell::new(0),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        storage: Ok(None),
-    };
-
-    assert!(catch_up_globals(&mut client, &joiner).await.is_err());
-    assert_eq!(client.ensure_calls.get(), 0);
 }
 
 #[tokio::test]
@@ -99,15 +63,13 @@ async fn successful_ensure_is_reobserved_before_success() {
         machine_id: joiner.id,
         services: vec![service],
         target_services: None,
-        capacity: None,
-        ensure_calls: Cell::new(0),
+        create_result: Ok(Some(created())),
+        create_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
-        storage: Ok(None),
     };
 
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
-    assert_eq!(client.ensure_calls.get(), 1);
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -125,11 +87,10 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         machine_id: joiner.id,
         services: vec![service],
         target_services: Some(Vec::new()),
-        capacity: None,
-        ensure_calls: Cell::new(0),
+        create_result: Ok(Some(created())),
+        create_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
-        storage: Ok(None),
     };
 
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
@@ -164,11 +125,10 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         machine_id: joiner.id,
         services: vec![service],
         target_services: Some(vec![hook_only]),
-        capacity: None,
-        ensure_calls: Cell::new(0),
+        create_result: Ok(Some(created())),
+        create_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
-        storage: Ok(None),
     };
 
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
@@ -196,15 +156,13 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         machine_id: joiner.id,
         services: vec![stale.clone(), current],
         target_services: Some(vec![stale]),
-        capacity: Some(BridgeEndpointCapacity::new(10, 0)),
-        ensure_calls: Cell::new(0),
+        create_result: Ok(Some(created())),
+        create_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
-        storage: Ok(None),
     };
 
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
-    assert_eq!(client.ensure_calls.get(), 1);
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -228,15 +186,13 @@ async fn another_projects_matching_shape_does_not_satisfy_catch_up() {
         machine_id: joiner.id,
         services: vec![shop.clone(), prod],
         target_services: Some(vec![shop]),
-        capacity: Some(BridgeEndpointCapacity::new(10, 0)),
-        ensure_calls: Cell::new(0),
+        create_result: Ok(Some(created())),
+        create_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
-        storage: Ok(None),
     };
 
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
-    assert_eq!(client.ensure_calls.get(), 1);
     assert_eq!(error.unresolved, [qualified("prod", "api")]);
 }
 
@@ -244,9 +200,8 @@ struct FakeCatchUpClient {
     machine_id: MachineId,
     services: Vec<ServiceObservation>,
     target_services: Option<Vec<ServiceObservation>>,
-    capacity: Option<BridgeEndpointCapacity>,
-    storage: Result<Option<MachineStorageObservation>, &'static str>,
-    ensure_calls: Cell<usize>,
+    create_calls: Vec<CreateContainerRequest>,
+    create_result: Result<Option<ployz_core::ContainerCreated>, RpcError>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
 }
@@ -270,26 +225,27 @@ impl CatchUpClient for FakeCatchUpClient {
         })
     }
 
-    async fn target_storage(
-        &mut self,
-        _machine_id: &MachineId,
-    ) -> Result<Option<MachineStorageObservation>, Failure> {
-        self.storage.map_err(Failure::usage)
-    }
-
     async fn bridge_capacity(
         &mut self,
         _machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
-        Ok(self.capacity.clone())
+        panic!("orchestration delegates capacity checks to create_slot")
     }
 
-    async fn ensure_global_slot(
+    async fn create_slot(
         &mut self,
         _machine_id: &MachineId,
-        _request: EnsureGlobalSlotRequest,
+        request: CreateContainerRequest,
+    ) -> Result<Option<ployz_core::ContainerCreated>, RpcError> {
+        self.create_calls.push(request);
+        self.create_result.clone()
+    }
+
+    async fn start_slot(
+        &mut self,
+        _machine_id: &MachineId,
+        _container_id: ContainerId,
     ) -> Result<(), RpcError> {
-        self.ensure_calls.set(self.ensure_calls.get() + 1);
         Ok(())
     }
 
@@ -306,292 +262,6 @@ impl CatchUpClient for FakeCatchUpClient {
             .map(|container| container.as_observation().clone())
             .collect())
     }
-}
-
-#[test]
-fn two_joiners_each_plan_only_their_own_slot() {
-    let founder = machine('f', "founder");
-    let first = machine('1', "first");
-    let second = machine('2', "second");
-    let ingress = global_service(
-        QualifiedService::system_ingress(),
-        'c',
-        Placement::default(),
-        running_on(&founder, 'a'),
-    );
-
-    let first_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &first, None);
-    let second_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &second, None);
-
-    assert_eq!(identities(&first_slots), ["ployz-system/ingress"]);
-    assert_eq!(identities(&second_slots), ["ployz-system/ingress"]);
-    assert!(
-        first_slots
-            .iter()
-            .chain(second_slots.iter())
-            .all(|slot| slot.resolved_spec().service_id.as_str() == service_id('c').as_str())
-    );
-}
-
-#[test]
-fn add_machine_inherits_observed_caddy_ingress_spec() {
-    let founder = machine('f', "founder");
-    let joiner = machine('1', "joiner");
-    let slots = plan_global_catch_up(&[observed_caddy_ingress(&founder, 'c')], &joiner, None);
-    assert_eq!(slots.len(), 1);
-    assert_eq!(
-        slots.first().unwrap().resolved_spec().container.command,
-        ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-    );
-}
-
-#[test]
-fn constraints_excluding_this_joiner_plans_no_slot() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let services = [global_service(
-        qualified("app", "api"),
-        'a',
-        Placement {
-            constraints: [
-                PlacementConstraint::parse(format!("node.id == {}", founder.id)).unwrap(),
-            ]
-            .into(),
-        },
-        running_on(&founder, 'a'),
-    )];
-    assert!(plan_global_catch_up(&services, &joiner, None).is_empty());
-}
-
-#[test]
-fn constraints_including_this_joiner_plans_a_slot() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let services = [global_service(
-        qualified("app", "api"),
-        'a',
-        Placement {
-            constraints: [PlacementConstraint::parse(format!(
-                "node.id != {}",
-                machine('2', "other").id
-            ))
-            .unwrap()]
-            .into(),
-        },
-        running_on(&founder, 'a'),
-    )];
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None)),
-        ["app/api"]
-    );
-}
-
-#[test]
-fn catch_up_never_names_a_peer_machine() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let slots = plan_global_catch_up(
-        &[global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&founder, 'a'),
-        )],
-        &joiner,
-        None,
-    );
-    let spec = &slots
-        .first()
-        .expect("eligible Global must produce a slot")
-        .resolved_spec();
-    let encoded = serde_json::to_string(spec).unwrap();
-    assert!(
-        !encoded.contains(founder.id.as_str()),
-        "catch-up output must not target a peer Machine, got {encoded}"
-    );
-    assert_eq!(identities(&slots), ["app/api"]);
-}
-
-#[test]
-fn machine_add_places_user_globals_not_only_ingress() {
-    let added = machine('2', "edge");
-    let founder = machine('f', "founder");
-    let services = [
-        global_service(
-            QualifiedService::system_ingress(),
-            'c',
-            Placement::default(),
-            running_on(&founder, 'a'),
-        ),
-        global_service(
-            qualified("shop", "worker"),
-            'b',
-            Placement::default(),
-            running_on(&founder, 'b'),
-        ),
-    ];
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &added, None)),
-        ["ployz-system/ingress", "shop/worker"]
-    );
-}
-
-#[test]
-fn created_not_started_on_this_machine_is_still_a_slot() {
-    let joiner = machine('1', "joiner");
-    let services = [global_service(
-        qualified("app", "api"),
-        'a',
-        Placement::default(),
-        created_on(&joiner, 'a'),
-    )];
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None)),
-        ["app/api"]
-    );
-}
-
-#[test]
-fn running_on_this_machine_is_not_a_slot() {
-    let joiner = machine('1', "joiner");
-    let services = [global_service(
-        qualified("app", "api"),
-        'a',
-        Placement::default(),
-        running_on(&joiner, 'a'),
-    )];
-    assert!(plan_global_catch_up(&services, &joiner, None).is_empty());
-}
-
-#[test]
-fn replicated_services_are_not_catch_up_slots() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let mut spec = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    spec.name = ServiceName::parse("api").unwrap();
-    let services = [grouped(
-        qualified("app", "api"),
-        spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
-            .expect("volume graph is scoped"),
-        running_on(&founder, 'a'),
-    )];
-    assert!(plan_global_catch_up(&services, &joiner, None).is_empty());
-}
-
-#[tokio::test]
-async fn provisioned_globals_use_target_storage_and_report_unknown() {
-    let joiner = machine('1', "joiner");
-    let founder = machine('f', "founder");
-    let mut spec = requested(ServiceMode::Global);
-    let reference = ServiceVolumeReference::parse("data").unwrap();
-    spec.set_volume_graph(
-        ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference: reference.clone(),
-                source: ployz_core::RawVolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(100).unwrap(),
-                    ),
-                    labels: Default::default(),
-                }
-                .admit()
-                .expect("valid volume declaration"),
-            }],
-            vec![ServiceMount {
-                volume: reference,
-                target: ContainerPath::parse("/data").unwrap(),
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            }],
-        )
-        .unwrap()
-        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
-        .unwrap(),
-    )
-    .unwrap();
-    let service = grouped(
-        qualified("app", "api"),
-        spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
-            .expect("volume graph is scoped"),
-        running_on(&founder, 'a'),
-    );
-
-    for (storage, expected_calls, incomplete) in [
-        (Ok(Some(MachineStorageObservation::Ready)), 1, false),
-        (
-            Ok(Some(MachineStorageObservation::Pool {
-                size_bytes: NonZeroU64::new(100).unwrap(),
-                used_bytes: 0,
-                free_bytes: 100,
-            })),
-            1,
-            false,
-        ),
-        (Ok(Some(MachineStorageObservation::Stateless)), 0, false),
-        (Ok(None), 0, true),
-        (Err("storage inspection failed"), 0, true),
-    ] {
-        let local = grouped(
-            service.identity.clone(),
-            service.observed_global_slot_spec().unwrap().clone(),
-            running_on(&joiner, 'b'),
-        );
-        let stateless = global_service(
-            qualified("app", "worker"),
-            'c',
-            Placement::default(),
-            running_on(&founder, 'c'),
-        );
-        let local_stateless = global_service(
-            qualified("app", "worker"),
-            'c',
-            Placement::default(),
-            running_on(&joiner, 'd'),
-        );
-        let mut client = FakeCatchUpClient {
-            machine_id: joiner.id,
-            services: vec![service.clone(), stateless],
-            target_services: Some(vec![local, local_stateless]),
-            capacity: Some(BridgeEndpointCapacity::new(10, 0)),
-            storage,
-            ensure_calls: Cell::new(0),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        let result = catch_up_globals(&mut client, &joiner).await;
-        assert_eq!(client.ensure_calls.get(), expected_calls + 1);
-        assert_eq!(result.is_err(), incomplete);
-        if let Err(error) = result {
-            assert_eq!(error.unresolved, [qualified("app", "api")]);
-            let message = joined_catch_up_error(error);
-            assert!(message.contains("storage eligibility is unknown"));
-            if let Err(cause) = storage {
-                assert!(message.contains(cause));
-            }
-        }
-    }
-}
-
-fn observed_caddy_ingress(machine: &Machine, id: char) -> ServiceObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
-        .to_resolved(service_id(id), ResolvedUpdateConfig::default())
-        .expect("volume graph is scoped");
-    let mut container = running_on(machine, id);
-    container
-        .try_update(|parts| parts.created_at_unix_nanos = 1)
-        .unwrap();
-    grouped(QualifiedService::system_ingress(), spec, container)
-}
-
-fn identities(slots: &[ObservedGlobalSlotSpec]) -> Vec<String> {
-    slots
-        .iter()
-        .map(|slot| slot.identity().to_string())
-        .collect()
 }
 
 fn machine(hex: char, name: &str) -> Machine {
@@ -749,141 +419,77 @@ fn container_on(
     .unwrap()
 }
 
-#[tokio::test(start_paused = true)]
-async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() {
-    use ployz_core::{
-        ContainerCreated, InspectTelemetry, LocalMachinePhase, MachineDetails, OpaquePayload,
-        RpcRequestBody, RpcResponse,
-    };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use std::time::Duration;
-    use tonic::{Request, Response, Status};
-
-    for placement in [false, true] {
-        for failures in [1, 4] {
-            let target = machine('1', "joiner");
-            let observed = target.clone();
-            let calls = Arc::new(AtomicUsize::new(0));
-            let attempts = calls.clone();
-            let request = EnsureGlobalSlotRequest {
-                project_name: ProjectName::parse("app").unwrap(),
-                resolved_spec: requested(ServiceMode::Global)
-                    .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
-                    .unwrap(),
-            };
-            let expected = request.clone();
-            let (mut client, server) =
-                crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
-                    let target = observed.clone();
-                    let expected = expected.clone();
-                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                    async move {
-                        assert_eq!(
-                            rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).unwrap(),
-                            target.id.as_str()
-                        );
-                        #[expect(
-                            clippy::wildcard_enum_match_arm,
-                            reason = "fixture accepts only the two catch-up RPCs under test"
-                        )]
-                        let response = match rpc.into_inner().decode_request().unwrap().body {
-                            RpcRequestBody::Inspect(inspect) => {
-                                assert!(!placement);
-                                assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
-                                RpcResponse::from(MachineDetails {
-                                    id: target.id,
-                                    phase: LocalMachinePhase::Participating,
-                                    public_key: target.public_key,
-                                    advertised_endpoints: Vec::new(),
-                                    machine: Some(target),
-                                    store_version: Default::default(),
-                                    rtts: Vec::new(),
-                                    cloud_paired: false,
-                                    telemetry: None,
-                                    storage: None,
-                                })
-                            }
-                            RpcRequestBody::EnsureGlobalSlot(ensure) => {
-                                assert!(placement);
-                                assert_eq!(ensure, expected);
-                                RpcResponse::from(ContainerCreated {
-                                    container_id: container_id('a'),
-                                    display_name: "api".into(),
-                                })
-                            }
-                            other => panic!("unexpected catch-up RPC: {other:?}"),
-                        };
-                        if attempt < failures {
-                            Err(Status::unavailable("transient catch-up failure"))
-                        } else {
-                            Ok(Response::new(response.encode().unwrap()))
-                        }
-                    }
-                })
-                .await;
-            let started = tokio::time::Instant::now();
-            let succeeded = if placement {
-                CatchUpClient::ensure_global_slot(&mut client, &target.id, request)
-                    .await
-                    .is_ok()
-            } else {
-                CatchUpClient::bridge_capacity(&mut client, &target.id)
-                    .await
-                    .is_ok()
-            };
-            assert_eq!(succeeded, failures == 1);
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                if failures == 1 { 2 } else { 4 }
-            );
-            assert_eq!(
-                started.elapsed(),
-                if failures == 1 {
-                    Duration::from_millis(500)
-                } else {
-                    Duration::from_secs(6)
+fn provisioned_global_spec() -> RequestedServiceSpec {
+    let mut spec = requested(ServiceMode::Global);
+    let reference = ServiceVolumeReference::parse("data").unwrap();
+    spec.set_volume_graph(
+        ServiceVolumeGraph::parse(
+            vec![ServiceVolume {
+                reference: reference.clone(),
+                source: ployz_core::RawVolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("data").unwrap(),
+                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                        NonZeroU64::new(100).unwrap(),
+                    ),
+                    labels: Default::default(),
                 }
-            );
-            server.abort();
-        }
+                .admit()
+                .expect("valid volume declaration"),
+            }],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap()
+        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+        .unwrap(),
+    )
+    .unwrap();
+    spec
+}
+
+#[tokio::test]
+async fn failed_placement_is_reported_even_if_final_observation_is_running() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let mut client = FakeCatchUpClient {
+        machine_id: joiner.id,
+        services: vec![global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        )],
+        target_services: Some(vec![global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'b'),
+        )]),
+
+        create_calls: Vec::new(),
+        create_result: Err(RpcError {
+            code: ployz_core::RpcErrorCode::Conflict,
+            message: "creation key conflict".into(),
+            details: serde_json::Value::Null,
+        }),
+        failures: Vec::new(),
+        omissions: Vec::new(),
+    };
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    assert!(joined_catch_up_error(error).contains("creation key conflict"));
+}
+
+fn created() -> ployz_core::ContainerCreated {
+    ployz_core::ContainerCreated {
+        container_id: container_id('a'),
+        display_name: "api".into(),
     }
 }
 
-#[test]
-fn joiner_evaluates_stored_labels_and_independent_acceptance() {
-    let founder = machine('f', "founder");
-    let mut joiner = machine('1', "joiner");
-    let services = [
-        observed_caddy_ingress(&founder, 'c'),
-        global_service(
-            qualified("app", "api"),
-            'a',
-            Placement {
-                constraints: [PlacementConstraint::parse("node.labels.tier == runtime").unwrap()]
-                    .into(),
-            },
-            running_on(&founder, 'a'),
-        ),
-    ];
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None)),
-        ["ployz-system/ingress"]
-    );
-    joiner
-        .labels
-        .insert("tier".parse().unwrap(), "RUNTIME".parse().unwrap());
-    joiner.accepts_ingress = false;
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None)),
-        ["app/api"]
-    );
-    joiner.accepts_services = false;
-    joiner.accepts_ingress = true;
-    assert_eq!(
-        identities(&plan_global_catch_up(&services, &joiner, None)),
-        ["ployz-system/ingress"]
-    );
-}
+#[path = "global_catch_up_rpc_tests.rs"]
+mod rpc_tests;

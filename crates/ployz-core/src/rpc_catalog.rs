@@ -53,7 +53,6 @@ macro_rules! rpc_catalog {
                 InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container),
                 GetContainerObservations: (get_container_observations, "GetContainerObservations", GetContainerObservationsRequest, "get_container_observations", ContainerObservationMap, GET_CONTAINER_OBSERVATIONS_CAPABILITY, "ployz.container.observations.v1", Cluster),
                 CreateContainer: (create_container, "CreateContainer", CreateContainerRequest, "create_container", ContainerCreated, CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1", Container),
-                EnsureGlobalSlot: (ensure_global_slot, "EnsureGlobalSlot", EnsureGlobalSlotRequest, "ensure_global_slot", ContainerCreated, ENSURE_GLOBAL_SLOT_CAPABILITY, "ployz.container.ensure-global-slot.v1", Container),
                 StartContainer: (start_container, "StartContainer", StartContainerRequest, "start_container", ContainerChanged, START_CONTAINER_CAPABILITY, "ployz.container.start.v1", Container),
                 StopContainer: (stop_container, "StopContainer", StopContainerRequest, "stop_container", ContainerChanged, STOP_CONTAINER_CAPABILITY, "ployz.container.stop.v1", Container),
                 RemoveContainer: (remove_container, "RemoveContainer", RemoveContainerRequest, "remove_container", ContainerChanged, REMOVE_CONTAINER_CAPABILITY, "ployz.container.remove.v1", Container),

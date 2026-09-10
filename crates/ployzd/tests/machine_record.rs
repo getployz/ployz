@@ -134,7 +134,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         accepts_builds: true,
         accepts_services: true,
         accepts_ingress: true,
-        id: MachineId::random(),
+        id: second.record().id(),
         name: MachineName::parse("second").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
         public_key,
@@ -306,7 +306,7 @@ async fn join_with_cloud_pairing_stores_the_same_two_fields() {
         accepts_builds: true,
         accepts_services: true,
         accepts_ingress: true,
-        id: MachineId::random(),
+        id: store.record().id(),
         name: MachineName::parse("second").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
         public_key,
@@ -892,7 +892,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
     let dir = TestDir::new("ployzd-empty-join-endpoints");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     let original = store.record().clone();
-    let mut assigned = sample_machine(MachineId::random(), original.private_key().public_key());
+    let mut assigned = sample_machine(original.id(), original.private_key().public_key());
     let peer = sample_machine(
         MachineId::random(),
         WireGuardPrivateKey::generate().public_key(),
@@ -938,4 +938,58 @@ fn data_directory_errors_preserve_non_utf8_bytes() {
         );
         assert!(!error.contains('\u{fffd}'), "{error}");
     }
+}
+
+#[tokio::test]
+async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_response() {
+    let dir = TestDir::new("ployzd-join-replay");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let id = store.record().id();
+    let assigned = sample_machine(id, store.record().private_key().public_key());
+    let peer = sample_machine(
+        MachineId::random(),
+        WireGuardPrivateKey::generate().public_key(),
+    );
+    let request = JoinRequest {
+        registration: Registered {
+            assigned_machine: assigned,
+            visible_peers: vec![peer],
+            target_versions: BTreeMap::from([("actor".into(), 4)]),
+        },
+        wireguard_mtu: Some(1380),
+        cloud_pairing: Some(sample_cloud_pairing()),
+    };
+    let (restart, mut restart_observation) = tokio::sync::watch::channel(false);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), restart);
+    for wrong_id in [true, false] {
+        let mut invalid = request.clone();
+        if wrong_id {
+            invalid.registration.assigned_machine.id = MachineId::random();
+        } else {
+            invalid.registration.assigned_machine.public_key =
+                WireGuardPrivateKey::generate().public_key();
+        }
+        assert!(local.join(invalid).await.is_err());
+        assert_eq!(
+            local.record().unwrap().phase(),
+            LocalMachinePhase::Uninitialized
+        );
+        assert_eq!(local.record().unwrap().id(), id);
+    }
+    assert!(!local.join(request.clone()).await.unwrap().already_accepted);
+    assert!(*restart_observation.borrow_and_update());
+    assert!(local.join(request.clone()).await.unwrap().already_accepted);
+    assert!(!restart_observation.has_changed().unwrap());
+    drop(local);
+    let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
+    reopened.complete_catch_up().unwrap();
+    let local = LocalMachine::new(
+        Arc::new(Mutex::new(reopened)),
+        tokio::sync::watch::channel(false).0,
+    );
+    assert!(local.join(request.clone()).await.unwrap().already_accepted);
+    let mut conflict = request;
+    conflict.wireguard_mtu = None;
+    assert!(local.join(conflict).await.is_err());
+    assert_eq!(local.record().unwrap().id(), id);
 }

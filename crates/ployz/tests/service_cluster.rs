@@ -34,6 +34,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerKind::ServiceContainer,
             ProjectName::parse("app").unwrap(),
             first.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -43,6 +44,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerKind::ServiceContainer,
             ProjectName::parse("app").unwrap(),
             second.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -52,6 +54,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerKind::PreDeployHook,
             ProjectName::parse("app").unwrap(),
             first.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -61,6 +64,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerKind::PreDeployHook,
             ProjectName::parse("app").unwrap(),
             second.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -93,6 +97,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerKind::ServiceContainer,
             ProjectName::parse("shop-staging").unwrap(),
             spec(&collision_id, "shared", "collision"),
+            None,
         )
         .await
         .unwrap();
@@ -223,6 +228,7 @@ async fn assert_l3_061_default_spec(
             ContainerKind::ServiceContainer,
             ProjectName::parse("app").unwrap(),
             spec.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -309,6 +315,7 @@ async fn assert_l3_062_full_spec(
             ContainerKind::ServiceContainer,
             ProjectName::parse("app").unwrap(),
             spec.clone(),
+            None,
         )
         .await
         .unwrap();

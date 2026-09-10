@@ -2,6 +2,7 @@ import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 import {
   machineEnrollmentToken,
+  enrollmentAllocation,
   organizationMachine,
   organizationPairing,
 } from "#/db/schema";
@@ -22,6 +23,14 @@ function columnName<T>(column: T) {
 }
 
 describe("organization machine enrollment invariants", () => {
+  it("scopes allocation history to organization and Cluster generation", () => {
+    const table = getTableConfig(enrollmentAllocation);
+    expect(table.primaryKeys[0]?.columns.map(columnName)).toEqual(["organization_id", "cluster_key"]);
+    expect(table.checks.map((check) => check.name)).toEqual([
+      "enrollment_allocation_cluster_key_check", "enrollment_allocation_assignments_check",
+    ]);
+  });
+
   it("keeps token persistence authorization-only", () => {
     const columns = getTableConfig(machineEnrollmentToken).columns.map(
       columnName,

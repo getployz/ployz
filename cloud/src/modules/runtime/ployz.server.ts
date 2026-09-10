@@ -2,6 +2,8 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type {
   Client,
+  EnrollmentAssignment,
+  EnrollmentSnapshot,
   ClusterTeardown,
   ConnectOptions,
   DataLossConfirmation,
@@ -14,7 +16,6 @@ import type {
   ObservedDataLoss,
   PreparedDeploy,
   ProjectName,
-  RegisterRequest,
   RemoveVolumesRequest,
   RuntimeWatchView,
   WatchOptions,
@@ -32,11 +33,12 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 const {
   connect: connectSdk,
   listHeld,
-  register: registerSdk,
   revokePairing,
+  observeEnrollment,
+  publishEnrollment,
 } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
   typeof PloyzSdk,
-  "connect" | "listHeld" | "register" | "revokePairing"
+  "connect" | "listHeld" | "revokePairing" | "observeEnrollment" | "publishEnrollment"
 >;
 
 export class PloyzProviderError extends Data.TaggedError(
@@ -93,19 +95,14 @@ export interface PloyzSession {
 }
 
 type PloyzBindings = {
+  readonly observeEnrollment?: typeof PloyzSdk.observeEnrollment;
+  readonly publishEnrollment?: typeof PloyzSdk.publishEnrollment;
   readonly connect: (options: ConnectOptions) => Promise<Client>;
   readonly listHeld?: (
     relayUrl: string,
     bearer: string,
     pairing: string,
   ) => Promise<HeldRegister[]>;
-  readonly register?: (
-    relayUrl: string,
-    bearer: string,
-    pairing: string,
-    machineId: MachineId,
-    identity: RegisterRequest,
-  ) => Promise<object>;
   readonly revokePairing?: (
     relayUrl: string,
     bearer: string,
@@ -114,6 +111,14 @@ type PloyzBindings = {
 };
 
 export interface PloyzService {
+  readonly observeEnrollment: (
+    relayUrl: string, bearer: string, pairing: string, machineId: MachineId,
+  ) => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
+  readonly publishEnrollment: (
+    relayUrl: string, bearer: string, pairing: string,
+    machineId: MachineId, assignment: EnrollmentAssignment,
+  ) => Effect.Effect<JsonValue, PloyzProviderError>;
+
   readonly connect: (
     options: ConnectOptions,
   ) => Effect.Effect<PloyzSession, PloyzProviderError, Scope.Scope>;
@@ -127,13 +132,6 @@ export interface PloyzService {
     bearer: string,
     pairing: string,
   ) => Effect.Effect<void, PloyzProviderError>;
-  readonly registerHeldMachine: (
-    relayUrl: string,
-    bearer: string,
-    pairing: string,
-    machineId: string,
-    identity: RegisterRequest,
-  ) => Effect.Effect<JsonValue, PloyzProviderError>;
 }
 
 export class Ployz extends Context.Service<Ployz, PloyzService>()(
@@ -268,9 +266,22 @@ function closeSession(session: Client) {
 
 export function makePloyzLayer(bindings: PloyzBindings) {
   const held = bindings.listHeld ?? listHeld;
-  const register = bindings.register ?? registerSdk;
   const revoke = bindings.revokePairing ?? revokePairing;
   return Layer.succeed(Ployz, {
+    observeEnrollment: (relayUrl, bearer, pairing, machineId) => Effect.tryPromise({
+      try: () => (bindings.observeEnrollment ?? observeEnrollment)(relayUrl, bearer, pairing, machineId),
+      catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),
+    }),
+    publishEnrollment: (relayUrl, bearer, pairing, machineId, assignment) => Effect.tryPromise({
+      try: async () => {
+        const registered = await (bindings.publishEnrollment ?? publishEnrollment)(relayUrl, bearer, pairing, machineId, assignment);
+        const json = projectJsonValue(registered);
+        if (json === undefined) throw new Error("Invalid registration response");
+        return json;
+      },
+      catch: (cause) => new PloyzProviderError({ operation: "publish enrollment", cause }),
+    }),
+
     connect: (options) =>
       Effect.acquireRelease(
         Effect.tryPromise({
@@ -292,39 +303,11 @@ export function makePloyzLayer(bindings: PloyzBindings) {
         catch: (cause) =>
           new PloyzProviderError({ operation: "revoke relay pairing", cause }),
       }),
-    registerHeldMachine: (relayUrl, bearer, pairing, machineId, identity) =>
-      Effect.gen(function* () {
-        const registered = yield* Effect.tryPromise({
-          try: () =>
-            register(
-              relayUrl,
-              bearer,
-              pairing,
-              // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
-              machineId as MachineId,
-              identity,
-            ),
-          catch: (cause) =>
-            new PloyzProviderError({
-              operation: "register held machine",
-              cause,
-            }),
-        });
-        const registration = projectJsonValue(registered);
-        if (registration === undefined) {
-          return yield* new PloyzProviderError({
-            operation: "decode held machine registration",
-            cause: new Error("held Register returned a non-JSON payload"),
-          });
-        }
-        return registration;
-      }),
   });
 }
 
 export const PloyzLive = makePloyzLayer({
   connect: connectSdk,
   listHeld,
-  register: registerSdk,
   revokePairing,
 });

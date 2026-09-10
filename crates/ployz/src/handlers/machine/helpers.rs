@@ -342,6 +342,7 @@ mod tests {
 
     fn token_with_hostname(hostname: &str) -> MachineToken {
         MachineToken {
+            id: ployz_core::MachineId::random(),
             public_key: ployz_core::WireGuardPublicKey([0; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

@@ -241,6 +241,12 @@ pub struct InitializeRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
+    /// Durable identity of the joining Machine.
+    pub machine_id: MachineId,
+    /// Client-selected subnet, required for Register publication.
+    /// Allocation policy callers omit it before selecting an assignment.
+    #[serde(default)]
+    pub assigned_subnet: Option<crate::MachineSubnet>,
     /// Complete policy committed in the first Machine assignment, before participation.
     pub initial_policy: crate::InitialMachinePolicy,
     pub name: MachineName,
@@ -288,13 +294,10 @@ pub struct GetContainerObservationsRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateContainerRequest {
+    /// Retry identity for a currently existing creation, scoped to Machine, Project, and kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_key: Option<String>,
     pub kind: ContainerKind,
-    pub project_name: ProjectName,
-    pub resolved_spec: ResolvedServiceSpec,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct EnsureGlobalSlotRequest {
     pub project_name: ProjectName,
     pub resolved_spec: ResolvedServiceSpec,
 }
@@ -692,10 +695,17 @@ pub struct Registered {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct JoinAccepted {}
+pub struct JoinAccepted {
+    /// The matching assignment was already durably accepted; no restart requested.
+    #[serde(default)]
+    pub already_accepted: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineList {
+    /// Enrollment facts observed by this Entry Machine.
+    #[serde(default)]
+    pub enrollment: Option<crate::EnrollmentSnapshot>,
     pub machines: Vec<MachineObservation>,
 }
 

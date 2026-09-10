@@ -10,12 +10,11 @@ use std::{
 use ployz_core::{
     CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerList, ContainerObservationMap,
     ContractDescription, Domain, DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata,
-    LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::{sync::watch, time::Instant};
-use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -27,9 +26,6 @@ use crate::{
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
 
-/// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
-/// admits locally and does not forward again.
-pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded";
 const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -39,8 +35,6 @@ pub struct MachineService {
     ingress_data_dir: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
-    #[cfg(test)]
-    allocator_endpoint: Option<(MachineId, std::net::SocketAddr)>,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     runtime_watch: Arc<RuntimeWatch>,
     pub(crate) builds: Arc<crate::build::Runner>,
@@ -59,8 +53,6 @@ impl MachineService {
             ingress_data_dir: None,
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
-            #[cfg(test)]
-            allocator_endpoint: None,
             cloud_pairing: None,
             runtime_watch: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
@@ -122,17 +114,6 @@ impl MachineService {
         self
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn with_allocator_endpoint(
-        mut self,
-        machine: MachineId,
-        address: std::net::SocketAddr,
-    ) -> Self {
-        self.allocator_endpoint = Some((machine, address));
-        self
-    }
-
     pub(super) fn machine_api_port(&self) -> u16 {
         self.machine_api_port
     }
@@ -166,87 +147,6 @@ impl MachineService {
         self.local
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
-    }
-
-    async fn forward_register(
-        &self,
-        payload: OpaquePayload,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let replicated = match self.local.replicated() {
-            Ok(store) => store,
-            Err(error) => return local_error(error),
-        };
-        let first = match replicated.allocator().await {
-            Ok(Some(row)) => row.machine_id,
-            Ok(None) => return local_error(LocalMachineError::NotAllocator),
-            Err(error) => return local_error(error.into()),
-        };
-        if let Some(response) = self.dial_allocator(first, payload.clone()).await? {
-            return Ok(response);
-        }
-        let named = match replicated.allocator().await {
-            Ok(row) => row.map(|row| row.machine_id),
-            Err(error) => return local_error(error.into()),
-        };
-        if named != Some(first)
-            && let Some(allocator) = named
-            && let Some(response) = self.dial_allocator(allocator, payload).await?
-        {
-            return Ok(response);
-        }
-        let me = match self.local_record() {
-            Ok(record) => record.id(),
-            Err(error) => return Err(error),
-        };
-        match self.local.isolation_locked().await {
-            Ok(true) => return local_error(LocalMachineError::IsolationLocked),
-            Ok(false) => {}
-            Err(error) => return local_error(error),
-        }
-        match replicated.steal_allocator(&me).await {
-            Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
-            Err(error) => local_error(error.into()),
-        }
-    }
-
-    async fn dial_allocator(
-        &self,
-        allocator: MachineId,
-        payload: OpaquePayload,
-    ) -> Result<Option<Response<OpaquePayload>>, Status> {
-        let replicated = match self.local.replicated() {
-            Ok(store) => store,
-            Err(error) => return local_error(error).map(Some),
-        };
-        let Some(target) = (match replicated.machine(allocator.as_str()).await {
-            Ok(machine) => machine,
-            Err(error) => return local_error(error.into()).map(Some),
-        }) else {
-            return Ok(None);
-        };
-        let address =
-            std::net::SocketAddr::new(target.management_address().0.into(), self.machine_api_port);
-        #[cfg(test)]
-        let address = self
-            .allocator_endpoint
-            .filter(|(id, _)| *id == target.id)
-            .map_or(address, |(_, address)| address);
-        let endpoint = Endpoint::from_shared(format!("http://{address}"))
-            .map_err(|error| Status::internal(error.to_string()))?
-            .connect_timeout(Duration::from_secs(10));
-        let mut client = MachineRpcClient::new(match endpoint.connect().await {
-            Ok(channel) => channel,
-            Err(_) => return Ok(None),
-        });
-        let mut outbound = Request::new(payload);
-        outbound.metadata_mut().insert(
-            REGISTER_FORWARDED_METADATA,
-            "1".parse().expect("ASCII metadata"),
-        );
-        match client.register(outbound).await {
-            Ok(response) => Ok(Some(response)),
-            Err(_) => Ok(None),
-        }
     }
 }
 
@@ -316,22 +216,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let forwarded = request
-            .metadata()
-            .get(REGISTER_FORWARDED_METADATA)
-            .is_some();
-        let payload = request.into_inner();
-        let decoded = op::Register::from_request_body(
-            payload.decode_request().map_err(invalid_request)?.body,
-        )
-        .map_err(invalid_request)?;
-        if forwarded {
-            return finish(self.local.register(decoded).await);
-        }
-        match self.local.register(decoded).await {
-            Err(LocalMachineError::NotAllocator) => self.forward_register(payload).await,
-            other => finish(other),
-        }
+        finish(self.local.register(expect::<op::Register>(request)?).await)
     }
 
     async fn join(
@@ -435,22 +320,14 @@ impl MachineRpc for MachineService {
         let request = expect::<op::CreateContainer>(request)?;
         finish(
             self.local
-                .create_container(request.kind, &request.project_name, &request.resolved_spec)
+                .create_container(
+                    request.kind,
+                    &request.project_name,
+                    &request.resolved_spec,
+                    request.creation_key,
+                )
                 .await,
         )
-    }
-
-    async fn ensure_global_slot(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::EnsureGlobalSlot>(request)?;
-        let result = self
-            .local
-            .converge_global_slot(&request.project_name, &request.resolved_spec)
-            .await
-            .and_then(|outcome| outcome.into_container().map_err(Into::into));
-        finish(result)
     }
 
     async fn start_container(
@@ -916,9 +793,12 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::KeyAlreadyNamed
-        | LocalMachineError::NameTaken
-        | LocalMachineError::InitialPolicyMismatch => respond(RpcError {
+        LocalMachineError::MissingAssignment => respond(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: Value::Null,
+        }),
+        LocalMachineError::Enrollment(error) => respond(RpcError {
             code: RpcErrorCode::Conflict,
             message: error.to_string(),
             details: Value::Null,
@@ -946,9 +826,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message,
             details: Value::Null,
         }),
-        LocalMachineError::AllocatorNotQuiet
-        | LocalMachineError::NotAllocator
-        | LocalMachineError::IsolationLocked => respond(unavailable(&error.to_string())),
+        LocalMachineError::IsolationLocked => respond(unavailable(&error.to_string())),
         LocalMachineError::Admission(crate::mutation::Error::Busy) => respond(RpcError {
             code: RpcErrorCode::Conflict,
             message: "a Ployz installation or upgrade is active".into(),
@@ -1063,6 +941,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::AlreadyRunning(_) => RpcErrorCode::Conflict,
         StoreError::MissingEndpoints
         | StoreError::MissingPeers
+        | StoreError::IdentityMismatch
         | StoreError::KeyMismatch
         | StoreError::InvalidNetwork(_) => RpcErrorCode::InvalidArgument,
         StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {

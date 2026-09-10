@@ -210,6 +210,34 @@ used_bytes: number, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
+export type EnrollmentAssignment = {
+/**
+ * Retry identity inputs, excluding assigned subnet and runtime observations.
+ */
+request: RegisterRequest,
+/**
+ * IPv4 pool from the observed Cluster configuration.
+ */
+network: string,
+/**
+ * Durable Machine identity and selected subnet to publish.
+ */
+machine: Machine, };
+
+export type EnrollmentSnapshot = {
+/**
+ * IPv4 pool from the observed Cluster configuration.
+ */
+network: string,
+/**
+ * Observed Machines; absence does not prove an assignment is free.
+ */
+machines: Array<Machine>,
+/**
+ * Entry Machine store versions to carry into publication and Join.
+ */
+target_versions: { [key in string]: number }, };
+
 export type EnvSource = { kind: 'variable_group', resourceId: string, resourceName: string, variableGroupId: string, key: string, };
 
 export type EnvironmentNodeType = "service" | "variable_group" | "volume";
@@ -449,6 +477,15 @@ export type PullPolicy = "always" | "missing" | "never";
 export type QualifiedService = string;
 
 export type RegisterRequest = {
+/**
+ * Durable identity of the joining Machine.
+ */
+machine_id: MachineId,
+/**
+ * Client-selected subnet, required for Register publication.
+ * Allocation policy callers omit it before selecting an assignment.
+ */
+assigned_subnet: MachineSubnet | null,
 /**
  * Complete policy committed in the first Machine assignment, before participation.
  */

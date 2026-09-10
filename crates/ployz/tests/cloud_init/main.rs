@@ -1216,7 +1216,10 @@ async fn join_starts_created_ingress_before_success() {
     .await;
     let mut created = ingress_on(&joiner);
     created
-        .try_update(|parts| parts.runtime = ployz_core::ContainerRuntimeObservation::Created)
+        .try_update(|parts| {
+            parts.container_id = ployz_core::ContainerId::parse("b".repeat(64)).unwrap();
+            parts.runtime = ployz_core::ContainerRuntimeObservation::Created;
+        })
         .unwrap();
     let daemon = JoinDaemon::new(registration).with_containers(vec![ingress_on(&founder), created]);
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -1243,10 +1246,17 @@ async fn join_starts_created_ingress_before_success() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(
-        ensure_names(&daemon.ensure_requests()),
-        [("ployz-system", "ingress")]
+    assert!(
+        daemon.ensure_requests().is_empty(),
+        "an exact existing creation only needs Start"
     );
+    assert!(daemon.containers().iter().any(|container| {
+        container.container_id.as_str() == "b".repeat(64)
+            && matches!(
+                container.runtime,
+                ployz_core::ContainerRuntimeObservation::Running { .. }
+            )
+    }));
 }
 
 #[tokio::test]
@@ -1270,7 +1280,7 @@ async fn two_concurrent_joins_each_ensure_ingress_locally() {
 
 async fn join_against_founder(
     founder: &ployz_core::Machine,
-) -> Vec<ployz_core::EnsureGlobalSlotRequest> {
+) -> Vec<ployz_core::CreateContainerRequest> {
     let mut registration = registration();
     registration.assigned_machine.id = ployz_core::MachineId::random();
     registration.visible_peers = vec![founder.clone()];
@@ -1311,7 +1321,7 @@ async fn join_against_founder(
     daemon.ensure_requests()
 }
 
-fn ensure_names(requests: &[ployz_core::EnsureGlobalSlotRequest]) -> Vec<(&str, &str)> {
+fn ensure_names(requests: &[ployz_core::CreateContainerRequest]) -> Vec<(&str, &str)> {
     requests
         .iter()
         .map(|request| {

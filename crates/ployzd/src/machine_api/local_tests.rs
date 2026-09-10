@@ -1,8 +1,8 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, hosted_dns_error, ingress_config_missing, local_error, store_error};
+use super::{MachineService, hosted_dns_error, ingress_config_missing, store_error};
 use crate::corrosion::{AdminClient, fake_cluster};
-use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
+use crate::machine::{LocalMachineStore, StoreError};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
@@ -85,21 +85,6 @@ fn missing_ingress_config_names_its_path_in_details() {
     let error = ingress_config_missing(std::path::Path::new(path));
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details.get("path"), Some(&serde_json::json!(path)));
-}
-
-#[test]
-fn allocator_not_quiet_is_retryable_unavailable() {
-    let RpcResponseBody::Error(error) = local_error(LocalMachineError::AllocatorNotQuiet)
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .body
-    else {
-        panic!("expected error payload");
-    };
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "Allocator is not quiet");
 }
 
 #[tokio::test]
@@ -193,21 +178,6 @@ async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
 
     drop(service);
     std::fs::remove_dir_all(data_dir).unwrap();
-}
-
-#[test]
-fn not_allocator_does_not_allocate() {
-    let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotAllocator)
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .body
-    else {
-        panic!("expected error payload");
-    };
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "this Machine is not the Allocator");
 }
 
 #[tokio::test]
@@ -509,4 +479,215 @@ async fn runtime_watch_without_a_cluster_store_is_unavailable() {
         .expect("Watch without a Cluster store must fail");
     assert_eq!(error.code(), Code::Unavailable);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
+    use crate::docker::test_support::{FakeDocker, fake_runtime_with};
+    use ployz_core::{CreateContainerRequest, InitializeRequest, MachineName};
+    use serde_json::json;
+    let data_dir = std::env::temp_dir().join(format!("ployzd-keyed-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .initialize(InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("local").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                "192.0.2.1:51820".parse().unwrap(),
+            )],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
+        .unwrap();
+    let store = Arc::new(Mutex::new(store));
+    let containers = Arc::new(Mutex::new(BTreeMap::new()));
+    let (runtime, fake) = fake_runtime_with(FakeDocker {
+        named_containers: Some(containers.clone()),
+        ..Default::default()
+    })
+    .await;
+    let service = MachineService::with_cluster(store.clone(), watch::channel(false).0, None)
+        .with_optional_containers(Some(runtime));
+    let request = CreateContainerRequest {
+        creation_key: Some("retry/1".into()),
+        kind: ContainerKind::ServiceContainer,
+        project_name: ProjectName::parse("app").unwrap(),
+        resolved_spec: serde_json::from_value(json!({
+            "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
+            "mode":{"mode":"replicated", "replicas":1},
+            "container":{"image":"example.test/api", "pull_policy":"missing"},
+            "pre_deploy":{"command":["true"]}
+        }))
+        .unwrap(),
+    };
+    async fn create(
+        service: &MachineService,
+        request: CreateContainerRequest,
+    ) -> Result<ployz_core::ContainerCreated, ployz_core::RpcError> {
+        let response = service
+            .create_container(Request::new(
+                op::CreateContainer::into_request(request).encode().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        if let RpcResponseBody::Error(error) = response.body {
+            return Err(error);
+        }
+        Ok(response.decode::<op::CreateContainer>().unwrap())
+    }
+    let (first, simultaneous) = tokio::join!(
+        create(&service, request.clone()),
+        create(&service, request.clone())
+    );
+    let first = first.unwrap();
+    assert_eq!(first, simultaneous.unwrap());
+    assert_eq!(first, create(&service, request.clone()).await.unwrap());
+    assert_eq!(containers.lock().unwrap().len(), 1);
+    let original = containers.lock().unwrap().clone();
+    let mut mismatch = request.clone();
+    mismatch.resolved_spec.mode = ployz_core::ServiceMode::Replicated {
+        replicas: 2.try_into().unwrap(),
+    };
+    assert_eq!(
+        mismatch.resolved_spec.serving_shape(),
+        request.resolved_spec.serving_shape()
+    );
+    assert_eq!(
+        create(&service, mismatch).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    let mut mismatch = request.clone();
+    mismatch.resolved_spec.service_id =
+        ServiceId::parse(format!("{}{}", "a".repeat(8), "b".repeat(24))).unwrap();
+    assert_eq!(
+        create(&service, mismatch).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(*containers.lock().unwrap(), original);
+    let mut other_project = request.clone();
+    other_project.project_name = ProjectName::parse("other").unwrap();
+    let mut hook = request.clone();
+    hook.kind = ContainerKind::PreDeployHook;
+    let mut unkeyed = request.clone();
+    unkeyed.creation_key = None;
+    for independent in [other_project, hook, unkeyed.clone(), unkeyed] {
+        let count = containers.lock().unwrap().len();
+        assert_ne!(
+            first.container_id,
+            create(&service, independent).await.unwrap().container_id
+        );
+        assert_eq!(containers.lock().unwrap().len(), count + 1);
+    }
+    let mut contender = request.clone();
+    contender.creation_key = Some("contended".into());
+    let mut incompatible = contender.clone();
+    incompatible.resolved_spec.container.image = "example.test/other".into();
+    let (left, right) = tokio::join!(
+        create(&service, contender.clone()),
+        create(&service, incompatible.clone())
+    );
+    let (winner, loser, retry) = match (left, right) {
+        (Ok(winner), Err(loser)) => (winner, loser, contender),
+        (Err(loser), Ok(winner)) => (winner, loser, incompatible),
+        other => panic!("one conflicting creation must win: {other:?}"),
+    };
+    assert_eq!(loser.code, RpcErrorCode::Conflict);
+    assert_eq!(winner, create(&service, retry).await.unwrap());
+    store
+        .lock()
+        .unwrap()
+        .update(
+            serde_json::from_value(json!({"accepts_services":false})).unwrap(),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(first, create(&service, request.clone()).await.unwrap());
+    let mut new_request = request.clone();
+    new_request.creation_key = Some("new".into());
+    assert_eq!(
+        create(&service, new_request).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    service
+        .remove_container(Request::new(
+            op::RemoveContainer::into_request(ployz_core::RemoveContainerRequest {
+                container_id: first.container_id,
+                remove_volumes: false,
+                force: false,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::RemoveContainer>()
+        .unwrap();
+    assert_eq!(
+        create(&service, request.clone()).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    store
+        .lock()
+        .unwrap()
+        .update(
+            serde_json::from_value(json!({"accepts_services":true})).unwrap(),
+            &[],
+        )
+        .unwrap();
+    assert_ne!(
+        first.container_id,
+        create(&service, request.clone())
+            .await
+            .unwrap()
+            .container_id
+    );
+    let mut unsafe_request = request.clone();
+    unsafe_request.creation_key = Some("unsafe".into());
+    unsafe_request.resolved_spec.placement = ployz_core::Placement {
+        constraints: ["node.labels.target==other".parse().unwrap()].into(),
+    };
+    assert_eq!(
+        create(&service, unsafe_request).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    for source in [
+        crate::docker::test_support::ordinary_source("unsafe"),
+        crate::docker::test_support::provisioned_source("bounded", 1_073_741_824),
+    ] {
+        let mut unsafe_request = request.clone();
+        unsafe_request.creation_key = Some("unsafe-storage".into());
+        unsafe_request.resolved_spec = crate::docker::test_support::spec_with_sources(vec![source]);
+        fake.volumes.lock().unwrap().insert(
+            "app_unsafe".into(),
+            json!({"Name":"app_unsafe", "Driver":"local", "Mountpoint":"/volumes/app_unsafe"}),
+        );
+        fake.volumes.lock().unwrap().insert(
+            "app_bounded".into(),
+            json!({"Name":"app_bounded", "Driver":"local", "Mountpoint":"/volumes/app_bounded"}),
+        );
+        let error = create(&service, unsafe_request).await.unwrap_err();
+        assert!(
+            matches!(
+                error.code,
+                RpcErrorCode::Conflict | RpcErrorCode::Unavailable | RpcErrorCode::Unsupported
+            ),
+            "{error}"
+        );
+    }
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, path)| !path.ends_with("/start") && !path.ends_with("/stop"))
+    );
+    std::fs::remove_dir_all(data_dir).unwrap();
 }

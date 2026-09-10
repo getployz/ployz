@@ -39,11 +39,11 @@ fn with_faults(daemon: JoinDaemon, target: Fault, ensure: Fault) -> JoinDaemon {
 async fn cloud_join_retries_target_readiness_and_reports_failure() {
     let (recovered, daemon) = cloud_join(Fault::Transient, Fault::Healthy).await;
     assert!(recovered.status.success());
-    assert_eq!(daemon.target_inspect_attempts(), 2);
+    assert_eq!(daemon.target_inspect_attempts(), 5);
 
     let (failed, daemon) = cloud_join(Fault::Permanent, Fault::Healthy).await;
     assert!(!failed.status.success());
-    assert_eq!(daemon.target_inspect_attempts(), 1);
+    assert_eq!(daemon.target_inspect_attempts(), 2);
     assert_eq!(daemon.ensure_attempts(), 0);
     assert_joined_with_incomplete_catch_up(&failed);
     daemon.join_request();
@@ -53,12 +53,12 @@ async fn cloud_join_retries_target_readiness_and_reports_failure() {
 async fn machine_add_retries_target_readiness_and_reports_failure() {
     let (recovered, entry, target) = machine_add(Fault::Transient, Fault::Healthy).await;
     assert!(recovered.status.success());
-    assert_eq!(entry.target_inspect_attempts(), 2);
+    assert_eq!(entry.target_inspect_attempts(), 5);
     target.join_request();
 
     let (failed, entry, target) = machine_add(Fault::Permanent, Fault::Healthy).await;
     assert!(!failed.status.success());
-    assert_eq!(entry.target_inspect_attempts(), 1);
+    assert_eq!(entry.target_inspect_attempts(), 2);
     assert_eq!(entry.ensure_attempts(), 0);
     assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Machine joiner"));
     assert_joined_with_incomplete_catch_up(&failed);

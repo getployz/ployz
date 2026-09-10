@@ -15,3 +15,7 @@ export const applyOne = fail;
 export const packageName = fail;
 export const Client = fail;
 export const RpcError = fail;
+
+export const allocateEnrollment = fail;
+export const observeEnrollment = fail;
+export const publishEnrollment = fail;

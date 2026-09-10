@@ -10,12 +10,11 @@ use std::{
 use ployz_core::{
     CloudPairing, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
     LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineList, MachineName, MachineObservation, MachineRemoved, MachineToken,
-    MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation,
-    PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
-    RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics, SelectedEndpoint,
-    UpdateMachineRequest, WireGuardInspected, WireGuardPublicKey, associate_wireguard_peers,
-    synthesize_membership,
+    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
+    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
+    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
+    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
+    associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::{OwnedMutexGuard, watch};
@@ -26,7 +25,7 @@ use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
     host_capacity,
-    network::{NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device},
+    network::{NetworkError, discover_network, inspect_wireguard_device},
 };
 
 /// Live Observation and membership operations for this Machine.
@@ -82,6 +81,8 @@ impl RuntimeWatchTelemetry {
 /// Failures from Local Machine operations. The RPC adapter maps these once.
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Enrollment(#[from] ployz_core::EnrollmentError),
     /// Machine-local storage admission or preparation failed with structured details.
     #[error(transparent)]
     StoragePreparation(#[from] ployz_core::RpcError),
@@ -95,15 +96,6 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
-    #[error("public key is already registered under another Machine Name")]
-    KeyAlreadyNamed,
-    #[error("Machine Name is already used by another public key")]
-    NameTaken,
-    #[error(
-        "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine"
-    )]
-    /// Enrollment policy differs from the current assignment and cannot overwrite it.
-    InitialPolicyMismatch,
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("local Machine record lock poisoned")]
@@ -120,10 +112,8 @@ pub enum Error {
     Cleanup(String),
     #[error("local operation task failed: {0}")]
     OperationTask(#[from] tokio::task::JoinError),
-    #[error("Allocator is not quiet")]
-    AllocatorNotQuiet,
-    #[error("this Machine is not the Allocator")]
-    NotAllocator,
+    #[error("Register requires a client-selected Machine Subnet")]
+    MissingAssignment,
     #[error("this Machine is isolation-locked")]
     IsolationLocked,
     #[error(transparent)]
@@ -352,10 +342,12 @@ impl LocalMachine {
     /// and [`Error::Network`] when endpoint discovery fails.
     pub async fn machine_token(&self, request: MachineTokenRequest) -> Result<MachineToken, Error> {
         let record = self.record()?;
+        let id = record.id();
         let private_key = record.wireguard_private_key;
         let discovered = discover_network(request.wireguard_port, request.public_ip).await?;
         let capacity = host_capacity::observe();
         Ok(MachineToken {
+            id,
             public_key: private_key.public_key(),
             public_ip: discovered.public_ip,
             advertised_endpoints: if request.advertised_endpoints.is_empty() {
@@ -436,74 +428,49 @@ impl LocalMachine {
             .await
     }
 
-    /// Assign a new Machine into the Cluster from this participating Machine
-    /// when cluster KV names this Machine as Allocator. A replica row with the
-    /// same public key and name is returned as-is, without publishing. Replay
-    /// requires this Machine to be participating so catch-up cannot hand out a
-    /// partial replica.
+    /// Publish a client-selected assignment from a participating Entry Machine.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::NotParticipating`] when this Machine is not
-    /// participating, [`Error::KeyAlreadyNamed`] when the public key is stored
-    /// under another name, [`Error::NameTaken`] when the name belongs to another
-    /// public key, [`Error::Store`] when endpoints are missing on a new
-    /// allocation, [`Error::ClusterStoreUnavailable`] when the Cluster store
-    /// is missing, [`Error::IsolationLocked`] when the machines replica is
-    /// larger than three and every other Machine is uncontactable,
-    /// [`Error::AllocatorNotQuiet`] when this Machine is named Allocator but
-    /// the row is younger than 5s, [`Error::NotAllocator`] when the row names
-    /// another Machine or is missing, [`Error::Network`] when subnet allocation
-    /// fails, and [`Error::Cluster`] when replicated I/O fails.
+    /// Rejects absent assignments, observed conflicts, isolation, or unavailable storage.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.register_admitted(request).await })
-            .await
-    }
-
-    async fn register_admitted(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        let me = {
-            let record = self.record()?;
-            if record.phase() != LocalMachinePhase::Participating {
+        self.finish_mutation(async move {
+            if local.record()?.phase() != LocalMachinePhase::Participating {
                 return Err(Error::NotParticipating);
             }
-            record.id()
-        };
-        if let Some(registered) = self.committed_registration(&request).await? {
-            return Ok(registered);
-        }
-        if request.advertised_endpoints.is_empty() {
-            return Err(StoreError::MissingEndpoints.into());
-        }
-        if self.isolation_locked().await? {
-            return Err(Error::IsolationLocked);
-        }
-        match self.replicated()?.allocator().await? {
-            Some(row) if row.machine_id == me => self.admit_local_register(request).await,
-            _ => Err(Error::NotAllocator),
-        }
+            if request.assigned_subnet.is_none() {
+                return Err(Error::MissingAssignment);
+            }
+            local.publish_assignment(request).await
+        })
+        .await
     }
 
-    async fn committed_registration(
-        &self,
-        request: &RegisterRequest,
-    ) -> Result<Option<Registered>, Error> {
-        let Some(cluster) = &self.cluster else {
-            return Ok(None);
-        };
-        let machines = cluster.replicated.machines().await?.observations;
-        let Some(machine) = recognize(request.public_key, &request.name, &machines)? else {
-            return Ok(None);
-        };
-        if !request.initial_policy.matches(machine) {
-            return Err(Error::InitialPolicyMismatch);
-        }
-        let assigned_machine = machine.clone();
-        Ok(Some(registered(
-            assigned_machine,
+    async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
+        let replicated = self.replicated()?;
+        let publication = replicated.machine_publication().await;
+        let machines = replicated.machines().await?.observations;
+        let snapshot = ployz_core::EnrollmentSnapshot {
+            network: replicated.cluster_network().await?,
             machines,
-            cluster.replicated.version().await?,
-        )))
+            target_versions: replicated.version().await?,
+        };
+        let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
+        if !snapshot
+            .machines
+            .iter()
+            .any(|m| m.id == assignment.machine.id)
+        {
+            if self.isolation_locked().await? {
+                return Err(Error::IsolationLocked);
+            }
+            publication.publish(&assignment.machine).await?;
+        }
+        Ok(registered(
+            assignment.machine,
+            replicated.machines().await?.observations,
+            replicated.version().await?,
+        ))
     }
 
     /// Isolation lock: replica larger than three and every other Machine
@@ -531,55 +498,6 @@ impl LocalMachine {
         ))
     }
 
-    async fn admit_local_register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        let replicated = self.replicated()?;
-        let assigned_machine = {
-            let publication = replicated.machine_publication().await;
-            let snapshot = replicated.machines().await?;
-            if let Some(machine) =
-                recognize(request.public_key, &request.name, &snapshot.observations)?
-            {
-                if !request.initial_policy.matches(machine) {
-                    return Err(Error::InitialPolicyMismatch);
-                }
-                machine.clone()
-            } else {
-                let me = self.record()?.id();
-                match replicated.allocator().await? {
-                    Some(row) if row.machine_id == me && row.quiet => {}
-                    Some(row) if row.machine_id == me => {
-                        return Err(Error::AllocatorNotQuiet);
-                    }
-                    Some(_) | None => return Err(Error::NotAllocator),
-                }
-                let network = replicated.cluster_network().await?;
-                let assigned_machine = Machine {
-                    labels: request.initial_policy.labels,
-                    accepts_builds: request.initial_policy.accepts_builds,
-                    accepts_services: request.initial_policy.accepts_services,
-                    accepts_ingress: request.initial_policy.accepts_ingress,
-                    id: MachineId::random(),
-                    name: request.name,
-                    subnet: allocate_machine_subnet(
-                        network,
-                        snapshot.observations.iter().map(|machine| machine.subnet),
-                    )?,
-                    public_key: request.public_key,
-                    public_ip: request.public_ip,
-                    advertised_endpoints: request.advertised_endpoints,
-                    runtime: request.runtime,
-                };
-                publication.publish(&assigned_machine).await?;
-                assigned_machine
-            }
-        };
-        Ok(registered(
-            assigned_machine,
-            replicated.machines().await?.observations,
-            replicated.version().await?,
-        ))
-    }
-
     /// Persist a join assignment and request restart.
     ///
     /// # Errors
@@ -588,7 +506,7 @@ impl LocalMachine {
     /// and [`Error::Store`] when join is not legal in the current phase.
     fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
         let mut store = self.lock_store()?;
-        store.join(
+        let already_accepted = store.join(
             request.registration.assigned_machine,
             request.registration.visible_peers,
             request.registration.target_versions,
@@ -605,8 +523,10 @@ impl LocalMachine {
             "join accepted"
         );
         drop(store);
-        self.restart.send_replace(true);
-        Ok(JoinAccepted {})
+        if !already_accepted {
+            self.restart.send_replace(true);
+        }
+        Ok(JoinAccepted { already_accepted })
     }
 
     /// Persist a join assignment under local mutation admission and request restart.
@@ -672,6 +592,11 @@ impl LocalMachine {
         let states = membership_states_by_address(states);
         let entry_id = local.id();
         Ok(MachineList {
+            enrollment: Some(ployz_core::EnrollmentSnapshot {
+                network: replicated.cluster_network().await?,
+                machines: machines.clone(),
+                target_versions: replicated.version().await?,
+            }),
             machines: RuntimeWatchTelemetry {
                 states,
                 selected_endpoints: local.selected_endpoints,
@@ -840,22 +765,6 @@ impl LocalMachine {
         }
         self.restart.send_replace(true);
         Ok(ResetAccepted {})
-    }
-}
-
-fn recognize<'machines>(
-    public_key: WireGuardPublicKey,
-    name: &MachineName,
-    machines: &'machines [Machine],
-) -> Result<Option<&'machines Machine>, Error> {
-    match machines
-        .iter()
-        .find(|machine| machine.public_key == public_key)
-    {
-        Some(machine) if &machine.name == name => Ok(Some(machine)),
-        Some(_) => Err(Error::KeyAlreadyNamed),
-        None if machines.iter().any(|machine| &machine.name == name) => Err(Error::NameTaken),
-        None => Ok(None),
     }
 }
 

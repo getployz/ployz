@@ -323,7 +323,7 @@ fn join(path: &Path) {
         accepts_builds: true,
         accepts_services: true,
         accepts_ingress: true,
-        id: MachineId::random(),
+        id: details.id,
         name: MachineName::parse("joined").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
         public_key: details.public_key,

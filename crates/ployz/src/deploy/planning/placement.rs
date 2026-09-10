@@ -272,6 +272,22 @@ pub(super) fn plan_global(
         }
 
         if let Some(container) = on_machine(current, machine_id)
+            .find(|container| reusable_global(container, requested, options))
+        {
+            let observation = container.as_observation();
+            used.insert(observation.container_id);
+            placement
+                .sockets
+                .admit(machine_id, requested, None, EndpointOperation::Create)?;
+            operations.push(DeployOperation::RunContainer {
+                machine_id,
+                spec: observation.resolved_spec.clone(),
+                skip_health_monitor: options.skip_health_monitor,
+            });
+            continue;
+        }
+
+        if let Some(container) = on_machine(current, machine_id)
             .find(|container| super::super::is_active_runtime(&container.as_observation().runtime))
         {
             let observation = container.as_observation();
@@ -340,14 +356,33 @@ pub(super) fn plan_global(
     Ok((operations, hook_machine))
 }
 
+fn reusable_global(
+    container: &ServiceContainer,
+    requested: &RequestedServiceSpec,
+    options: &PlanOptions,
+) -> bool {
+    let observation = container.as_observation();
+    !options.force_recreate
+        && !super::super::is_active_runtime(&observation.runtime)
+        && observation.labels.contains_key("ployz.creation.key")
+        && observation.resolved_spec
+            == resolve(
+                requested,
+                observation.service_id(),
+                observation.resolved_spec.update.order,
+            )
+}
+
 fn global_endpoint_operation(
     current: &[ServiceContainer],
     machine_id: MachineId,
     requested: &RequestedServiceSpec,
     options: &PlanOptions,
 ) -> EndpointOperation {
-    if on_machine(current, machine_id).any(|container| is_up_to_date(container, requested, options))
-    {
+    if on_machine(current, machine_id).any(|container| {
+        is_up_to_date(container, requested, options)
+            || reusable_global(container, requested, options)
+    }) {
         EndpointOperation::Unchanged
     } else if on_machine(current, machine_id)
         .any(|container| super::super::is_active_runtime(&container.as_observation().runtime))

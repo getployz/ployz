@@ -145,13 +145,13 @@ async fn register_rejects_bad_dial_pairing_and_unknown_machine_like_connect() {
 }
 
 #[tokio::test]
-async fn register_allocator_not_quiet_is_rpc_error() {
+async fn register_isolation_locked_is_rpc_error() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let service = DiscoveryService::new(description.clone());
     service.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
-        message: "Allocator is not quiet".into(),
+        message: "this Machine is isolation-locked".into(),
         details: serde_json::Value::Null,
     });
     let _machine = session.spawn_machine(description.machine_id, service).await;
@@ -168,40 +168,40 @@ async fn register_allocator_not_quiet_is_rpc_error() {
         ),
     )
     .await
-    .expect("Allocator not-quiet must not hang")
-    .expect_err("Allocator not-quiet is RpcError");
+    .expect("isolation lock must not hang")
+    .expect_err("isolation lock is RpcError");
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "Allocator is not quiet");
+    assert_eq!(error.message, "this Machine is isolation-locked");
 }
 
 #[tokio::test]
 async fn node_smoke_covers_list_held_then_register() {
     let description = advertised_description();
-    let not_quiet_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
+    let isolated_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
     let session = RelaySession::start().await;
-    let _quiet = session
+    let _entry = session
         .spawn_machine(
             description.machine_id,
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let noisy = DiscoveryService::new(description.clone());
-    noisy.set_register_error(RpcError {
+    let isolated = DiscoveryService::new(description.clone());
+    isolated.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
-        message: "Allocator is not quiet".into(),
+        message: "this Machine is isolation-locked".into(),
         details: serde_json::Value::Null,
     });
-    let _noisy = session.spawn_machine(not_quiet_id, noisy).await;
+    let _isolated = session.spawn_machine(isolated_id, isolated).await;
     wait_held(&session.url, description.machine_id).await;
-    wait_held(&session.url, not_quiet_id).await;
+    wait_held(&session.url, isolated_id).await;
 
     session
         .assert_sdk_script(
             "node_register.js",
             description.machine_id,
             &[
-                ("PLOYZ_NOT_QUIET_MACHINE_ID", not_quiet_id.as_str()),
+                ("PLOYZ_ISOLATED_MACHINE_ID", isolated_id.as_str()),
                 ("PLOYZ_UNKNOWN_MACHINE_ID", MachineId::random().as_str()),
             ],
         )
@@ -229,6 +229,8 @@ async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
 
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
+        machine_id: MachineId::random(),
+        assigned_subnet: Some("10.210.1.0/24".parse().unwrap()),
         initial_policy: Default::default(),
         name: MachineName::parse("joiner").unwrap(),
         storage: StorageChoice::Zfs,

@@ -9,6 +9,7 @@ pub mod connect;
 pub mod context;
 pub mod deploy;
 pub mod dns;
+pub mod enrollment;
 pub mod failure;
 mod global_catch_up;
 pub mod handlers;

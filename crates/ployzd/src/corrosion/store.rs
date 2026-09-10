@@ -17,7 +17,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::{
     ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
@@ -32,21 +32,6 @@ use crate::{
 pub struct ReplicatedStore {
     api: ApiClient,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
-}
-
-// Solo founder backdates so the first Register is already quiet. ON CONFLICT
-// leaves a later steal's `updated_at = now` alone.
-pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
-pub(crate) const STEAL_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
-#[cfg(test)]
-pub(crate) const AGE_ALLOCATOR: &str =
-    "UPDATE cluster SET updated_at = datetime('now', '-5 seconds') WHERE key = 'allocator'";
-pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AllocatorRow {
-    pub machine_id: MachineId,
-    pub quiet: bool,
 }
 
 pub(crate) struct MachinePublicationGuard<'a> {
@@ -230,49 +215,6 @@ impl ReplicatedStore {
             )])
             .await?;
         Ok(())
-    }
-
-    /// Write `cluster.allocator` naming this Machine, with `updated_at = now - 5s`.
-    ///
-    /// # Errors
-    ///
-    /// Returns if the Cluster store cannot be written.
-    pub async fn publish_founder_allocator(&self, machine_id: &MachineId) -> Result<(), Error> {
-        self.api
-            .execute([Statement::new(CLAIM_FOUNDER_ALLOCATOR, [json!(machine_id)])])
-            .await
-    }
-
-    /// Write `cluster.allocator` naming this Machine, with `updated_at = now`.
-    ///
-    /// # Errors
-    ///
-    /// Returns if the Cluster store cannot be written.
-    pub(crate) async fn steal_allocator(&self, machine_id: &MachineId) -> Result<(), Error> {
-        self.api
-            .execute([Statement::new(STEAL_ALLOCATOR, [json!(machine_id)])])
-            .await
-    }
-
-    /// Local Allocator observation: named Machine ID and whether the row is ≥5s old.
-    ///
-    /// # Errors
-    ///
-    /// Returns if the Cluster store cannot be read or the row is malformed.
-    pub(crate) async fn allocator(&self) -> Result<Option<AllocatorRow>, Error> {
-        let query = self.api.query(Statement::new(ALLOCATOR_ROW, [])).await?;
-        match query.rows(["allocator", "quiet"])?.as_slice() {
-            [] => Ok(None),
-            [[value, Value::Number(quiet)]] => Ok(Some(AllocatorRow {
-                machine_id: MachineId::parse(text(value, "Allocator")?)?,
-                quiet: quiet
-                    .as_u64()
-                    .filter(|value| *value <= 1)
-                    .map(|value| value == 1)
-                    .ok_or_else(|| Error::Protocol("invalid Allocator quiet".into()))?,
-            })),
-            _ => Err(Error::Protocol("invalid Allocator row".into())),
-        }
     }
 
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {

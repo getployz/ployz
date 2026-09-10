@@ -181,17 +181,14 @@ pub enum PublicIpDiscovery {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineToken {
+    pub id: MachineId,
     pub public_key: WireGuardPublicKey,
     #[serde(default)]
     pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
-    // This token crosses independently upgraded CLI/daemon processes. Current
-    // daemons always serialize these keys; None means the daemon could not
-    // observe that capacity. Keep defaults on every additive observation so a
-    // newer CLI can still enroll through an older remote daemon. Removing one
-    // turns a harmless missing fact into a hard --connect wire break.
+    // Capacity is nullable when the daemon could not observe it.
     #[serde(default)]
     pub memory_total_bytes: Option<u64>,
     #[serde(default)]
@@ -207,6 +204,7 @@ mod machine_token_tests {
     #[test]
     fn capacity_is_nullable_and_missing_fields_decode_for_older_daemons() {
         let token = MachineToken {
+            id: MachineId::random(),
             public_key: WireGuardPublicKey([0; 32]),
             public_ip: None,
             advertised_endpoints: Vec::new(),

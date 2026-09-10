@@ -79,6 +79,9 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
 
     for adding in [false, true] {
         let mut registration = registration();
+        if adding {
+            registration.visible_peers = vec![super::harness::founder_machine()];
+        }
         registration.assigned_machine.labels =
             [("pool".parse().unwrap(), "build".parse().unwrap())].into();
         registration.assigned_machine.accepts_services = false;

@@ -58,6 +58,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
                 ContainerKind::ServiceContainer,
                 ProjectName::parse("app").unwrap(),
                 spec.clone(),
+                None,
             )
             .await
             .unwrap();

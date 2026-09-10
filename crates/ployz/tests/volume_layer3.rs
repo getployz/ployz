@@ -135,6 +135,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
                 ContainerKind::ServiceContainer,
                 ProjectName::parse("app").unwrap(),
                 mount_spec(index, &shared),
+                None,
             )
             .await
             .unwrap();
@@ -189,6 +190,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
                 ContainerKind::ServiceContainer,
                 ProjectName::parse("app").unwrap(),
                 mount_spec(9, &missing),
+                None,
             )
             .await
             .is_err()

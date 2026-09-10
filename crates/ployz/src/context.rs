@@ -191,6 +191,45 @@ impl Config {
         })
     }
 
+    /// Merge a completed enrollment into the latest configuration. The stable
+    /// lock is separate from the atomically replaced YAML and covers no RPCs.
+    ///
+    /// # Errors
+    /// Returns lock, load, or save failures, or a context removed during enrollment.
+    pub fn save_connection(
+        &self,
+        context_name: &str,
+        connection: Connection,
+    ) -> Result<(), ConfigError> {
+        let write_error = |source| ConfigError::Write {
+            path: self.path.clone(),
+            source,
+        };
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(self.path.with_added_extension("lock"))
+            .map_err(write_error)?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+            .map_err(|error| write_error(error.into()))?;
+        let mut latest = Self::load(&self.path)?;
+        let context =
+            latest
+                .contexts
+                .get_mut(context_name)
+                .ok_or_else(|| ContextError::ContextNotFound {
+                    name: context_name.to_owned(),
+                    path: self.path.clone(),
+                })?;
+        if !context.connections.contains(&connection) {
+            context.connections.push(connection);
+        }
+        latest.save()
+    }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -663,6 +702,8 @@ impl fmt::Display for SshDestination {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error(transparent)]
+    Context(#[from] ContextError),
     #[error("could not read Ployz config {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
     #[error("could not parse Ployz config {path}: {source}")]

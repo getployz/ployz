@@ -504,3 +504,66 @@ fn rpc_to_napi(error: RpcError) -> Error {
         Err(_) => Error::from_reason(error.to_string()),
     }
 }
+
+/// Run the shared allocation policy inside the caller's storage transaction.
+///
+/// # Errors
+/// Rejects invalid JSON, conflicting retry inputs or claims, invalid pools, and exhaustion.
+#[napi]
+pub fn allocate_enrollment(
+    request: serde_json::Value,
+    snapshot: serde_json::Value,
+    saved: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let request = serde_json::from_value(request).map_err(invalid_json)?;
+    let snapshot = serde_json::from_value(snapshot).map_err(invalid_json)?;
+    let saved: Vec<ployz_core::EnrollmentAssignment> =
+        serde_json::from_value(saved).map_err(invalid_json)?;
+    let assignment =
+        ployz_core::allocate_enrollment(&request, &snapshot, &saved).map_err(|error| {
+            rpc_to_napi(ployz_core::RpcError {
+                code: ployz_core::RpcErrorCode::Conflict,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+    to_json(&assignment)
+}
+
+/// Read an observer-relative enrollment snapshot.
+///
+/// # Errors
+/// Returns invalid connection inputs, transport failures, or a nonparticipating Entry Machine.
+#[napi]
+pub async fn observe_enrollment(
+    relay_url: String,
+    bearer: String,
+    pairing: String,
+    machine_id: String,
+) -> Result<serde_json::Value> {
+    to_json(
+        &sdk::observe_enrollment(&relay_url, &bearer, &pairing, &machine_id)
+            .await
+            .map_err(rpc_to_napi)?,
+    )
+}
+
+/// Publish the caller's durably saved assignment.
+///
+/// # Errors
+/// Rejects invalid JSON or connection inputs, conflicting assignments, and RPC failures.
+#[napi]
+pub async fn publish_enrollment(
+    relay_url: String,
+    bearer: String,
+    pairing: String,
+    machine_id: String,
+    assignment: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let assignment = serde_json::from_value(assignment).map_err(invalid_json)?;
+    to_json(
+        &sdk::publish_enrollment(&relay_url, &bearer, &pairing, &machine_id, &assignment)
+            .await
+            .map_err(rpc_to_napi)?,
+    )
+}

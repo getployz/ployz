@@ -672,3 +672,40 @@ fn invalid_argument(message: String) -> RpcError {
         details: Value::Null,
     }
 }
+
+/// Observe enrollment facts through a short-lived Relay session.
+///
+/// # Errors
+/// Returns Relay, RPC, or unavailable snapshot errors.
+pub async fn observe_enrollment(
+    relay_url: &str,
+    bearer: &str,
+    pairing: &str,
+    machine_id: &str,
+) -> Result<ployz_core::EnrollmentSnapshot, RpcError> {
+    let session = connect(relay_url, bearer, pairing, machine_id).await?;
+    let result =
+        async { crate::enrollment::observe_enrollment(&mut session.client().await?).await }.await;
+    session.close().await;
+    result
+}
+
+/// Publish a saved assignment through a short-lived Relay session.
+///
+/// # Errors
+/// Returns allocation conflicts, Relay or publication errors.
+pub async fn publish_enrollment(
+    relay_url: &str,
+    bearer: &str,
+    pairing: &str,
+    machine_id: &str,
+    assignment: &ployz_core::EnrollmentAssignment,
+) -> Result<Registered, RpcError> {
+    let session = connect(relay_url, bearer, pairing, machine_id).await?;
+    let result = async {
+        crate::enrollment::publish_enrollment(&mut session.client().await?, assignment).await
+    }
+    .await;
+    session.close().await;
+    result
+}

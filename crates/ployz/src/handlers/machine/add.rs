@@ -1,7 +1,6 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineObservation,
-    RegisterRequest, WireGuardPublicKey, op,
+    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, RegisterRequest, op,
 };
 
 use super::super::{connect_client, runtime};
@@ -12,7 +11,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let policy = super::enrollment_policy(matches)?;
     let options = ConnectionOptions::from_matches(root)?;
-    let (mut config, context_name) = options.active_config()?;
+    let (config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
     let connection = destination.parse()?;
     let mut connection = helpers::configure_ssh_key(
@@ -34,7 +33,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             crate::provisioning::provision(matches, storage).await?;
         }
         let mut entry = connect_client(matches, options.context()).await?;
-        let visible = entry.machines().await?;
+        let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
@@ -52,8 +51,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 None,
             )
             .await?;
-        if details.phase != LocalMachinePhase::Uninitialized {
-            cluster_membership_conflict(&details.phase, &visible, &token.public_key)?;
+        let history = config.path().with_extension("enrollment");
+        let resuming = crate::enrollment::local::has_assignment(&history, &snapshot, token.id)
+            .map_err(|error| Error::usage(error.to_string()))?
+            || snapshot
+                .machines
+                .iter()
+                .any(|machine| machine.id == token.id && machine.public_key == token.public_key);
+        if details.phase != LocalMachinePhase::Uninitialized && !resuming {
             helpers::confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
             helpers::reset(&mut target_client).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
@@ -63,22 +68,24 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         }
         let name = helpers::machine_name(requested_name, &token)?;
 
-        // Register recognizes the same public key and name and returns its committed assignment.
-        let registration = entry
-            .call_repeatable::<op::Register>(
-                RegisterRequest {
-                    initial_policy: policy,
-                    name,
-                    storage,
-                    public_key: token.public_key,
-                    public_ip: token.public_ip,
-                    advertised_endpoints: token.advertised_endpoints,
-                    runtime: token.runtime,
-                },
-                None,
-            )
-            .await?;
-        let assigned = registration.assigned_machine.clone();
+        let assignment = crate::enrollment::local::save_assignment(
+            &history,
+            &RegisterRequest {
+                machine_id: token.id,
+                assigned_subnet: None,
+                initial_policy: policy,
+                name,
+                storage,
+                public_key: token.public_key,
+                public_ip: token.public_ip,
+                advertised_endpoints: token.advertised_endpoints,
+                runtime: token.runtime,
+            },
+            &snapshot,
+        )
+        .map_err(|error| Error::usage(error.to_string()))?;
+        let assigned = assignment.machine.clone();
+        let registration = crate::enrollment::publish_enrollment(&mut entry, &assignment).await?;
         helpers::join(
             &mut target_client,
             JoinRequest {
@@ -93,13 +100,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     })?;
 
     connection = connection.with_machine_id(assigned.id);
-    config
-        .contexts
-        .get_mut(&context_name)
-        .expect("active context was validated")
-        .connections
-        .push(connection.clone());
-    config.save()?;
+    config.save_connection(&context_name, connection.clone())?;
     println!("{}", added_machine_line(&assigned));
 
     runtime.block_on(helpers::wait_direct_participating(
@@ -137,22 +138,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn cluster_membership_conflict(
-    phase: &LocalMachinePhase,
-    visible: &[MachineObservation],
-    public_key: &WireGuardPublicKey,
-) -> Result<(), Error> {
-    if *phase != LocalMachinePhase::Uninitialized
-        && visible
-            .iter()
-            .any(|observation| observation.machine.public_key == *public_key)
-    {
-        Err(Error::usage("Machine already belongs to this Cluster"))
-    } else {
-        Ok(())
-    }
-}
-
 fn added_machine_line(assigned: &Machine) -> String {
     format!("Added Machine {} ({})", assigned.name, assigned.id)
 }
@@ -160,10 +145,7 @@ fn added_machine_line(assigned: &Machine) -> String {
 #[cfg(test)]
 mod tests {
     use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
-    use ployz_core::{
-        LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation,
-        MembershipObservation, WireGuardPublicKey,
-    };
+    use ployz_core::{Machine, MachineId, MachineName, WireGuardPublicKey};
 
     use super::*;
 
@@ -206,38 +188,6 @@ mod tests {
             error.matches("deploy timed out").count(),
             1,
             "failure must report the error once, got {error:?}"
-        );
-    }
-
-    #[test]
-    fn re_adding_a_joined_machine_reports_it_already_belongs_to_the_cluster() {
-        let assigned = assigned_machine("edge", 'a');
-        let visible = [MachineObservation::new(
-            assigned.clone(),
-            MembershipObservation::Up,
-        )];
-        assert_eq!(
-            cluster_membership_conflict(
-                &LocalMachinePhase::Participating,
-                &visible,
-                &assigned.public_key,
-            )
-            .unwrap_err()
-            .to_string(),
-            "Machine already belongs to this Cluster"
-        );
-        assert!(
-            cluster_membership_conflict(
-                &LocalMachinePhase::Uninitialized,
-                &visible,
-                &assigned.public_key,
-            )
-            .is_ok()
-        );
-        let other = WireGuardPublicKey([9; 32]);
-        assert!(
-            cluster_membership_conflict(&LocalMachinePhase::Participating, &visible, &other,)
-                .is_ok()
         );
     }
 

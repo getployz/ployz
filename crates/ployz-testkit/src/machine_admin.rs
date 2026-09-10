@@ -51,20 +51,32 @@ impl Cluster {
         token: MachineToken,
     ) -> Result<ployz_core::Registered, TestkitError> {
         let mut client = self.client(entry).await?;
+        let snapshot = response(
+            client
+                .list_machines(op::ListMachines::into_request(ListMachinesRequest {}).encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode::<op::ListMachines>()?
+        .enrollment
+        .ok_or_else(|| TestkitError::Rpc("missing enrollment snapshot".into()))?;
+        let mut request = RegisterRequest {
+            machine_id: token.id,
+            assigned_subnet: None,
+            initial_policy: Default::default(),
+            name: MachineName::parse(name)?,
+            storage: ployz_core::StorageChoice::None,
+            public_key: token.public_key,
+            public_ip: token.public_ip,
+            advertised_endpoints: token.advertised_endpoints,
+            runtime: token.runtime,
+        };
+        let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])
+            .map_err(|error| TestkitError::Rpc(error.to_string()))?;
+        request.assigned_subnet = Some(assignment.machine.subnet);
         Ok(response(
             client
-                .register(
-                    op::Register::into_request(RegisterRequest {
-                        initial_policy: Default::default(),
-                        name: MachineName::parse(name)?,
-                        storage: ployz_core::StorageChoice::None,
-                        public_key: token.public_key,
-                        public_ip: token.public_ip,
-                        advertised_endpoints: token.advertised_endpoints,
-                        runtime: token.runtime,
-                    })
-                    .encode()?,
-                )
+                .register(op::Register::into_request(request).encode()?)
                 .await?
                 .into_inner(),
         )?

@@ -6,9 +6,7 @@ use std::{
 };
 
 use ipnet::{IpNet, Ipv4Net};
-use ployz_core::{
-    AdvertisedEndpoint, Machine, MachineId, MachineSubnet, SelectedEndpoint, WireGuardPublicKey,
-};
+use ployz_core::{AdvertisedEndpoint, Machine, MachineId, SelectedEndpoint, WireGuardPublicKey};
 pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -66,10 +64,6 @@ impl std::fmt::Debug for WireGuardPrivateKey {
 
 #[derive(Debug, Error)]
 pub enum NetworkError {
-    #[error("cluster IPv4 pool must contain /24 subnets")]
-    InvalidClusterNetwork,
-    #[error("cluster IPv4 pool has no free /24 in this observation")]
-    NoFreeSubnet,
     #[error("configured Machine has no WireGuard private key")]
     MissingPrivateKey,
     #[error(
@@ -102,22 +96,7 @@ pub fn default_cluster_network() -> Ipv4Net {
 
 pub use ployz_core::management_address;
 
-pub fn allocate_machine_subnet(
-    cluster_network: Ipv4Net,
-    claimed: impl IntoIterator<Item = MachineSubnet>,
-) -> Result<MachineSubnet, NetworkError> {
-    let claimed = claimed.into_iter().collect::<Vec<_>>();
-    let candidates = cluster_network
-        .subnets(24)
-        .map_err(|_| NetworkError::InvalidClusterNetwork)?;
-    candidates
-        .map(|candidate| {
-            MachineSubnet::try_from(candidate)
-                .expect("cluster /24 candidates are valid Machine Subnets")
-        })
-        .find(|candidate| !claimed.contains(candidate))
-        .ok_or(NetworkError::NoFreeSubnet)
-}
+pub use ployz_core::allocate_machine_subnet;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeshPeer {
