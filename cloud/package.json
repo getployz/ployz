@@ -95,9 +95,9 @@
     "vitest": "^4.1.5"
   },
   "optionalDependencies": {
-    "@ployz/sdk-darwin-arm64": "0.1.2-beta.36",
-    "@ployz/sdk-darwin-x64": "0.1.2-beta.36",
-    "@ployz/sdk-linux-arm64": "0.1.2-beta.36",
-    "@ployz/sdk-linux-x64": "0.1.2-beta.36"
+    "@ployz/sdk-darwin-arm64": "0.1.2-beta.37",
+    "@ployz/sdk-darwin-x64": "0.1.2-beta.37",
+    "@ployz/sdk-linux-arm64": "0.1.2-beta.37",
+    "@ployz/sdk-linux-x64": "0.1.2-beta.37"
   }
 }
