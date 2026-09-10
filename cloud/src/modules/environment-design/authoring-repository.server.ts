@@ -193,6 +193,6 @@ export const createResourceLineage = Effect.fn(
       canonicalSlug: lineageCanonicalSlug({ baseSlug: input.slug, lineageId: id }),
     })
     .onConflictDoNothing()
-    .returning({ id: resourceLineage.id });
+    .returning();
   return rows[0] ?? null;
 });

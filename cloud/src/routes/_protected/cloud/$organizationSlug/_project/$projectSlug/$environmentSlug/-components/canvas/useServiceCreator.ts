@@ -1,8 +1,9 @@
+import { applyCreatedService } from "#/modules/environment-design/apply-created-node";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { getRawServicesCollection } from "#/electric/collections";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import { createEmptyServiceSource } from "#/modules/environment-design/services";
 import { SERVICE_NODE_SIZE } from "./constants";
@@ -20,6 +21,7 @@ export function useServiceCreator(
   getViewportCenter: () => FlowPosition,
 ) {
   const navigate = useNavigate();
+  const collectionScope = useCollectionScope();
   const flow = useReactFlow<CanvasServiceNode>();
   const createService = useServerFn(createServiceServerFn);
 
@@ -61,9 +63,7 @@ export function useServiceCreator(
         y: placement.y,
       },
     });
-    await getRawServicesCollection(
-      params.organizationSlug,
-    ).utils.awaitTxId(receipt.txid);
+    await applyCreatedService(params.organizationSlug, collectionScope, receipt.data);
     await navigate({
       to: ENVIRONMENT_SERVICE_ROUTE_TO,
       params: {

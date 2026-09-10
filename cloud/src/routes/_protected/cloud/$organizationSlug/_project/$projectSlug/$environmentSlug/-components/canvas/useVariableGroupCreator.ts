@@ -1,7 +1,8 @@
+import { applyCreatedResource } from "#/modules/environment-design/apply-created-node";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useServerFn } from "@tanstack/react-start";
-import { getRawEnvironmentResourcesCollection } from "#/electric/collections";
 import { createVariableGroupResourceServerFn } from "#/modules/environment-design/resource-functions";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
@@ -16,6 +17,7 @@ export function useVariableGroupCreator(
   environmentId: string,
   getViewportCenter: () => FlowPosition,
 ) {
+  const collectionScope = useCollectionScope();
   const flow = useReactFlow<CanvasResourceNode>();
   const createVariableGroupResource = useServerFn(createVariableGroupResourceServerFn);
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -69,9 +71,7 @@ export function useVariableGroupCreator(
       },
     });
 
-    await getRawEnvironmentResourcesCollection(
-      params.organizationSlug,
-    ).utils.awaitTxId(result.txid);
+    await applyCreatedResource(params.organizationSlug, collectionScope, result);
 
     return result.data;
   }

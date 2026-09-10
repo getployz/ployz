@@ -1,3 +1,5 @@
+import { getVolumeRemoveAttemptsCollection } from "#/collections/collections";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
@@ -5,7 +7,7 @@ import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { VolumeRemoveDataLossDialog } from "#/components/data-loss/data-loss-confirm-dialog";
 import {
   AlertDialog,
@@ -61,6 +63,7 @@ export function VolumeDrawer({
   params: VolumeResourceRouteParams;
   state: VolumeDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const navigate = useNavigate();
   const deleteVolume = useServerFn(deleteVolumeResourceServerFn);
   const updateVolume = useServerFn(updateVolumeResourceServerFn);
@@ -84,7 +87,7 @@ export function VolumeDrawer({
   async function handleDelete() {
     setIsDeleting(true);
     try {
-      const receipt = await deleteVolume({
+      const result = await deleteVolume({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -92,9 +95,7 @@ export function VolumeDrawer({
           resourceId,
         },
       });
-      await getEnvironmentsCollection(
-        state.organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+      await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
       await navigate({
         to: ENVIRONMENT_INDEX_ROUTE_TO,
         params: {
@@ -125,16 +126,14 @@ export function VolumeDrawer({
           editDescription="Rename this volume."
           placeholder="Volume name"
           onRename={async (value) => {
-            const receipt = await updateVolume({ data: {
+            const result = await updateVolume({ data: {
               organizationSlug: state.organizationSlug,
               environmentId: state.environmentId,
               revision: revision(),
               resourceId,
               name: value,
             } });
-            await getEnvironmentsCollection(
-              state.organizationSlug,
-            ).utils.awaitTxId(receipt.txid);
+            await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Named volume</p>
@@ -226,6 +225,7 @@ type VolumeRemoveAttemptSummary = {
 
 function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   const resourceId = state.resource.resource.id;
+  const collectionScope = useCollectionScope();
   const loadDataLoss = useServerFn(loadVolumeRemoveDataLossServerFn);
   const confirmRemove = useServerFn(confirmVolumeRemoveServerFn);
   const retryRemove = useServerFn(retryVolumeRemoveServerFn);
@@ -249,7 +249,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
     if (!attempt || retrying) return;
     setRetrying(true);
     try {
-      await rememberLatestVolumeRemoveAttempt(
+      const committed = await rememberLatestVolumeRemoveAttempt(
         queryClient,
         latestQuery.queryKey,
         () =>
@@ -260,6 +260,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
             },
           }),
       );
+      await getVolumeRemoveAttemptsCollection(state.organizationSlug, collectionScope).writeCommitted(committed);
       toast.success("Volume remove retry started.");
     } catch (error) {
       toast.error(
@@ -323,7 +324,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
         callbacks={{
           load: () => loadDataLoss({ data: input }),
           confirm: async (identities) => {
-            await rememberLatestVolumeRemoveAttempt(
+            const committed = await rememberLatestVolumeRemoveAttempt(
               queryClient,
               latestQuery.queryKey,
               () =>
@@ -331,6 +332,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
                   data: { ...input, identities },
                 }),
             );
+            await getVolumeRemoveAttemptsCollection(state.organizationSlug, collectionScope).writeCommitted(committed);
             toast.success("Volume remove started.");
           },
         }}

@@ -26,7 +26,7 @@ import { createService } from "./service-operations.server";
 import { createImageServiceSource } from "./services";
 
 it.live(
-  "keeps resource lifecycle and service-owned mounts authorized and receipt-aligned",
+  "keeps resource lifecycle and service-owned mounts authorized and atomic",
   () =>
     Effect.gen(function* () {
       const container = yield* postgresTestContainer;
@@ -37,7 +37,6 @@ it.live(
             ConfigProvider.fromEnv({
               env: {
                 DATABASE_URL: container.url.href,
-                ELECTRIC_URL: "http://localhost:30000",
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",
                 GITHUB_CLIENT_ID: "github-client-id",
@@ -144,10 +143,8 @@ it.live(
           `,
           "objects",
         );
-        assert.deepStrictEqual(
-          groupRows.map((row) => Number(row.txid)),
-          [group.txid, group.txid, group.txid, group.txid, group.txid],
-        );
+        assert.strictEqual(groupRows.length, 5);
+        assert.strictEqual(new Set(groupRows.map((row) => row.txid)).size, 1);
 
         const volume = yield* createVolumeResource(actor, {
           organizationSlug: "acme",
@@ -169,10 +166,8 @@ it.live(
           `,
           "objects",
         );
-        assert.deepStrictEqual(
-          volumeRows.map((row) => Number(row.txid)),
-          [volume.txid, volume.txid, volume.txid],
-        );
+        assert.strictEqual(volumeRows.length, 3);
+        assert.strictEqual(new Set(volumeRows.map((row) => row.txid)).size, 1);
 
         const renamed = yield* updateVariableGroupResource(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
@@ -182,10 +177,6 @@ it.live(
           name: "Runtime config",
         });
         assert.strictEqual(renamed.data.intent.variableGroups[0]?.name, "Runtime config");
-        const renamedRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
-        assert.strictEqual(Number(renamedRows[0]?.txid), renamed.txid);
-
         const mounted = yield* attachServiceVolume(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
@@ -194,13 +185,9 @@ it.live(
           volumeResourceId: volume.data.resource.id,
           mountPath: "/data",
         });
-        const mountRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`select xmin::text as txid from environment where id = ${environmentRecord.id}`,
-          "objects",
-        );
-        assert.deepStrictEqual(
-          mountRows.map((row) => Number(row.txid)),
-          [mounted.txid],
+        assert.strictEqual(
+          (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
+          mounted.data.revision,
         );
         const updatedMount = yield* updateServiceVolumeMountPath(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
@@ -212,7 +199,7 @@ it.live(
         });
         assert.strictEqual(updatedMount.data.intent.services[0]?.volumeAttachments[0]?.mountPath, "/var/data");
 
-        const moved = yield* updateEnvironmentResourceCanvasPosition(actor, {
+        yield* updateEnvironmentResourceCanvasPosition(actor, {
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           resourceId: volume.data.resource.id,
@@ -220,16 +207,17 @@ it.live(
           y: 66.6,
         });
         const movedRows = yield* database.drizzle.execute<{
-          txid: string;
+          x: number;
+          y: number;
           resourceType: string;
         }>(
-          sql`select xmin::text as txid, resource_type as "resourceType"
+          sql`select x, y, resource_type as "resourceType"
               from environment_canvas_node_position
               where resource_id = ${volume.data.resource.id}`,
           "objects",
         );
         assert.deepStrictEqual(movedRows, [
-          { txid: String(moved.txid), resourceType: "volume" },
+          { x: 56, y: 67, resourceType: "volume" },
         ]);
 
         const invalidTarget = yield* Effect.flip(

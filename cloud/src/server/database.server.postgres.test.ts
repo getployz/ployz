@@ -32,7 +32,6 @@ it.live(
       const provider = ConfigProvider.fromEnv({
         env: {
           DATABASE_URL: container.url.href,
-          ELECTRIC_URL: "http://localhost:30000",
           APP_URL: "http://localhost:3000",
           BETTER_AUTH_SECRET: "better-auth-secret",
           GITHUB_CLIENT_ID: "github-client-id",

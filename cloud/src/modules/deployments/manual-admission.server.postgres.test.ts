@@ -26,7 +26,7 @@ import {
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import type { DatabaseService } from "#/server/database.server";
 import { Database } from "#/server/database.server";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
   makeSecretEncryption,
@@ -518,7 +518,7 @@ describe("manual environment saved-state persistence", () => {
     };
 
     const result = await Effect.runPromise(
-      withMutationReceipt(
+      withMutationResult(
         createManualEnvironmentDeployment({
           environmentId,
           actorId: userId,
@@ -640,7 +640,7 @@ describe("manual environment saved-state persistence", () => {
 
   it("rolls back a saved row when its repeatable-read transaction fails", async () => {
     const result = await Effect.runPromise(
-      withMutationReceipt(
+      withMutationResult(
         Effect.gen(function* () {
           const review = yield* Effect.promise(publicationReview);
           yield* saveManualEnvironmentStateSnapshot({

@@ -29,7 +29,7 @@ import {
 import { createImageServiceSource } from "./services";
 
 it.live(
-  "keeps service, credential, and canvas authoring authorized and receipt-aligned",
+  "keeps service, credential, and canvas authoring authorized and atomic",
   () =>
     Effect.gen(function* () {
       const container = yield* postgresTestContainer;
@@ -40,7 +40,6 @@ it.live(
             ConfigProvider.fromEnv({
               env: {
                 DATABASE_URL: container.url.href,
-                ELECTRIC_URL: "http://localhost:30000",
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",
                 GITHUB_CLIENT_ID: "github-client-id",
@@ -133,10 +132,8 @@ it.live(
           `,
           "objects",
         );
-        assert.deepStrictEqual(
-          committed.map((row) => Number(row.txid)),
-          [created.txid, created.txid],
-        );
+        assert.strictEqual(committed.length, 2);
+        assert.strictEqual(new Set(committed.map((row) => row.txid)).size, 1);
 
         const updated = yield* updateService(actor, {
           organizationSlug: "acme",

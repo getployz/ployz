@@ -5,7 +5,7 @@ import { Effect, Schema } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { DeployImageNotPullableError } from "#/modules/deployments/deployment-errors";
 import { isActiveDeploymentUniqueViolation } from "#/modules/deployments/queue-lock.server";
 import {
@@ -265,7 +265,7 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
   }
   const message = input.message?.trim() || null;
   if (shouldDeploy) {
-    const attempt = yield* withMutationReceipt(
+    const attempt = yield* withMutationResult(
       createManualEnvironmentDeployment({
         environmentId: context.environment.id,
         actorId: actor.userId,
@@ -290,7 +290,7 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
       environmentDeploymentId: attempt.data.environmentDeploymentId,
       environmentId: context.environment.id,
     });
-    return { state: "deployment_queued" as const, txid: attempt.txid };
+    return { state: "deployment_queued" as const };
   }
 
   const destructiveVolumeReviews = input.destructiveVolumeReviews ?? [];
@@ -330,7 +330,7 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
     }
   }
 
-  const saved = yield* withMutationReceipt(
+  yield* withMutationResult(
     saveReviewedEnvironmentState({
       environmentId: context.environment.id,
       actorId: actor.userId,
@@ -344,14 +344,14 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
     }),
     { isolationLevel: "read committed" },
   );
-  return { state: "saved" as const, txid: saved.txid };
+  return { state: "saved" as const };
 });
 
 export const discardEnvironmentSavedChange = Effect.fn(
   "Deployments.discardEnvironmentSavedChange",
 )(function* (actor: Actor, input: DiscardEnvironmentSavedChangeInput) {
   const context = yield* requireEnvironment(actor, input);
-  return yield* withMutationReceipt(
+  return yield* withMutationResult(
     discardEnvironmentSavedState({
       environmentId: context.environment.id,
       actorId: actor.userId,

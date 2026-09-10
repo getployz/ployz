@@ -1,6 +1,7 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   VariablesPanel,
   type VariableAddInput,
@@ -27,6 +28,7 @@ export function VariableGroupVariablesTab({
 }: {
   state: VariableGroupDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const createVariable = useServerFn(createVariableGroupVariableServerFn);
   const updateVariable = useServerFn(updateVariableGroupVariableServerFn);
   const updateVariableMetadata = useServerFn(
@@ -54,7 +56,7 @@ export function VariableGroupVariablesTab({
     if (input.sealed) {
       // Sealed values can't round-trip through the optimistic collection, so
       // the create goes through the server function directly.
-      const receipt = await createVariable({
+      const result = await createVariable({
         data: {
           organizationSlug,
           revision: revision(),
@@ -66,9 +68,7 @@ export function VariableGroupVariablesTab({
           value: { type: "sealed", value: input.value },
         },
       });
-      await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
-        receipt.txid,
-      );
+      await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
     } else {
       await insertPlainVariableGroupVariable(variableWriter, {
         variableGroupId,
@@ -80,7 +80,7 @@ export function VariableGroupVariablesTab({
   }
 
   async function handleSealVariable(variable: PlainVariableRecord) {
-    const receipt = await updateVariable({
+    const result = await updateVariable({
       data: {
         organizationSlug,
         revision: revision(),
@@ -93,16 +93,14 @@ export function VariableGroupVariablesTab({
         value: { type: "sealed", value: variable.value.value },
       },
     });
-    await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
-      receipt.txid,
-    );
+    await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   async function handleUpdateMetadata(
     variable: VariableRecord,
     patch: VariableMetadataPatch,
   ) {
-    const receipt = await updateVariableMetadata({
+    const result = await updateVariableMetadata({
       data: {
         organizationSlug,
         revision: revision(),
@@ -113,9 +111,7 @@ export function VariableGroupVariablesTab({
         exported: patch.exported ?? variable.exported,
       },
     });
-    await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
-      receipt.txid,
-    );
+    await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   return (

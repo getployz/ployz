@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
@@ -10,7 +10,7 @@ import { getMountConflict, type AttachServiceVolumeInput, type DetachServiceVolu
 const editMount = Effect.fn("EnvironmentDesign.editMount")(
   function* (actor: Actor, input: DetachServiceVolumeInput & { mountPath?: string }, mode: "attach" | "edit" | "detach") {
     yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       yield* requireDocumentRevision(document, input.revision);
       const node = document.intent.services.find((node) => node.id === input.serviceId);

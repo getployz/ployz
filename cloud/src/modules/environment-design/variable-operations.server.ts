@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
@@ -21,7 +21,7 @@ const editVariables = Effect.fn("EnvironmentDesign.editVariables")(
   function* (actor: Actor, input: ServiceScope | GroupScope, edits: readonly VariableEdit[], deletes: readonly string[] = []) {
     yield* requireEnvironmentForActorById(actor, input);
     const encryption = yield* SecretEncryption;
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       yield* requireDocumentRevision(document, input.revision);
       const node = "serviceId" in input ? document.intent.services.find((node) => node.id === input.serviceId)
@@ -90,7 +90,7 @@ export const bulkUpdateServiceVariables = Effect.fn("EnvironmentDesign.bulkUpdat
 const editGroupAttachment = Effect.fn("EnvironmentDesign.editGroupAttachment")(
   function* (actor: Actor, input: ServiceScope & { readonly variableGroupId: string }, attach: boolean) {
     yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       yield* requireDocumentRevision(document, input.revision);
       const node = document.intent.services.find((node) => node.id === input.serviceId);

@@ -1,6 +1,7 @@
+import { getEnvironmentsCollection } from "#/collections/collections";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
 import {
   Tabs,
   TabsContent,
@@ -27,6 +28,7 @@ export function VariableGroupDrawer({
   params: VariableGroupResourceRouteParams;
   state: VariableGroupDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const updateVariableGroup = useServerFn(updateVariableGroupResourceServerFn);
   const document = useEnvironmentDocument(state.organizationSlug, state.resource.resource.environmentId);
   function revision() {
@@ -53,16 +55,14 @@ export function VariableGroupDrawer({
           editDescription="Rename this Variable Group."
           placeholder="Variable Group name"
           onRename={async (value) => {
-            const receipt = await updateVariableGroup({ data: {
+            const result = await updateVariableGroup({ data: {
               organizationSlug: state.organizationSlug,
               environmentId: state.resource.resource.environmentId,
               revision: revision(),
               resourceId,
               name: value,
             } });
-            await getEnvironmentsCollection(
-              state.organizationSlug,
-            ).utils.awaitTxId(receipt.txid);
+            await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Variable Group</p>

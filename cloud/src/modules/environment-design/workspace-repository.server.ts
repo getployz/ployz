@@ -198,7 +198,7 @@ export const createProject = Effect.fn("EnvironmentDesign.createProject")(
               slug: getSlugWithSuffix(baseSlug, attempt),
             })
             .onConflictDoNothing()
-            .returning(projectColumns);
+            .returning();
           return rows[0] ?? null;
         }),
       exhausted: new Conflict({
@@ -220,7 +220,7 @@ export const createEnvironmentRecord = Effect.fn(
   const rows = yield* database.drizzle
     .insert(environment)
     .values({ ...input, intent: emptyEnvironmentIntent(input.namespace) })
-    .returning(environmentColumns);
+    .returning();
   const created = rows[0];
   if (created === undefined) {
     return yield* Effect.die("PostgreSQL did not return the created environment.");

@@ -1,9 +1,10 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useReducer } from "react";
 import { HardDriveIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   Empty,
   EmptyDescription,
@@ -98,12 +99,11 @@ function volumeAttachmentsReducer(
 }
 
 export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
+  const collectionScope = useCollectionScope();
   const attachVolume = useServerFn(attachServiceVolumeServerFn);
   const detachVolume = useServerFn(detachServiceVolumeServerFn);
   const updateMountPath = useServerFn(updateServiceVolumeMountPathServerFn);
-  const attachmentsCollection = getEnvironmentsCollection(
-    state.organizationSlug,
-  );
+  const attachmentsCollection = getEnvironmentsCollection(state.organizationSlug, collectionScope);
 
   const document = useEnvironmentDocument(state.organizationSlug, state.environmentId);
   function revision() {
@@ -176,7 +176,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
 
     dispatchMountState({ type: "patch", patch: { pending: true } });
     try {
-      const receipt = await attachVolume({
+      const result = await attachVolume({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -186,7 +186,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
           mountPath: parsed.success,
         },
       });
-      await attachmentsCollection.utils.awaitTxId(receipt.txid);
+      await attachmentsCollection.writeCommitted(result.data);
       dispatchMountState({ type: "resetAddForm" });
     } catch (error) {
       dispatchMountState({
@@ -233,7 +233,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
 
     dispatchMountState({ type: "patch", patch: { pending: true } });
     try {
-      const receipt = await updateMountPath({
+      const result = await updateMountPath({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -243,7 +243,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
           mountPath: parsed.success,
         },
       });
-      await attachmentsCollection.utils.awaitTxId(receipt.txid);
+      await attachmentsCollection.writeCommitted(result.data);
       dispatchMountState({ type: "cancelEdit" });
     } catch (error) {
       dispatchMountState({
@@ -263,7 +263,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
   async function handleDetach(serviceId: string) {
     dispatchMountState({ type: "patch", patch: { pending: true } });
     try {
-      const receipt = await detachVolume({
+      const result = await detachVolume({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -272,7 +272,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
           volumeResourceId,
         },
       });
-      await attachmentsCollection.utils.awaitTxId(receipt.txid);
+      await attachmentsCollection.writeCommitted(result.data);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to remove the mount.",

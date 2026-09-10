@@ -1,10 +1,11 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { createOptimisticAction } from "@tanstack/react-db";
 import {
   clearServiceRegistryCredentialServerFn,
   restoreServiceRegistryCredentialServerFn,
   setServiceRegistryCredentialServerFn,
 } from "#/modules/environment-design/service-functions";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 
 type UseServiceRegistryCredentialActionsInput = {
   organizationSlug: string;
@@ -16,7 +17,8 @@ type UseServiceRegistryCredentialActionsInput = {
 export function useServiceRegistryCredentialActions({
   organizationSlug, environmentId, serviceId, onSuccess,
 }: UseServiceRegistryCredentialActionsInput) {
-  const environments = getEnvironmentsCollection(organizationSlug);
+  const collectionScope = useCollectionScope();
+  const environments = getEnvironmentsCollection(organizationSlug, collectionScope);
   type CredentialAction = { kind: "clear" | "restore" } | { kind: "set"; username: string | null; secret: string };
   const persist = createOptimisticAction<{ action: CredentialAction; revision: string }>({
     onMutate: ({ action }) => {
@@ -29,11 +31,11 @@ export function useServiceRegistryCredentialActions({
     },
     mutationFn: async ({ action, revision }) => {
       const data = { organizationSlug, environmentId, serviceId, revision };
-      const receipt = action.kind === "set"
-        ? await setServiceRegistryCredentialServerFn({ data: { ...data, username: action.username ?? undefined, secret: action.secret } })
-        : action.kind === "clear" ? await clearServiceRegistryCredentialServerFn({ data })
-          : await restoreServiceRegistryCredentialServerFn({ data });
-      await environments.utils.awaitTxId(receipt.txid);
+      const result = await (action.kind === "set"
+        ? setServiceRegistryCredentialServerFn({ data: { ...data, username: action.username ?? undefined, secret: action.secret } })
+        : action.kind === "clear" ? clearServiceRegistryCredentialServerFn({ data })
+          : restoreServiceRegistryCredentialServerFn({ data }));
+      await environments.writeCommitted(result.data);
       onSuccess?.();
     },
   });

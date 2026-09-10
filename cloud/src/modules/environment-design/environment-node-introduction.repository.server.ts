@@ -20,13 +20,15 @@ export const captureEnvironmentNodeIntroduction = Effect.fn("EnvironmentDesign.c
       .find((node) => node.nodeType === identity.nodeType && node.nodeId === identity.nodeId);
     const config = snapshot && asRecord(snapshot.config);
     if (!snapshot || !config) return yield* new Conflict({ message: "The new node has no authored introduction." });
-    yield* drizzle.insert(environmentNodeIntroduction).values({
+    const [introduction] = yield* drizzle.insert(environmentNodeIntroduction).values({
       ...identity, organizationId: document.organizationId, nodeLineageId: snapshot.nodeLineageId,
       configVersion: snapshot.configVersion, config,
-    });
+    }).returning();
+    if (!introduction) return yield* Effect.die("PostgreSQL did not return the node introduction.");
     // ponytail: a full canonical document per introduction; narrow the immutable
     // snapshot only if measured history size warrants a separate node contract.
     yield* drizzle.insert(environmentNodeIntroductionSecret).values({ ...identity, authoredIntent: intent });
+    return introduction;
   },
 );
 

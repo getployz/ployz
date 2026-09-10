@@ -1,3 +1,5 @@
+import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -39,9 +41,7 @@ import {
 import {
   getEnvironmentsCollection,
   getProjectsCollection,
-  getRawEnvironmentResourcesCollection,
-  getRawServicesCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
@@ -160,6 +160,7 @@ function useServiceCreateActions({
   setPanel: (panel: Panel) => void;
   setQuery: (query: string) => void;
 }) {
+  const collectionScope = useCollectionScope();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const createEmptyProject = useServerFn(createEmptyProjectServerFn);
@@ -178,8 +179,8 @@ function useServiceCreateActions({
       }),
     onSuccess: async (receipt) => {
       await Promise.all([
-        getProjectsCollection(props.organizationSlug).utils.awaitTxId(receipt.txid),
-        getEnvironmentsCollection(props.organizationSlug).utils.awaitTxId(receipt.txid),
+        getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
+        getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
       ]);
       if (props.mode !== "service") {
         await props.onCreated?.(receipt.data);
@@ -204,9 +205,7 @@ function useServiceCreateActions({
       });
     },
     onSuccess: async (result) => {
-      await getRawServicesCollection(props.organizationSlug).utils.awaitTxId(
-        result.txid,
-      );
+      await applyCreatedService(props.organizationSlug, collectionScope, result.data);
       if (props.mode === "service") {
         await props.onCreated?.(result.data);
       }
@@ -223,10 +222,8 @@ function useServiceCreateActions({
           y: 0,
         },
       }),
-    onSuccess: async (receipt) => {
-      await getRawEnvironmentResourcesCollection(
-        props.organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+    onSuccess: async (result) => {
+      await applyCreatedResource(props.organizationSlug, collectionScope, result);
     },
   });
   const createVolumeMutation = useMutation({
@@ -240,10 +237,8 @@ function useServiceCreateActions({
           y: 0,
         },
       }),
-    onSuccess: async (receipt) => {
-      await getRawEnvironmentResourcesCollection(
-        props.organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+    onSuccess: async (result) => {
+      await applyCreatedResource(props.organizationSlug, collectionScope, result);
     },
   });
 

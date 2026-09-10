@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { useState } from "react";
@@ -44,7 +45,7 @@ import {
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
@@ -70,6 +71,7 @@ export function ServiceVariablesTab({
 }: {
   state: ServiceDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const ployzManagedVariables = getManagedServiceExports(state.service);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
@@ -167,7 +169,7 @@ export function ServiceVariablesTab({
     patch: VariableMetadataPatch,
   ) {
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await updateExport({
+    const result = await updateExport({
       data: {
         organizationSlug: state.organizationSlug,
         revision: document.revision,
@@ -177,9 +179,7 @@ export function ServiceVariablesTab({
         exported: patch.exported ?? variable.exported,
       },
     });
-    await getEnvironmentsCollection(state.organizationSlug).utils.awaitTxId(
-      receipt.txid,
-    );
+    await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   return (

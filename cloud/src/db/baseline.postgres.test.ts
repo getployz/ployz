@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { PLOYZ_TABLES } from "#/electric/synced-tables.server";
+import { collectionReadInput } from "#/collections/read.contract";
 import {
   type GithubPostgresTestHarness,
   startGithubPostgresTestHarness,
@@ -18,8 +18,8 @@ afterAll(async () => {
   await harness?.stop();
 });
 
-it("creates Electric-ready tables without the retired notification triggers", async () => {
-  const tables = Object.keys(PLOYZ_TABLES).sort();
+it("creates collection tables with default replication identity without the retired notification triggers", async () => {
+  const tables = [...collectionReadInput.fields.table.literals].sort();
   const replication = await harness.pool.query<{
     relname: string;
     relreplident: string;
@@ -30,7 +30,7 @@ it("creates Electric-ready tables without the retired notification triggers", as
     order by relname
   `, [tables]);
   expect(replication.rows.map((row) => row.relname)).toEqual(tables);
-  expect(replication.rows.filter((row) => row.relreplident !== "f")).toEqual([]);
+  expect(replication.rows.filter((row) => row.relreplident !== "d")).toEqual([]);
 
   const triggers = await harness.pool.query(`
     select tgname from pg_trigger

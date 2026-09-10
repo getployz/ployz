@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { type ReactElement, type ReactNode, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -12,7 +13,7 @@ import {
   PlusIcon,
   SlashIcon,
 } from "lucide-react";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   getDashboardDestination,
   getDashboardProjectDestination,
@@ -251,6 +252,7 @@ function CreateEnvironmentDialog({
   projectSlug: string;
   section: DashboardSection;
 }) {
+  const collectionScope = useCollectionScope();
   const [name, setName] = useState("");
   const navigate = useNavigate();
   const createEnvironment = useServerFn(createEnvironmentServerFn);
@@ -260,9 +262,7 @@ function CreateEnvironmentDialog({
         data: { organizationSlug, projectSlug, name },
       }),
     onSuccess: async (receipt) => {
-      await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
-        receipt.txid,
-      );
+      await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(receipt.data);
       onOpenChange(false);
       setName("");
       const destination = getDashboardProjectDestination(

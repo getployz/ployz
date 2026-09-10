@@ -5,8 +5,6 @@ services:
     command:
       - -c
       - listen_addresses=*
-      - -c
-      - wal_level=logical
     ports:
       - '8394:5432'
     environment:
@@ -20,20 +18,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  electric:
-    image: electricsql/electric:latest
-    container_name: ployz-cloud-electric
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ployz_cloud?sslmode=disable
-      # Local development only. Browser requests are authenticated by the
-      # application's Shape proxy, not by this directly exposed service.
-      ELECTRIC_INSECURE: 'true'
-    ports:
-      - '30000:3000'
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   inngest:
     image: inngest/inngest

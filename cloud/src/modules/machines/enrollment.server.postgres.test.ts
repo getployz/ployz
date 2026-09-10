@@ -159,7 +159,6 @@ function enrollmentTestClient(
     env: {
       NODE_ENV: "test",
       DATABASE_URL: "postgres://unused",
-      ELECTRIC_URL: "http://localhost:30000",
       APP_URL: "https://cloud.example.test",
       BETTER_AUTH_SECRET: "better-auth-secret",
       GITHUB_CLIENT_ID: "github-client-id",
@@ -247,7 +246,6 @@ describe("organization enrollment coordinator", () => {
       env: {
         NODE_ENV: "test",
         DATABASE_URL: harness.databaseUrl,
-        ELECTRIC_URL: "http://localhost:30000",
         APP_URL: "https://cloud.example.test",
         BETTER_AUTH_SECRET: "better-auth-secret",
         GITHUB_CLIENT_ID: "github-client-id",

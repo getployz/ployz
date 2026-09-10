@@ -200,7 +200,7 @@ export type DestructiveVolumeSubmissionOutcome =
     };
 export type EnvironmentPublicationSubmissionOutcome =
   | { state: "saved" }
-  | { state: "deployment_queued"; txid: number }
+  | { state: "deployment_queued" }
   | Extract<
       DestructiveVolumeSubmissionOutcome,
       { state: "review_updated_evidence" }

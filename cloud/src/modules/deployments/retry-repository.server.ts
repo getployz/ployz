@@ -11,7 +11,7 @@ import {
 } from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import {
   listCoreOperationEvidencePageEffect,
 } from "#/modules/operations/core-operation-evidence.server";
@@ -106,7 +106,7 @@ export const createRetryAttempt = Effect.fn("Deployments.createRetryAttempt")(
         message: "Only failed deployment attempts can be retried.",
       });
     }
-    const created = yield* withMutationReceipt(
+    const created = yield* withMutationResult(
       Effect.gen(function* () {
         const { drizzle: tx } = yield* Database;
         yield* admitActiveDeploymentAttempt(input.environmentId);

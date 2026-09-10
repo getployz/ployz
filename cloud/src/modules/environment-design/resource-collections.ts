@@ -2,7 +2,7 @@ import { createLiveQueryCollection, eq, toArray, type Collection, type UtilsReco
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { variableGroupDocumentRecord, volumeDocumentRecord, volumeIsVisible, type VolumeHistory, type ResourceDocumentView } from "./resource-document";
 
-import type { getRawEnvironmentResourcesCollection, getResourceLineagesCollection, getCanvasPositionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemoveAttemptsCollection } from "#/electric/collections";
+import type { getRawEnvironmentResourcesCollection, getResourceLineagesCollection, getCanvasPositionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemoveAttemptsCollection } from "#/collections/collections";
 import type { getEnvironmentDocumentsCollection } from "./environment-document.collection";
 
 type Source<C> = C extends Collection<infer Row, infer Key, infer _Utils, infer Schema, infer Input>
@@ -20,12 +20,12 @@ type VolumeSources = ResourceSources & {
 
 function resourceDocumentRows(organizationSlug: string, type: "variable_group" | "volume", { resources, lineages, positions, documents }: ResourceSources) {
   const resourcePositions = createLiveQueryCollection({
-    id: `electric:${organizationSlug}:${type}-positions`, startSync: true,
+    id: `collections:${organizationSlug}:${type}-positions`, gcTime: 1,
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.resourceType, type)),
     getKey: (position) => position.resourceId,
   });
   return createLiveQueryCollection({
-    id: `electric:${organizationSlug}:${type}-document-rows`, startSync: true,
+    id: `collections:${organizationSlug}:${type}-document-rows`, gcTime: 1,
     query: (q) => q.from({ resource: resources })
       .where(({ resource }) => eq(resource.implementationType, type))
       .innerJoin({ lineage: lineages }, ({ resource, lineage }) => eq(resource.lineageId, lineage.id))
@@ -53,7 +53,7 @@ function documentView(row: ReturnType<typeof resourceDocumentRows> extends { val
 export function createEnvironmentResourcesCollection(input: { organizationSlug: string; sources: ResourceSources }) {
   const rows = resourceDocumentRows(input.organizationSlug, "variable_group", input.sources);
   return createLiveQueryCollection({
-    id: `electric:${input.organizationSlug}:variable-group-resources`, startSync: true,
+    id: `collections:${input.organizationSlug}:variable-group-resources`, gcTime: 1,
     query: (q) => q.from({ row: rows })
       .fn.where(({ row }) => row.document.intent.variableGroups.some((node) => node.resourceId === row.resource.id))
       .fn.select(({ row }) => {
@@ -69,7 +69,7 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
   const resources = resourceDocumentRows(input.organizationSlug, "volume", input.sources);
   const { snapshots, removals } = input.sources;
   const rows = createLiveQueryCollection({
-    id: `electric:${input.organizationSlug}:volume-history`, startSync: true,
+    id: `collections:${input.organizationSlug}:volume-history`, gcTime: 1,
     query: (q) => q.from({ resource: input.sources.resources })
       .where(({ resource }) => eq(resource.implementationType, "volume"))
       .select(({ resource }) => ({ resourceId: resource.id,
@@ -85,19 +85,20 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
     })),
   });
   const withHistory = createLiveQueryCollection({
-    id: `electric:${input.organizationSlug}:volume-document-history`, startSync: true,
+    id: `collections:${input.organizationSlug}:volume-document-history`, gcTime: 1,
     query: (q) => q.from({ history: rows }).fn.select(({ history }) => {
-      const dates = history.removals.flatMap((removal) =>
+      // Correlated arrays can be null while a refreshed parent row is removed.
+      const dates = (history.removals ?? []).flatMap((removal) =>
         removal.terminalAt ? [removal.terminalAt] : [],
       );
       return { resourceId: history.resourceId, history: {
-        snapshot: history.snapshots[0] ?? null,
+        snapshot: history.snapshots?.[0] ?? null,
         removedAt: dates.length ? new Date(Math.max(...dates.map((date) => date.getTime()))) : null,
       } satisfies VolumeHistory };
     }),
   });
   return createLiveQueryCollection({
-    id: `electric:${input.organizationSlug}:volume-resources`, startSync: true,
+    id: `collections:${input.organizationSlug}:volume-resources`, gcTime: 1,
     query: (q) => q.from({ row: resources })
       .innerJoin({ history: withHistory }, ({ row, history }) => eq(row.resource.id, history.resourceId))
       .fn.where(({ row, history }) => volumeIsVisible(documentView(row), history.history))

@@ -1,13 +1,16 @@
+import { cachedByCollectionScope } from "#/collections/scope";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { compileEnvironmentIntent } from "@ployz/sdk/config";
 import { createLiveQueryCollection, eq, useLiveQuery } from "@tanstack/react-db";
-import { getEnvironmentsCollection, getProjectsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
 import { plainRowCollection, withoutVirtualProps } from "#/lib/tanstack-db";
 
-function createEnvironmentDocumentsCollection(organizationSlug: string) {
-  const environments = getEnvironmentsCollection(organizationSlug);
-  const projects = getProjectsCollection(organizationSlug);
+export function createEnvironmentDocumentsCollection(organizationSlug: string, { environments, projects }: {
+  environments: ReturnType<typeof getEnvironmentsCollection>;
+  projects: ReturnType<typeof getProjectsCollection>;
+}) {
   return plainRowCollection(createLiveQueryCollection({
-    id: `electric:${organizationSlug}:environment-documents`, startSync: true,
+    id: `collections:${organizationSlug}:environment-documents`, gcTime: 1,
     query: (q) => q.from({ environment: environments })
       .innerJoin({ project: projects }, ({ environment, project }) => eq(environment.projectId, project.id))
       .fn.select(({ environment, project }) => ({ ...withoutVirtualProps(environment), projectSlug: project.slug,
@@ -16,17 +19,14 @@ function createEnvironmentDocumentsCollection(organizationSlug: string) {
     getKey: (document) => document.id,
   }));
 }
-const documents = new Map<string, ReturnType<typeof createEnvironmentDocumentsCollection>>();
-export function getEnvironmentDocumentsCollection(organizationSlug: string) {
-  const existing = documents.get(organizationSlug);
-  if (existing) return existing;
-  const collection = createEnvironmentDocumentsCollection(organizationSlug);
-  documents.set(organizationSlug, collection);
-  return collection;
-}
+export const getEnvironmentDocumentsCollection = cachedByCollectionScope((organizationSlug, scope) =>
+  createEnvironmentDocumentsCollection(organizationSlug, {
+    environments: getEnvironmentsCollection(organizationSlug, scope),
+    projects: getProjectsCollection(organizationSlug, scope),
+  }));
 
 export function useEnvironmentDocument(organizationSlug: string, environmentId: string | null) {
-  const collection = getEnvironmentDocumentsCollection(organizationSlug);
+  const collection = getEnvironmentDocumentsCollection(organizationSlug, useCollectionScope());
   return useLiveQuery((q) => q.from({ document: collection })
     .where(({ document }) => eq(document.id, environmentId ?? "")).findOne(), [collection, environmentId]).data;
 }

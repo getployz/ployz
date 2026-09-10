@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { redirect, useMatch } from "@tanstack/react-router";
@@ -23,7 +24,7 @@ import {
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
 import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/environment-node-names";
-import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collections";
+import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
@@ -73,15 +74,16 @@ function serviceConfig(
 export function useServiceDrawerState(
   params: ServiceRouteParams,
 ): ServiceDrawerState | null {
+  const collectionScope = useCollectionScope();
   const collection = useServicesCollection(params.organizationSlug);
   const serviceWriter = useServiceWriter(params.organizationSlug);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     params.organizationSlug,
   );
   const canvasPositions = useCanvasPositionsCollection(params.organizationSlug);
-  const documents = getEnvironmentDocumentsCollection(params.organizationSlug);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const nodeIntroductions = getEnvironmentNodeIntroductionsCollection(
-    params.organizationSlug,
+    params.organizationSlug, collectionScope,
   );
   const environmentMatch = useMatch({
     from: ENVIRONMENT_ROUTE_FROM,

@@ -155,4 +155,6 @@ Cloud installs the published `@ployz/sdk`, including platform bindings, pinned t
 
 Production cutover uses the existing Railway **Ployz Dashboard / production / web** service: change its source to `getployz/ployz2`, branch `main`, and root directory `/cloud`. Keep its existing variables, domains, and `pnpm db:migrate` pre-deploy command. This repository change does not apply those hosted settings.
 
-Cloud migrations now start from one fresh baseline for the planned Railway reset. Apply it only to an empty Cloud database with a fresh Drizzle migration journal. Reset Electric's persisted sync state together with Postgres before cutover, then run `pnpm db:migrate` from `cloud/`. Historical migrations remain in the original dashboard repository history.
+Cloud migrations now start from one fresh baseline for the planned Railway reset. Apply it only to an empty Cloud database with a fresh Drizzle migration journal. Run `pnpm db:migrate` from `cloud/`. Historical migrations remain in the original dashboard repository history.
+
+Cloud collection reads use the authenticated API and Postgres. Start the local services with `docker compose up -d` from `cloud/`, configure `.env` from `.env.example`, run `pnpm db:migrate`, and start `pnpm dev`. Active collections refresh every 15 seconds while visible, on focus/reconnect, and immediately after local edits. Runtime streaming and busy-operation polling retain their existing cadence.

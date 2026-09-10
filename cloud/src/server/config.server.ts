@@ -46,9 +46,6 @@ const rawConfig = Config.all({
     Config.withDefault("production"),
   ),
   databaseUrl: Config.url("DATABASE_URL"),
-  electricUrl: Config.url("ELECTRIC_URL"),
-  electricSecret: optional(Config.schema(NonEmptySecret, "ELECTRIC_SECRET")),
-  electricSourceId: optional(Config.nonEmptyString("ELECTRIC_SOURCE_ID")),
   appUrl: Config.url("APP_URL"),
   port: Config.port("PORT").pipe(Config.withDefault(3000)),
   betterAuthSecret: Config.schema(NonEmptySecret, "BETTER_AUTH_SECRET"),
@@ -181,11 +178,6 @@ const makeAppConfig = Effect.gen(function* () {
     nodeEnv: raw.nodeEnv,
     app: { url: raw.appUrl, port: raw.port },
     database: { url: raw.databaseUrl },
-    electric: {
-      url: raw.electricUrl,
-      secret: raw.electricSecret,
-      sourceId: raw.electricSourceId,
-    },
     auth: {
       secret: raw.betterAuthSecret,
       trustedOrigins: raw.betterAuthTrustedOrigins,

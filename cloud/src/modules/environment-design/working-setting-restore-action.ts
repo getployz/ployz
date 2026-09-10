@@ -4,12 +4,13 @@ import { projectServiceDeploymentConfig, type ServiceDeploymentConfig } from "./
 import type { EnvironmentDocument } from "./working-state-repository.server";
 import type { RestoreWorkingDocumentInput } from "./working-document-restore";
 
-export function createWorkingSettingRestoreAction({ environments, environmentId, organizationSlug, restore, awaitTxId }: {
-  environments: Pick<Collection<EnvironmentDocument>, "get" | "update">;
+export function createWorkingSettingRestoreAction({ environments, environmentId, organizationSlug, restore }: {
+  environments: Pick<Collection<EnvironmentDocument>, "get" | "update"> & {
+    writeCommitted: (row: EnvironmentDocument) => Promise<void>;
+  };
   environmentId: string;
   organizationSlug: string;
-  restore: (input: { data: RestoreWorkingDocumentInput }) => Promise<{ txid: number }>;
-  awaitTxId: (txid: number) => Promise<void>;
+  restore: (input: { data: RestoreWorkingDocumentInput }) => Promise<{ data: EnvironmentDocument }>;
 }) {
   return createOptimisticAction<{
     serviceId: string;
@@ -32,12 +33,12 @@ export function createWorkingSettingRestoreAction({ environments, environmentId,
       });
     },
     mutationFn: async ({ serviceId, revision, path, snapshotSource }) => {
-      const receipt = await restore({ data: {
+      const result = await restore({ data: {
         organizationSlug: organizationSlug, environmentId, revision,
         snapshotSource,
         command: { kind: "node", nodeType: "service", nodeId: serviceId, path },
       } });
-      await awaitTxId(receipt.txid);
+      await environments.writeCommitted(result.data);
     },
   });
 }

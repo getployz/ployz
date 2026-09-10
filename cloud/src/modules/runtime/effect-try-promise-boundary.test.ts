@@ -16,7 +16,6 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "routes/api/enroll/-handlers.ts",
   "routes/api/auth/github.ts",
   "routes/api/github/-webhook.handler.ts",
-  "electric/table-sync-request.server.ts",
 ]);
 
 function walk(dir: string): string[] {

@@ -1,3 +1,5 @@
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { restoreWorkingDocumentServerFn } from "#/modules/environment-design/working-document-restore.functions";
 import { createWorkingSettingRestoreAction } from "#/modules/environment-design/working-setting-restore-action";
@@ -7,8 +9,8 @@ import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
-  getEnvironmentDeploymentsCollection, getEnvironmentsCollection,
-} from "#/electric/collections";
+  getEnvironmentsCollection,
+} from "#/collections/collections";
 import type {
   CanvasEnvironmentChangeGroup,
   CanvasEnvironmentChangeState,
@@ -73,6 +75,7 @@ export function useCanvasChangeActions({
   setCommitMessage,
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
+  const collectionScope = useCollectionScope();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   function workingReview() {
     if (!document) throw new Error("Environment is not loaded.");
@@ -81,10 +84,10 @@ export function useCanvasChangeActions({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const serviceWriter = useServiceWriter(params.organizationSlug);
-  const environments = getEnvironmentsCollection(params.organizationSlug);
+  const environments = getEnvironmentsCollection(params.organizationSlug, collectionScope);
   const restoreWorkingSetting = createWorkingSettingRestoreAction({
     environments, environmentId, organizationSlug: params.organizationSlug,
-    restore: restoreWorkingDocumentServerFn, awaitTxId: async (txid) => { await environments.utils.awaitTxId(txid); },
+    restore: restoreWorkingDocumentServerFn,
   });
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
@@ -138,12 +141,7 @@ export function useCanvasChangeActions({
           },
         });
 
-      if (result.state === "deployment_queued") {
-        await getEnvironmentDeploymentsCollection(
-          params.organizationSlug,
-        ).utils.awaitTxId(result.txid);
-      }
-
+      await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
       await queryClient.invalidateQueries({
         queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
           params.organizationSlug,
@@ -174,7 +172,6 @@ export function useCanvasChangeActions({
     command: EnvironmentSavedStateDiscardCommand,
   ) {
     const receipt: {
-      txid: number;
       data: { savedStateSnapshotId: string };
     } = await discardSavedChange({
         data: {
@@ -184,6 +181,7 @@ export function useCanvasChangeActions({
           command,
         },
       });
+    await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
     await refreshExplicitChangeState();
     return receipt;
   }
@@ -203,11 +201,11 @@ export function useCanvasChangeActions({
     }
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await restoreWorkingDocumentServerFn({ data: {
+    const result = await restoreWorkingDocumentServerFn({ data: {
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: workingSnapshotSource, command: { kind: "all" },
     } });
-    await environments.utils.awaitTxId(receipt.txid);
+    await environments.writeCommitted(result.data);
   }
 
   async function discardServiceChanges(serviceId: string) {
@@ -237,12 +235,12 @@ export function useCanvasChangeActions({
   ) {
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await restoreWorkingDocumentServerFn({ data: {
+    const result = await restoreWorkingDocumentServerFn({ data: {
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: plan.kind === "delete" ? null : snapshotSource,
       command: { kind: "node", nodeType: plan.node.type, nodeId: plan.node.id },
     } });
-    await environments.utils.awaitTxId(receipt.txid);
+    await environments.writeCommitted(result.data);
   }
 
   async function discardVolumeChanges(group: CanvasEnvironmentChangeGroup) {

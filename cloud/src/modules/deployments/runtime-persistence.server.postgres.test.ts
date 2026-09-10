@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
 import type { ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
 import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { getPloyzTable } from "#/electric/synced-tables.server";
+import { collectionReadInput } from "#/collections/read.contract";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {
@@ -208,7 +208,7 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     expect(publicRow?.status).toBe("failed");
     expect(JSON.stringify([privateRow, publicRow])).not.toContain("never-publish-outcome");
-    expect(getPloyzTable("environment_deployment_secret")).toBeNull();
+    expect(collectionReadInput.fields.table.literals).not.toContain("environment_deployment_secret");
   });
 
   it("persists preview and promotes a confirmed whole target to Applied", async () => {

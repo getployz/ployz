@@ -1,3 +1,5 @@
+import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
@@ -20,7 +22,7 @@ import {
   getResourceLineagesCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment-collection";
 import {
   createEnvironmentResourcesCollection,
@@ -48,12 +50,12 @@ export type EnvironmentParams = {
   environmentSlug: string;
 };
 
-function createServicesCollection(organizationSlug: string) {
-  const identities = getRawServicesCollection(organizationSlug);
-  const documents = getEnvironmentDocumentsCollection(organizationSlug);
+function createServicesCollection(organizationSlug: string, scope: CollectionScope) {
+  const identities = getRawServicesCollection(organizationSlug, scope);
+  const documents = getEnvironmentDocumentsCollection(organizationSlug, scope);
   return createLiveQueryCollection({
-    id: `electric:${organizationSlug}:services-with-context`,
-    startSync: true,
+    id: `collections:${organizationSlug}:services-with-context`,
+    gcTime: 1,
     query: (q) => q.from({ identity: identities })
       .innerJoin({ document: documents }, ({ identity, document }) => eq(identity.environmentId, document.id))
       .fn.where(({ identity, document }) => document.intent.services.some((node) => node.id === identity.id))
@@ -76,9 +78,10 @@ export type ServiceWriter = {
 
 function createServiceWriter(
   organizationSlug: string,
+  scope: CollectionScope,
   services: ReturnType<typeof createServicesCollection>,
 ): ServiceWriter {
-  const environments = getEnvironmentsCollection(organizationSlug);
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
   type Edit = { serviceId: string; environmentId: string; revision: string;
     settings: ServiceDeploymentFieldSelection };
   const persist = createOptimisticAction<Edit>({
@@ -96,10 +99,10 @@ function createServiceWriter(
     },
     mutationFn: async ({ serviceId, environmentId, revision, settings }) => {
       try {
-        const receipt = await updateServiceServerFn({
+        const result = await updateServiceServerFn({
           data: { organizationSlug, environmentId, serviceId, revision, ...settings },
         });
-        await environments.utils.awaitTxId(receipt.txid);
+        await environments.writeCommitted(result.data);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Something went wrong while saving this field.");
         throw error;
@@ -134,68 +137,69 @@ export function getCanvasPositionCollectionKey(
   return `${item.resourceType}:${item.resourceId}`;
 }
 
-function cachedByOrganization<T>(create: (organizationSlug: string) => T) {
-  const cache = new Map<string, T>();
+const getServicesCollection = cachedByCollectionScope(createServicesCollection);
 
-  return (organizationSlug: string): T => {
-    const existing = cache.get(organizationSlug);
-    if (existing) return existing;
-
-    const value = create(organizationSlug);
-    cache.set(organizationSlug, value);
-    return value;
-  };
-}
-
-const getServicesCollection = cachedByOrganization(createServicesCollection);
-
-const getServiceWriter = cachedByOrganization((organizationSlug) =>
+const getServiceWriter = cachedByCollectionScope((organizationSlug, scope) =>
   createServiceWriter(
     organizationSlug,
-    getServicesCollection(organizationSlug),
+    scope,
+    getServicesCollection(organizationSlug, scope),
   ),
 );
 
-const getVariableWriter = cachedByOrganization(createVariableWriter);
+const getVariableWriter = cachedByCollectionScope(createVariableWriter);
 
-function resourceSources(organizationSlug: string) {
+function resourceSources(organizationSlug: string, scope: CollectionScope) {
   return {
-    resources: getRawEnvironmentResourcesCollection(organizationSlug),
-    lineages: getResourceLineagesCollection(organizationSlug),
-    positions: getCanvasPositionsCollection(organizationSlug),
-    documents: getEnvironmentDocumentsCollection(organizationSlug),
+    resources: getRawEnvironmentResourcesCollection(organizationSlug, scope),
+    lineages: getResourceLineagesCollection(organizationSlug, scope),
+    positions: getCanvasPositionsCollection(organizationSlug, scope),
+    documents: getEnvironmentDocumentsCollection(organizationSlug, scope),
   };
 }
 
-const getEnvironmentResourcesCollection = cachedByOrganization(
-  (organizationSlug) =>
+const getEnvironmentResourcesCollection = cachedByCollectionScope(
+  (organizationSlug, scope) =>
     createEnvironmentResourcesCollection({
       organizationSlug,
-      sources: resourceSources(organizationSlug),
+      sources: resourceSources(organizationSlug, scope),
     }),
 );
 
-const getVolumeResourcesCollection = cachedByOrganization(
-  (organizationSlug) =>
+const getVolumeResourcesCollection = cachedByCollectionScope(
+  (organizationSlug, scope) =>
     createVolumeResourcesCollection({
       organizationSlug,
       sources: {
-        ...resourceSources(organizationSlug),
-        snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug),
-        removals: getVolumeRemoveAttemptsCollection(organizationSlug),
+        ...resourceSources(organizationSlug, scope),
+        snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope),
+        removals: getVolumeRemoveAttemptsCollection(organizationSlug, scope),
       },
     }),
 );
 
 export type ServicesCollection = ReturnType<typeof getServicesCollection>;
-export const useServicesCollection = getServicesCollection;
-export const useServiceWriter = getServiceWriter;
-export const useEnvironmentResourcesCollection =
-  getEnvironmentResourcesCollection;
-export const useVolumeResourcesCollection = getVolumeResourcesCollection;
-export const useCanvasPositionsCollection = getCanvasPositionsCollection;
-export const useDeploymentsCollection = getOrganizationDeploymentsCollection;
-export const useVariableWriter = getVariableWriter;
+export function useServicesCollection(organizationSlug: string) {
+  return getServicesCollection(organizationSlug, useCollectionScope());
+}
+export function useServiceWriter(organizationSlug: string) {
+  return getServiceWriter(organizationSlug, useCollectionScope());
+}
+export function useEnvironmentResourcesCollection(organizationSlug: string) {
+  return getEnvironmentResourcesCollection(organizationSlug, useCollectionScope());
+}
+export function useVolumeResourcesCollection(organizationSlug: string) {
+  return getVolumeResourcesCollection(organizationSlug, useCollectionScope());
+}
+export function useCanvasPositionsCollection(organizationSlug: string) {
+  return getCanvasPositionsCollection(organizationSlug, useCollectionScope());
+}
+export function useDeploymentsCollection(organizationSlug: string) {
+  return getOrganizationDeploymentsCollection(organizationSlug, useCollectionScope());
+}
+export function useVariableWriter(organizationSlug: string) {
+  return getVariableWriter(organizationSlug, useCollectionScope());
+}
 
 export function buildEnvironmentServicesViewQuery(
   q: InitialQueryBuilder,

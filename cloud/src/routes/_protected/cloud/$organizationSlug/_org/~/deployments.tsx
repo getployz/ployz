@@ -1,3 +1,4 @@
+import { preloadCollection } from "#/collections/query-collection";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Await, createFileRoute } from "@tanstack/react-router";
 import { RocketIcon } from "lucide-react";
@@ -11,7 +12,7 @@ import {
   getProjectsCollection,
   getRawEnvironmentResourcesCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import {
   Empty,
   EmptyDescription,
@@ -26,20 +27,14 @@ export const Route = createFileRoute(
 )({
   loader: ({ params, context }) => {
     const organizationSlug = params.organizationSlug;
-    const baseUrl = context.tableSyncBaseUrl;
+    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
     const deploymentsReady = Promise.all([
-      getEnvironmentDeploymentsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
-      getProjectsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentNodeConfigSnapshotsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
-      getRawEnvironmentResourcesCollection(organizationSlug, baseUrl).preload(),
-      getVolumeRemoveAttemptsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
+      preloadCollection(getProjectsCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
+      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
+      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
     ]);
 
     return { deploymentsReady };

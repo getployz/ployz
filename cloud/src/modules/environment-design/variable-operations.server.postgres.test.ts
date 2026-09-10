@@ -29,7 +29,7 @@ import {
 } from "./variable-operations.server";
 
 it.live(
-  "authorizes variable writes, redacts secrets, and reconciles every transaction receipt",
+  "authorizes variable writes, redacts secrets, and commits related rows atomically",
   () =>
     Effect.gen(function* () {
       const container = yield* postgresTestContainer;
@@ -40,7 +40,6 @@ it.live(
             ConfigProvider.fromEnv({
               env: {
                 DATABASE_URL: container.url.href,
-                ELECTRIC_URL: "http://localhost:30000",
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",
                 GITHUB_CLIENT_ID: "github-client-id",
@@ -139,7 +138,8 @@ it.live(
         const plainRows = yield* database.drizzle.execute<{ txid: string }>(
           sql`select xmin::text as txid from variable where id = ${plainId}
               union all select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
-        assert.deepStrictEqual(plainRows.map((row) => Number(row.txid)), [plain.txid, plain.txid]);
+        assert.strictEqual(plainRows.length, 2);
+        assert.strictEqual(new Set(plainRows.map((row) => row.txid)).size, 1);
 
         const sealed = yield* createVariableGroupVariable(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
@@ -160,7 +160,8 @@ it.live(
           sql`select xmin::text as txid from variable where id = ${sealedVariable.id}
               union all select xmin::text as txid from variable_secret where variable_id = ${sealedVariable.id}
               union all select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
-        assert.deepStrictEqual(secretRows.map((row) => Number(row.txid)), [sealed.txid, sealed.txid, sealed.txid]);
+        assert.strictEqual(secretRows.length, 3);
+        assert.strictEqual(new Set(secretRows.map((row) => row.txid)).size, 1);
 
         const invalidTransition = yield* Effect.flip(
           updateVariableGroupVariable(actor, {
@@ -210,9 +211,10 @@ it.live(
         assert.deepStrictEqual(bulk.data.intent.services[0]?.variables.map((variable) => [variable.key, variable.value]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), [
           ["HOST", { kind: "literal", value: "127.0.0.1" }], ["PORT", { kind: "literal", value: "3000" }],
         ]);
-        const bulkRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`select xmin::text as txid from environment where id = ${environmentRecord.id}`, "objects");
-        assert.strictEqual(Number(bulkRows[0]?.txid), bulk.txid);
+        assert.strictEqual(
+          (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
+          bulk.data.revision,
+        );
       }).pipe(Effect.provide(layer));
     }),
   60_000,

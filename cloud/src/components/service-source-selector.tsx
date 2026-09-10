@@ -1,3 +1,5 @@
+import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
+import { useLoaderData } from "@tanstack/react-router";
 import {
   type ReactNode,
   Suspense,
@@ -13,10 +15,12 @@ import {
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   useSuspenseQuery,
+  skipToken,
 } from "@tanstack/react-query";
-import { count, ilike, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import {
@@ -36,7 +40,7 @@ import {
   githubRepoAccessQueryOptions,
   githubKeys,
 } from "#/modules/github/github.queries";
-import { getGithubReposCollection } from "#/modules/github/github.collection";
+import { getGithubReposCollection, getRawGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { toErrorMessage } from "#/lib/error-message";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
@@ -249,7 +253,17 @@ function GitRepoSelectorResults({
   disabled = false,
   onSelectRepo,
 }: GitRepoSelectorProps) {
-  const githubRepos = getGithubReposCollection();
+  const queryClient = useQueryClient();
+  const { session } = useLoaderData({ from: "__root__" });
+  if (!session) throw new Error("Authentication is required.");
+  const scope = { queryClient, userId: session.user.id, sessionId: session.session.id };
+  const raw = getRawGithubReposCollection(scope);
+  // Query errors must repaint even when the collection retains identical rows.
+  const { isError, dataUpdatedAt } = useQuery({
+    queryKey: githubReposQueryKey(scope), queryFn: skipToken, gcTime: 1,
+  });
+  const { isReady: rawReady } = useLiveQuery(raw);
+  const githubRepos = rawReady ? getGithubReposCollection(scope) : undefined;
   const { data: accessState } = useSuspenseQuery(
     githubRepoAccessQueryOptions()
   );
@@ -257,36 +271,37 @@ function GitRepoSelectorResults({
   const normalizedQuery = deferredQuery.trim();
 
   const { data: repoCountRows } =
-    useLiveSuspenseQuery({
-      query: (q) =>
-        q.from({ repo: githubRepos }).select(({ repo }) => ({
-          count: count(repo.id),
-        })),
-    });
+    useLiveQuery((q) => githubRepos
+      ? { gcTime: 1, query: q.from({ repo: githubRepos }).select(({ repo }) => ({ count: count(repo.id) })) }
+      : undefined, [githubRepos]);
 
-  const { data: repos } = useLiveSuspenseQuery(
+  const { data: repos = [], isLoading } = useLiveQuery(
     (q) => {
+      if (!githubRepos) return undefined;
       const repoQuery = q
         .from({ repo: githubRepos })
         .orderBy(({ repo }) => repo.repo_updated_at, "desc");
 
       if (normalizedQuery) {
-        return repoQuery
+        return { gcTime: 1, query: repoQuery
           .where(({ repo }) => ilike(repo.full_name, `%${normalizedQuery}%`))
-          .limit(FILTERED_GITHUB_REPO_LIMIT);
+          .limit(FILTERED_GITHUB_REPO_LIMIT) };
       }
 
-      return repoQuery.limit(INITIAL_GITHUB_REPO_LIMIT);
+      return { gcTime: 1, query: repoQuery.limit(INITIAL_GITHUB_REPO_LIMIT) };
     },
     [githubRepos, normalizedQuery],
   );
-  const repoCount = repoCountRows[0]?.count ?? 0;
+  const repoCount = repoCountRows?.[0]?.count ?? 0;
   const selectorState = getGitRepoSelectorState({
     configured: accessState.configured,
     hasInstallations: accessState.hasInstallations,
     repoCount,
     filteredRepoCount: repos.length,
   });
+
+  if (isError && dataUpdatedAt === 0) return <GithubRepositoryRefreshNotice initial />;
+  if (!rawReady || isLoading) return <SelectorEmpty><Spinner /></SelectorEmpty>;
 
   if (selectorState === "not-configured") {
     return (
@@ -306,6 +321,7 @@ function GitRepoSelectorResults({
 
   return (
     <>
+      {isError && <GithubRepositoryRefreshNotice />}
       <CommandSeparator />
 
       {selectorState === "empty" ? (

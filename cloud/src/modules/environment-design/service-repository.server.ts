@@ -106,8 +106,9 @@ export const insertCanvasPosition = Effect.fn(
       x: Math.round(input.x),
       y: Math.round(input.y),
     })
-    .returning(canvasPositionColumns);
-  return rows[0] === undefined ? null : toCanvasPosition(rows[0]);
+    .returning();
+  if (!rows[0]) return yield* Effect.die("PostgreSQL did not return the canvas position.");
+  return rows[0];
 });
 
 export const upsertCanvasPosition = Effect.fn(
@@ -139,6 +140,7 @@ export const upsertCanvasPosition = Effect.fn(
       ],
       set: { x: Math.round(input.x), y: Math.round(input.y), updatedAt: now },
     })
-    .returning(canvasPositionColumns);
-  return rows[0] === undefined ? null : toCanvasPosition(rows[0]);
+    .returning();
+  if (!rows[0]) return yield* Effect.die("PostgreSQL did not return the canvas position.");
+  return rows[0];
 });

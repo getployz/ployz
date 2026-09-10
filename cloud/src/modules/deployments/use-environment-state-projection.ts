@@ -1,15 +1,17 @@
+import { preloadCollection } from "#/collections/query-collection";
+import type { CollectionScope } from "#/collections/scope";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEffect } from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import {
   queryOptions,
-  type QueryClient,
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentSavedStateRevisionsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import { listLatestOrganizationEnvironmentChangeStatesServerFn } from "#/modules/deployments/deployment.functions";
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";
@@ -33,13 +35,13 @@ function organizationEnvironmentChangeStatesQueryOptions(
 }
 
 export function preloadOrganizationEnvironmentChangeStateProjections(
-  queryClient: QueryClient,
+  scope: CollectionScope,
   organizationSlug: string,
 ) {
   return Promise.all([
-    getEnvironmentDeploymentsCollection(organizationSlug).preload(),
-    getEnvironmentSavedStateRevisionsCollection(organizationSlug).preload(),
-    queryClient.ensureQueryData(
+    preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
+    preloadCollection(getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope)),
+    scope.queryClient.ensureQueryData(
       organizationEnvironmentChangeStatesQueryOptions(organizationSlug),
     ),
   ]);
@@ -49,17 +51,37 @@ export function preloadOrganizationEnvironmentChangeStateProjections(
  * Owns the complete read seam for one environment's explicit change state.
  *
  * Saved and Applied State are projected on the server. Saved revision inserts
- * and deployment lifecycle changes arrive through metadata-only Electric
- * Shapes, so every authoritative projection change invalidates this query.
+ * and deployment lifecycle changes arrive through metadata-only API
+ * collections, so every authoritative projection change invalidates this query.
  */
 export function useEnvironmentChangeStateProjection({
   organizationSlug,
   environmentId,
 }: EnvironmentChangeStateProjectionInput): EnvironmentChangeStateProjection | null {
-  const queryClient = useQueryClient();
-  const deployments = getEnvironmentDeploymentsCollection(organizationSlug);
+  const scope = useCollectionScope();
+  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
   const savedStateRevisions =
-    getEnvironmentSavedStateRevisionsCollection(organizationSlug);
+    getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope);
+  useEnvironmentProjectionRefresh({ organizationSlug, environmentId }, { deployments, savedStateRevisions });
+  const { data: organizationState } = useSuspenseQuery(
+    organizationEnvironmentChangeStatesQueryOptions(organizationSlug),
+  );
+  return environmentId
+    ? (organizationState.find(
+        (state) => state.environmentId === environmentId,
+      ) ?? null)
+    : null;
+}
+
+/** Metadata joins drive refresh independently of the projection's server read. */
+export function useEnvironmentProjectionRefresh(
+  { organizationSlug, environmentId }: EnvironmentChangeStateProjectionInput,
+  { deployments, savedStateRevisions }: {
+    deployments: ReturnType<typeof getEnvironmentDeploymentsCollection>;
+    savedStateRevisions: ReturnType<typeof getEnvironmentSavedStateRevisionsCollection>;
+  },
+) {
+  const queryClient = useQueryClient();
   const { data: deploymentLifecycle = [] } = useLiveQuery(
     (q) => {
       if (!environmentId) return undefined;
@@ -86,9 +108,6 @@ export function useEnvironmentChangeStateProjection({
     },
     [savedStateRevisions, environmentId],
   );
-  const { data: organizationState } = useSuspenseQuery(
-    organizationEnvironmentChangeStatesQueryOptions(organizationSlug),
-  );
   const projectionVersion = [
     ...deploymentLifecycle.map(
       (deployment) =>
@@ -107,9 +126,4 @@ export function useEnvironmentChangeStateProjection({
     });
   }, [environmentId, organizationSlug, projectionVersion, queryClient]);
 
-  return environmentId
-    ? (organizationState.find(
-        (state) => state.environmentId === environmentId,
-      ) ?? null)
-    : null;
 }

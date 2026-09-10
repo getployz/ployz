@@ -1,3 +1,4 @@
+import { preloadCollection } from "#/collections/query-collection";
 import {
   Await,
   createFileRoute,
@@ -14,7 +15,7 @@ import {
   getRawEnvironmentResourcesCollection,
   getRawServicesCollection,
   getResourceLineagesCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
 import {
   EnvironmentCanvasScene,
@@ -26,25 +27,19 @@ export const Route = createFileRoute(
 )({
   loader: ({ params, context }) => {
     const organizationSlug = params.organizationSlug;
-    const baseUrl = context.tableSyncBaseUrl;
+    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
     const canvasReady = Promise.all([
-      getProjectsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
-      getVolumeRemoveAttemptsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
-      getRawServicesCollection(organizationSlug, baseUrl).preload(),
-      getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
-      getRawEnvironmentResourcesCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
-      getResourceLineagesCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentNodeIntroductionsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getProjectsCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
+      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
+      preloadCollection(getRawServicesCollection(organizationSlug, scope)),
+      preloadCollection(getCanvasPositionsCollection(organizationSlug, scope)),
+      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
+      preloadCollection(getResourceLineagesCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentNodeIntroductionsCollection(organizationSlug, scope)),
       preloadOrganizationEnvironmentChangeStateProjections(
-        context.queryClient,
+        scope,
         organizationSlug,
       ),
     ]);

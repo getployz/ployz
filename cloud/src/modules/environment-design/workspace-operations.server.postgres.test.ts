@@ -25,7 +25,6 @@ it.live(
             ConfigProvider.fromEnv({
               env: {
                 DATABASE_URL: container.url.href,
-                ELECTRIC_URL: "http://localhost:30000",
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",
                 GITHUB_CLIENT_ID: "github-client-id",
@@ -80,7 +79,6 @@ it.live(
           { userId: author.id },
           { organizationSlug: "acme" },
         );
-        assert.strictEqual(Number.isSafeInteger(receipt.txid), true);
 
         const committedRows = yield* database.drizzle.execute<{
           txid: string;
@@ -92,10 +90,8 @@ it.live(
           select xmin::text as txid from user_project_preference
           where user_id = ${author.id} and project_id = ${receipt.data.project.id}
         `, "objects");
-        assert.deepStrictEqual(
-          committedRows.map((row) => Number(row.txid)),
-          [receipt.txid, receipt.txid, receipt.txid],
-        );
+        assert.strictEqual(committedRows.length, 3);
+        assert.strictEqual(new Set(committedRows.map((row) => row.txid)).size, 1);
 
         const unauthorized = yield* Effect.flip(
           listProjects(

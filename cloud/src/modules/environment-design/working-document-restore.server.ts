@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { environmentDeployment } from "#/modules/deployments/tables";
 import { Database } from "#/server/database.server";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
 import { emptyEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
@@ -17,7 +17,7 @@ import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introd
 export const restoreWorkingDocument = Effect.fn("EnvironmentDesign.restoreWorkingDocument")(
   function* (actor: Actor, input: RestoreWorkingDocumentInput) {
     yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       yield* requireDocumentRevision(document, input.revision);
       let baseline: SavedEnvironmentIntent | null = null;

@@ -20,9 +20,6 @@ importers:
       '@effect/sql-pg':
         specifier: 4.0.0-rc.112
         version: 4.0.0-rc.112(effect@4.0.0-rc.112)
-      '@electric-sql/client':
-        specifier: ^1.5.25
-        version: 1.5.25
       '@fontsource-variable/geist':
         specifier: ^5.2.9
         version: 5.2.9
@@ -44,9 +41,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.4
         version: 4.2.4(vite@8.0.9(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
-      '@tanstack/electric-db-collection':
-        specifier: ^0.3.15
-        version: 0.3.15(typescript@7.0.1-rc)
+      '@tanstack/query-db-collection':
+        specifier: ^1.2.1
+        version: 1.2.1(@tanstack/query-core@5.101.4)(typescript@7.0.1-rc)
       '@tanstack/react-db':
         specifier: ^0.1.95
         version: 0.1.95(react@19.2.5)(typescript@7.0.1-rc)
@@ -616,10 +613,6 @@ packages:
     peerDependencies:
       effect: ^4.0.0-rc.112
       vitest: '>=4.1.0 <5.0.0'
-
-  '@electric-sql/client@1.5.25':
-    resolution: {integrity: sha512-fq7DwXpYpoIdAY22Vf4EOtS/Tlo9NvTIp7DLbcv/hjDeKqEO4KKxG1lgHvoxF52Htps8f7CM8UX8J5GPpd1Gmw==}
-    hasBin: true
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -1242,9 +1235,6 @@ packages:
   '@js-temporal/polyfill@0.5.1':
     resolution: {integrity: sha512-hloP58zRVCRSpgDxmqCWJNlizAlUgJFqG2ypq79DCvyv9tHjRYMDOcPFjzfl/A1/YxDvRCZz8wvZvmapQnKwFQ==}
     engines: {node: '>=12'}
-
-  '@microsoft/fetch-event-source@2.0.1':
-    resolution: {integrity: sha512-W6CLUJ2eBMw3Rec70qrsEW0jOm/3twwJv21mrmj2yORiaVmVYGS4sSS5yUwvQc1ZlDLYGPnClVWmUUMagKNsfA==}
 
   '@modelcontextprotocol/sdk@1.28.0':
     resolution: {integrity: sha512-gmloF+i+flI8ouQK7MWW4mOwuMh4RePBuPFAEPC6+pdqyWOUMDOixb6qZ69owLJpz6XmyllCouc4t8YWO+E2Nw==}
@@ -2590,11 +2580,6 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@rollup/rollup-darwin-arm64@4.62.4':
-    resolution: {integrity: sha512-krw5uS2STmvJ02x0uTXHbqQNuz+9eZ1iw+qXk9dmW2gvV4jV7O2hEoOnuhFrpOPiel1mBFtqbxYZZtC46hXLOw==}
-    cpu: [arm64]
-    os: [darwin]
-
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
 
@@ -2856,9 +2841,6 @@ packages:
     peerDependencies:
       solid-js: '>=1.9.7'
 
-  '@tanstack/electric-db-collection@0.3.15':
-    resolution: {integrity: sha512-vBnoKpgahLz2QPBK8EDxQROa5kTrXFac4ZVT3lmKxvzjltEOUfqQno5/CyxWXUYniQV38aqpdOZe1ZP0Gf/+gQ==}
-
   '@tanstack/form-core@2.0.0-alpha.0':
     resolution: {integrity: sha512-/Rjkboo2sIVa24cKgwgC05IphV/VsWpvfW7yHNV94zch2YMlPMqD5BZg4v/VMSDrxAwhFi6rYrBG5ZxhAkhmhg==}
     engines: {node: '>=18'}
@@ -2883,6 +2865,12 @@ packages:
 
   '@tanstack/query-core@5.101.4':
     resolution: {integrity: sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==}
+
+  '@tanstack/query-db-collection@1.2.1':
+    resolution: {integrity: sha512-2IwtxdolgPMwLoV7TKaB+1qVGU7ukulacCQqhCt1/50+x/r9sLXF2668fy6OnLd0mEkkEthzCa+J3ZbiA4kNbg==}
+    peerDependencies:
+      '@tanstack/query-core': ^5.0.0
+      typescript: '>=4.7'
 
   '@tanstack/query-devtools@5.101.4':
     resolution: {integrity: sha512-z5IPHnDX3aUWeTWlRKLyooBQekaCAw4xRpZqPQ390RiWTDBcTynjpPT221BArw0u2+pnQMdGvPQI9YNNubBcmA==}
@@ -7367,12 +7355,6 @@ snapshots:
       effect: 4.0.0-rc.112
       vitest: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@26.0.1)(jsdom@29.0.2(@noble/hashes@2.0.1))(msw@2.12.14(@types/node@26.0.1)(typescript@7.0.1-rc))(vite@8.0.9(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
 
-  '@electric-sql/client@1.5.25':
-    dependencies:
-      '@microsoft/fetch-event-source': 2.0.1
-    optionalDependencies:
-      '@rollup/rollup-darwin-arm64': 4.62.4
-
   '@emnapi/core@1.11.1':
     dependencies:
       '@emnapi/wasi-threads': 1.2.2
@@ -7771,8 +7753,6 @@ snapshots:
   '@js-temporal/polyfill@0.5.1':
     dependencies:
       jsbi: 4.3.2
-
-  '@microsoft/fetch-event-source@2.0.1': {}
 
   '@modelcontextprotocol/sdk@1.28.0(zod@3.25.76)':
     dependencies:
@@ -9056,9 +9036,6 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@rollup/rollup-darwin-arm64@4.62.4':
-    optional: true
-
   '@sec-ant/readable-stream@0.4.1': {}
 
   '@sindresorhus/merge-streams@4.0.0': {}
@@ -9311,17 +9288,6 @@ snapshots:
       - csstype
       - utf-8-validate
 
-  '@tanstack/electric-db-collection@0.3.15(typescript@7.0.1-rc)':
-    dependencies:
-      '@electric-sql/client': 1.5.25
-      '@standard-schema/spec': 1.1.0
-      '@tanstack/db': 0.6.17(typescript@7.0.1-rc)
-      '@tanstack/store': 0.9.3
-      debug: 4.4.3
-    transitivePeerDependencies:
-      - supports-color
-      - typescript
-
   '@tanstack/form-core@2.0.0-alpha.0':
     dependencies:
       '@tanstack/pacer-lite': 0.2.2
@@ -9362,6 +9328,13 @@ snapshots:
   '@tanstack/pacer-lite@0.2.2': {}
 
   '@tanstack/query-core@5.101.4': {}
+
+  '@tanstack/query-db-collection@1.2.1(@tanstack/query-core@5.101.4)(typescript@7.0.1-rc)':
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      '@tanstack/db': 0.6.17(typescript@7.0.1-rc)
+      '@tanstack/query-core': 5.101.4
+      typescript: 7.0.1-rc
 
   '@tanstack/query-devtools@5.101.4': {}
 

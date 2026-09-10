@@ -1,6 +1,7 @@
+import type { CollectionScope } from "#/collections/scope";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { type SavedEnvironmentIntent, type SavedVariableIntent } from "@ployz/sdk/config";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import type { VariableRecord } from "./variables";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
 import {
@@ -23,8 +24,8 @@ function variableOwners(intent: SavedEnvironmentIntent) {
   ];
 }
 
-export function createVariableWriter(organizationSlug: string): VariableWriter {
-  const environments = getEnvironmentsCollection(organizationSlug);
+export function createVariableWriter(organizationSlug: string, scope: CollectionScope): VariableWriter {
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
   type Edit = { environmentId: string; revision: string; kind: "insert" | "update" | "delete";
     variable: VariableRecord; authored: SavedVariableIntent | null };
   const persist = createOptimisticAction<Edit>({
@@ -47,16 +48,16 @@ export function createVariableWriter(organizationSlug: string): VariableWriter {
       if (kind !== "delete" && value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
       const data = { ...scope, key: variable.key, description: variable.description, exported: variable.exported,
         value: { type: "plain" as const, value: value.type === "plain" ? value.value : "" } };
-      const receipt = variable.serviceId
-        ? kind === "delete" ? await deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
-          : kind === "insert" ? await createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
-          : await updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } })
+      const result = await (variable.serviceId
+        ? kind === "delete" ? deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
+          : kind === "insert" ? createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
+          : updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } })
         : variable.variableGroupId
-          ? kind === "delete" ? await deleteVariableGroupVariableServerFn({ data: { ...scope, variableGroupId: variable.variableGroupId, variableId: variable.id } })
-            : kind === "insert" ? await createVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, id: variable.id } })
-            : await updateVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, variableId: variable.id } })
-          : (() => { throw new Error("Variable has no owner."); })();
-      await environments.utils.awaitTxId(receipt.txid);
+          ? kind === "delete" ? deleteVariableGroupVariableServerFn({ data: { ...scope, variableGroupId: variable.variableGroupId, variableId: variable.id } })
+            : kind === "insert" ? createVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, id: variable.id } })
+            : updateVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, variableId: variable.id } })
+          : (() => { throw new Error("Variable has no owner."); })());
+      await environments.writeCommitted(result.data);
     },
   });
 

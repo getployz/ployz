@@ -1,16 +1,10 @@
-import { snakeCamelMapper } from "@electric-sql/client";
 import {
-  BasicIndex,
   type Collection,
-  createCollection,
   createLiveQueryCollection,
 } from "@tanstack/react-db";
-import {
-  electricCollectionOptions,
-  type ElectricCollectionConfig,
-} from "@tanstack/electric-db-collection";
-
-import { tableSyncUrl } from "#/electric/table-sync-url";
+import type { QueryClient } from "@tanstack/react-query";
+import { createApiCollection } from "#/collections/query-collection";
+import { readCollectionServerFn } from "#/collections/read.functions";
 import { plainRowCollection } from "#/lib/tanstack-db";
 import type { GithubRepositorySelection } from "#/modules/github/github";
 import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
@@ -21,42 +15,63 @@ type GithubRepositoryView = GithubRepositorySelection & {
   synced_at: string;
 };
 
-let rawGithubRepos: ReturnType<typeof createRawGithubReposCollection> | undefined;
+export type GithubCollectionScope = {
+  queryClient: QueryClient;
+  userId: string;
+  sessionId: string;
+};
 
-function createRawGithubReposCollection() {
-  const config: ElectricCollectionConfig<GithubRepositoryRow> = {
-    id: "electric:github_repository_cache",
-    startSync: true,
-    ["shapeOptions"]: {
-      url: tableSyncUrl("github_repository_cache"),
-      parser: {
-        int8: (value) => Number(value),
-        timestamptz: (value) => new Date(value),
-        timestamp: (value) => new Date(value),
-      },
-      columnMapper: snakeCamelMapper(),
+const scopes = new WeakMap<QueryClient, Map<string, {
+  raw: ReturnType<typeof createRawGithubReposCollection>;
+  view?: Collection<GithubRepositoryView>;
+}>>();
+
+export function githubReposQueryKey(scope: GithubCollectionScope) {
+  return ["collections", scope.sessionId, scope.userId, "github_repository_cache"];
+}
+
+function createRawGithubReposCollection(scope: GithubCollectionScope) {
+  return createApiCollection<GithubRepositoryRow>({
+    queryClient: scope.queryClient,
+    queryKey: githubReposQueryKey(scope),
+    queryFn: async ({ signal }) => {
+      const rows = await readCollectionServerFn({
+        data: { table: "github_repository_cache", userId: scope.userId },
+        signal,
+      });
+      // SAFETY: the literal table selects githubRepositoryCache in the allowlisted read.
+      return rows as GithubRepositoryRow[];
     },
     getKey: (row) => `${row.installationId}:${row.repositoryId}`,
-    autoIndex: "eager",
-    defaultIndexType: BasicIndex,
-  };
-  return createCollection(electricCollectionOptions(config));
+  });
 }
 
-export function getRawGithubReposCollection() {
-  rawGithubRepos ??= createRawGithubReposCollection();
-  return rawGithubRepos;
+function getScope(scope: GithubCollectionScope) {
+  let cache = scopes.get(scope.queryClient);
+  if (!cache) {
+    cache = new Map();
+    scopes.set(scope.queryClient, cache);
+  }
+  const key = `${scope.sessionId}:${scope.userId}`;
+  let entry = cache.get(key);
+  if (!entry) {
+    entry = { raw: createRawGithubReposCollection(scope) };
+    cache.set(key, entry);
+  }
+  return entry;
 }
 
-let githubRepos: ReturnType<typeof createGithubReposCollection> | undefined;
+export function getRawGithubReposCollection(scope: GithubCollectionScope) {
+  return getScope(scope).raw;
+}
 
-function createGithubReposCollection(): Collection<GithubRepositoryView> {
+export function createGithubReposCollection(raw: Collection<GithubRepositoryRow>, id: string): Collection<GithubRepositoryView> {
   return plainRowCollection(
     createLiveQueryCollection({
-      id: "electric:github-repositories",
-      startSync: true,
+      id,
+      gcTime: 1,
       query: (q) =>
-        q.from({ repository: getRawGithubReposCollection() }).fn.select(
+        q.from({ repository: raw }).fn.select(
           ({ repository }): GithubRepositoryView => ({
             id: repository.repositoryId,
             installation_id: repository.installationId,
@@ -76,7 +91,8 @@ function createGithubReposCollection(): Collection<GithubRepositoryView> {
   );
 }
 
-export function getGithubReposCollection() {
-  githubRepos ??= createGithubReposCollection();
-  return githubRepos;
+export function getGithubReposCollection(scope: GithubCollectionScope) {
+  const entry = getScope(scope);
+  entry.view ??= createGithubReposCollection(entry.raw, `api:${scope.sessionId}:github-repositories`);
+  return entry.view;
 }

@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { Suspense } from "react";
 import {
@@ -15,7 +16,7 @@ import {
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
-import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collections";
+import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
   environmentResourceCanvasPositionSchema,
@@ -64,6 +65,7 @@ export function PendingCanvas() {
 }
 
 function CanvasWithData() {
+  const collectionScope = useCollectionScope();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId, organizationId } = useLoaderData({
     from: ENVIRONMENT_ROUTE_FROM,
@@ -78,10 +80,10 @@ function CanvasWithData() {
   const volumeResourcesCollection = useVolumeResourcesCollection(
     params.organizationSlug,
   );
-  const documents = getEnvironmentDocumentsCollection(params.organizationSlug);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   const nodeIntroductionsCollection = getEnvironmentNodeIntroductionsCollection(
-    params.organizationSlug,
+    params.organizationSlug, collectionScope,
   );
   const environmentChangeState = useEnvironmentChangeStateProjection({
     organizationSlug: params.organizationSlug,

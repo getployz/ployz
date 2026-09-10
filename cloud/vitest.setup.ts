@@ -1,6 +1,5 @@
 process.env["NODE_ENV"] ??= "test";
 process.env["DATABASE_URL"] ??= "postgres://postgres:postgres@localhost:5432/ployz_cloud";
-process.env["ELECTRIC_URL"] ??= "http://localhost:30000";
 process.env["APP_URL"] ??= "http://localhost:3000";
 process.env["BETTER_AUTH_SECRET"] ??= "test-better-auth-secret-1234567890";
 process.env["GITHUB_CLIENT_ID"] ??= "test-github-client-id";

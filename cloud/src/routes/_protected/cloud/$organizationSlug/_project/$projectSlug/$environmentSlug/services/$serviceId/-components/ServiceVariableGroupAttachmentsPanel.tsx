@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
@@ -8,7 +9,7 @@ import { Button } from "#/components/ui/button";
 import { Empty, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   attachServiceVariableGroupServerFn,
@@ -79,11 +80,10 @@ export function ServiceVariableGroupAttachmentsPanel({
 }: {
   state: ServiceDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const attachVariableGroup = useServerFn(attachServiceVariableGroupServerFn);
   const detachVariableGroup = useServerFn(detachServiceVariableGroupServerFn);
-  const rawAttachments = getEnvironmentsCollection(
-    state.organizationSlug,
-  );
+  const rawAttachments = getEnvironmentsCollection(state.organizationSlug, collectionScope);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
   );
@@ -128,11 +128,11 @@ export function ServiceVariableGroupAttachmentsPanel({
       };
 
       if (attachment.action === "attach") {
-        const receipt = await attachVariableGroup({ data });
-        await rawAttachments.utils.awaitTxId(receipt.txid);
+        const result = await attachVariableGroup({ data });
+        await rawAttachments.writeCommitted(result.data);
       } else {
-        const receipt = await detachVariableGroup({ data });
-        await rawAttachments.utils.awaitTxId(receipt.txid);
+        const result = await detachVariableGroup({ data });
+        await rawAttachments.writeCommitted(result.data);
       }
     } catch (error) {
       toast.error(

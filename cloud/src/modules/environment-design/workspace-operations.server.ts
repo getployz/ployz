@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { sqlErrorFrom } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import type { Actor } from "#/modules/identity/actor";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import {
   createCanonicalEnvironmentNamespace,
   DEFAULT_ENVIRONMENT_NAME,
@@ -146,7 +146,7 @@ export const createEmptyProject = Effect.fn(
   "EnvironmentDesign.createEmptyProject",
 )(function* (actor: Actor, input: ProjectList) {
   const organization = yield* requireOrganizationForActor(actor, input.organizationSlug);
-  return yield* withMutationReceipt(
+  return yield* withMutationResult(
     Effect.gen(function* () {
       const project = yield* createProject({
         organizationId: organization.id,
@@ -230,7 +230,7 @@ export const createEnvironment = Effect.fn(
   "EnvironmentDesign.createEnvironment",
 )(function* (actor: Actor, input: CreateEnvironment) {
   const context = yield* requireProjectContext(actor, input);
-  const create = withMutationReceipt(
+  const create = withMutationResult(
     createEnvironmentRecord({
       projectId: context.project.id,
       organizationId: context.organization.id,

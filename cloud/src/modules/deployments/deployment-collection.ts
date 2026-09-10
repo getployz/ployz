@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import {
   createLiveQueryCollection,
   eq,
@@ -6,11 +8,12 @@ import {
 } from "@tanstack/react-db";
 import {
   getEnvironmentDeploymentsCollection,
+  getEnvironmentSavedStateRevisionsCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { plainRowCollection } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import {
@@ -19,22 +22,17 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 
-const cache = new Map<string, Collection<EnvironmentDeploymentSummary>>();
-
-export function getOrganizationDeploymentsCollection(organizationSlug: string) {
-  const existing = cache.get(organizationSlug);
-  if (existing) return existing;
-
-  const deployments = getEnvironmentDeploymentsCollection(organizationSlug);
-  const environments = getEnvironmentsCollection(organizationSlug);
-  const projects = getProjectsCollection(organizationSlug);
+export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
+  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
+  const projects = getProjectsCollection(organizationSlug, scope);
   const nodeSnapshots =
-    getEnvironmentNodeConfigSnapshotsCollection(organizationSlug);
-  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug);
+    getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
+  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
   const rows = createLiveQueryCollection({
-    id: `electric:${organizationSlug}:deployment-relationships`,
-    startSync: true,
+    id: `collections:${organizationSlug}:deployment-relationships`,
+    gcTime: 1,
     query: (q) => q
       .from({ deployment: deployments })
       .innerJoin({ environment: environments }, ({ deployment, environment }) =>
@@ -67,8 +65,8 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
   const collection: Collection<EnvironmentDeploymentSummary> =
     plainRowCollection(
       createLiveQueryCollection({
-        id: `electric:${organizationSlug}:deployment-summaries`,
-    startSync: true,
+        id: `collections:${organizationSlug}:deployment-summaries`,
+    gcTime: 1,
     query: (q) =>
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
         const deployment = deploymentRelationships.deployment;
@@ -126,6 +124,15 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
       }),
     );
 
-  cache.set(organizationSlug, collection);
   return collection;
+});
+
+/** Admission and Saved State commands can also replace a queued attempt's history. */
+export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
+  await Promise.all([
+    reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
+    reconcileCollection(getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope)),
+    reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
+    reconcileCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
+  ]);
 }

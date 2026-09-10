@@ -91,8 +91,8 @@ export const createResourceIdentity = Effect.fn("EnvironmentDesign.createResourc
     }
     const [resource] = yield* drizzle.insert(environmentResource).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: lineage.id, implementationType: input.type, variableGroupId: group?.id ?? null }).returning();
     if (!resource) return yield* Effect.die("PostgreSQL did not return resource identity.");
-    yield* upsertResourceCanvasPosition({ ...input, resourceId: resource.id, resourceType: input.type });
-    return { resource, group };
+    const canvasPosition = yield* upsertResourceCanvasPosition({ ...input, resourceId: resource.id, resourceType: input.type });
+    return { resource, group, lineage, canvasPosition };
   },
 );
 
@@ -129,6 +129,7 @@ export const upsertResourceCanvasPosition = Effect.fn(
         updatedAt: new Date(),
       },
     })
-    .returning(canvasPositionColumns);
-  return rows[0] ?? null;
+    .returning();
+  if (!rows[0]) return yield* Effect.die("PostgreSQL did not return the canvas position.");
+  return rows[0];
 });

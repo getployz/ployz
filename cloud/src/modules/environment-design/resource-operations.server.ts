@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { captureEnvironmentNodeIntroduction } from "./environment-node-introduction.repository.server";
 import type { Actor } from "#/modules/identity/actor";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { slugifySegment } from "#/utils/slug";
 import { getDuplicateEnvironmentNodeNameMessage, isEnvironmentNodeNameTaken, resolveUniqueEnvironmentNodeName } from "./environment-node-names";
 import { environmentDesignFields } from "./fields";
@@ -15,16 +15,16 @@ import { Conflict, NotFound } from "#/server/public-error";
 const createResource = Effect.fn("EnvironmentDesign.createResource")(
   function* (actor: Actor, input: CreateVolumeResourceInput, type: "variable_group" | "volume") {
     const context = yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       const name = resolveUniqueEnvironmentNodeName({ name: input.name, nodes: yield* listEnvironmentNodeNameIdentities(input.environmentId), schema: environmentDesignFields.resource.name, maxLength: 64 });
       const slug = slugifySegment(name) || (type === "volume" ? "volume" : "variable-group");
-      const { resource, group } = yield* createResourceIdentity({ ...input, projectId: context.project.id, name, slug, type });
+      const { resource, group, lineage, canvasPosition } = yield* createResourceIdentity({ ...input, projectId: context.project.id, name, slug, type });
       if (group) document.intent.variableGroups.push({ resourceId: resource.id, resourceLineageId: resource.lineageId, variableGroupId: group.id, variableGroupLineageId: group.lineageId, name, slug, variables: [] });
       else document.intent.volumes.push({ resourceId: resource.id, resourceLineageId: resource.lineageId, name });
-      yield* writeEnvironmentDocument(document, document.intent);
-      yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: type, nodeId: resource.id });
-      return resource.id;
+      const environment = yield* writeEnvironmentDocument(document, document.intent);
+      const introduction = yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: type, nodeId: resource.id });
+      return { resource, lineage, canvasPosition, environment, introduction };
     }));
   },
 );
@@ -32,24 +32,24 @@ const createResource = Effect.fn("EnvironmentDesign.createResource")(
 export const createVariableGroupResource = Effect.fn("EnvironmentDesign.createVariableGroupResource")(
   function* (actor: Actor, input: CreateVariableGroupResourceInput) {
     const receipt = yield* createResource(actor, input, "variable_group");
-    const data = yield* getVariableGroupResource(input.environmentId, receipt.data);
+    const data = yield* getVariableGroupResource(input.environmentId, receipt.data.resource.id);
     if (!data) return yield* new NotFound({ message: "Variable group not found." });
-    return { ...receipt, data };
+    return { ...receipt.data, data };
   },
 );
 export const createVolumeResource = Effect.fn("EnvironmentDesign.createVolumeResource")(
   function* (actor: Actor, input: CreateVolumeResourceInput) {
     const receipt = yield* createResource(actor, input, "volume");
-    const data = yield* getVolumeResource(input.environmentId, receipt.data);
+    const data = yield* getVolumeResource(input.environmentId, receipt.data.resource.id);
     if (!data) return yield* new NotFound({ message: "Volume not found." });
-    return { ...receipt, data };
+    return { ...receipt.data, data };
   },
 );
 
 const editResource = Effect.fn("EnvironmentDesign.editResource")(
   function* (actor: Actor, input: DeleteVolumeResourceInput & { name?: string }, type: "variable_group" | "volume") {
     yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       yield* requireDocumentRevision(document, input.revision);
       const node = (type === "volume" ? document.intent.volumes : document.intent.variableGroups).find((node) => node.resourceId === input.resourceId);
@@ -97,7 +97,7 @@ export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   if (resource === null) {
     return yield* new NotFound({ message: "Resource not found." });
   }
-  return yield* withMutationReceipt(
+  return yield* withMutationResult(
     upsertResourceCanvasPosition({
       ...input,
       resourceType: resource.implementationType,

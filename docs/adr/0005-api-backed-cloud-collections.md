@@ -1,0 +1,3 @@
+# API-backed Cloud collections
+
+Replace ElectricSQL with authenticated API reads backed by TanStack Query collections to reduce operational dependencies. TanStack DB remains essential: preserve its collection queries and optimistic mutation mechanics while replacing Electric-specific synchronization and transaction acknowledgements. Refresh active collections every 15 seconds while the page is visible and on focus or reconnect to pick up other users' and background jobs' changes; reconcile local mutations immediately through TanStack DB, without cross-tab broadcasting or new push infrastructure. Preserve the separate runtime SSE stream and existing operation-specific polling.

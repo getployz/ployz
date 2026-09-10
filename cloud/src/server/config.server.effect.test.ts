@@ -4,7 +4,6 @@ import { AppConfig } from "#/server/config.server";
 
 const requiredEnvironment = {
   DATABASE_URL: "postgres://postgres:postgres@localhost:5432/ployz_cloud",
-  ELECTRIC_URL: "http://localhost:30000",
   APP_URL: "http://localhost:3000",
   BETTER_AUTH_SECRET: "better-auth-secret",
   GITHUB_CLIENT_ID: "github-client-id",
@@ -22,16 +21,14 @@ const load = (environment: Record<string, string>) =>
   );
 
 describe("AppConfig", () => {
-  it.effect("loads defaults and keeps secrets redacted", () =>
+  it.effect("loads startup configuration without Electric and keeps secrets redacted", () =>
     Effect.gen(function* () {
       const config = yield* load({
         ...requiredEnvironment,
-        ELECTRIC_SECRET: "",
       });
 
       assert.strictEqual(config.app.port, 3000);
       assert.strictEqual(config.ployz.installerUrl.href, "https://ployz.sh/");
-      assert.strictEqual(config.electric.secret, undefined);
       assert.strictEqual(String(config.auth.secret), "<redacted>");
       assert.strictEqual(Redacted.value(config.auth.secret), "better-auth-secret");
       assert.deepStrictEqual(config.polar, { mode: "self_hosted" });

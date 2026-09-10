@@ -18,13 +18,9 @@ import {
 } from "../utils/theme";
 import appCss from "../styles.css?url";
 import type { QueryClient } from "@tanstack/react-query";
-import { getTableSyncBaseUrl } from "#/electric/table-sync-url";
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
 }>()({
-  beforeLoad: async () => ({
-    tableSyncBaseUrl: await getTableSyncBaseUrl(),
-  }),
   loader: async () => {
     const theme = getTheme();
     const session = await getAuthSession();

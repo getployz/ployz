@@ -1,3 +1,5 @@
+import { OrganizationCollectionRefreshNotice } from "#/components/organization-collection-refresh-notice";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import DashboardHeader from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardHeader";
 import {
   WireframeContent,
@@ -15,6 +17,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org")
 });
 
 function RouteComponent() {
+  const scope = useCollectionScope();
   const params = useParams({ from: "/_protected/cloud/$organizationSlug" });
 
   return (
@@ -48,10 +51,11 @@ function RouteComponent() {
         </WireframeNav>
         <WireframeContent
           className="h-[calc(100dvh-var(--top-nav-height))] overflow-hidden"
-          surfaceClassName="min-h-0 overflow-y-auto"
+          surfaceClassName="flex min-h-0 flex-col overflow-y-auto"
         >
           <NavigationProgress />
-          <Outlet />
+          <OrganizationCollectionRefreshNotice scope={scope} organizationSlug={params.organizationSlug} />
+          <div className="min-h-0 flex-1"><Outlet /></div>
         </WireframeContent>
       </Wireframe>
     </SidebarProvider>

@@ -9,7 +9,7 @@ import { environmentNodeIntroduction } from "#/modules/runtime/tables";
 import { decodeStrict } from "./schema";
 import { loadCurrentEnvironmentState, writeEnvironmentDocument } from "./working-state-repository.server";
 import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { canonicalizeEnvironmentIntent, compileEnvironmentIntent } from "@ployz/sdk/config";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
@@ -51,7 +51,6 @@ it.live(
             ConfigProvider.fromEnv({
               env: {
                 DATABASE_URL: container.url.href,
-                ELECTRIC_URL: "http://localhost:30000",
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",
                 GITHUB_CLIENT_ID: "github-client-id",
@@ -211,13 +210,14 @@ it.live(
           select xmin::text as txid from environment where id = ${environmentRecord.id}
           union all select xmin::text as txid from variable_secret where variable_id = ${variableId}
           union all select xmin::text as txid from service_registry_credential where service_id = ${serviceId}`, "objects");
-        assert.deepStrictEqual(written.map((row) => Number(row.txid)), [restored.txid, restored.txid, restored.txid]);
+        assert.strictEqual(written.length, 3);
+        assert.strictEqual(new Set(written.map((row) => row.txid)).size, 1);
         // Identity validation is inside the single write boundary, including restores.
         const candidate = structuredClone(restored.data.intent);
         const first = candidate.services[0];
         if (!first) return yield* Effect.die("Service missing.");
         first.lineageId = volume.data.resource.lineageId;
-        const identityError = yield* Effect.flip(withMutationReceipt(writeEnvironmentDocument(restored.data, candidate)));
+        const identityError = yield* Effect.flip(withMutationResult(writeEnvironmentDocument(restored.data, candidate)));
         assert.strictEqual(identityError._tag, "Conflict");
         assert.strictEqual((yield* revision()), restored.data.revision);
       }).pipe(Effect.provide(layer));
