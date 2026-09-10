@@ -1,10 +1,10 @@
-//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`, founder callback.
+//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`, enrollment callback.
 
 use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    PairingCredential, Registered, StorageChoice, WireGuardPublicKey,
+    PairingCredential, Registered, StorageChoice, TailcatCapability, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -12,7 +12,6 @@ use thiserror::Error;
 const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-// Healthy production enroll measured 8.15s for Relay List + registerHeld.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Failures talking to Cloud enroll.
@@ -28,8 +27,6 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
-    #[error("Cloud response must not carry a Dial Credential")]
-    DialOffered,
     #[error(
         "Cloud {operation} failed: {detail}; rerun the same ployz cloud enroll command without --reset (keep all other options)"
     )]
@@ -45,10 +42,7 @@ impl Error {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
                 crate::setup_retry::transient_http(error)
             }
-            Self::Json(_)
-            | Self::Status { .. }
-            | Self::DialOffered
-            | Self::RetrySameCommand { .. } => false,
+            Self::Json(_) | Self::Status { .. } | Self::RetrySameCommand { .. } => false,
         }
     }
 }
@@ -145,19 +139,15 @@ pub(crate) enum Response {
     },
 }
 
-/// Enrollment protocol 2 is a coordinated compatibility break. Unknown fields
-/// remain harmless, while state-shaping fields are required. `dial` remains a
-/// deliberate rejection: a Machine must never hold Dial.
+/// Enrollment responses admit only the declared wire fields.
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
         #[serde(default)]
         storage: StorageChoice,
         registration: Box<Registered>,
-        #[serde(default)]
-        dial: Option<serde::de::IgnoredAny>,
     },
     NotYet {
         #[serde(default, rename = "retryAfter")]
@@ -168,8 +158,6 @@ enum EnrollWire {
         pairing: CloudPairing,
         #[serde(default)]
         storage: StorageChoice,
-        #[serde(default)]
-        dial: Option<serde::de::IgnoredAny>,
     },
 }
 
@@ -179,7 +167,7 @@ pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/api/enroll/{}", cloud_origin(cloud_url), token.as_str())
 }
 
-/// Final founder commit: `POST /api/enroll/<token>/callback`.
+/// Final enrollment completion: `POST /api/enroll/<token>/callback`.
 #[must_use]
 pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/callback", enroll_url(cloud_url, token))
@@ -197,15 +185,19 @@ fn cloud_origin(cloud_url: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnrollCallback<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tailcat: Option<&'a TailcatCapability>,
     machine_id: MachineId,
     pairing_credential: &'a PairingCredential,
 }
 
 /// POST identity until Cloud returns `initialize` or `join`.
 ///
-/// Transport errors and `not_yet` are retried with backoff. A timed-out enroll
-/// is safe to repeat: the Organization claim keeps the same founder and joins
-/// are idempotent.
+/// Only pre-dispatch connection failures and explicit `not_yet` responses retry.
+/// A lost response may follow Register dispatch; the caller must explicitly
+/// resume the same saved enrollment attempt instead of replaying it here.
 ///
 /// # Errors
 ///
@@ -218,7 +210,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
             &mut (),
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
-            Error::is_transport,
+            |error| matches!(error, Error::Connect(_)),
             async |_| post_json(&http, url, identity).await,
         )
         .await
@@ -247,7 +239,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
     }
 }
 
-/// POST the founder Machine ID and Pairing Credential after Relay Register is held.
+/// Request enrollment completion after publishing its protected connection candidate.
 ///
 /// # Errors
 ///
@@ -257,28 +249,78 @@ pub(crate) async fn callback(
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
 ) -> Result<(), Error> {
+    post_callback(url, machine_id, pairing_credential, None).await
+}
+
+/// Publish a candidate against the authenticated enrollment attempt before completion.
+pub(crate) async fn publish(
+    url: &str,
+    machine_id: MachineId,
+    pairing_credential: &PairingCredential,
+    tailcat: &TailcatCapability,
+) -> Result<(), Error> {
+    post_callback(url, machine_id, pairing_credential, Some(tailcat)).await
+}
+
+async fn post_callback(
+    url: &str,
+    machine_id: MachineId,
+    pairing_credential: &PairingCredential,
+    tailcat: Option<&TailcatCapability>,
+) -> Result<(), Error> {
     let http = http_client()?;
     let body = EnrollCallback {
+        stage: tailcat.map(|_| "publish"),
+        tailcat,
         machine_id,
         pairing_credential,
     };
+    let operation = if tailcat.is_some() {
+        "candidate publication"
+    } else {
+        "enrollment completion"
+    };
     crate::setup_retry::run(
         &mut (),
-        &format!("Cloud founder completion at {}", diagnostic_origin(url)),
+        &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
         Error::is_transport,
-        async |_| post_json(&http, url, &body).await.map(|_| ()),
+        async |_| {
+            post_json(&http, url, &body)
+                .await
+                .map(|_| ())
+                .map_err(|error| {
+                    // Both stages carry credentials; a server may echo them in any encoding.
+                    if let Error::Status { status, .. } = error {
+                        Error::Status {
+                            status,
+                            body: format!("{operation} rejected"),
+                        }
+                    } else {
+                        error
+                    }
+                })
+        },
     )
     .await
     .map_err(|error| Error::RetrySameCommand {
-        operation: "founder completion",
+        operation,
         detail: error.to_string(),
     })
 }
 
 fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>) -> Error {
     match error {
-        crate::setup_retry::Error::Permanent(error) => error,
+        crate::setup_retry::Error::Permanent(error) => {
+            if matches!(error, Error::Timeout(_) | Error::Http(_)) {
+                Error::RetrySameCommand {
+                    operation,
+                    detail: format!("response lost; enrollment outcome may be uncertain: {error}"),
+                }
+            } else {
+                error
+            }
+        }
         crate::setup_retry::Error::Exhausted(detail) => {
             Error::RetrySameCommand { operation, detail }
         }
@@ -336,14 +378,10 @@ async fn post_json(
 
 fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
     match serde_json::from_slice::<EnrollWire>(bytes)? {
-        EnrollWire::Join { dial: Some(_), .. } | EnrollWire::Initialize { dial: Some(_), .. } => {
-            Err(Error::DialOffered)
-        }
         EnrollWire::Join {
             pairing,
             storage,
             registration,
-            dial: None,
         } => Ok(Response::Join(Box::new(Join {
             pairing,
             storage,
@@ -356,7 +394,6 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             resumed,
             pairing,
             storage,
-            dial: None,
         } => Ok(Response::Initialize {
             mode: if resumed {
                 InitializeMode::Resume
@@ -376,11 +413,7 @@ mod tests {
     use super::*;
 
     fn pairing() -> CloudPairing {
-        CloudPairing::parse(
-            "https://relay.example.invalid",
-            PairingCredential::parse("pairing-secret").unwrap(),
-        )
-        .unwrap()
+        CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
     }
 
     fn registration() -> Registered {
@@ -429,7 +462,6 @@ mod tests {
             "kind": "join",
             "storage": "zfs",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
             "registration": registration(),
@@ -445,41 +477,42 @@ mod tests {
     }
 
     #[test]
-    fn pairing_with_a_dial_field_is_rejected() {
+    fn pairing_with_an_unknown_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "join",
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
-                "dial": "dial-credential",
+                "unexpectedCredential": "unexpected-value",
             },
             "registration": registration(),
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("Dial Credential"), "{error}");
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
-    fn top_level_dial_is_rejected() {
+    fn top_level_unknown_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "join",
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
             "registration": registration(),
-            "dial": "dial-credential",
+            "unexpectedCredential": "unexpected-value",
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("Dial Credential"), "{error}");
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
-    fn enrollment_rejects_invalid_relay_endpoint() {
-        let error = parse_enroll(br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"not-a-url","secret":"pairing-secret"}}"#).unwrap_err();
-        assert!(error.to_string().contains("Relay endpoint"), "{error}");
+    fn enrollment_rejects_empty_pairing_credential() {
+        let error = parse_enroll(
+            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":""}}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Pairing Credential"), "{error}");
     }
 
     #[test]
@@ -489,7 +522,6 @@ mod tests {
             "resumed": false,
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
         });
@@ -505,33 +537,30 @@ mod tests {
 
     #[test]
     fn initialize_requires_the_protocol_two_resume_directive() {
-        let error = parse_enroll(
-            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
-        )
-        .unwrap_err();
+        let error = parse_enroll(br#"{"kind":"initialize","pairing":{"secret":"pairing-secret"}}"#)
+            .unwrap_err();
         assert!(error.to_string().contains("resumed"), "{error}");
     }
 
     #[test]
-    fn initialize_pairing_with_a_dial_field_is_rejected() {
+    fn initialize_pairing_with_an_unknown_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "initialize",
             "resumed": false,
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
-                "dial": "dial-credential",
+                "unexpectedCredential": "unexpected-value",
             },
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("Dial Credential"), "{error}");
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
     fn enrollment_defaults_missing_storage_to_none() {
         let Response::Initialize { storage, .. } = parse_enroll(
-            br#"{"kind":"initialize","resumed":false,"pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
+            br#"{"kind":"initialize","resumed":false,"pairing":{"secret":"pairing-secret"}}"#,
         )
         .unwrap() else {
             panic!("expected initialize");
@@ -559,25 +588,14 @@ mod tests {
     }
 
     #[test]
-    fn enroll_ignores_fields_the_cloud_adds_later() {
-        let Response::NotYet { retry_after } =
-            parse_enroll(br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#)
-                .unwrap()
-        else {
-            panic!("expected not_yet");
-        };
-        assert_eq!(retry_after, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn initialize_ignores_fields_the_cloud_adds_later() {
-        let Response::Initialize { pairing: parsed, .. } = parse_enroll(
-            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
-        )
-        .unwrap() else {
-            panic!("expected initialize");
-        };
-        assert_eq!(parsed, pairing());
+    fn enrollment_rejects_unknown_fields() {
+        for payload in [
+            br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#.as_slice(),
+            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#.as_slice(),
+        ] {
+            let error = parse_enroll(payload).unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
     }
 
     fn identity() -> EnrollIdentity {
@@ -603,7 +621,6 @@ mod tests {
             "kind": "join",
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
             "registration": registration(),
@@ -680,30 +697,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enroll_retries_transport_error_then_joins() {
-        let (listener, url) = listen().await;
-        let body = join_body();
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            read_http(&mut stream).await;
-            drop(stream);
-            let (mut stream, _) = listener.accept().await.unwrap();
-            read_http(&mut stream).await;
-            let response = http_response(200, "OK", &body);
-            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+    async fn enrollment_never_reposts_after_losing_a_dispatched_response() {
+        for timeout in [false, true] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                if timeout {
+                    tokio::time::pause();
+                    tokio::time::advance(REQUEST_TIMEOUT).await;
+                    tokio::time::resume();
+                }
+                drop(stream);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                        .await
+                        .is_err()
+                );
+            });
+            let error = tokio::time::timeout(Duration::from_secs(25), enroll(&url, &identity()))
                 .await
-                .unwrap();
-        });
-        let Outcome::Join(join) = enroll(&url, &identity()).await.unwrap() else {
-            panic!("expected join");
-        };
-        assert_eq!(join.pairing, pairing());
-        assert_eq!(join.registration, registration());
+                .expect("lost response must return without retrying")
+                .unwrap_err();
+            assert!(error.to_string().contains("uncertain"), "{error}");
+            assert!(error.to_string().contains("without --reset"), "{error}");
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
-    async fn held_enrollment_and_callback_requests_retry_within_stage_budget() {
-        for completing in [false, true] {
+    async fn enrollment_publication_and_completion_retry_within_stage_budget() {
+        for stage in ["publish", "complete"] {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
                 let (mut held, _) = listener.accept().await.unwrap();
@@ -716,18 +740,23 @@ mod tests {
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();
                 read_http(&mut retry).await;
-                let body = if completing {
-                    b"{}".to_vec()
-                } else {
-                    join_body()
-                };
+                let body = b"{}".to_vec();
                 tokio::io::AsyncWriteExt::write_all(&mut retry, &http_response(200, "OK", &body))
                     .await
                     .unwrap();
                 drop(held);
             });
             tokio::time::timeout(Duration::from_secs(25), async {
-                if completing {
+                if stage == "publish" {
+                    publish(
+                        &url,
+                        MachineId::random(),
+                        &PairingCredential::parse("pairing-secret").unwrap(),
+                        &TailcatCapability::parse("fixture-tailcat-capability").unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                } else {
                     callback(
                         &url,
                         MachineId::random(),
@@ -735,16 +764,59 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                } else {
-                    assert!(matches!(
-                        enroll(&url, &identity()).await.unwrap(),
-                        Outcome::Join(_)
-                    ));
                 }
                 server.await.unwrap();
             })
             .await
             .expect("held request must retry before the stage deadline");
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_errors_redact_capability_and_pairing_credentials() {
+        for publishing in [true, false] {
+            let (listener, url) = listen().await;
+            let secret = "secret-tailcat-capability";
+            let pairing = "pairing-secret";
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                tokio::io::AsyncWriteExt::write_all(
+                    &mut stream,
+                    &http_response(400, "Error", format!("{secret} {pairing}").as_bytes()),
+                )
+                .await
+                .unwrap();
+            });
+            let credential = PairingCredential::parse(pairing).unwrap();
+            let (result, operation) = if publishing {
+                (
+                    publish(
+                        &url,
+                        MachineId::random(),
+                        &credential,
+                        &TailcatCapability::parse(secret).unwrap(),
+                    )
+                    .await,
+                    "candidate publication",
+                )
+            } else {
+                (
+                    callback(&url, MachineId::random(), &credential).await,
+                    "enrollment completion",
+                )
+            };
+            let error = result.unwrap_err();
+            for rendered in [error.to_string(), format!("{error:?}")] {
+                assert!(!rendered.contains(secret));
+                assert!(!rendered.contains(pairing));
+            }
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("HTTP 400: {operation} rejected"))
+            );
+            assert!(error.to_string().contains("without --reset"));
         }
     }
 

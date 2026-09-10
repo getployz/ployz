@@ -9,6 +9,8 @@ export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "s
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
 
+export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
+
 export type ByteQuantity = number;
 
 export type CapabilityName = string;
@@ -292,6 +294,8 @@ accepts_ingress: boolean, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
+export type LocalMachinePhase = "uninitialized" | "joining" | "participating" | "resetting" | string;
+
 export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogDriver = { name: string, options: { [key in string]: string }, };
@@ -316,9 +320,25 @@ accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubne
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
+export type MachineDetails = { id: MachineId, phase: LocalMachinePhase, machine: Machine | null, public_key: WireGuardPublicKey, advertised_endpoints: Array<AdvertisedEndpoint>, store_version: { [key in string]: number }, rtts: Array<RttObservation>,
+/**
+ * Stored Cloud Pairing is present. The Pairing Credential is not returned.
+ */
+cloud_paired: boolean,
+/**
+ * Fresh telemetry requested only by targeted inspect.
+ */
+telemetry: TelemetryObservation | null,
+/**
+ * Current local storage evidence when the daemon advertises support.
+ */
+storage: MachineStorageObservation | null, };
+
 export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 
 export type MachineId = string & { readonly __brand: "MachineId" };
+
+export type MachineIdentity = { id: MachineId, name: MachineName, };
 
 export type MachineLabelKey = string;
 
@@ -373,6 +393,40 @@ export type MachineSubnet = string;
 export type MachineSuccess<T> = { machine_id: MachineId, value: T, };
 
 export type MachineTarget = string;
+
+export type MachineTelemetry = {
+/**
+ * Unix timestamp when this observation began.
+ */
+observed_at_unix_seconds: number,
+/**
+ * Ployz-managed Docker Container count.
+ */
+managed_containers: number,
+/**
+ * Host logical CPU count.
+ */
+cpu_count: number,
+/**
+ * One-minute host load average multiplied by 1,000.
+ */
+load_average_milli: number,
+/**
+ * Host memory total in bytes.
+ */
+memory_total_bytes: number,
+/**
+ * Host memory available in bytes.
+ */
+memory_available_bytes: number,
+/**
+ * Docker-root filesystem size in bytes.
+ */
+docker_root_total_bytes: number,
+/**
+ * Docker-root filesystem free bytes.
+ */
+docker_root_free_bytes: number, };
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
@@ -617,6 +671,8 @@ export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue
 
 export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | string;
 
+export type RttObservation = { peer_id: string, address: string, machine: MachineIdentity | null, statistics: RttStatistics, };
+
 export type RttStatistics = { median_ns: number, population_stddev_ns: number, };
 
 export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled";
@@ -844,6 +900,22 @@ message: string, } | { "code": "volume_size_conflict",
 name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
+
+export type TailcatRemoval = { expected_pairing: string, expected: string, successor: string, };
+
+export type TelemetryObservation = { "scope": "bridge_capacity",
+/**
+ * Fresh Ployz bridge endpoint capacity.
+ */
+bridge: BridgeEndpointCapacity, } | { "scope": "full",
+/**
+ * Fresh host telemetry.
+ */
+host: MachineTelemetry,
+/**
+ * Fresh Ployz bridge endpoint capacity.
+ */
+bridge: BridgeEndpointCapacity, };
 
 export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: string, };
 

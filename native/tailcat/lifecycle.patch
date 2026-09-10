@@ -1,0 +1,510 @@
+diff --git a/lifecycle_test.go b/lifecycle_test.go
+new file mode 100644
+index 000000000..5d0ad4e6f
+--- /dev/null
++++ b/lifecycle_test.go
+@@ -0,0 +1,249 @@
++package tailcat
++
++import (
++	"context"
++	"io"
++	"net"
++	"runtime"
++	"testing"
++	"time"
++
++	"tailscale.com/ipn/ipnstate"
++	"tailscale.com/tstest/integration"
++	"tailscale.com/types/key"
++)
++
++// Churn uses injected expiry; final cleanup exercises the real sweep timer.
++// All connections use a local DERP fixture.
++func TestBoundedClientLifecycle(t *testing.T) {
++	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derp"), "127.0.0.1")
++	started := make(chan struct{}, 1)
++	finished := make(chan struct{}, 1)
++	s := &Server{Region: dm.Regions[1], MaxClients: 4, ClientIdleTimeout: 2 * time.Second,
++		OnTCP: func(uint16) func(net.Conn) {
++			return func(c net.Conn) {
++				defer c.Close()
++				started <- struct{}{}
++				io.Copy(c, c)
++				finished <- struct{}{}
++			}
++		}}
++	if err := s.Start(); err != nil {
++		t.Fatal(err)
++	}
++	defer s.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	c := &Client{Server: s.TailcatAddr()}
++	defer c.Close()
++	conn, err := c.DialTCPPort(ctx, 80)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	conn.SetDeadline(time.Now().Add(25 * time.Second))
++	select {
++	case <-started:
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	echo := func() {
++		t.Helper()
++		if _, err := conn.Write([]byte("ok")); err != nil {
++			t.Fatal(err)
++		}
++		var got [2]byte
++		if _, err := io.ReadFull(conn, got[:]); err != nil {
++			t.Fatal(err)
++		}
++		if string(got[:]) != "ok" {
++			t.Fatal(string(got[:]))
++		}
++	}
++	echo()
++	for round := 0; round < 32; round++ {
++		// A meow is unauthenticated admission: no PSK proof, no successful TCP.
++		for i := 0; i < 3; i++ {
++			if !s.lb.onMeow(key.NewNode().Public(), key.NewDisco().Public()) {
++				t.Fatal("unexpected cap")
++			}
++		}
++		if s.lb.onMeow(key.NewNode().Public(), key.NewDisco().Public()) {
++			t.Fatal("admission cap exceeded")
++		}
++		s.lb.expireClients(time.Now().Add(2 * time.Hour))
++		s.lb.mu.Lock()
++		retained, lifetimes, peers := len(s.lb.clients), len(s.lb.lifetimes), len(s.lb.nm.Peers)
++		s.lb.mu.Unlock()
++		if retained != 1 || lifetimes != 1 || peers != 1 {
++			t.Fatalf("retained %d/%d/%d", retained, lifetimes, peers)
++		}
++		echo() // established WireGuard/TCP stream survives unrelated peer removal.
++	}
++	for round := 0; round < 3; round++ {
++		wrong, err := ParseAddr(s.TailcatAddr())
++		if err != nil {
++			t.Fatal(err)
++		}
++		wrong.PresharedKey = NewPresharedKey()
++		invalid := &Client{Server: wrong.Addr()}
++		attempt, stop := context.WithTimeout(ctx, 500*time.Millisecond)
++		stream, err := invalid.DialTCPPort(attempt, 80)
++		stop()
++		invalid.Close()
++		if err == nil {
++			stream.Close()
++			t.Fatal("wrong PSK established TCP")
++		}
++		s.lb.mu.Lock()
++		_, admitted := s.lb.clients[invalid.PublicKey()]
++		s.lb.mu.Unlock()
++		if !admitted {
++			t.Fatal("wrong-PSK test never reached admission")
++		}
++		s.lb.expireClients(time.Now().Add(2 * time.Hour))
++		s.lb.mu.Lock()
++		retained, lifetimes, peers := len(s.lb.clients), len(s.lb.lifetimes), len(s.lb.nm.Peers)
++		s.lb.mu.Unlock()
++		if retained != 1 || lifetimes != 1 || peers != 1 || enginePeers(s) != 1 {
++			t.Fatal("invalid handshake retained peer state")
++		}
++		echo()
++	}
++	for round := 0; round < 8; round++ {
++		transient := &Client{Server: s.TailcatAddr()}
++		stream, err := transient.DialTCPPort(ctx, 80)
++		if err != nil {
++			transient.Close()
++			t.Fatal(err)
++		}
++		stream.SetDeadline(time.Now().Add(5 * time.Second))
++		select {
++		case <-started:
++		case <-ctx.Done():
++			t.Fatal(ctx.Err())
++		}
++		if _, err := stream.Write([]byte("ok")); err != nil {
++			t.Fatal(err)
++		}
++		var got [2]byte
++		if _, err := io.ReadFull(stream, got[:]); err != nil {
++			t.Fatal(err)
++		}
++		stream.Close()
++		select {
++		case <-finished:
++		case <-ctx.Done():
++			t.Fatal(ctx.Err())
++		}
++		for {
++			s.lb.mu.Lock()
++			life := s.lb.lifetimes[transient.PublicKey()]
++			idle := life != nil && life.active == 0
++			s.lb.mu.Unlock()
++			if idle {
++				break
++			}
++			select {
++			case <-ctx.Done():
++				t.Fatal(ctx.Err())
++			default:
++				runtime.Gosched()
++			}
++		}
++		transient.Close()
++		s.lb.expireClients(time.Now().Add(2 * time.Hour))
++		s.lb.mu.Lock()
++		retained := len(s.lb.clients)
++		s.lb.mu.Unlock()
++		if retained != 1 {
++			t.Fatalf("successful churn retained %d clients", retained)
++		}
++		if enginePeers(s) != 1 {
++			t.Fatal("successful churn retained engine peers")
++		}
++		echo()
++	}
++	// Destroy a client network stack with its TCP connection still open, like
++	// a killed helper. The survivor stays silent and must ACK keepalive probes.
++	vanished := &Client{Server: s.TailcatAddr()}
++	abandoned, err := vanished.DialTCPPort(ctx, 80)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer abandoned.Close()
++	select {
++	case <-started:
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	vanished.Close()
++	select {
++	case <-finished:
++	case <-ctx.Done():
++		t.Fatal("vanished client pinned handler")
++	}
++	sweep := time.NewTicker(10 * time.Millisecond)
++	for {
++		s.lb.mu.Lock()
++		retained := len(s.lb.clients)
++		s.lb.mu.Unlock()
++		if retained == 1 && enginePeers(s) == 1 {
++			break
++		}
++		select {
++		case <-sweep.C:
++		case <-ctx.Done():
++			t.Fatal("vanished client retained peer")
++		}
++	}
++	sweep.Stop()
++	echo()
++	conn.Close()
++	select {
++	case <-finished:
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	// Handler defer updates lifetime just after sending finished; wait on its mutex
++	// through a completion barrier rather than a timing assumption.
++	for {
++		s.lb.mu.Lock()
++		active := 0
++		for _, life := range s.lb.lifetimes {
++			active += life.active
++		}
++		s.lb.mu.Unlock()
++		if active == 0 {
++			break
++		}
++		select {
++		case <-ctx.Done():
++			t.Fatal(ctx.Err())
++		default:
++			runtime.Gosched()
++		}
++	}
++	// No injected expiry here: prove the production timer clears the last peer.
++	poll := time.NewTicker(10 * time.Millisecond)
++	defer poll.Stop()
++	for {
++		s.lb.mu.Lock()
++		empty := len(s.lb.clients) == 0 && len(s.lb.nm.Peers) == 0 && len(s.lb.lifetimes) == 0
++		s.lb.mu.Unlock()
++		if empty && enginePeers(s) == 0 {
++			break
++		}
++		select {
++		case <-poll.C:
++		case <-ctx.Done():
++			t.Fatal("timer failed to remove successful peer")
++		}
++	}
++}
++
++func enginePeers(s *Server) int {
++	sb := &ipnstate.StatusBuilder{WantPeers: true}
++	s.lb.sys.Engine.Get().UpdateStatus(sb)
++	return len(sb.Status().Peer)
++}
+diff --git a/tailcat.go b/tailcat.go
+index 41cd966fe..46dc3bb53 100644
+--- a/tailcat.go
++++ b/tailcat.go
+@@ -64,6 +64,7 @@
+ 	"github.com/tailscale/wireguard-go/device"
+ 	go4mem "go4.org/mem"
+ 	"go4.org/netipx"
++	"gvisor.dev/gvisor/pkg/tcpip"
+ 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+ 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+ 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+@@ -353,12 +354,18 @@ type locoBackend struct {
+ 	// peer map lookup. Set before createEngine.
+ 	onDERPRecv func(regionID tailcfg.DERPRegionID, src key.NodePublic, pkt []byte) bool
+ 
+-	mu             sync.Mutex
+-	clients        map[key.NodePublic]*tailcfg.Node // for the server
+-	nm             *netmap.NetworkMap
+-	allowedClients map[key.NodePublic]bool // or nil map for all
+-	eps            []netip.AddrPort        // our current local UDP endpoints, sorted
+-	closeOnce      sync.Once
++	mu                sync.Mutex
++	clients           map[key.NodePublic]*tailcfg.Node // for the server
++	lifetimes         map[key.NodePublic]*clientLifetime
++	maxClients        int
++	clientIdleTimeout time.Duration
++	nextClientID      tailcfg.NodeID
++	stopCleanup       chan struct{}
++	cleanupDone       chan struct{}
++	nm                *netmap.NetworkMap
++	allowedClients    map[key.NodePublic]bool // or nil map for all
++	eps               []netip.AddrPort        // our current local UDP endpoints, sorted
++	closeOnce         sync.Once
+ }
+ 
+ func (b *locoBackend) derpRegionID() tailcfg.DERPRegionID {
+@@ -373,6 +380,10 @@ func (b *locoBackend) derpRegionID() tailcfg.DERPRegionID {
+ 
+ func (b *locoBackend) Close() error {
+ 	b.closeOnce.Do(func() {
++		if b.stopCleanup != nil {
++			close(b.stopCleanup)
++			<-b.cleanupDone
++		}
+ 		if b.ns != nil {
+ 			b.ns.Close()
+ 		}
+@@ -401,6 +412,13 @@ func (b *locoBackend) Close() error {
+ // configuration fields, then call [Server.Start], which picks
+ // defaults for anything unset.
+ type Server struct {
++	// MaxClients bounds retained peer admissions. Zero disables the bound.
++	MaxClients int
++	// ClientIdleTimeout expires admissions with no running TCP handler.
++	// Handlers must remain running until their connection closes. Zero disables
++	// cleanup. UDP handlers are unsupported with this option.
++	ClientIdleTimeout time.Duration
++
+ 	// Key is the server's node identity.
+ 	// If zero, Start generates a new ephemeral key.
+ 	Key key.NodePrivate
+@@ -580,7 +598,15 @@ func (s *Server) Start() error {
+ 		return fmt.Errorf("missing RegionID in %v", logger.AsJSON(reg))
+ 	}
+ 
++	if s.MaxClients < 0 || s.ClientIdleTimeout < 0 {
++		return errors.New("invalid client lifecycle limits")
++	}
++	if s.ClientIdleTimeout > 0 && (s.OnUDP != nil || s.OnUDPForward != nil) {
++		return errors.New("client idle cleanup requires TCP-only server")
++	}
+ 	lb := newLocoBackend(priv, psk)
++	lb.maxClients = s.MaxClients
++	lb.clientIdleTimeout = s.ClientIdleTimeout
+ 	lb.logf = logf
+ 	lb.dm = &tailcfg.DERPMap{}
+ 	mak.Set(&lb.dm.Regions, reg.RegionID, reg)
+@@ -609,6 +635,7 @@ func (s *Server) Start() error {
+ 	sys.Set(store)
+ 
+ 	lb.isServer = true
++	admissions := make(chan struct{}, 64)
+ 	lb.onDERPRecv = func(regionID tailcfg.DERPRegionID, src key.NodePublic, pkt []byte) bool {
+ 		if !IsMeowPacket(pkt) {
+ 			return false
+@@ -618,7 +645,13 @@ func (s *Server) Start() error {
+ 		}
+ 		if _, discoPub, ok := ParseMeowPing(pkt); ok {
+ 			mc := lb.sys.MagicSock.Get()
++			select {
++			case admissions <- struct{}{}:
++			default:
++				return true
++			}
+ 			go func() {
++				defer func() { <-admissions }()
+ 				// Only reply once the client is fully added as a peer:
+ 				// "meowed" is the ack that tells the client it can
+ 				// start dialing. Disallowed clients get no reply.
+@@ -647,7 +680,7 @@ func (s *Server) Start() error {
+ 			if s.OnTCP == nil {
+ 				return nil, true // send RST
+ 			}
+-			return s.OnTCP(dst.Port()), true
++			return lb.trackTCP(src.Addr(), s.OnTCP(dst.Port())), true
+ 		}
+ 		if s.OnTCPForward == nil {
+ 			return nil, true // send RST
+@@ -658,7 +691,7 @@ func (s *Server) Start() error {
+ 			copy(a4[:], d6[12:16])
+ 			dst = netip.AddrPortFrom(netip.AddrFrom4(a4), dst.Port())
+ 		}
+-		return s.OnTCPForward(dst), true
++		return lb.trackTCP(src.Addr(), s.OnTCPForward(dst)), true
+ 	}
+ 	ns.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool) {
+ 		var h func(ConnPacketConn)
+@@ -703,6 +736,23 @@ func (s *Server) Start() error {
+ 		lb.Close()
+ 		return err
+ 	}
++	if lb.clientIdleTimeout > 0 {
++		lb.stopCleanup = make(chan struct{})
++		lb.cleanupDone = make(chan struct{})
++		go func() {
++			defer close(lb.cleanupDone)
++			ticker := time.NewTicker(lb.clientIdleTimeout)
++			defer ticker.Stop()
++			for {
++				select {
++				case now := <-ticker.C:
++					lb.expireClients(now)
++				case <-lb.stopCleanup:
++					return
++				}
++			}
++		}()
++	}
+ 	return nil
+ }
+ 
+@@ -1600,7 +1650,14 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool
+ 	if _, ok := b.clients[src]; ok {
+ 		return true
+ 	}
+-	id := len(b.clients) + 2 // server is ID 1, clients are IDs 2, 3, ...
++	if b.maxClients > 0 && len(b.clients) >= b.maxClients {
++		return false
++	}
++	b.nextClientID++
++	id := b.nextClientID + 1 // server is ID 1; IDs must not alias after removal.
++	if b.clientIdleTimeout > 0 {
++		mak.Set(&b.lifetimes, src, &clientLifetime{idleSince: time.Now()})
++	}
+ 	derpRegion := b.derpRegionID()
+ 	mak.Set(&b.clients, src, &tailcfg.Node{
+ 		ID:         tailcfg.NodeID(id),
+@@ -1653,7 +1710,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool
+ func (b *locoBackend) Status() *ipnstate.Status {
+ 	mc := b.sys.MagicSock.Get()
+ 	eng := b.sys.Engine.Get()
+-	var sb ipnstate.StatusBuilder
++	sb := ipnstate.StatusBuilder{WantPeers: true}
+ 	mc.UpdateStatus(&sb)
+ 	eng.UpdateStatus(&sb)
+ 	return sb.Status()
+@@ -2441,3 +2498,87 @@ func discoPrivateForNode(k key.NodePrivate) key.DiscoPrivate {
+ func DiscoPublicForNode(k key.NodePrivate) DiscoPublic {
+ 	return DiscoPublic{discoPrivateForNode(k).Public()}
+ }
++
++// clientLifetime belongs to an admitted peer, not an application session.
++type clientLifetime struct {
++	active    int
++	idleSince time.Time
++}
++
++func (b *locoBackend) trackTCP(ip netip.Addr, handler func(net.Conn)) func(net.Conn) {
++	if handler == nil || b.clientIdleTimeout == 0 {
++		return handler
++	}
++	return func(c net.Conn) {
++		// Keep live quiet streams, but let the stack terminate vanished clients.
++		// User timeout also bounds connections with unacknowledged payloads.
++		gc, ok := c.(*gonet.TCPConn)
++		if !ok {
++			c.Close()
++			return
++		}
++		raw, _ := gonetTCPConnInternals(gc)
++		ep := raw.(tcpip.Endpoint)
++		idle := tcpip.KeepaliveIdleOption(b.clientIdleTimeout)
++		interval := tcpip.KeepaliveIntervalOption(b.clientIdleTimeout)
++		timeout := tcpip.TCPUserTimeoutOption(b.clientIdleTimeout)
++		for _, option := range []tcpip.SettableSocketOption{&idle, &interval, &timeout} {
++			if err := ep.SetSockOpt(option); err != nil {
++				c.Close()
++				return
++			}
++		}
++		if err := ep.SetSockOptInt(tcpip.KeepaliveCountOption, 2); err != nil {
++			c.Close()
++			return
++		}
++		ep.SocketOptions().SetKeepAlive(true)
++		b.mu.Lock()
++		var lifetime *clientLifetime
++		for k := range b.clients {
++			if tcAddrForKey(k) == ip {
++				lifetime = b.lifetimes[k]
++				break
++			}
++		}
++		if lifetime != nil {
++			lifetime.active++
++		}
++		b.mu.Unlock()
++		if lifetime == nil {
++			c.Close()
++			return
++		}
++		defer func() { b.mu.Lock(); lifetime.active--; lifetime.idleSince = time.Now(); b.mu.Unlock() }()
++		handler(c)
++	}
++}
++
++func (b *locoBackend) expireClients(now time.Time) {
++	b.mu.Lock()
++	var removed []key.NodePublic
++	for k, life := range b.lifetimes {
++		if life.active == 0 && now.Sub(life.idleSince) >= b.clientIdleTimeout {
++			delete(b.clients, k)
++			delete(b.lifetimes, k)
++			removed = append(removed, k)
++		}
++	}
++	if len(removed) > 0 {
++		nm := *b.nm
++		nm.Peers = nil
++		for _, peer := range b.nm.Peers {
++			if _, ok := b.clients[peer.Key()]; ok {
++				nm.Peers = append(nm.Peers, peer)
++			}
++		}
++		b.nm = &nm
++		b.sys.MagicSock.Get().SetNetworkMap(nm.SelfNode, nm.Peers)
++		b.sys.Netstack.Get().UpdateNetstackIPs(&nm)
++	}
++	b.mu.Unlock()
++	// SyncDevicePeer consults peerConfig, which takes b.mu. Never hold it here.
++	for _, k := range removed {
++		b.sys.Engine.Get().SyncDevicePeer(k)
++	}
++}

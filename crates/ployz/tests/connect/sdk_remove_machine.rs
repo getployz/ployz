@@ -9,9 +9,9 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::support::{DiscoveryService, confirmation, connected_client, machine};
 use super::support::{docker_volume, machine_named};
+use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
 async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
@@ -109,18 +109,13 @@ async fn remove_machine_refuses_the_current_entry_while_another_is_visible() {
 async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
     let (description, worker, _empty, service) = removal_cluster();
     *service.reset_warning.lock().unwrap() = Some("replicated delete failed".into());
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")
@@ -148,18 +143,14 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
 #[tokio::test]
 async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() {
     let (description, entry, service) = last_machine_cluster();
-    let session = RelaySession::start().await;
+    service.cloud_paired.store(true, Ordering::SeqCst);
+    let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")
@@ -277,7 +268,7 @@ fn last_machine_cluster() -> (ContractDescription, MachineObservation, Discovery
 #[tokio::test]
 async fn node_remove_machine_covers_volumes_and_unconfirmed_missing_names() {
     let (description, worker, empty, service) = removal_cluster();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
@@ -296,22 +287,17 @@ async fn removal_session() -> (
     ployz_core::Machine,
     ployz_core::Machine,
     DiscoveryService,
-    RelaySession,
-    super::relay::FakeMachine,
+    UnixSession,
+    super::unix_session::FakeMachine,
 ) {
     let (description, worker, empty, service) = removal_cluster();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")

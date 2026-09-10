@@ -136,8 +136,7 @@ impl UnconfirmedDataLoss {
 ///
 /// Projects and Machines that completed are named. Unreachable Machines stay
 /// in `machines.failures` rather than being omitted. `pairing_revoked` is
-/// independent of Machine reset so a repeated attempt can finish leftover work
-/// over Dial after Register is already closed.
+/// independent of Machine reset and records confirmed Cloud endpoint revocation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ClusterTeardown {
     pub destroyed_projects: Vec<ProjectName>,

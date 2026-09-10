@@ -40,6 +40,10 @@ for binding in "$@"; do
     target=${target%.node}
     mkdir -p "$dest/npm/$target"
     cp "$binding" "$dest/npm/$target/ployz-sdk.node"
+    helper="$(dirname "$binding")/ployz-tailcat.$target"
+    [ -s "$helper" ] || fail "native helper for '$target' is missing or empty"
+    cp "$helper" "$dest/npm/$target/ployz-tailcat"
+    chmod 755 "$dest/npm/$target/ployz-tailcat"
     targets+=("$target")
 done
 
@@ -60,7 +64,7 @@ for (const target of process.env.PLOYZ_SDK_TARGETS.split(" ")) {
     description: `${target} native binding for ${main.name}.`,
     repository: main.repository,
     main: "ployz-sdk.node",
-    files: ["ployz-sdk.node"],
+    files: ["ployz-sdk.node", "ployz-tailcat"],
     os: [platform],
     cpu: [arch],
     engines: main.engines,

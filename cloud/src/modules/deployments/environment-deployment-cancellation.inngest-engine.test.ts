@@ -1,3 +1,4 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -7,6 +8,8 @@ import * as runtimeCancellation from "#/modules/deployments/runtime-cancellation
 import { createMarkCancelledRowBackedWorkflow } from "./environment-deployment.inngest";
 
 const cancelDeployment = vi.fn();
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(
   runtimeCancellation,

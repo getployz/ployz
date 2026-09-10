@@ -34,7 +34,7 @@ use crate::{
         BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
         UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout, target_request,
     },
-    context::{Connection, ConnectionSource, Transport},
+    context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, VolumeSnapshot},
     service::ContainerOperationFailure,
 };
@@ -97,7 +97,26 @@ impl Client {
             let payload =
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
             match self.call_once::<op::DescribeContract>(payload, None).await {
-                Ok(_) | Err(ConnectError::Remote(_)) => Ok(()),
+                Ok(description) => {
+                    if let Some(expected) = self.connection.machine_id()
+                        && *expected != description.machine_id
+                    {
+                        return Err(ConnectError::IdentityMismatch {
+                            expected: *expected,
+                            actual: description.machine_id,
+                        });
+                    }
+                    if description.protocol_major != ployz_core::PROTOCOL_MAJOR {
+                        return Err(ConnectError::Codec(
+                            ployz_core::CodecError::UnsupportedProtocolMajor {
+                                requested: description.protocol_major,
+                                supported: ployz_core::PROTOCOL_MAJOR,
+                            },
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(()),
                 Err(error) => Err(error),
             }
         };
@@ -258,6 +277,7 @@ impl Client {
     ) -> Result<T::Response, ConnectError> {
         if redial {
             self.channel = self.connector.connect(&self.connection).await?;
+            self.confirm_entry().await?;
         }
         self.call_once::<T>(payload, target).await
     }
@@ -845,21 +865,16 @@ async fn refuse_last_cloud_paired(
     if machines.len() != 1 {
         return Ok(());
     }
-    let paired = match client.connection.transport() {
-        Transport::Relay { .. } => true,
-        Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => {
-            // Inspect errors must not block unpaired last-Machine removal.
-            client
-                .invoke::<op::Inspect>(
-                    InspectRequest::default(),
-                    &MachineTarget::from(&selected),
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await
-                .map(|details| details.cloud_paired)
-                .unwrap_or(false)
-        }
-    };
+    // Inspect errors must not block unpaired last-Machine removal.
+    let paired = client
+        .invoke::<op::Inspect>(
+            InspectRequest::default(),
+            &MachineTarget::from(&selected),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map(|details| details.cloud_paired)
+        .unwrap_or(false);
     if !paired {
         return Ok(());
     }

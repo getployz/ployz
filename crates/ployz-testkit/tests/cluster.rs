@@ -67,11 +67,7 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn machine_add_and_cloud_join_reach_participating() {
-    let cloud_pairing = CloudPairing::parse(
-        "ws://127.0.0.1:9",
-        PairingCredential::parse("unreachable-test-relay").unwrap(),
-    )
-    .unwrap();
+    let cloud_pairing = CloudPairing::new(PairingCredential::parse("test-pairing").unwrap());
     for run in 1..=2 {
         for (path, cloud_pairing) in [
             ("machine-add", None),

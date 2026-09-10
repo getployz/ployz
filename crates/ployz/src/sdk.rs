@@ -1,4 +1,4 @@
-//! Relay-only Cloud session: connect, list_held, register, revoke_pairing,
+//! Native Cloud session: connect, observe_enrollment, register,
 //! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
 //! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
 //! destroy_project, destroy_cluster, and close.
@@ -12,17 +12,16 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use crate::connect::{
-    Client, ConnectError, DialCredential, HeldRegister, PairingCredential, TransportError,
-    connect_relay, list_held as list_held_relay, revoke_cloud_pairing,
-};
+use crate::connect::{Client, ConnectError, Connector, TransportError, connect_selected_with};
+use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
-    DescribeContractRequest, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
-    ObservedDataLoss, OpaquePayload, ProjectName, RUNTIME_WATCH_CAPABILITY, RegisterRequest,
-    Registered, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
+    DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot, ExecutionError,
+    LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload, ProjectName,
+    RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation, VolumeRemoval,
+    decode_runtime_watch_frame, op,
 };
 
 pub use payloads::typescript_declarations;
@@ -46,11 +45,11 @@ impl From<RuntimeWatchFrame> for RuntimeWatchView {
 }
 
 struct SessionInner {
-    client: Mutex<Option<Client>>,
+    client: std::sync::Mutex<Option<Client>>,
     cancel: CancellationToken,
 }
 
-/// Connected Cloud session over one Relay Attach.
+/// Connected Cloud session over one confirmed management connection.
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<SessionInner>,
@@ -61,143 +60,140 @@ pub struct Session {
 /// Drop or [`cancel`](Self::cancel) ends this stream only. The Client stays usable.
 pub struct Watch {
     cancel: CancellationToken,
-    client: Client,
-    stream: Mutex<Option<tonic::Streaming<OpaquePayload>>>,
+    session: std::sync::Weak<SessionInner>,
+    stream: Arc<Mutex<Option<tonic::Streaming<OpaquePayload>>>>,
 }
 
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
 pub struct PreparedDeploy {
     preview: DeployPlan,
-    client: Client,
-    session_cancel: CancellationToken,
+    session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
 }
+
+type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
 
 /// In-flight execution of one Deploy Preview.
 pub struct RunningDeploy {
     cancel: CancellationToken,
     events: Mutex<Option<mpsc::UnboundedReceiver<DeployEvent>>>,
-    join: Mutex<Option<tokio::task::JoinHandle<DeployOutcome<ExecutionError>>>>,
+    join: Mutex<Option<DeployTask>>,
 }
 
-/// Open a Machine RPC channel through Cloud Relay.
-///
-/// Succeeds only after Relay Dial and Machine Attach produce a usable RPC
-/// channel. Does not mint Attach credentials, perform Cloud Pairing, or choose
-/// an entry Machine.
+/// Select the first confirmed connection before any operation is dispatched.
 ///
 /// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer, pairing, or Machine ID is
-/// rejected, or when the Relay or inner RPC channel fails.
-pub async fn connect(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
+/// Returns connection/identity failures; an empty connection list is invalid.
+pub async fn connect_connections(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
 ) -> Result<Session, RpcError> {
-    let credential = parse_dial(bearer)?;
-    let pairing = parse_pairing(pairing)?;
-    let machine_id = MachineId::parse(machine_id).map_err(|error| RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: error.to_string(),
-        details: Value::Null,
-    })?;
-    let client = connect_relay(relay_url, credential, pairing, machine_id).await?;
+    if connections.is_empty() {
+        return Err(invalid_argument("connections must not be empty".into()));
+    }
+    let client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections,
+        },
+        connector,
+    )
+    .await?;
     Ok(Session {
         inner: Arc::new(SessionInner {
-            client: Mutex::new(Some(client)),
+            client: std::sync::Mutex::new(Some(client)),
             cancel: CancellationToken::new(),
         }),
     })
 }
 
-/// Dial a held Machine, send Machine RPC Register, then close.
-///
-/// Same Dial tuple as [`connect`]. Callers never see the session.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer, pairing, or Machine ID is
-/// rejected, when the Relay or inner RPC channel fails, or when Machine RPC
-/// Register fails.
-pub async fn register(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-    identity: RegisterRequest,
-) -> Result<Registered, RpcError> {
-    let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result = async {
-        let mut client = session.client().await?;
-        client
-            .call::<op::Register>(identity, None)
-            .await
-            .map_err(RpcError::from)
-    }
-    .await;
-    session.close().await;
-    result
-}
-
-/// List Machines currently holding Register for this pairing.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer or pairing is rejected, or
-/// when the Relay call fails.
-pub async fn list_held(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-) -> Result<Vec<HeldRegister>, RpcError> {
-    let credential = parse_dial(bearer)?;
-    let pairing = parse_pairing(pairing)?;
-    list_held_relay(relay_url, &credential, &pairing)
-        .await
-        .map_err(RpcError::from)
-}
-
-/// Revoke a Pairing Credential so later Register with that bearer fails.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer or pairing is rejected, or
-/// when the Relay call fails.
-pub async fn revoke_pairing(relay_url: &str, bearer: &str, pairing: &str) -> Result<(), RpcError> {
-    let credential = parse_dial(bearer)?;
-    let pairing = parse_pairing(pairing)?;
-    revoke_cloud_pairing(relay_url, &credential, &pairing)
-        .await
-        .map_err(RpcError::from)
-}
-
-fn parse_dial(bearer: &str) -> Result<DialCredential, RpcError> {
-    DialCredential::parse(bearer).map_err(|error| RpcError {
-        code: RpcErrorCode::Unauthenticated,
-        message: error.to_string(),
-        details: Value::Null,
-    })
-}
-
-fn parse_pairing(pairing: &str) -> Result<PairingCredential, RpcError> {
-    PairingCredential::parse(pairing).map_err(|error| RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: error.to_string(),
-        details: Value::Null,
-    })
-}
-
 impl Session {
-    async fn client(&self) -> Result<Client, RpcError> {
+    fn client(&self) -> Result<Client, RpcError> {
         self.inner
             .client
             .lock()
-            .await
+            .expect("session client lock")
             .as_ref()
             .ok_or_else(closed)
             .cloned()
+    }
+
+    async fn until_closed<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, RpcError>>,
+    ) -> Result<T, RpcError> {
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(closed()),
+            result = work => result,
+        }
+    }
+
+    /// Observe enrollment facts on this confirmed Entry Machine.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or missing enrollment facts.
+    pub async fn observe_enrollment(&self) -> Result<EnrollmentSnapshot, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(crate::enrollment::observe_enrollment(&mut client))
+            .await
+    }
+
+    /// Publish a durably saved assignment on this Entry Machine without mutation replay.
+    ///
+    /// # Errors
+    /// Returns cancellation, allocation conflicts, or publication errors.
+    pub async fn register(
+        &self,
+        assignment: &EnrollmentAssignment,
+    ) -> Result<Registered, RpcError> {
+        let mut client = self.client()?;
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "session closed; in-flight Register outcome may be uncertain".into(),
+                details: Value::Null,
+            }),
+            result = crate::enrollment::publish_enrollment(&mut client, assignment) => result,
+        }
+    }
+
+    /// Clear pairing and request bounded Tailcat rotation. A reply is not revocation evidence.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport, or endpoint errors, including uncertain outcomes.
+    pub async fn remove_cloud_pairing(
+        &self,
+        removal: ployz_core::TailcatRemoval,
+    ) -> Result<(), RpcError> {
+        let client = self.client()?;
+        self.until_closed(async {
+            client
+                .call_unretried::<op::SetCloudPairing>(
+                    ployz_core::SetCloudPairingRequest::Remove { removal },
+                    None,
+                )
+                .await
+                .map(|_| ())
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
+    /// Inspect the selected Machine, including its Cloud Pairing presence.
+    ///
+    /// # Errors
+    /// Returns cancellation or Inspect errors.
+    pub async fn inspect(&self) -> Result<ployz_core::MachineDetails, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
     }
 
     /// Describe the entry Machine contract.
@@ -207,11 +203,14 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or
     /// `DescribeContract` fails.
     pub async fn about(&self) -> Result<ContractDescription, RpcError> {
-        let mut client = self.client().await?;
-        client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .map_err(RpcError::from)
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
     }
 
     /// Open a Runtime Watch stream of complete frames.
@@ -224,11 +223,15 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, Watch is not
     /// advertised, or the stream cannot be opened.
     pub async fn watch(&self) -> Result<Watch, RpcError> {
-        let mut client = self.client().await?;
-        let description = client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .map_err(RpcError::from)?;
+        let mut client = self.client()?;
+        let description = self
+            .until_closed(async {
+                client
+                    .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                    .await
+                    .map_err(RpcError::from)
+            })
+            .await?;
         if !description.supports(RUNTIME_WATCH_CAPABILITY) {
             return Err(RpcError {
                 code: RpcErrorCode::Unsupported,
@@ -239,14 +242,23 @@ impl Session {
         let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
             .encode()
             .map_err(ConnectError::from)?;
-        let stream = client
-            .runtime_watch_stream(payload)
-            .await
-            .map_err(ConnectError::Rpc)?;
+        let stream = tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => return Err(closed()),
+            stream = client.runtime_watch_stream(payload) => stream.map_err(ConnectError::Rpc)?,
+        };
+        let cancel = self.inner.cancel.child_token();
+        let stream = Arc::new(Mutex::new(Some(stream)));
+        let cleanup = stream.clone();
+        let cancelled = cancel.clone();
+        tokio::spawn(async move {
+            cancelled.cancelled().await;
+            cleanup.lock().await.take();
+        });
         Ok(Watch {
-            cancel: self.inner.cancel.child_token(),
-            client,
-            stream: Mutex::new(Some(stream)),
+            cancel,
+            session: Arc::downgrade(&self.inner),
+            stream,
         })
     }
 
@@ -260,7 +272,7 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, snapshot
     /// gathering fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
-        let mut client = self.client().await?;
+        let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
@@ -268,8 +280,7 @@ impl Session {
         };
         Ok(PreparedDeploy {
             preview,
-            client,
-            session_cancel: self.inner.cancel.clone(),
+            session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
         })
     }
@@ -285,7 +296,7 @@ impl Session {
         project_name: ProjectName,
         volumes: VolumeFate,
     ) -> Result<PreparedDeploy, RpcError> {
-        let mut client = self.client().await?;
+        let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
@@ -293,8 +304,7 @@ impl Session {
         };
         Ok(PreparedDeploy {
             preview,
-            client,
-            session_cancel: self.inner.cancel.clone(),
+            session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
         })
     }
@@ -323,7 +333,7 @@ impl Session {
                 abort.cancel();
             });
         }
-        Ok(running.finished().await)
+        running.finished().await
     }
 
     /// Destroy named Docker Volumes. The list is the confirmation.
@@ -337,8 +347,8 @@ impl Session {
         &self,
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
-        let mut client = self.client().await?;
-        client.remove_volumes(request).await
+        let mut client = self.client()?;
+        self.until_closed(client.remove_volumes(request)).await
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.
@@ -357,8 +367,9 @@ impl Session {
     ) -> Result<ObservedDataLoss, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client.data_loss_if_machine_removed(&target).await
+        let mut client = self.client()?;
+        self.until_closed(client.data_loss_if_machine_removed(&target))
+            .await
     }
 
     /// Remove `machine` after an exact Data Loss confirmation.
@@ -382,8 +393,9 @@ impl Session {
     ) -> Result<LocalMachineRemoved, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client.remove_machine(&target, confirm_data_loss).await
+        let mut client = self.client()?;
+        self.until_closed(client.remove_machine(&target, confirm_data_loss))
+            .await
     }
 
     /// Live Observation of Data Loss that destroying `project` would cause.
@@ -402,9 +414,8 @@ impl Session {
     ) -> Result<ObservedDataLoss, RpcError> {
         let project_name =
             ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client
-            .data_loss_if_project_destroyed(&project_name, volumes)
+        let mut client = self.client()?;
+        self.until_closed(client.data_loss_if_project_destroyed(&project_name, volumes))
             .await
     }
 
@@ -430,16 +441,15 @@ impl Session {
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let project_name =
             ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client
-            .destroy_project(
-                &project_name,
-                confirm_data_loss,
-                volumes,
-                &self.inner.cancel,
-                None,
-            )
-            .await
+        let mut client = self.client()?;
+        self.until_closed(client.destroy_project(
+            &project_name,
+            confirm_data_loss,
+            volumes,
+            &self.inner.cancel,
+            None,
+        ))
+        .await
     }
 
     /// Live Observation of Data Loss that destroying this Cluster would cause.
@@ -452,8 +462,9 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or listing
     /// Machines fails.
     pub async fn data_loss_if_cluster_destroyed(&self) -> Result<ObservedDataLoss, RpcError> {
-        let mut client = self.client().await?;
-        client.data_loss_if_cluster_destroyed().await
+        let mut client = self.client()?;
+        self.until_closed(client.data_loss_if_cluster_destroyed())
+            .await
     }
 
     /// Destroy this Cluster after an exact Data Loss confirmation.
@@ -472,18 +483,21 @@ impl Session {
         &self,
         confirm_data_loss: &DataLossConfirmation,
     ) -> Result<ClusterTeardown, RpcError> {
-        let mut client = self.client().await?;
-        client
-            .destroy_cluster(confirm_data_loss, &self.inner.cancel)
+        let mut client = self.client()?;
+        self.until_closed(client.destroy_cluster(confirm_data_loss, &self.inner.cancel))
             .await
     }
 
-    /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
+    /// Drop the Client and transport session. Aborts in-flight Watch and Deploy.
     ///
     /// Repeated calls are a no-op.
     pub async fn close(&self) {
         self.inner.cancel.cancel();
-        self.inner.client.lock().await.take();
+        self.inner
+            .client
+            .lock()
+            .expect("session client lock")
+            .take();
     }
 }
 
@@ -515,7 +529,10 @@ impl PreparedDeploy {
     ///
     /// Returns when this preview already confirmed, or when the session is closed.
     pub fn confirm(&self) -> Result<RunningDeploy, RpcError> {
-        if self.session_cancel.is_cancelled() {
+        let session = Session {
+            inner: self.session.upgrade().ok_or_else(closed)?,
+        };
+        if session.inner.cancel.is_cancelled() {
             return Err(closed());
         }
         if self.confirmed.swap(true, Ordering::SeqCst) {
@@ -523,12 +540,23 @@ impl PreparedDeploy {
                 "this Deploy Preview already confirmed".into(),
             ));
         }
-        let cancel = self.session_cancel.child_token();
+        let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
-        let client = self.client.clone();
+        let client = session.client()?;
         let preview = self.preview.clone();
         let token = cancel.clone();
-        let join = tokio::spawn(async move { client.confirm(&preview, &token, Some(tx)).await });
+        let session_cancel = session.inner.cancel.clone();
+        let join = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = session_cancel.cancelled() => Err(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "session closed; in-flight Deploy outcome may be uncertain".into(),
+                    details: Value::Null,
+                }),
+                outcome = client.confirm(&preview, &token, Some(tx)) => Ok(outcome),
+            }
+        });
         Ok(RunningDeploy {
             cancel,
             events: Mutex::new(Some(rx)),
@@ -563,7 +591,10 @@ impl RunningDeploy {
     }
 
     /// Wait for the Deploy Outcome. Progress events are still produced.
-    pub async fn finished(&self) -> DeployOutcome<ExecutionError> {
+    ///
+    /// # Errors
+    /// Returns unavailable when session closure interrupts execution; mutations may have completed.
+    pub async fn finished(&self) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let handle = self
             .join
             .lock()
@@ -573,6 +604,18 @@ impl RunningDeploy {
         let outcome = handle.await.expect("deploy task joins");
         while self.next().await.is_some() {}
         outcome
+    }
+}
+
+impl Drop for SessionInner {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -616,12 +659,16 @@ impl Watch {
             }
             Some(Ok(Some(payload))) => match decode_runtime_watch_frame(&payload) {
                 Ok(mut frame) => {
+                    let Some(inner) = self.session.upgrade() else {
+                        return Ok(None);
+                    };
+                    let client = Session { inner }.client()?;
                     tokio::select! {
                         () = self.cancel.cancelled() => {
                             *guard = None;
                             Ok(None)
                         }
-                        () = self.client.observe_machine_storage(&mut frame.machines) => {
+                        () = client.observe_machine_storage(&mut frame.machines) => {
                             Ok(Some(frame))
                         }
                     }
@@ -671,41 +718,4 @@ fn invalid_argument(message: String) -> RpcError {
         message,
         details: Value::Null,
     }
-}
-
-/// Observe enrollment facts through a short-lived Relay session.
-///
-/// # Errors
-/// Returns Relay, RPC, or unavailable snapshot errors.
-pub async fn observe_enrollment(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-) -> Result<ployz_core::EnrollmentSnapshot, RpcError> {
-    let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result =
-        async { crate::enrollment::observe_enrollment(&mut session.client().await?).await }.await;
-    session.close().await;
-    result
-}
-
-/// Publish a saved assignment through a short-lived Relay session.
-///
-/// # Errors
-/// Returns allocation conflicts, Relay or publication errors.
-pub async fn publish_enrollment(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-    assignment: &ployz_core::EnrollmentAssignment,
-) -> Result<Registered, RpcError> {
-    let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result = async {
-        crate::enrollment::publish_enrollment(&mut session.client().await?, assignment).await
-    }
-    .await;
-    session.close().await;
-    result
 }

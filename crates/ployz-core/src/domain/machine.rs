@@ -8,9 +8,9 @@ use std::{
 use ts_rs::TS;
 
 use ipnet::IpNet;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
-use super::{NameMatches, RelayEndpoint};
+use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
     MachineSubnet, MachineTarget, ManagementAddress, PairingCredential, Placement,
@@ -232,7 +232,7 @@ mod machine_token_tests {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineIdentity {
     pub id: MachineId,
     pub name: MachineName,
@@ -518,7 +518,7 @@ pub struct RttStatistics {
 }
 
 /// One directed Corrosion RTT observation, retaining the peer's native identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RttObservation {
     pub peer_id: String,
     pub address: SocketAddr,
@@ -631,65 +631,25 @@ impl MembershipObservation {
     }
 }
 
-/// Rejection when a Cloud response tries to hand a Machine a Dial Credential.
-pub const DIAL_IN_PAIRING: &str = "Cloud Pairing must not carry a Dial Credential";
-
-/// Cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential.
-///
-/// Absence means no Machine dials Relay. The Dial Credential is not a field
-/// here and is never stored on a Machine.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Cluster-scoped credential identifying the current Cloud pairing.
+/// Absence means the Machine is not paired with Cloud.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CloudPairing {
-    relay_url: RelayEndpoint,
     secret: PairingCredential,
-}
-
-/// Cloud deploys ahead of installed CLIs, so unknown fields are ignored. A
-/// `dial` field is still refused by name: a Machine never holds Dial.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CloudPairingWire {
-    relay_url: String,
-    secret: PairingCredential,
-    #[serde(default)]
-    dial: Option<de::IgnoredAny>,
 }
 
 impl CloudPairing {
-    /// Build Cloud Pairing from a Relay endpoint and Pairing Credential.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when `relay_url` is not a usable HTTP(S) endpoint.
-    pub fn parse(
-        relay_url: impl Into<String>,
-        secret: PairingCredential,
-    ) -> Result<Self, ValueError> {
-        let relay_url = RelayEndpoint::parse(relay_url.into())?;
-        Ok(Self { relay_url, secret })
-    }
-
-    /// Cloud Relay endpoint this Machine should dial. Not `--cloud-url`.
+    /// Build Cloud Pairing from an admitted Pairing Credential.
     #[must_use]
-    pub fn relay_url(&self) -> &RelayEndpoint {
-        &self.relay_url
+    pub fn new(secret: PairingCredential) -> Self {
+        Self { secret }
     }
 
-    /// Pairing Credential used to authenticate Register.
+    /// Credential identifying this Cloud pairing.
     #[must_use]
     pub fn secret(&self) -> &PairingCredential {
         &self.secret
-    }
-}
-
-impl<'de> Deserialize<'de> for CloudPairing {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = CloudPairingWire::deserialize(deserializer)?;
-        if wire.dial.is_some() {
-            return Err(de::Error::custom(DIAL_IN_PAIRING));
-        }
-        Self::parse(wire.relay_url, wire.secret).map_err(de::Error::custom)
     }
 }
 
@@ -699,20 +659,15 @@ mod cloud_pairing_tests {
     use serde_json::json;
 
     fn pairing() -> CloudPairing {
-        CloudPairing::parse(
-            "https://relay.example.invalid",
-            PairingCredential::parse("pairing-secret").unwrap(),
-        )
-        .unwrap()
+        CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
     }
 
     #[test]
-    fn cloud_pairing_wire_shape_is_relay_url_and_secret() {
+    fn cloud_pairing_wire_shape_is_secret() {
         let value = serde_json::to_value(pairing()).unwrap();
         assert_eq!(
             value,
             json!({
-                "relayUrl": "https://relay.example.invalid/",
                 "secret": "pairing-secret",
             })
         );
@@ -723,82 +678,23 @@ mod cloud_pairing_tests {
     }
 
     #[test]
-    fn cloud_pairing_rejects_a_dial_credential_field() {
-        let error = serde_json::from_value::<CloudPairing>(json!({
-            "relayUrl": "https://relay.example.invalid",
-            "secret": "pairing-secret",
-            "dial": "dial-credential",
-        }))
-        .unwrap_err();
-        assert!(error.to_string().contains(DIAL_IN_PAIRING), "{error}");
-    }
-
-    #[test]
-    fn cloud_pairing_ignores_fields_the_cloud_adds_later() {
-        let parsed = serde_json::from_value::<CloudPairing>(json!({
-            "relayUrl": "https://relay.example.invalid",
-            "secret": "pairing-secret",
-            "privateRelayUrl": "http://relay.railway.internal",
-        }))
-        .unwrap();
-        assert_eq!(parsed, pairing());
-    }
-
-    #[test]
-    fn cloud_pairing_rejects_unusable_relay_endpoints() {
-        for endpoint in [
-            "not-a-url",
-            "ws://relay.example",
-            "https://",
-            "https://host:bad",
-            "https://host:0",
-            "https://host/?query",
-            "https://user:pass@host",
-            "https://host/#fragment",
-        ] {
-            assert!(
-                CloudPairing::parse(endpoint, PairingCredential::parse("secret").unwrap()).is_err(),
-                "{endpoint}"
-            );
-            assert!(
-                serde_json::from_value::<CloudPairing>(
-                    json!({"relayUrl": endpoint, "secret": "secret"})
-                )
-                .is_err(),
-                "{endpoint}"
-            );
+    fn cloud_pairing_rejects_unknown_fields() {
+        for field in ["unexpectedCredential", "futureField"] {
+            let error = serde_json::from_value::<CloudPairing>(json!({
+                "secret": "pairing-secret",
+                (field): "unexpected-value",
+            }))
+            .unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
         }
     }
 
     #[test]
-    fn relay_endpoint_admission_is_syntax_only_and_round_trips() {
-        for endpoint in [
-            "http://127.0.0.1:1/",
-            "https://unavailable.invalid/base/",
-            "https://[::1]:8443/",
-        ] {
-            let endpoint = RelayEndpoint::parse(endpoint).unwrap();
-            let encoded = serde_json::to_string(&endpoint).unwrap();
-            assert_eq!(
-                serde_json::from_str::<RelayEndpoint>(&encoded).unwrap(),
-                endpoint
-            );
-            let pairing = CloudPairing::parse(
-                endpoint.as_str(),
-                PairingCredential::parse("secret").unwrap(),
-            )
-            .unwrap();
-            assert_eq!(pairing.relay_url(), &endpoint);
-        }
-        assert!(serde_json::from_str::<RelayEndpoint>("\"not-a-url\"").is_err());
-    }
-
-    #[test]
-    fn pairing_credential_and_relay_url_must_be_non_empty() {
+    fn pairing_credential_must_be_non_empty() {
         assert!(PairingCredential::parse("").is_err());
-        assert!(
-            CloudPairing::parse("", PairingCredential::parse("pairing-secret").unwrap()).is_err()
-        );
+        for value in [json!({}), json!({"secret": ""})] {
+            assert!(serde_json::from_value::<CloudPairing>(value).is_err());
+        }
     }
 
     #[test]
@@ -811,7 +707,6 @@ mod cloud_pairing_tests {
 
 #[cfg(test)]
 mod placement_tests {
-
     use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
 
     use super::{Machine, machine_matches_placement};

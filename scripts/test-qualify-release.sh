@@ -64,6 +64,7 @@ case "$1" in
         name= storage= context= cloud_url= no_dns=no no_ingress=no label=
         while [ "$#" -gt 0 ]; do
             case "$1" in
+                root@*) : ;;
                 --name) name=$2; shift ;;
                 --storage) storage=$2; shift ;;
                 --context) context=$2; shift ;;
@@ -75,32 +76,10 @@ case "$1" in
             esac
             shift
         done
-        [ "$label" = qualify=primary ] || { echo "resumed enrollment policy differs from founder label" >&2; exit 1; }
+        if [ "$name" = qualify-1 ]; then
+            [ "$label" = qualify=primary ] || { echo "founder enrollment lost primary placement label" >&2; exit 1; }
+        fi
         printf 'cloud-enroll token=%s name=%s storage=%s context=%s cloud_url=%s no_dns=%s no_ingress=%s\n' "$token" "$name" "$storage" "$context" "$cloud_url" "$no_dns" "$no_ingress" >>"$LOG"
-        python3 - "$cloud_url" "$token" <<'PY'
-import json
-import sys
-import urllib.request
-
-origin, token = sys.argv[1:]
-url = f"{origin}/api/enroll/{token}"
-identity = {
-    "protocolVersion": 2,
-    "name": "qualify-1",
-    "requestedStorage": "none",
-    "publicKey": "synthetic-public-key",
-}
-request = urllib.request.Request(url, json.dumps(identity).encode(), {"Content-Type": "application/json"})
-with urllib.request.urlopen(request) as response:
-    pairing = json.load(response)["pairing"]
-callback = {
-    "machineId": "11111111111111111111111111111111",
-    "pairingCredential": pairing["secret"],
-}
-request = urllib.request.Request(f"{url}/callback", json.dumps(callback).encode(), {"Content-Type": "application/json"})
-with urllib.request.urlopen(request) as response:
-    json.load(response)
-PY
         : >"$QUALIFY_PAIRED"
         ;;
     machine)
@@ -196,15 +175,17 @@ cat >"$TARGET/ployzd" <<'DAEMON'
 DAEMON
 printf '#!/bin/sh\nexit 0\n' >"$SOURCE/ployz-uninstall"
 cp "$SOURCE/ployz-uninstall" "$TARGET/ployz-uninstall"
-chmod 0755 "$SOURCE/ployzd" "$TARGET/ployzd" "$SOURCE/ployz-uninstall" "$TARGET/ployz-uninstall"
+printf '#!/bin/sh\nexit 0\n' >"$SOURCE/ployz-tailcat"
+cp "$SOURCE/ployz-tailcat" "$TARGET/ployz-tailcat"
+chmod 0755 "$SOURCE/ployzd" "$TARGET/ployzd" "$SOURCE/ployz-uninstall" "$TARGET/ployz-uninstall" "$SOURCE/ployz-tailcat" "$TARGET/ployz-tailcat"
 
 for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
     tar -czf "$SOURCE/$archive" -C "$SOURCE" ployz
     tar -czf "$TARGET/$archive" -C "$TARGET" ployz
 done
 for archive in ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
-    tar -czf "$SOURCE/$archive" -C "$SOURCE" ployzd ployz-uninstall
-    tar -czf "$TARGET/$archive" -C "$TARGET" ployzd ployz-uninstall
+    tar -czf "$SOURCE/$archive" -C "$SOURCE" ployzd ployz-tailcat ployz-uninstall
+    tar -czf "$TARGET/$archive" -C "$TARGET" ployzd ployz-tailcat ployz-uninstall
 done
 (
     cd "$SOURCE"
@@ -222,6 +203,7 @@ key=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -i) key=$2; shift 2 ;;
+        -o) shift 2 ;;
         *) break ;;
     esac
 done
@@ -232,6 +214,7 @@ command=$*
 printf 'ssh host=%s command=%s\n' "$host" "$command" >>"$SSH_LOG"
 case "$command" in
     *'uname -m'*) printf 'x86_64\n' ;;
+    *'./ployz cloud enroll '*) : >"$QUALIFY_PAIRED" ;;
     *'ln -sfn'*'/target'*'/current'*) printf 'target\n' >"$QUALIFY_STATE" ;;
     *'ln -sfn'*'/corrupt'*'/current'*) printf 'corrupt\n' >"$QUALIFY_STATE" ;;
     *'ln -sfn'*'/failure'*'/current'*) printf 'failure\n' >"$QUALIFY_STATE" ;;
@@ -244,7 +227,7 @@ case "$command" in
         ;;
     *'sudo cat /var/lib/ployz/machine.json'*)
         if [ -f "$QUALIFY_PAIRED" ]; then
-            pairing='{"relayUrl":"http://127.0.0.1:1/","secret":"qualification-synthetic-pairing-secret-v1"}'
+            pairing='{"secret":"qualification-synthetic-pairing-secret-v1"}'
         else
             pairing=null
         fi
@@ -263,14 +246,36 @@ cat >"$TMP/bin/scp" <<'SCP'
 #!/bin/sh
 set -eu
 key=
-if [ "${1:-}" = -i ]; then
-    key=$2
-    shift 2
-fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -i) key=$2; shift 2 ;;
+        -o) shift 2 ;;
+        *) break ;;
+    esac
+done
 [ "$key" = /tmp/qualify-key ] || { echo 'remote copy lost SSH identity' >&2; exit 1; }
 printf 'scp %s\n' "$*" >>"$SSH_LOG"
 SCP
 chmod 0755 "$TMP/bin/scp"
+
+cat >"$TMP/cloud-driver" <<'DRIVER'
+#!/bin/sh
+set -eu
+[ -f "$PLOYZ_QUALIFICATION_STATE" ] || : >"$PLOYZ_QUALIFICATION_STATE"
+case "$PLOYZ_QUALIFICATION_PHASE" in
+    seed) printf '%s\n' '{"version":1,"founderToken":"pmet_founder","joinToken":"pmet_join"}' >"$PLOYZ_QUALIFICATION_STATE" ;;
+    runtime)
+        if [ -n "${PLOYZ_QUALIFICATION_CONTEXT_OUT:-}" ]; then
+            printf '%s\n' '{"current_context":"qualify","contexts":{"qualify":{"connections":[{"tailcat":"tailcat://fixture-a","machine_id":"11111111111111111111111111111111"},{"tailcat":"tailcat://fixture-b","machine_id":"22222222222222222222222222222222"}]}}}' >"$PLOYZ_QUALIFICATION_CONTEXT_OUT"
+            chmod 600 "$PLOYZ_QUALIFICATION_CONTEXT_OUT"
+        fi
+        ;;
+    fallback|revoke-offline|revoke-online) : ;;
+    *) exit 1 ;;
+esac
+chmod 600 "$PLOYZ_QUALIFICATION_STATE"
+DRIVER
+chmod 0755 "$TMP/cloud-driver"
 export QUALIFY_PAIRED=$TMP/paired
 
 for reset in 0 1; do
@@ -279,12 +284,14 @@ for reset in 0 1; do
     PATH="$TMP/bin:$PATH" PLOYZ_QUALIFY_HOSTS='root@192.0.2.10 root@192.0.2.11' PLOYZ_ARTIFACT_DIR="$SOURCE" \
         PLOYZ_UPGRADE_ARTIFACT_DIR="$TARGET" PLOYZ_QUALIFY_SSH_KEY=/tmp/qualify-key \
         PLOYZ_QUALIFY_CONTEXT=qualify PLOYZ_QUALIFY_RESET="$reset" \
+        PLOYZ_QUALIFY_CLOUD_URL=https://qualification.example.test \
+        PLOYZ_QUALIFY_CLOUD_STATE="$TMP/cloud-state-$reset.json" PLOYZ_QUALIFY_CLOUD_DRIVER="$TMP/cloud-driver" \
         "$ROOT/scripts/qualify-release.sh" >/dev/null
     expected_reset=no
     [ "$reset" = 0 ] || expected_reset=yes
-    grep -Fxq "init target=root@192.0.2.10 reset=$expected_reset key=/tmp/qualify-key context=qualify no_install=no version=1.2.3 storage=zfs name=qualify-1 no_dns=yes no_ingress=yes release=$SOURCE" "$LOG" || fail "init lost its target, release, storage, name, version, reset policy, isolation policy, or SSH identity"
-    grep -Fxq "add target=root@192.0.2.11 reset=yes key=/tmp/qualify-key context=qualify no_install=no version=1.2.3 storage=zfs name=qualify-2 no_dns=no no_ingress=no release=$SOURCE" "$LOG" || fail "add lost its target, release, storage, name, version, or SSH identity"
-    grep -Eq '^cloud-enroll token=pmet_qualification name=qualify-1 storage=none context=qualify cloud_url=http://127\.0\.0\.1:[0-9]+ no_dns=yes no_ingress=yes$' "$LOG" || fail "Cloud Pairing fixture was not exercised through the source CLI"
+    if grep -Fq 'init target=' "$LOG" || grep -Fq 'add target=' "$LOG"; then
+        fail "a Machine was initialized before Cloud enrollment"
+    fi
     grep -Fxq "deploy context=qualify file=$ROOT/scripts/qualify-release/compose.yaml yes=yes" "$LOG" || fail "persistent-volume fixture was not deployed"
     grep -Fxq 'upgrade release=1.2.4 machine=qualify-1 context=qualify current=target' "$LOG" || fail "target upgrade was not requested"
     grep -Fxq 'upgrade release=1.2.4 machine=qualify-1 context=qualify current=corrupt' "$LOG" || fail "corrupt preflight was not requested"
@@ -341,7 +348,8 @@ output=$(
         PLOYZ_QUALIFY_RESET=0 "$ROOT/scripts/qualify-release.sh"
 )
 printf '%s\n' "$output" | grep -Fq 'qualify dry-run' || fail "dry-run did not print the plan"
-printf '%s\n' "$output" | grep -Fq 'normal ZFS machine init/add' || fail "dry-run omitted normal storage setup"
+printf '%s\n' "$output" | grep -Fq 'source archive daemon bootstrap' || fail "dry-run omitted source archive bootstrap"
+printf '%s\n' "$output" | grep -Fq 'isolated live Cloud founder/join' || fail "dry-run omitted live Cloud authority"
 printf '%s\n' "$output" | grep -Fq 'client disconnect and reconnect' || fail "dry-run omitted connection loss"
 printf '%s\n' "$output" | grep -Fq 'failed activation' || fail "dry-run omitted failure evidence"
 printf '%s\n' "$output" | grep -Fq 'reset: no' || fail "dry-run omitted the default no-reset policy"

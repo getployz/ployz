@@ -35,7 +35,7 @@ One of a Machine's independently enabled permissions to accept Builds, applicati
 _Avoid_: Swarm manager/worker role, runtime capability, Machine Label
 
 **Machine ID**:
-The durable opaque identity of one Machine. It is distinct from its mutable Machine Name. Uniqueness is within one Cluster and one Pairing Credential's slots, not across organizations.
+The durable opaque identity of one Machine. It is distinct from its mutable Machine Name. Uniqueness is within one Cluster, not across organizations.
 _Avoid_: Machine Name, hostname, globally unique Machine ID
 
 **Machine Name**:
@@ -231,7 +231,7 @@ An operator’s saved Machine assignments, including enrollments not yet visible
 _Avoid_: allocator role, global reservation, Cluster IPAM
 
 **Cloud Enroll Token**:
-Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Dial Credential.
+Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Tailcat Capability.
 _Avoid_: pairing token, API key, join URL as identity
 
 **Founding Claim**:
@@ -326,33 +326,22 @@ _Avoid_: Selected Endpoint, current endpoint
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
 
-**Cloud Relay**:
-The hosted byte pipe a Machine dials out to and holds open so Cloud can reach it without an inbound route. It carries opaque streams and interprets none of them. It is not a Machine, not a mesh peer, and holds no Cluster observation.
-_Avoid_: Machine Proxy, tunnel binary, control plane
-
 **Cloud Pairing**:
-The cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, not a distinct per-cluster Dial Credential, and not proof any Machine is currently connected.
-_Avoid_: per-Machine credential, login, daemon authn
-
-**Relay Tenant**:
-Not a customer object inside the Cloud Relay. Machine ID uniqueness is within one Pairing Credential's slots. The relay has no tenant type, org id, or pairing catalog.
-_Avoid_: tenant catalog, org id on the wire, per-cluster Dial Credential, global Machine ID namespace, org-prefixed Machine ID, shared pairing
+Cloud's Organization-scoped association with one Cluster generation. It scopes enrollment and connection candidates; it is neither Cluster membership nor evidence of reachability.
+_Avoid_: live connection, Cluster authority, per-Machine identity
 
 **Pairing Credential**:
-The bearer a Machine presents on Register and the slot key Cloud presents as metadata on Dial, List, and Revoke. It is never the Dial bearer.
-_Avoid_: Dial Credential, per-Machine JWT, global Register secret
+The secret identifying the current Cloud Pairing and authenticating enrollment callbacks for that attempt. It is distinct from a Machine's Tailcat Capability.
+_Avoid_: Tailcat Capability, Machine identity, presence proof
 
-**Dial Credential**:
-The process-wide bearer Cloud presents on Dial, List, and Revoke. It is not the Pairing Credential and does not authenticate Register.
-_Avoid_: Pairing Credential, cluster credential, per-cluster Dial Credential, machine-id-only Dial
+**Tailcat Capability**:
+A protected bearer granting administrative Machine RPC access to one Tailcat endpoint. Possession does not prove the intended Machine identity or Cloud Organization authorization.
+It is shared administrative authority, not per-user access; Cloud logout does not revoke a separately held capability.
+_Avoid_: per-user permission, read-only grant, Pairing Credential
 
-**Register Path RTT**:
-Machine-to-this-relay-PoP latency sampled by ping/pong on the held Register bidi. It is not mesh RTT and not Cloud-to-Machine RPC RTT after Attach.
-_Avoid_: machine rtt, Corrosion statistics, TCP RTT, HTTP/2 PING
-
-**Tunnel ID**:
-The Relay-issued identity of one opaque splice, carried on Open and Attach. It is not a Machine ID.
-_Avoid_: session id, connection id, stream id
+**Connection Candidate**:
+An Organization's protected access descriptor for one Machine in its current Cloud Pairing. It is a way to attempt a connection, not membership or live presence.
+_Avoid_: Machine catalog, registered member, reachable Machine
 
 **Live Observation**:
 Data obtained by directly querying a Machine at a point in time. It may still be incomplete, entry-relative, or obsolete immediately after collection.

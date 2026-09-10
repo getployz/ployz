@@ -88,6 +88,7 @@ export function parseTeardownTargets<Input>(targets: Input): TeardownTargets {
 }
 
 export type TeardownRuntimeEvidence = {
+  pairingRemovals?: Array<{ machineId: string; status: "confirmed" | "unconfirmed" }>;
   projectTeardowns?: Array<{
     projectName: string;
     outcome: DeployOutcome<ExecutionError>;
@@ -97,11 +98,11 @@ export type TeardownRuntimeEvidence = {
 
 export type TeardownOutcome =
   | ({
-      rustMustRevokePairing: false;
+      pairingRevocationUnconfirmed: false;
       runtimeMembership: TeardownRuntimeOutcome;
     } & TeardownRuntimeEvidence)
   | ({
-      rustMustRevokePairing: true;
+      pairingRevocationUnconfirmed: true;
       runtimeMembership: "unknown";
     } & TeardownRuntimeEvidence);
 
@@ -122,7 +123,7 @@ export type TeardownRuntimePlan =
     };
 
 /**
- * Org teardown pins live Cluster membership when Dial works. An unreachable
+ * Org teardown pins live Cluster membership when a connection works. An unreachable
  * Cluster cannot be recorded as verified zero — that takes an explicit abandon.
  */
 export function planTeardownRuntime(input: {
@@ -196,8 +197,8 @@ export function teardownCompletedDescription(
   const membership = outcome.runtimeMembership;
   switch (membership) {
     case "unknown":
-      return outcome.rustMustRevokePairing
-        ? "Cloud management was dropped. Runtime membership remains unknown, and pairing must still be revoked in Rust."
+      return outcome.pairingRevocationUnconfirmed
+        ? "Cloud access is disabled. Endpoint revocation is unconfirmed; removal credentials and the founding claim are retained."
         : "Cloud management was dropped. Runtime membership remains unknown.";
     case "verified_zero":
       return "The cluster was removed. Cloud recorded verified zero.";
@@ -229,18 +230,18 @@ function teardownRuntimeOutcome(
 
 export function teardownOutcome(
   membership: TeardownRuntimeMembership,
-  rustMustRevokePairing: boolean,
+  pairingRevocationUnconfirmed: boolean,
   evidence: TeardownRuntimeEvidence = {},
 ): TeardownOutcome {
-  if (rustMustRevokePairing) {
+  if (pairingRevocationUnconfirmed) {
     return {
-      rustMustRevokePairing: true,
+      pairingRevocationUnconfirmed: true,
       runtimeMembership: "unknown",
       ...evidence,
     };
   }
   return {
-    rustMustRevokePairing: false,
+    pairingRevocationUnconfirmed: false,
     runtimeMembership: teardownRuntimeOutcome(membership),
     ...evidence,
   };

@@ -16,9 +16,7 @@ release_assets() {
         ployz_macos_amd64.tar.gz \
         ployz_macos_arm64.tar.gz \
         ployzd_linux_amd64.tar.gz \
-        ployzd_linux_arm64.tar.gz \
-        ployz-relay_linux_amd64.tar.gz \
-        ployz-relay_linux_arm64.tar.gz | sort)
+        ployzd_linux_arm64.tar.gz | sort)
     actual=$(find "$dist" -maxdepth 1 \( -name '*.tar.gz' -o -name checksums.txt \) -exec basename {} \; | sort)
     if [ "$actual" != "$expected" ]; then
         echo "release asset set differs from the approved files" >&2
@@ -72,6 +70,7 @@ generated_changelog() {
 tag=${1:-}
 [ -n "$tag" ] || { echo "usage: $0 <tag>" >&2; exit 1; }
 dist=${DIST:-"$ROOT/dist"}
-mapfile -t assets < <(release_assets "$dist")
+asset_paths=$(release_assets "$dist")
+mapfile -t assets <<< "$asset_paths"
 mapfile -t flags < <(release_create_flags "$tag")
 gh release create "$tag" "${flags[@]}" --title "$tag" --notes "$(release_notes "$tag" "$(generated_changelog "$tag")")" "${assets[@]}"

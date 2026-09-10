@@ -32,7 +32,6 @@ pub mod machine_api;
 pub mod machine_pool;
 pub mod mutation;
 pub mod network;
-pub mod relay;
 pub(crate) mod runtime_watch;
 mod storage;
 #[cfg(test)]

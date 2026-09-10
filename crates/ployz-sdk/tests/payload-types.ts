@@ -44,15 +44,11 @@ import {
   applyOne,
   Client,
   connect,
-  listHeld,
   packageName,
-  register,
   allocateEnrollment,
-  observeEnrollment,
-  publishEnrollment,
   RpcError,
 } from "../index";
-import type { HeldRegister, PreparedDeploy } from "../index";
+import type { PreparedDeploy } from "../index";
 
 // Every field serde always writes is present in the type; `Option` is `T | null`.
 const container: ServiceContainerSpec = {
@@ -206,13 +202,9 @@ const bind = { kind: "bind", machine_path: "/srv" as MachinePath, create_machine
 // The façade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;
 const connectOptions = {
-  relayUrl: "https://relay.example",
-  bearer: "bearer",
-  pairing: "pairing",
-  machineId: "machine" as MachineId,
+  connections: [{ unix: "/tmp/machine.sock", machine_id: "machine" as MachineId }],
 };
 connect(connectOptions) satisfies Promise<Client>;
-listHeld("https://relay.example", "bearer", "pairing") satisfies Promise<HeldRegister[]>;
 const identity: RegisterRequest = {
   machine_id: "machine" as MachineId,
   assigned_subnet: null,
@@ -236,7 +228,6 @@ const identity: RegisterRequest = {
     kernel_version: "1",
   },
 };
-register("https://relay.example", "bearer", "pairing", "machine" as MachineId, identity) satisfies Promise<Registered>;
 applyAll("app" as ProjectName, [web]) satisfies DeployIntent;
 applyOne("app" as ProjectName, web) satisfies DeployIntent;
 client.preview(intent) satisfies Promise<PreparedDeploy>;
@@ -246,7 +237,7 @@ client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
 // @ts-expect-error destructive methods require an explicit confirmation object
 client.removeMachine("machine", []);
 // @ts-expect-error MachineId is branded; a plain string cannot cross the façade
-connect({ ...connectOptions, machineId: "machine" });
+connect({ connections: [{ unix: "/tmp/machine.sock", machine_id: "machine" }] });
 
 declare const watchFrame: RuntimeWatchView;
 watchFrame.services satisfies ServiceObservation[];
@@ -263,5 +254,5 @@ packageName() satisfies "@ployz/sdk";
 
 declare const enrollmentSnapshot: EnrollmentSnapshot;
 const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfies EnrollmentAssignment;
-observeEnrollment("https://relay.example", "bearer", "pairing", "machine" as MachineId) satisfies Promise<EnrollmentSnapshot>;
-publishEnrollment("https://relay.example", "bearer", "pairing", "machine" as MachineId, assignment) satisfies Promise<Registered>;
+client.observeEnrollment() satisfies Promise<EnrollmentSnapshot>;
+client.register(assignment) satisfies Promise<Registered>;

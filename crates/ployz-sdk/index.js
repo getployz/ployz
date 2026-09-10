@@ -2,12 +2,15 @@
 
 // ponytail: specifiers are computed so bundlers cannot follow require into the
 // .node binary. Nitro/Vinxi emit this file as ESM without CJS module globals.
+const path = require("node:path");
 const localBinding = [".", "ployz-sdk.node"].join("/"); // tests
 const bindingPackage = `@ployz/sdk-${process.platform}-${process.arch}`;
 let native;
+let helper;
 for (const specifier of [localBinding, bindingPackage]) {
   try {
     native = require(specifier);
+    helper = path.join(path.dirname(require.resolve(specifier)), "ployz-tailcat");
     break;
   } catch (error) {
     if (error.code !== "MODULE_NOT_FOUND") {
@@ -58,6 +61,22 @@ class Client {
     this.runtime = {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),
     };
+  }
+
+  observeEnrollment() {
+    return withRpcError(this._inner.observeEnrollment());
+  }
+
+  register(assignment) {
+    return withRpcError(this._inner.register(assignment));
+  }
+
+  removeCloudPairing(removal) {
+    return withRpcError(this._inner.removeCloudPairing(removal));
+  }
+
+  inspect() {
+    return withRpcError(this._inner.inspect());
   }
 
   about() {
@@ -139,7 +158,7 @@ function wrapRunning(running, signal) {
   return {
     abort: stop,
     get finished() {
-      finished ??= running.finished();
+      finished ??= withRpcError(running.finished());
       return finished;
     },
     async *[Symbol.asyncIterator]() {
@@ -224,20 +243,36 @@ function applyOne(project_name, spec, options = defaultPlanOptions()) {
 }
 
 async function connect(options) {
-  return new Client(await withRpcError(native.connect(options)));
+  const { signal, timeoutMs } = options;
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647)) {
+    throw new TypeError("timeoutMs must be a positive 32-bit integer");
+  }
+  signal?.throwIfAborted();
+  let attempt;
+  try { attempt = native.startConnections(options.connections, helper); } catch (error) { throwRpcError(error); }
+  let client;
+  let timer;
+  let stopped = false;
+  const stop = () => { stopped = true; attempt.cancel(); void client?.close(); };
+  const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", stop); };
+  signal?.addEventListener("abort", stop, { once: true });
+  if (timeoutMs !== undefined) timer = setTimeout(stop, timeoutMs);
+  try {
+    client = new Client(await withRpcError(attempt.wait()));
+    const close = client.close.bind(client);
+    client.close = () => { cleanup(); return close(); };
+    if (stopped) { await client.close(); signal?.throwIfAborted(); throw new Error("session deadline exceeded"); }
+    return client;
+  } catch (error) { cleanup(); throw error; }
 }
 
 module.exports = {
+  prepareTailcatRemoval: (expected) => withRpcError(native.prepareTailcatRemoval(expected, helper)),
   configRequest: native.configRequest,
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
-  observeEnrollment: (...args) => withRpcError(native.observeEnrollment(...args)),
-  publishEnrollment: (...args) => withRpcError(native.publishEnrollment(...args)),
   connect,
-  listHeld: (...args) => withRpcError(native.listHeld(...args)),
-  register: (...args) => withRpcError(native.register(...args)),
-  revokePairing: (...args) => withRpcError(native.revokePairing(...args)),
   packageName: native.packageName,
   Client,
   RpcError,

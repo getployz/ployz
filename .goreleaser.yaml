@@ -68,26 +68,6 @@ builds:
     flags: *ployzd-flags
     hooks: *ployzd-hooks
 
-  - id: ployz-relay-linux-amd64
-    builder: rust
-    binary: ployz-relay
-    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-relay-linux-amd64") }}'
-    targets:
-      - x86_64-unknown-linux-musl
-    flags: &ployz-relay-flags
-      - --release
-      - --locked
-      - --package=ployz-relay
-      - --bin=ployz-relay
-
-  - id: ployz-relay-linux-arm64
-    builder: rust
-    binary: ployz-relay
-    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-relay-linux-arm64") }}'
-    targets:
-      - aarch64-unknown-linux-musl
-    flags: *ployz-relay-flags
-
 archives:
   - id: ployz
     builds: [ployz-linux-amd64, ployz-linux-arm64, ployz-darwin-amd64, ployz-darwin-arm64]
@@ -100,7 +80,10 @@ archives:
     builds_info:
       mode: 0755
     files:
-      - none*
+      - src: target/tailcat/{{ .Os }}_{{ .Arch }}/ployz-tailcat
+        dst: ployz-tailcat
+        info:
+          mode: 0755
 
   - id: ployzd
     builds: [ployzd-linux-amd64, ployzd-linux-arm64]
@@ -109,19 +92,14 @@ archives:
     builds_info:
       mode: 0755
     files:
+      - src: target/tailcat/{{ .Os }}_{{ .Arch }}/ployz-tailcat
+        dst: ployz-tailcat
+        info:
+          mode: 0755
       - src: scripts/uninstall.sh
         dst: ployz-uninstall
         info:
           mode: 0755
-
-  - id: ployz-relay
-    builds: [ployz-relay-linux-amd64, ployz-relay-linux-arm64]
-    format: tar.gz
-    name_template: "ployz-relay_{{ .Os }}_{{ .Arch }}"
-    builds_info:
-      mode: 0755
-    files:
-      - none*
 
 checksum:
   name_template: checksums.txt

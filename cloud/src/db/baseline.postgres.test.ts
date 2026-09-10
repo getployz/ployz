@@ -44,6 +44,7 @@ it("reruns migrations without replaying the baseline or losing application rows"
     insert into organization (name, slug) values ('Baseline', 'baseline')
   `);
   const before = await harness.pool.query("select * from drizzle.__drizzle_migrations");
+  expect(before.rows).toHaveLength(1);
   await execFile(process.execPath, ["node_modules/drizzle-kit/bin.cjs", "migrate"], {
     cwd: process.cwd(),
     env: { ...process.env, DATABASE_URL: harness.databaseUrl },

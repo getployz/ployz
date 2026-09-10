@@ -1,4 +1,4 @@
-//! Fake enroll HTTP, Relay, and Machine RPC for membership join tests.
+//! Fake enroll HTTP and Machine RPC for membership join tests.
 
 use std::sync::{
     Arc, Mutex,
@@ -16,22 +16,17 @@ use ployz_core::{
     ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory,
     WireGuardPublicKey,
 };
-use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status, Streaming};
 
 #[path = "enroll_http.rs"]
 mod enroll_http;
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
-#[path = "relay.rs"]
-mod relay;
 #[path = "servers.rs"]
 mod servers;
 
 pub use enroll_http::{EnrollListen, EventLog};
-use relay::hold_register;
-pub use relay::{RelayListen, assert_not_held, wait_for_held};
-pub use servers::{serve_ingress_probe, serve_local_machine, serve_machine};
+pub use servers::{cli, serve_ingress_probe, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
@@ -90,7 +85,6 @@ struct JoinInner {
     fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
-    _register: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl JoinDaemon {
@@ -135,7 +129,6 @@ impl JoinDaemon {
                 fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
-                _register: Mutex::new(None),
             }),
         }
     }
@@ -457,15 +450,9 @@ impl MachineRpc for JoinDaemon {
                 details: serde_json::Value::Null,
             });
         }
-        if let Some(pairing) = join.cloud_pairing.clone() {
-            hold_register(
-                pairing.relay_url().as_str(),
-                pairing.secret(),
-                &join.registration.assigned_machine.id,
-                &self.inner._register,
-            )
-            .await?;
-        }
+        self.inner
+            .cloud_paired
+            .store(join.cloud_pairing.is_some(), Ordering::SeqCst);
         *self.inner.current_machine.lock().unwrap() = join.registration.assigned_machine.clone();
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
@@ -498,22 +485,13 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::SetCloudPairing(set) = decoded.body else {
             return Err(Status::invalid_argument("expected SetCloudPairing"));
         };
-        match set.cloud_pairing {
-            Some(pairing) => {
-                hold_register(
-                    pairing.relay_url().as_str(),
-                    pairing.secret(),
-                    &self.inner.registration.assigned_machine.id,
-                    &self.inner._register,
-                )
-                .await?;
+        match set {
+            ployz_core::SetCloudPairingRequest::Set { .. } => {
                 self.inner.cloud_paired.store(true, Ordering::SeqCst);
                 self.record("set_cloud_pairing");
             }
-            None => {
-                if let Some(old) = self.inner._register.lock().unwrap().take() {
-                    old.abort();
-                }
+            ployz_core::SetCloudPairingRequest::Clear {}
+            | ployz_core::SetCloudPairingRequest::Remove { .. } => {
                 self.inner.cloud_paired.store(false, Ordering::SeqCst);
             }
         }
@@ -556,24 +534,9 @@ impl MachineRpc for JoinDaemon {
         self.inner.initialize_requests.lock().unwrap().push(init);
         self.record("initialize");
         self.inner.joined.store(true, Ordering::SeqCst);
-        if let Some(pairing) = pairing
-            && let Err(status) = hold_register(
-                pairing.relay_url().as_str(),
-                pairing.secret(),
-                &machine.id,
-                &self.inner._register,
-            )
-            .await
-        {
-            if status.code() == tonic::Code::Unauthenticated {
-                return rpc_ok(RpcError {
-                    code: RpcErrorCode::Unauthenticated,
-                    message: status.message().to_owned(),
-                    details: serde_json::Value::Null,
-                });
-            }
-            return Err(status);
-        }
+        self.inner
+            .cloud_paired
+            .store(pairing.is_some(), Ordering::SeqCst);
         if self
             .inner
             .replace_identity_on_initialize
@@ -1031,9 +994,7 @@ impl MachineRpc for JoinDaemon {
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
         *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
-        if let Some(hold) = self.inner._register.lock().unwrap().take() {
-            hold.abort();
-        }
+        self.inner.cloud_paired.store(false, Ordering::SeqCst);
         if self
             .inner
             .lose_lifecycle_reply

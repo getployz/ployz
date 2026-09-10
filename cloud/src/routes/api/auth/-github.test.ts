@@ -1,7 +1,10 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as auth from "#/auth/auth.server";
 import { handleGithubSignIn } from "./github";
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(auth, "signInGithubEffect").mockImplementation(
   (_headers, callbackURL) =>

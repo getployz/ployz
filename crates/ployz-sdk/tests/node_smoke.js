@@ -1,19 +1,19 @@
 "use strict";
 
 const fs = require("node:fs");
+const assert = require("node:assert/strict");
 const os = require("node:os");
 const path = require("node:path");
 const expectRpcError = require("./expect-rpc-error");
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
-const relayUrl = process.env.PLOYZ_RELAY_URL;
-const bearer = process.env.PLOYZ_BEARER;
-const pairing = process.env.PLOYZ_PAIRING;
+const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
+const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
 
-if (!addon || !pkg || !relayUrl || !bearer || !pairing || !machineId || !unknownMachineId) {
+if (!addon || !pkg || !socketDirectory || !machineId || !unknownMachineId) {
   throw new Error("Node smoke is missing environment");
 }
 
@@ -35,7 +35,34 @@ async function expectRpc(fn, code) {
 }
 
 (async () => {
-  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
+  const client = await sdk.connect({ connections: connectionsFor(machineId) });
+  const helper = path.join(dir, "ployz-tailcat");
+  const called = path.join(dir, "helper-called");
+  const reply = path.join(dir, "helper-reply");
+  fs.writeFileSync(helper, `#!/bin/sh
+[ "$#" = 1 ] && [ "$1" = successor ] || exit 1
+printf called >> "$(dirname "$0")/helper-called"
+IFS= read -r expected || exit 1
+[ "$expected" = private-old ] || exit 1
+cat "$(dirname "$0")/helper-reply"
+`, { mode: 0o700 });
+  for (const invalid of ["", "private\ncommand", "private\rcommand", "private capability", "private\0capability", "x".repeat(16 * 1024)]) {
+    await assert.rejects(sdk.connect({ connections: [{ tailcat: invalid }] }),
+      error => error instanceof sdk.RpcError && error.code === "invalid_argument" && !error.message.includes("private"));
+    await assert.rejects(sdk.prepareTailcatRemoval(invalid), error => !error.message.includes("private"));
+    for (const field of ["expected", "successor"]) {
+      await assert.rejects(client.removeCloudPairing({ expected_pairing: "pairing", expected: "private-old", successor: "private-next", [field]: invalid }),
+        error => error.message === "invalid Tailcat removal");
+    }
+  }
+  assert.equal(fs.existsSync(called), false, "invalid capabilities must fail before helper execution");
+  fs.writeFileSync(reply, "private-next\n", { mode: 0o600 });
+  assert.equal(await sdk.prepareTailcatRemoval("private-old"), "private-next");
+  assert.equal(fs.readFileSync(called, "utf8"), "called", "valid capability must use protected stdin");
+  for (const output of ["private\nextra\n", "private next\n", "private-next", "x".repeat(16 * 1024) + "\n"]) {
+    fs.writeFileSync(reply, output);
+    await assert.rejects(sdk.prepareTailcatRemoval("private-old"), error => !error.message.includes("private"));
+  }
   const about = await client.about();
   if (!Array.isArray(about.capabilities)) {
     throw new Error("about() must return capabilities");
@@ -103,17 +130,13 @@ async function expectRpc(fn, code) {
   await expectRpc(() => client.run(intent), "unavailable");
   await client.close();
 
-  const again = await sdk.connect({ relayUrl, bearer, pairing, machineId });
+  const again = await sdk.connect({ connections: connectionsFor(machineId) });
   await again.about();
   await again.close();
 
   await expectRpc(
-    () => sdk.connect({ relayUrl, bearer: "wrong-secret", pairing, machineId }),
-    "unauthenticated",
-  );
-  await expectRpc(
-    () => sdk.connect({ relayUrl, bearer, pairing, machineId: unknownMachineId }),
-    "not_found",
+    () => sdk.connect({ connections: connectionsFor(unknownMachineId) }),
+    "internal",
   );
 
   const forbidden = [

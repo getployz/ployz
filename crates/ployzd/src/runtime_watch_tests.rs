@@ -42,7 +42,6 @@ const CHALLENGE_RESPONSE: &str =
 const DNS_TOKEN: &str = "dns-renewal-token-secret";
 const DNS_ENDPOINT: &str = "https://dns.example.invalid/v1";
 const PAIRING: &str = "pairing-credential-secret";
-const DIAL: &str = "dial-credential-secret";
 
 #[test]
 fn assembled_frame_keeps_replicated_rows_and_derives_services() {
@@ -413,7 +412,6 @@ fn assert_no_secret_material(text: &str) {
         DNS_TOKEN,
         DNS_ENDPOINT,
         PAIRING,
-        DIAL,
         "private_key",
         "challenge_token",
         "challenge_response",

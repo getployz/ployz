@@ -8,7 +8,7 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerList, ContainerObservationMap,
+    CapabilityAdvertisement, CloudPairingSet, ContainerList, ContainerObservationMap,
     ContractDescription, Domain, DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata,
     LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
     RpcErrorCode, RpcRequestBody, RpcResponse, op,
@@ -35,7 +35,6 @@ pub struct MachineService {
     ingress_data_dir: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
-    cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     runtime_watch: Arc<RuntimeWatch>,
     pub(crate) builds: Arc<crate::build::Runner>,
 }
@@ -53,7 +52,6 @@ impl MachineService {
             ingress_data_dir: None,
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
-            cloud_pairing: None,
             runtime_watch: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
@@ -92,12 +90,6 @@ impl MachineService {
     #[must_use]
     pub fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.ingest = ingest;
-        self
-    }
-
-    #[must_use]
-    pub fn with_cloud_pairing(mut self, pairing: watch::Sender<Option<CloudPairing>>) -> Self {
-        self.cloud_pairing = Some(pairing);
         self
     }
 
@@ -231,15 +223,8 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetCloudPairing>(request)?;
-        if let Err(error) = self
-            .local
-            .set_cloud_pairing(request.cloud_pairing.clone())
-            .await
-        {
+        if let Err(error) = self.local.set_cloud_pairing(request).await {
             return local_error(error);
-        }
-        if let Some(sender) = &self.cloud_pairing {
-            sender.send_replace(request.cloud_pairing);
         }
         respond(CloudPairingSet {})
     }

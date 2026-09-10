@@ -353,12 +353,20 @@ CREATE TABLE "environment_node_introduction_secret" (
 CREATE TABLE "organization_pairing" (
 	"organization_id" uuid PRIMARY KEY,
 	"encrypted_pairing_secret" jsonb NOT NULL,
+	"removal_started_at" timestamp with time zone,
+	"removal_endpoints" jsonb,
 	"founder_public_key" text,
+	"founder_claim_machine_id" text NOT NULL,
 	"founder_machine_id" text,
 	"first_connect_deployment_evaluated_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "organization_pairing_removal_shape_check" CHECK (
+      ("removal_started_at" is null and "removal_endpoints" is null)
+      or ("removal_started_at" is not null and "removal_endpoints" is not null and jsonb_typeof("removal_endpoints") = 'array')
+    ),
 	CONSTRAINT "organization_pairing_state_check" CHECK ("founder_public_key" is not null or "founder_machine_id" is not null),
+	CONSTRAINT "organization_pairing_founder_claim_machine_id_check" CHECK ("founder_claim_machine_id" ~ '^[0-9a-f]{32}$'),
 	CONSTRAINT "organization_pairing_founder_machine_id_check" CHECK ("founder_machine_id" is null or "founder_machine_id" ~ '^[0-9a-f]{32}$')
 );
 --> statement-breakpoint
@@ -470,6 +478,15 @@ CREATE TABLE "volume_remove_attempt" (
       ))
 );
 --> statement-breakpoint
+CREATE TABLE "enrollment_allocation" (
+	"organization_id" uuid,
+	"cluster_key" text,
+	"assignments" jsonb NOT NULL,
+	CONSTRAINT "enrollment_allocation_pkey" PRIMARY KEY("organization_id","cluster_key"),
+	CONSTRAINT "enrollment_allocation_cluster_key_check" CHECK ("cluster_key" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "enrollment_allocation_assignments_check" CHECK (jsonb_typeof("assignments") = 'array')
+);
+--> statement-breakpoint
 CREATE TABLE "machine_enrollment_token" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"organization_id" uuid NOT NULL,
@@ -535,10 +552,13 @@ CREATE TABLE "machine_remove_attempt" (
 CREATE TABLE "organization_machine" (
 	"organization_id" uuid,
 	"machine_id" text,
+	"cluster_key" text NOT NULL,
+	"encrypted_tailcat" jsonb NOT NULL,
 	"is_dial_entry" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "organization_machine_pkey" PRIMARY KEY("organization_id","machine_id"),
+	CONSTRAINT "organization_machine_cluster_key_check" CHECK ("cluster_key" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "organization_machine_id_format_check" CHECK ("machine_id" ~ '^[0-9a-f]{32}$')
 );
 --> statement-breakpoint
@@ -926,6 +946,7 @@ ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_reques
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_2ncjupSSetid_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "volume_remove_attempt" ADD CONSTRAINT "volume_remove_attempt_FQapB8QhQW1M_fkey" FOREIGN KEY ("retry_of_attempt_id") REFERENCES "volume_remove_attempt"("id") ON DELETE RESTRICT;--> statement-breakpoint
+ALTER TABLE "enrollment_allocation" ADD CONSTRAINT "enrollment_allocation_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "machine_enrollment_token" ADD CONSTRAINT "machine_enrollment_token_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "machine_enrollment_token" ADD CONSTRAINT "machine_enrollment_token_created_by_user_id_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "machine_remove_attempt" ADD CONSTRAINT "machine_remove_attempt_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint

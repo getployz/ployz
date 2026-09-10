@@ -9,8 +9,8 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::support::{DiscoveryService, machine, machine_id};
+use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
 async fn removal_outcomes_retain_each_volume_identity() {
@@ -163,20 +163,15 @@ async fn remove_volumes_force_is_off_by_default() {
 #[tokio::test]
 async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     let mut down = machine('c', "down");
     down.membership = MembershipObservation::Down;
     service.machines = vec![machine('a', "one"), machine('b', "two"), down];
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
 
     let result = client
         .remove_volumes(remove(
@@ -211,7 +206,7 @@ async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
 
 #[tokio::test(start_paused = true)]
 async fn timed_out_removal_retains_identity_and_unknown_completion() {
-    // The Client owns this deadline; other tests cover the Session/Relay adapter.
+    // The Client owns this deadline; other tests cover the Session adapter.
     let mut service = DiscoveryService::new(advertised_description());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
     let (mut client, server, _) = super::support::connected_client(service).await;
@@ -255,7 +250,7 @@ async fn remove_volumes_after_close_is_unavailable() {
 #[tokio::test]
 async fn node_smoke_covers_successful_and_partial_volume_removal() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
     let _machine = session.spawn_machine(description.machine_id, service).await;
@@ -271,20 +266,15 @@ async fn node_smoke_covers_successful_and_partial_volume_removal() {
         .await;
 }
 
-async fn volume_session() -> (sdk::Session, RelaySession, super::relay::FakeMachine) {
+async fn volume_session() -> (sdk::Session, UnixSession, super::unix_session::FakeMachine) {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
     let machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     (client, session, machine)
 }
 

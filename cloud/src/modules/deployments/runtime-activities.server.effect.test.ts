@@ -10,7 +10,6 @@ import {
   createImageServiceSource,
   projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
-import type { DialTenant } from "#/modules/runtime/dial-entry";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
 import {
   makePloyzLayer,
@@ -33,13 +32,7 @@ const preview = {
   preserved_volumes: [],
 };
 
-const tenant = {
-  relayUrl: "wss://relay.example.test",
-  bearer: "tenant-token",
-  pairing: "ppair_test",
-  preferredMachineId: "machine-a",
-  enrolledMachineIds: ["machine-a"],
-} satisfies DialTenant;
+const connections = [{ tailcat: "tailcat://candidate" }];
 
 function context(deployPreview: typeof preview | null = null) {
   return {
@@ -73,7 +66,7 @@ function context(deployPreview: typeof preview | null = null) {
 
 function runtimeLayer(client: Client, finalized: () => void) {
   return makeOrganizationRuntimeLayer(() =>
-    Effect.succeed({ kind: "ready", tenant }),
+    Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
   ).pipe(
     Layer.provide(
       makePloyzLayer({

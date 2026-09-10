@@ -63,8 +63,8 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-go@v5
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
+          go-version-file: native/tailcat/go.mod
+          cache-dependency-path: native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: ${{ matrix.target }}
@@ -103,10 +103,25 @@ jobs:
           pr-comment: false
       - run: cargo ${{ matrix.command }} -p ployz-sdk --release --locked --target ${{ matrix.target }}${{ matrix.glibc }}
       - run: cp "target/${{ matrix.target }}/release/${{ matrix.cdylib }}" "${{ matrix.binding }}"
+      - name: Build matching Tailcat helper
+        env:
+          BINDING: ${{ matrix.binding }}
+          PLOYZ_VERSION: ${{ env.RELEASE_TAG }}
+        run: |
+          platform=${BINDING#ployz-sdk.}
+          platform=${platform%.node}
+          export GOOS=${platform%-*}
+          export GOARCH=${platform#*-}
+          [ "$GOARCH" != x64 ] || export GOARCH=amd64
+          export CGO_ENABLED=0
+          export PLOYZ_VERSION=${PLOYZ_VERSION#v}
+          bash native/tailcat/build.sh "$PWD/ployz-tailcat.$platform"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binding }}
-          path: ${{ matrix.binding }}
+          path: |
+            ${{ matrix.binding }}
+            ployz-tailcat.*
           if-no-files-found: error
 
   publish-sdk:

@@ -74,6 +74,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ExecutionError>();
     declarations.add::<LocalMachineRemoved>();
     declarations.add::<MachineId>();
+    declarations.add::<ployz_core::MachineDetails>();
+    declarations.add::<ployz_core::TailcatRemoval>();
     declarations.add::<MachineTarget>();
     declarations.add::<ObservedDataLoss>();
     declarations.add::<PlanOptions>();

@@ -45,9 +45,19 @@ async fn starting_machine() -> (
         async move {
             #[expect(
                 clippy::wildcard_enum_match_arm,
-                reason = "this fixture rejects every RPC except Initialize, Join, and Inspect"
+                reason = "this fixture accepts setup RPCs and connection confirmation"
             )]
             match request.into_inner().decode_request().unwrap().body {
+                RpcRequestBody::DescribeContract(_) => Ok(Response::new(
+                    RpcResponse::from(ployz_core::ContractDescription {
+                        machine_id: machine.id,
+                        protocol_major: ployz_core::PROTOCOL_MAJOR,
+                        daemon_version: "fixture".into(),
+                        capabilities: Default::default(),
+                    })
+                    .encode()
+                    .unwrap(),
+                )),
                 RpcRequestBody::Initialize(_) | RpcRequestBody::Join(_) => {
                     calls.fetch_add(1, Ordering::SeqCst);
                     std::future::pending::<Result<Response<OpaquePayload>, Status>>().await

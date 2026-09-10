@@ -159,15 +159,11 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
 }
 
 fn sample_cloud_pairing() -> CloudPairing {
-    CloudPairing::parse(
-        "https://relay.example.invalid",
-        PairingCredential::parse("pairing-secret").unwrap(),
-    )
-    .unwrap()
+    CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
 }
 
 #[tokio::test]
-async fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
+async fn initialize_with_cloud_pairing_stores_pairing_credential() {
     let dir = TestDir::new("ployzd-initialize-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let (reset, _) = tokio::sync::watch::channel(false);
@@ -201,7 +197,6 @@ async fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential()
     assert_eq!(
         pairing_json,
         &serde_json::json!({
-            "relayUrl": "https://relay.example.invalid/",
             "secret": "pairing-secret",
         })
     );
@@ -232,7 +227,9 @@ async fn set_cloud_pairing_after_initialize_persists() {
     assert_eq!(local.record().unwrap().cloud_pairing, None);
 
     local
-        .set_cloud_pairing(Some(pairing.clone()))
+        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
+            pairing: pairing.clone(),
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -262,7 +259,10 @@ async fn set_cloud_pairing_none_clears_persisted_pairing() {
         })
         .await
         .unwrap();
-    local.set_cloud_pairing(None).await.unwrap();
+    local
+        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {})
+        .await
+        .unwrap();
     assert_eq!(local.record().unwrap().cloud_pairing, None);
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
@@ -276,14 +276,16 @@ async fn set_cloud_pairing_before_initialize_is_not_participating() {
     let (reset, _) = tokio::sync::watch::channel(false);
     let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
     let error = local
-        .set_cloud_pairing(Some(sample_cloud_pairing()))
+        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
+            pairing: sample_cloud_pairing(),
+        })
         .await
         .unwrap_err();
     assert!(matches!(error, LocalMachineError::NotParticipating));
 }
 
 #[tokio::test]
-async fn join_with_cloud_pairing_stores_the_same_two_fields() {
+async fn join_with_cloud_pairing_stores_the_pairing_credential() {
     let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
     let initialized = first

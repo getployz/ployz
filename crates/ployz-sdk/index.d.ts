@@ -7,6 +7,8 @@ import type {
   VolumeRemoval,
   ExecutionError,
   MachineId,
+  MachineDetails,
+  TailcatRemoval,
   MachineTarget,
   ObservedDataLoss,
   LocalMachineRemoved,
@@ -25,17 +27,19 @@ import type {
 } from "./generated/payloads";
 export * from "./generated/payloads";
 
+/** Same serialized descriptors as CLI contexts. Backend only: Tailcat is an admin capability. */
+export type Connection = (
+  | { readonly tailcat: string }
+  | { readonly ssh: string; readonly ssh_key_file?: string }
+  | { readonly tcp: string }
+  | { readonly unix: string }
+) & { readonly machine_id?: MachineId };
 export type ConnectOptions = {
-  /** HTTP(S) base URL without credentials, query or fragment; validated before dialing. */
-  readonly relayUrl: string;
-  readonly bearer: string;
-  readonly pairing: string;
-  readonly machineId: MachineId;
-};
-
-export type HeldRegister = {
-  readonly machineId: string;
-  readonly registerRttNs?: number | null;
+  readonly connections: readonly Connection[];
+  /** Cancels connection establishment and closes the resulting session. */
+  readonly signal?: AbortSignal;
+  /** Total connection/session lifetime budget; close cancels this timer. */
+  readonly timeoutMs?: number;
 };
 
 export type WatchOptions = {
@@ -57,29 +61,14 @@ export type PreparedDeploy = DeployPreview & {
 
 export type RunningDeploy = AsyncIterable<DeployEvent> & {
   abort(): void;
+  /** Rejects with RpcError on session closure; an in-flight mutation may have completed. */
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
 export declare function packageName(): "@ployz/sdk";
+/** Backend-only ephemeral successor; never save as an ordinary connection candidate. */
+export declare function prepareTailcatRemoval(expected: string): Promise<string>;
 export declare function connect(options: ConnectOptions): Promise<Client>;
-export declare function listHeld(
-  relayUrl: string,
-  bearer: string,
-  pairing: string,
-): Promise<HeldRegister[]>;
-export declare function register(
-  relayUrl: string,
-  bearer: string,
-  pairing: string,
-  machineId: MachineId,
-  identity: RegisterRequest,
-): Promise<Registered>;
-export declare function revokePairing(
-  relayUrl: string,
-  bearer: string,
-  pairing: string,
-): Promise<void>;
-
 export declare function applyAll(
   project_name: ProjectName,
   specs: readonly RequestedServiceSpec[],
@@ -93,6 +82,10 @@ export declare function applyOne(
 ): DeployIntent;
 
 export declare class Client {
+  removeCloudPairing(removal: TailcatRemoval): Promise<void>;
+  inspect(): Promise<MachineDetails>;
+  observeEnrollment(): Promise<EnrollmentSnapshot>;
+  register(assignment: EnrollmentAssignment): Promise<Registered>;
   about(): Promise<ContractDescription>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
@@ -129,5 +122,3 @@ export declare class Client {
 };
 
 export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;
-export declare function observeEnrollment(relayUrl: string, bearer: string, pairing: string, machineId: MachineId): Promise<EnrollmentSnapshot>;
-export declare function publishEnrollment(relayUrl: string, bearer: string, pairing: string, machineId: MachineId, assignment: EnrollmentAssignment): Promise<Registered>;

@@ -15,10 +15,11 @@ import {
 } from "#/modules/project/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { tryRevokeOrganizationRelayPairing } from "#/modules/machines/enrollment.server";
+import { disableOrganizationPairing, loadTeardownConnections, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   PloyzProviderError,
+  Ployz,
 } from "#/modules/runtime/ployz.server";
 import {
   incompleteTeardownOutcome,
@@ -68,6 +69,7 @@ export const prepareTeardownAttemptActivity = Effect.fn("Teardown.prepare")(
       return { kind: "terminal" as const, attempt: existing };
     }
     const claimed = yield* claimTeardownAttemptActivity(input);
+    if (claimed.attempt.scope === "organization") yield* disableOrganizationPairing(claimed.attempt.organizationId);
     return { kind: "ready" as const, attempt: claimed.attempt };
   },
 );
@@ -99,15 +101,15 @@ export const destroyClusterActivity = Effect.fn("Teardown.destroyCluster")(
     readonly organizationId: string;
     readonly confirmDataLoss: readonly DataLossIdentity[];
   }) {
-    const runtime = yield* OrganizationRuntime;
-    const session = yield* runtime.open(input.organizationId);
-    if (session.status !== "connected") {
+    const connections = yield* loadTeardownConnections(input.organizationId);
+    if (connections.length === 0) {
       return yield* new PloyzProviderError({
-        operation: "open organization runtime",
-        cause: session,
+        operation: "open retained teardown connection",
+        cause: "No protected removal credential is available.",
       });
     }
-    return yield* session.connected.destroyCluster({
+    const session = yield* (yield* Ployz).connect({ connections });
+    return yield* session.destroyCluster({
       confirmed: [...input.confirmDataLoss],
     });
   },
@@ -118,24 +120,8 @@ export const revokeTeardownPairingActivity = Effect.fn(
 )(function* (input: {
   readonly organizationId: string;
 }) {
-  const revoked = yield* tryRevokeOrganizationRelayPairing(
-    input.organizationId,
-  );
-  if (!revoked) return { rustMustRevokePairing: true as const };
-  const database = yield* Database;
-  yield* Effect.all([
-    database.drizzle
-      .delete(schemaOrganizationPairing)
-      .where(
-        eq(schemaOrganizationPairing.organizationId, input.organizationId),
-      ),
-    database.drizzle
-      .delete(schemaMachineEnrollmentToken)
-      .where(
-        eq(schemaMachineEnrollmentToken.organizationId, input.organizationId),
-      ),
-  ]);
-  return { rustMustRevokePairing: false as const };
+  const revoked = yield* revokeOrganizationPairing(input.organizationId);
+  return { pairingRevocationUnconfirmed: !revoked.confirmed, pairingRemovals: revoked.endpoints };
 });
 
 export const dropTeardownCloudRowsActivity = Effect.fn(
@@ -180,6 +166,11 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
           .where(inArray(schemaProject.id, projectIds));
       }
       if (attempt.scope === "organization") {
+        const [pending] = yield* transaction.drizzle.select({ organizationId: schemaOrganizationPairing.organizationId })
+          .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, attempt.organizationId));
+        if (pending) return yield* new PloyzProviderError({
+          operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
+        });
         yield* transaction.drizzle
           .delete(schemaOrganizationPairing)
           .where(eq(schemaOrganizationPairing.organizationId, attempt.organizationId));

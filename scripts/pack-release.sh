@@ -19,10 +19,8 @@ daemon_archives=$(printf '%s\n' \
     ployzd_linux_amd64.tar.gz \
     ployzd_linux_arm64.tar.gz)
 all_archives=$(printf '%s\n' \
-    $cli_archives \
-    $daemon_archives \
-    ployz-relay_linux_amd64.tar.gz \
-    ployz-relay_linux_arm64.tar.gz)
+    "$cli_archives" \
+    "$daemon_archives")
 
 for archive in $all_archives; do
     [ -f "$DIST/$archive" ] || fail "missing $archive"

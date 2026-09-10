@@ -41,6 +41,8 @@ pub struct EnrollListen {
     posts: Arc<Mutex<Vec<serde_json::Value>>>,
     callbacks: Arc<Mutex<Vec<serde_json::Value>>>,
     callback_status: Arc<AtomicU16>,
+    publications: Arc<Mutex<Vec<serde_json::Value>>>,
+    publication_status: Arc<AtomicU16>,
     _server: tokio::task::JoinHandle<()>,
 }
 
@@ -86,6 +88,10 @@ impl EnrollListen {
         let paths = Arc::new(Mutex::new(Vec::new()));
         let posts = Arc::new(Mutex::new(Vec::new()));
         let callbacks = Arc::new(Mutex::new(Vec::new()));
+        let publication_status = Arc::new(AtomicU16::new(200));
+        let publication_code = Arc::clone(&publication_status);
+        let publications = Arc::new(Mutex::new(Vec::new()));
+        let recorded_publications = Arc::clone(&publications);
         let callback_status = Arc::new(AtomicU16::new(200));
         let recorded_paths = Arc::clone(&paths);
         let recorded_posts = Arc::clone(&posts);
@@ -111,6 +117,19 @@ impl EnrollListen {
                     .to_owned();
                 recorded_paths.lock().unwrap().push(path.clone());
                 if path.ends_with("/callback") {
+                    let body = enroll_json_body(raw);
+                    if body.get("stage").and_then(serde_json::Value::as_str) == Some("publish") {
+                        events.record("publish");
+                        recorded_publications.lock().unwrap().push(body);
+                        write_http(
+                            &mut stream,
+                            publication_code.load(Ordering::SeqCst),
+                            "Response",
+                            &[],
+                        )
+                        .await;
+                        continue;
+                    }
                     events.record("callback");
                     recorded_callbacks
                         .lock()
@@ -133,6 +152,8 @@ impl EnrollListen {
             posts,
             callbacks,
             callback_status,
+            publications,
+            publication_status,
             _server: server,
         }
     }
@@ -143,6 +164,14 @@ impl EnrollListen {
 
     pub fn posts(&self) -> Vec<serde_json::Value> {
         self.posts.lock().unwrap().clone()
+    }
+
+    pub fn set_publication_status(&self, status: u16) {
+        self.publication_status.store(status, Ordering::SeqCst);
+    }
+
+    pub fn publications(&self) -> Vec<serde_json::Value> {
+        self.publications.lock().unwrap().clone()
     }
 
     pub fn callbacks(&self) -> Vec<serde_json::Value> {

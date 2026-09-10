@@ -39,6 +39,7 @@ import {
 } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 
 type OrganizationRecord = { readonly id: string; readonly slug: string };
 type ProjectRecord = {
@@ -284,7 +285,7 @@ function targetsFor(
     })),
     destroyRuntimeProjects:
       access.scope !== "organization" && isConnectedRuntimeInspection(runtime),
-    revokePairing: plan.revokePairing,
+    revokePairing: access.scope === "organization" || plan.revokePairing,
     runtimeMembership: plan.runtimeMembership,
   };
 }
@@ -397,6 +398,7 @@ export const confirmTeardown = Effect.fn("Teardown.confirm")(
         confirmDataLoss: input.identities,
         targets,
       });
+    if (access.scope === "organization") yield* disableOrganizationPairing(access.organization.id);
     yield* dispatchTeardownRequested(attempt.id);
     return attempt;
   },

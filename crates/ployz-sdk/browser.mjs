@@ -7,9 +7,6 @@ function fail() {
 }
 
 export const connect = fail;
-export const listHeld = fail;
-export const register = fail;
-export const revokePairing = fail;
 export const applyAll = fail;
 export const applyOne = fail;
 export const packageName = fail;
@@ -17,5 +14,4 @@ export const Client = fail;
 export const RpcError = fail;
 
 export const allocateEnrollment = fail;
-export const observeEnrollment = fail;
-export const publishEnrollment = fail;
+export const prepareTailcatRemoval = fail;

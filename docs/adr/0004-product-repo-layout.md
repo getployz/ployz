@@ -7,9 +7,9 @@ Cargo.toml                 # members = crates/*
 crates/ployz/              # CLI; compose-helper stays inside (Go, not a crate)
 crates/ployz-core/
 crates/ployzd/
-crates/ployz-relay/
 crates/ployz-sdk/          # napi @ployz/sdk
 crates/ployz-testkit/
+native/tailcat/             # bundled Machine RPC transport helper
 cloud/                     # today's dashboard tree, including src/routes/_public
 site/                      # ployz.sh (_headers), not marketing
 ```

@@ -1,3 +1,4 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import { AppConfig } from "#/server/config.server";
@@ -74,6 +75,8 @@ function runtimeFailure(
   }
   return new PloyzProviderError({ operation, cause });
 }
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(
   runtimeHydration,

@@ -88,4 +88,16 @@ run_suite deploy_execution cargo test --locked --no-fail-fast --package ployz --
     deploy::exec::cluster_tests::deploy_execution_preserves_partial_effects_and_never_repairs_them \
     -- --ignored --exact --test-threads=1
 
+# Destructive host lifecycle coverage needs a dedicated systemd Machine, not the
+# container cluster fixture. Opt in only on that disposable Machine.
+if [[ -n "${PLOYZ_DISPOSABLE_SYSTEMD_RELEASE_DIR:-}" ]]; then
+    run_suite tailcat_systemd bash scripts/test-tailcat-systemd.sh \
+        "$PLOYZ_DISPOSABLE_SYSTEMD_RELEASE_DIR" "${PLOYZ_SYSTEMD_TEST_VERSION:?}"
+fi
+
+if [ -n "${PLOYZ_TAILCAT_REMOVAL_INPUT:-}" ]; then
+    run_suite tailcat_removal node crates/ployz-sdk/tests/node_tailcat_removal.js \
+        < "$PLOYZ_TAILCAT_REMOVAL_INPUT"
+fi
+
 exit "$failed"

@@ -10,9 +10,33 @@ use ployz_core::{CloudPairing, PairingCredential};
 use serde_json::json;
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, registration, serve_local_machine,
-    serve_machine,
+    EnrollListen, JoinDaemon, PAIRING, TOKEN, registration, serve_local_machine, serve_machine,
 };
+
+// Run successful local enrollment with an isolated PATH for capability export.
+fn with_export_helper(test: &str) -> bool {
+    if std::env::var_os("PLOYZ_EXPORT_FIXTURE").is_some() {
+        return false;
+    }
+    let cli = super::harness::cli();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &format!("daemon_sync::{test}"), "--nocapture"])
+        .envs(
+            cli.as_std()
+                .get_envs()
+                .filter_map(|(key, value)| value.map(|value| (key, value))),
+        )
+        .env("PLOYZ_EXPORT_FIXTURE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
 
 #[derive(Clone, Copy)]
 enum InstallOutcome {
@@ -97,9 +121,7 @@ async fn enroll_locally_with_storage(
 ) {
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": storage,
@@ -119,6 +141,9 @@ async fn enroll_locally_with_storage(
 
 #[tokio::test]
 async fn zfs_preparation_reconnects_after_restarting_a_matching_daemon() {
+    if with_export_helper("zfs_preparation_reconnects_after_restarting_a_matching_daemon") {
+        return;
+    }
     let (result, calls, connections) = enroll_locally_with_storage(
         env!("CARGO_PKG_VERSION"),
         InstallOutcome::UpdateDaemon,
@@ -127,7 +152,7 @@ async fn zfs_preparation_reconnects_after_restarting_a_matching_daemon() {
     .await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(
         connections.load(Ordering::SeqCst) >= 2,
         "enrollment must reconnect after storage preparation restarts the daemon"
@@ -135,21 +160,27 @@ async fn zfs_preparation_reconnects_after_restarting_a_matching_daemon() {
 }
 
 #[tokio::test]
-async fn matching_daemon_does_not_run_the_installer() {
+async fn matching_daemon_only_prepares_the_capability_helper() {
+    if with_export_helper("matching_daemon_only_prepares_the_capability_helper") {
+        return;
+    }
     let (result, calls, _) =
         enroll_locally(env!("CARGO_PKG_VERSION"), InstallOutcome::UpdateDaemon).await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn mismatched_daemon_is_reinstalled_without_preparing_storage() {
+    if with_export_helper("mismatched_daemon_is_reinstalled_without_preparing_storage") {
+        return;
+    }
     let (result, calls, connections) =
         enroll_locally("0.0.0-old", InstallOutcome::UpdateDaemon).await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(
         connections.load(Ordering::SeqCst) >= 2,
         "enrollment must reconnect after the installer restarts the daemon"

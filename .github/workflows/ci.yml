@@ -61,6 +61,7 @@ jobs:
       - run: python3 scripts/test-cloud-sdk-version.py
       - run: python3 scripts/check-cloud-sdk-version.py
       - run: bash scripts/test-cli-installer.sh
+      - run: bash scripts/test-release-packaging.sh
       - run: bash scripts/test-daemon-lifecycle.sh
       - run: bash scripts/test-qualify-release.sh
       - run: bash scripts/test-qualify-clean-init.sh
@@ -197,7 +198,6 @@ jobs:
     permissions:
       contents: read
       actions: write
-      packages: write
     secrets: inherit
 
   ready:

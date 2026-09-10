@@ -1,6 +1,6 @@
 # Ployz Cloud
 
-Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../CONTEXT.md) and are mirrored here for Cloud product language. The current bootstrap implementation follows the [organization enrollment protocol](../docs/adr/0003-organization-enrollment-protocol.md) and [Cloud relay architecture](../docs/adr/0001-cloud-relay.md).
+Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../CONTEXT.md) and are mirrored here for Cloud product language. Enrollment follows the [protected connection candidate decision](../docs/adr/0005-tailcat-connection-candidates.md).
 
 ## Language
 
@@ -40,8 +40,12 @@ _Avoid_: Token use, bootstrap report, machine acceptance
 The Organization-scoped assignment of one Server to found its Organization Cluster. It has no automatic expiry or transfer; the matching Server resumes it until completion or an operator performs a Manual Founding Reset.
 _Avoid_: Token claim, founder election, leader election, founder failover
 
+**Connection Candidate**:
+An Organization's protected access descriptor for one Server in its current Cloud Pairing. It permits a connection attempt but establishes neither membership nor live presence.
+_Avoid_: Server catalog, online Server, registered member
+
 **Manual Founding Reset**:
-An operator-confirmed abandonment of a pending Founding Claim after Cloud has definite evidence that its Pairing Credential holds no Server on Relay. It preserves the Organization's Cloud Enroll Tokens so existing enrollment commands can claim the replacement attempt.
+An operator-confirmed abandonment of a pending Founding Claim after endpoint access has been revoked. An absent Connection Candidate, failed connection, or timeout is not evidence permitting reset.
 _Avoid_: Automatic reclaim, founder failover, token reset
 
 **Waiting Cloud Bootstrap Redemption**:
@@ -53,7 +57,7 @@ A Cloud-side operator action for the interactive Cloud Bootstrap workflow. It do
 _Avoid_: Founder failover, automatic promotion, Cloud cleanup, machine removal
 
 **Cloud Connection**:
-Cloud's durable product-side relationship to an Organization Cluster after Cloud has accepted bootstrap evidence and can authenticate as an authorized NATS client. A Cloud Connection exists only after reachability succeeds; a Cloud Bootstrap Redemption may establish one, but they are separate concepts and a connection is not cluster truth, machine membership, or recovery authority.
+Cloud's durable product-side relationship to an Organization Cluster after Cloud has confirmed access to the intended Server. A Cloud Connection exists only after reachability succeeds; a Cloud Bootstrap Redemption may establish one, but they are separate concepts and a connection is not cluster truth, machine membership, or recovery authority.
 _Avoid_: Runtime authority, machine membership, Cloud control plane, recovery authority
 
 **Accepted Machine Evidence**:

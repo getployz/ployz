@@ -137,17 +137,24 @@ unreachable.
 ## 7. Cloud drives, never owns
 
 **The bet.** Cloud is the primary way users drive Ployz, but it is not a Cluster
-controller and holds no runtime truth. The Cloud Relay is a hosted pipe Machines
-dial out to and hold open: it carries opaque streams, interprets none of them,
-holds no Cluster observation, and is not a Machine or mesh peer.
+controller and holds no runtime truth. SSH and Tailcat use the same Machine RPC
+connection seam. Tailcat carries opaque streams through public DERP relays to a
+Machine-local helper; neither the helper nor the relay is a mesh peer.
 
-**Why.** A dumb relay keeps the hosted surface small and auditable. The Cluster is
-fully functional without Cloud, and no Cloud outage or compromise can corrupt
-Cluster semantics — it can only sever the pipe and pause Cloud-driven actions.
+**Why.** Reusing transport primitives removes a hosted protocol to maintain.
+Cloud stores encrypted, Organization-scoped connection candidates associated with
+the current Cluster pairing. A saved candidate is neither membership nor presence;
+only a successful connection confirms reachability and the intended Machine.
+The Cluster remains independently operable without Cloud.
 
-**Red flags:** relay-side interpretation or routing of payloads, Cloud-held
-runtime state, Cluster operations whose correctness depends on Cloud
-reachability.
+Removing Cloud access disables that pairing's connections immediately. Endpoint
+revocation is confirmed separately; an offline Machine remains unconfirmed.
+Tailcat capabilities grant shared administrative access: rotation affects every
+old holder, while Cloud logout does not revoke direct capabilities or SSH keys.
+
+**Red flags:** Cloud-held runtime truth, a connection catalog treated as membership,
+absence or transport failure used to reset a founder, Cluster operations whose
+correctness depends on Cloud reachability.
 
 ## 8. Evidence over claims
 

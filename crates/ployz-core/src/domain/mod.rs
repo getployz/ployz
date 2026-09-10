@@ -8,12 +8,12 @@ mod issuance;
 mod machine;
 mod observation;
 mod placement;
-mod relay_endpoint;
 mod resources;
 mod runtime_watch;
 mod selector;
 mod service_graph;
 mod spec;
+mod tailcat_capability;
 mod volume;
 
 pub use certificate_policy::*;
@@ -26,12 +26,12 @@ pub use issuance::*;
 pub use machine::*;
 pub use observation::*;
 pub use placement::*;
-pub use relay_endpoint::*;
 pub use resources::*;
 pub use runtime_watch::*;
 pub use selector::*;
 pub use service_graph::*;
 pub use spec::*;
+pub use tailcat_capability::*;
 pub use volume::*;
 
 use serde::{Deserialize, Serialize};

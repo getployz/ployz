@@ -48,7 +48,6 @@ it.live(
           BETTER_AUTH_SECRET: "better-auth-secret",
           GITHUB_CLIENT_ID: "github-client-id",
           GITHUB_CLIENT_SECRET: "github-client-secret",
-          PLOYZ_RELAY_URL: "https://relay.example.test",
           APP_ENCRYPTION_SECRET:
             "app-encryption-secret-at-least-32-characters",
         },
@@ -111,6 +110,8 @@ it.live(
         const base = { table: "github_repository_cache", userId };
         for (const input of [
           { ...base, table: "session" },
+          { ...base, table: "organization_machine" },
+          { ...base, table: "organization_pairing" },
           { ...base, table: "toString" },
           { ...base, sql: "select * from session" },
         ]) {

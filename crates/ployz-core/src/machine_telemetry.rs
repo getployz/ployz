@@ -7,7 +7,7 @@ use thiserror::Error;
 ///
 /// Attached endpoints may exceed the currently usable IPAM range when live
 /// Docker state is overcommitted. In that state free capacity is zero.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, ts_rs::TS)]
 pub struct BridgeEndpointCapacity {
     #[serde(rename = "bridge_usable_endpoints")]
     usable_endpoints: u64,
@@ -67,7 +67,7 @@ impl<'de> Deserialize<'de> for BridgeEndpointCapacity {
 }
 
 /// Fresh operator telemetry from one Machine. It is not placement scoring data.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, ts_rs::TS)]
 pub struct MachineTelemetry {
     /// Unix timestamp when this observation began.
     pub observed_at_unix_seconds: u64,
@@ -100,7 +100,7 @@ pub struct ByteCapacity {
 pub struct ByteCapacityError;
 
 /// Fresh telemetry returned by a requested Machine inspection.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case", tag = "scope")]
 pub enum TelemetryObservation {
     /// Only bridge endpoint capacity was requested.

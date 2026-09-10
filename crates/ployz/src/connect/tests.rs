@@ -299,6 +299,27 @@ async fn missing_ssh_client_survives_connection_selection() {
 }
 
 #[tokio::test]
+async fn missing_ssh_client_does_not_skip_later_non_ssh_connections() {
+    let error = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![
+                Connection::ssh(SshDestination::parse("user@example.com").unwrap()),
+                Connection::unix("/ployz-missing-rpc.sock").unwrap(),
+            ],
+        },
+        Arc::new(SystemConnector::new("/ployz-missing-ssh-client")),
+    )
+    .await
+    .err()
+    .expect("both unavailable connections must fail");
+    assert!(
+        matches!(error, ConnectError::AllFailed { attempts: 2, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn stalled_ssh_probe_obeys_configured_timeout() {
     let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh");
     let connector = SystemConnector::new(program).with_ssh_timeout(Duration::from_millis(100));
@@ -346,4 +367,53 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn tailcat_auxiliary_proxy_is_explicitly_unsupported_and_redacted() {
+    let connection = Connection::tailcat("private-capability").unwrap();
+    let result = SystemConnector::default()
+        .dial_proxy(&connection, "tcp", "127.0.0.1:1234")
+        .await;
+    let Err(ConnectError::ProxyUnsupported(message)) = result else {
+        panic!("Tailcat must reject auxiliary proxy");
+    };
+    assert!(message.contains("tailcat"));
+    assert!(!message.contains("private-capability"));
+}
+
+#[tokio::test]
+async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
+    use tokio::io::AsyncReadExt;
+    let mut stream = spawn_child(
+        Path::new("sh"),
+        &["-c".into(), "cat; printf response-after-eof".into()],
+    )
+    .unwrap();
+    stream.write_all(b"request").await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut result = String::new();
+    tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut result))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result, "requestresponse-after-eof");
+    assert!(stream._child.wait().await.unwrap().success());
+
+    let child = spawn_child(Path::new("cat"), &[]).unwrap();
+    let pid = child._child.id().unwrap();
+    drop(child);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while StdCommand::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled helper was not reaped");
 }

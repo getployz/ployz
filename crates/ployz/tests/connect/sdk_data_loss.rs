@@ -9,9 +9,9 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::support::{DiscoveryService, machine};
 use super::support::{docker_volume as volume, machine_named};
+use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
 async fn data_loss_if_machine_removed_lists_volumes_and_empty_without_mutating() {
@@ -76,18 +76,13 @@ async fn failed_volume_listing_is_not_empty_data_loss() {
     let description = super::sdk::advertised_description();
     let failed = machine('b', "broken");
     let machine_id = failed.machine.id;
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![failed];
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")
@@ -110,18 +105,13 @@ async fn omitted_volume_listing_is_not_empty_data_loss() {
     let mut down = machine('c', "gone");
     down.membership = MembershipObservation::Down;
     let machine_id = down.machine.id;
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![down];
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")
@@ -141,7 +131,7 @@ async fn omitted_volume_listing_is_not_empty_data_loss() {
 #[tokio::test]
 async fn node_data_loss_reads_a_machine_with_volumes_and_one_with_none() {
     let (description, loaded, empty, service) = two_machine_cluster();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
@@ -160,20 +150,15 @@ async fn session_with_two_machines() -> (
     sdk::Session,
     ployz_core::Machine,
     ployz_core::Machine,
-    RelaySession,
-    super::relay::FakeMachine,
+    UnixSession,
+    super::unix_session::FakeMachine,
 ) {
     let (description, loaded, empty, service) = two_machine_cluster();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let spawned = session.spawn_machine(description.machine_id, service).await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")

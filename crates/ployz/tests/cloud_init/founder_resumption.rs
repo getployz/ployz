@@ -5,11 +5,9 @@ use super::*;
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     let mut founder = founder_machine();
-    founder.accepts_ingress = false;
     let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    founder.accepts_ingress = false;
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let registration = Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
@@ -23,10 +21,10 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
             "pairing": pairing,
         }),
         json!({
-            "kind": "join",
+            "kind": "initialize",
+            "resumed": true,
             "storage": "none",
             "pairing": pairing,
-            "registration": registration,
         }),
     ])
     .await;
@@ -35,7 +33,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     let machine_addr = serve_machine(daemon.clone()).await;
 
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "founder",
         false,
@@ -52,10 +50,10 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
         enroll.callbacks(),
         vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 1]
     );
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 
+    enroll.set_callback_status(200);
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "founder",
         false,
@@ -70,16 +68,15 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     );
     assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.callbacks().len(), 1);
+    assert_eq!(enroll.callbacks().len(), 2);
+    assert_eq!(enroll.publications().len(), 2);
 }
 
 #[tokio::test]
 async fn new_founding_claim_with_reset_resets_then_initializes() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": false,
@@ -112,7 +109,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         .unwrap();
 
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "founder",
         true,
@@ -135,16 +132,13 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
             "pairingCredential": PAIRING,
         })]
     );
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
 async fn resumed_founder_uses_the_matching_participating_machine() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": true,
@@ -179,7 +173,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
         .unwrap();
 
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "founder",
         false,
@@ -207,7 +201,6 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
 async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let mut founder = founder_machine();
     founder.public_ip = Some("192.0.2.1".parse().unwrap());
-    let machine_id = founder.id;
     let requested = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default(), None);
     let ingress = container_on(
         &founder,
@@ -249,9 +242,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .unwrap();
     let events = EventLog::default();
     let daemon = daemon.with_events(events.clone());
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::script_recording(
         [json!({
             "kind": "initialize",
@@ -266,10 +257,10 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = super::harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -298,19 +289,19 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
     );
     assert_eq!(daemon.initialize_requests().len(), 1);
     assert!(daemon.reserve_request().is_none());
-    assert_eq!(events.entries(), ["set_cloud_pairing", "callback"]);
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
+    assert_eq!(
+        events.entries(),
+        ["set_cloud_pairing", "publish", "callback"]
+    );
 }
 
 #[tokio::test]
 async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let mut founder = founder_machine();
-    founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let machine_id = founder.id;
+    founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let events = EventLog::default();
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::script_recording(
         [
             json!({
@@ -337,11 +328,11 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let proxy = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
     let command = || {
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        let mut command = super::harness::cli();
         command
             .args([
                 "--connect",
-                &format!("tcp://{machine_addr}"),
+                &format!("ssh://root@{machine_addr}"),
                 "cloud",
                 "enroll",
                 TOKEN,
@@ -414,21 +405,19 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             "deploy_ingress",
             "publish_dns",
             "set_cloud_pairing",
+            "publish",
             "callback",
         ]
     );
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.posts().len(), 2);
     assert_eq!(enroll.callbacks().len(), 1);
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
 async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservation() {
     for replaced in [true, false] {
-        let relay = RelayListen::start().await;
-        let pairing =
-            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
         let enroll = EnrollListen::start(json!({
             "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
         }))
@@ -444,10 +433,10 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
             daemon.fail_reservation()
         };
         let address = serve_machine(daemon.clone()).await;
-        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        let output = super::harness::cli()
             .args([
                 "--connect",
-                &format!("tcp://{address}"),
+                &format!("ssh://root@{address}"),
                 "cloud",
                 "enroll",
                 TOKEN,
@@ -477,4 +466,56 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
         assert_eq!(daemon.reset_count(), 0);
         assert!(enroll.callbacks().is_empty());
     }
+}
+
+#[tokio::test]
+async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
+    let mut founder = founder_machine();
+    founder.accepts_ingress = false;
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let enroll = EnrollListen::script([
+        json!({ "kind": "initialize", "resumed": false, "pairing": pairing }),
+        json!({ "kind": "initialize", "resumed": true, "pairing": pairing }),
+        json!({ "kind": "initialize", "resumed": true, "pairing": pairing }),
+    ])
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let address = serve_machine(daemon.clone()).await;
+    let connect = format!("ssh://root@{address}");
+    let unsupported = init_cloud(
+        &format!("tcp://{address}"),
+        &enroll.url,
+        "founder",
+        false,
+        true,
+    )
+    .await;
+    assert!(!unsupported.status.success());
+    assert!(
+        String::from_utf8_lossy(&unsupported.stderr)
+            .contains("requires local Unix, SSH, or Tailcat")
+    );
+    assert!(daemon.initialize_requests().is_empty());
+    assert!(enroll.publications().is_empty());
+    enroll.set_publication_status(409);
+    let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("candidate publication"));
+    assert!(enroll.callbacks().is_empty());
+    enroll.set_publication_status(200);
+    let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(daemon.initialize_requests().len(), 1);
+    assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(enroll.publications().len(), 2);
+    assert_eq!(enroll.publications().first(), enroll.publications().get(1));
+    assert_eq!(enroll.callbacks().len(), 1);
 }

@@ -1,7 +1,7 @@
 //! Bounded enrollment after the caller has durably saved its allocation.
 pub mod local;
 
-use crate::connect::Client;
+use crate::connect::{Client, ConnectError};
 use ployz_core::{
     CloudPairing, EnrollmentAssignment, EnrollmentSnapshot, JoinAccepted, JoinRequest,
     ListMachinesRequest, Registered, RpcError, RpcErrorCode, op,
@@ -46,9 +46,20 @@ pub async fn publish_enrollment(
     request.assigned_subnet = Some(assignment.machine.subnet);
     request.runtime.clone_from(&assignment.machine.runtime);
     entry
-        .call::<op::Register>(request, None)
+        .call_unretried::<op::Register>(request, None)
         .await
-        .map_err(Into::into)
+        .map_err(|error| {
+            if let ConnectError::Remote(error) = error {
+                error
+            } else {
+                let mut error = RpcError::from(error);
+                error.message = format!(
+                    "Register response lost; outcome may be uncertain: {}",
+                    error.message
+                );
+                error
+            }
+        })
 }
 
 /// Re-publish a saved allocation, then durably accept Join. A lost response can

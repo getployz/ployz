@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{Ipv6Addr, SocketAddr},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -10,8 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::{MachineId, RelayEndpoint};
-use ployz_relay::{DialCredential, PairingCredential};
+use ployz_core::{MachineId, TailcatCapability};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -65,15 +64,31 @@ impl Config {
 
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
-        let yaml = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+        let mut file = File::open(&path).map_err(|source| ConfigError::Read {
             path: path.clone(),
             source,
         })?;
-        let mut config =
-            serde_norway::from_str::<Self>(&yaml).map_err(|source| ConfigError::Parse {
+        let mut yaml = String::new();
+        file.read_to_string(&mut yaml)
+            .map_err(|source| ConfigError::Read {
                 path: path.clone(),
                 source,
             })?;
+        let mut config =
+            serde_norway::from_str::<Self>(&yaml).map_err(|source| ConfigError::Parse {
+                path: path.clone(),
+                line: source.location().map(|location| location.line()),
+            })?;
+        if config.has_capability() {
+            require_private(
+                &path,
+                &file.metadata().map_err(|source| ConfigError::Read {
+                    path: path.clone(),
+                    source,
+                })?,
+            )?;
+            require_private_parent(&path)?;
+        }
         if config
             .current_context
             .as_ref()
@@ -159,6 +174,15 @@ impl Config {
         }
     }
 
+    fn has_capability(&self) -> bool {
+        self.contexts.values().any(|context| {
+            context
+                .connections
+                .iter()
+                .any(|connection| matches!(connection.transport(), Transport::Tailcat(_)))
+        })
+    }
+
     pub fn save(&self) -> Result<(), ConfigError> {
         let yaml = serde_norway::to_string(self).map_err(ConfigError::Encode)?;
         let parent = self
@@ -167,6 +191,9 @@ impl Config {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         create_private_directories(parent)?;
+        if self.has_capability() {
+            require_private_parent(&self.path)?;
+        }
         let temporary = temporary_path(&self.path);
         let mut file = OpenOptions::new()
             .write(true)
@@ -234,6 +261,25 @@ impl Config {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn require_private(path: &Path, metadata: &fs::Metadata) -> Result<(), ConfigError> {
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(ConfigError::PrivatePermissions(path.to_owned()));
+    }
+    Ok(())
+}
+
+fn require_private_parent(path: &Path) -> Result<(), ConfigError> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let metadata = fs::metadata(parent).map_err(|source| ConfigError::Read {
+        path: parent.to_owned(),
+        source,
+    })?;
+    require_private(parent, &metadata)
 }
 
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -375,19 +421,13 @@ pub struct Connection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Transport {
+    Tailcat(TailcatCapability),
     Ssh {
         destination: SshDestination,
         key_file: Option<PathBuf>,
     },
     Tcp(SocketAddr),
     Unix(PathBuf),
-    /// Cloud Relay Dial. Not persisted. The entry Machine ID lives on
-    /// [`Connection::machine_id`].
-    Relay {
-        url: RelayEndpoint,
-        credential: DialCredential,
-        pairing: PairingCredential,
-    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -404,12 +444,23 @@ struct ConnectionFile {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TransportFile {
+    Tailcat(TailcatCapability),
     Ssh(String),
     Tcp(SocketAddr),
     Unix(PathBuf),
 }
 
 impl Connection {
+    pub fn tailcat(capability: impl Into<String>) -> Result<Self, ConnectionError> {
+        Ok(Self {
+            transport: Transport::Tailcat(
+                TailcatCapability::parse(capability)
+                    .map_err(|_| ConnectionError::TailcatCapability)?,
+            ),
+            machine_id: None,
+        })
+    }
+
     #[must_use]
     pub fn ssh(destination: SshDestination) -> Self {
         Self {
@@ -440,26 +491,6 @@ impl Connection {
         })
     }
 
-    /// Connect through Cloud Relay with a caller-supplied Dial Credential,
-    /// Pairing Credential, and entry Machine ID. Does not mint credentials or
-    /// choose a Machine.
-    #[must_use]
-    pub fn relay(
-        url: RelayEndpoint,
-        credential: DialCredential,
-        pairing: PairingCredential,
-        machine_id: MachineId,
-    ) -> Self {
-        Self {
-            transport: Transport::Relay {
-                url,
-                credential,
-                pairing,
-            },
-            machine_id: Some(machine_id),
-        }
-    }
-
     #[must_use]
     pub fn with_machine_id(mut self, machine_id: MachineId) -> Self {
         self.machine_id = Some(machine_id);
@@ -483,7 +514,7 @@ impl Connection {
     pub fn ssh_key_file(&self) -> Option<&Path> {
         match &self.transport {
             Transport::Ssh { key_file, .. } => key_file.as_deref(),
-            Transport::Tcp(_) | Transport::Unix(_) | Transport::Relay { .. } => None,
+            Transport::Tailcat(_) | Transport::Tcp(_) | Transport::Unix(_) => None,
         }
     }
 
@@ -496,18 +527,30 @@ impl Connection {
 impl fmt::Display for Connection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.transport {
+            Transport::Tailcat(_) => match self.machine_id {
+                Some(machine_id) => write!(formatter, "tailcat:{machine_id}"),
+                None => formatter.write_str("tailcat:[redacted]"),
+            },
             Transport::Ssh { destination, .. } => write!(formatter, "ssh://{destination}"),
             Transport::Tcp(address) => write!(formatter, "tcp://{address}"),
             Transport::Unix(path) => write!(formatter, "unix://{}", path.display()),
-            Transport::Relay { url, .. } => write!(formatter, "{url}"),
         }
     }
+}
+
+// Tailcat capabilities are opaque, `tc`-prefixed base64url, not SSH destinations.
+// Recognize even malformed pastes here so parse errors never echo their secret.
+pub(crate) fn is_tailcat_address(value: &str) -> bool {
+    value.trim().starts_with("tc") && !value.contains('@') && !value.contains("://")
 }
 
 impl FromStr for Connection {
     type Err = ConnectionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.starts_with("tailcat:") || is_tailcat_address(value) {
+            return Err(ConnectionError::TailcatConfigOnly);
+        }
         if let Some(address) = value.strip_prefix("tcp://") {
             return address
                 .parse()
@@ -533,14 +576,10 @@ impl Serialize for Connection {
         S: Serializer,
     {
         let transport = match &self.transport {
+            Transport::Tailcat(capability) => TransportFile::Tailcat(capability.clone()),
             Transport::Ssh { destination, .. } => TransportFile::Ssh(destination.to_string()),
             Transport::Tcp(address) => TransportFile::Tcp(*address),
             Transport::Unix(path) => TransportFile::Unix(path.clone()),
-            Transport::Relay { .. } => {
-                return Err(serde::ser::Error::custom(
-                    "Cloud Relay connections are not persisted",
-                ));
-            }
         };
         ConnectionFile {
             transport,
@@ -562,12 +601,16 @@ impl<'de> Deserialize<'de> for Connection {
                 destination: SshDestination::parse(destination).map_err(de::Error::custom)?,
                 key_file,
             },
+            (TransportFile::Tailcat(capability), None) => Transport::Tailcat(capability),
             (TransportFile::Tcp(address), None) => Transport::Tcp(address),
             (TransportFile::Unix(path), None) if path.is_absolute() => Transport::Unix(path),
             (TransportFile::Unix(path), None) => {
                 return Err(de::Error::custom(ConnectionError::UnixPath(path)));
             }
-            (TransportFile::Tcp(_) | TransportFile::Unix(_), Some(_)) => {
+            (
+                TransportFile::Tailcat(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
+                Some(_),
+            ) => {
                 return Err(de::Error::custom(ConnectionError::SshKeyTransport));
             }
         };
@@ -589,6 +632,9 @@ pub struct SshDestination {
 impl SshDestination {
     pub fn parse(value: impl Into<String>) -> Result<Self, ConnectionError> {
         let value = value.into();
+        if is_tailcat_address(&value) {
+            return Err(ConnectionError::TailcatConfigOnly);
+        }
         let Some((user, destination)) = value.split_once('@') else {
             return Err(ConnectionError::SshDestination(value));
         };
@@ -706,11 +752,12 @@ pub enum ConfigError {
     Context(#[from] ContextError),
     #[error("could not read Ployz config {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
-    #[error("could not parse Ployz config {path}: {source}")]
-    Parse {
-        path: PathBuf,
-        source: serde_norway::Error,
-    },
+    #[error(
+        "could not parse Ployz config {path} (line {line:?}); check connection fields and YAML syntax"
+    )]
+    Parse { path: PathBuf, line: Option<usize> },
+    #[error("credential storage {0} must not grant group or other permissions")]
+    PrivatePermissions(PathBuf),
     #[error("current context cannot be empty in Ployz config {0}")]
     EmptyCurrentContext(PathBuf),
     #[error("could not encode Ployz config: {0}")]
@@ -723,6 +770,12 @@ pub enum ConfigError {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectionError {
+    #[error("invalid Tailcat capability")]
+    TailcatCapability,
+    #[error(
+        "store Tailcat capabilities in a private context config; do not pass them as command arguments"
+    )]
+    TailcatConfigOnly,
     #[error("invalid SSH destination {0:?}")]
     SshDestination(String),
     #[error("invalid TCP address {0:?}")]

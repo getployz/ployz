@@ -1,3 +1,4 @@
+import type { RemovalEndpoint } from "#/modules/machines/pairing-removal";
 import { createdAt, type EncryptedSecretValue, type JsonObject, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { environmentDeployment } from "#/modules/deployments/tables";
@@ -381,7 +382,10 @@ export const organizationPairing = pgTable(
     encryptedPairingSecret: jsonb("encrypted_pairing_secret")
       .notNull()
       .$type<EncryptedSecretValue>(),
+    removalStartedAt: timestamp("removal_started_at", { mode: "date", withTimezone: true }),
+    removalEndpoints: jsonb("removal_endpoints").$type<readonly RemovalEndpoint[] | null>(),
     founderPublicKey: text("founder_public_key"),
+    founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
     firstConnectDeploymentEvaluatedAt: timestamp(
       "first_connect_deployment_evaluated_at",
@@ -391,9 +395,17 @@ export const organizationPairing = pgTable(
     updatedAt,
   },
   (table) => [
+    check("organization_pairing_removal_shape_check", sql`
+      (${table.removalStartedAt} is null and ${table.removalEndpoints} is null)
+      or (${table.removalStartedAt} is not null and ${table.removalEndpoints} is not null and jsonb_typeof(${table.removalEndpoints}) = 'array')
+    `),
     check(
       "organization_pairing_state_check",
       sql`${table.founderPublicKey} is not null or ${table.founderMachineId} is not null`,
+    ),
+    check(
+      "organization_pairing_founder_claim_machine_id_check",
+      sql`${table.founderClaimMachineId} ~ '^[0-9a-f]{32}$'`,
     ),
     check(
       "organization_pairing_founder_machine_id_check",

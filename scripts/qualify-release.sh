@@ -8,7 +8,9 @@
 #   scripts/qualify-release.sh
 #
 # Optional: PLOYZ_QUALIFY_DRY_RUN=1, PLOYZ_QUALIFY_SSH_KEY,
-# PLOYZ_QUALIFY_CONTEXT, PLOYZ_QUALIFY_RESET=1.
+# PLOYZ_QUALIFY_CONTEXT, PLOYZ_QUALIFY_RESET=1, PLOYZ_QUALIFY_CLOUD_URL,
+# PLOYZ_QUALIFY_CLOUD_STATE, PLOYZ_QUALIFY_CLOUD_DRIVER, and
+# PLOYZ_QUALIFY_SSH_KNOWN_HOSTS.
 # Hosts must be uninitialized unless PLOYZ_QUALIFY_RESET=1. Reset destroys
 # managed containers on that Machine.
 
@@ -23,17 +25,19 @@ DRY_RUN=${PLOYZ_QUALIFY_DRY_RUN:-0}
 CONTEXT=${PLOYZ_QUALIFY_CONTEXT:-qualify}
 RESET=${PLOYZ_QUALIFY_RESET:-0}
 SSH_KEY=${PLOYZ_QUALIFY_SSH_KEY:-}
+SSH_KNOWN_HOSTS=${PLOYZ_QUALIFY_SSH_KNOWN_HOSTS:-}
 CONFIG_DIR=
 TRAFFIC_PID=
-ENROLL_FIXTURE_PID=
-ENROLL_PORT=
 TRAFFIC_STOP=/var/lib/ployz/qualification/traffic.stop
 REMOTE_RELEASE_ROOT=/var/lib/ployz/qualification/releases
 APP_URL=http://127.0.0.1:18082/identity
 APP_VALUE=qualify-persistent-data
 APP_VOLUME=qualify-release_qualify-data
 APP_VOLUME_MOUNT=/var/lib/ployz-volumes/$APP_VOLUME
-PAIRING='{"relayUrl":"http://127.0.0.1:1/","secret":"qualification-synthetic-pairing-secret-v1"}'
+CLOUD_URL=${PLOYZ_QUALIFY_CLOUD_URL:-}
+CLOUD_DRIVER=${PLOYZ_QUALIFY_CLOUD_DRIVER:-}
+CLOUD_STATE=${PLOYZ_QUALIFY_CLOUD_STATE:-}
+RESUME_ENROLLMENT=${PLOYZ_QUALIFY_RESUME_ENROLLMENT:-0}
 
 error() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -80,6 +84,10 @@ SSH_ARGS=()
 if [ -n "$SSH_KEY" ]; then
     SSH_ARGS=(-i "$SSH_KEY")
 fi
+if [ -n "$SSH_KNOWN_HOSTS" ]; then
+    [ -f "$SSH_KNOWN_HOSTS" ] || error "PLOYZ_QUALIFY_SSH_KNOWN_HOSTS does not exist"
+    SSH_ARGS+=(-o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+fi
 
 ssh_host() {
     # shellcheck disable=SC2029 # Every post-host argument is intentionally interpreted remotely.
@@ -117,29 +125,21 @@ value = json.load(sys.stdin)["cloud_pairing"]
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))'
 }
 
-start_enroll_fixture() {
-    local port_file=$work/cloud-enroll.port i
-    python3 "$COMPOSE_DIR/cloud-enroll-fixture.py" "$port_file" "$work/cloud-enroll-evidence.jsonl" >"$work/cloud-enroll.log" 2>&1 &
-    ENROLL_FIXTURE_PID=$!
-    for ((i = 0; i < 50; i++)); do
-        if [ -s "$port_file" ]; then
-            ENROLL_PORT=$(cat "$port_file")
-            return
-        fi
-        kill -0 "$ENROLL_FIXTURE_PID" 2>/dev/null || break
-        sleep 0.1
-    done
-    cat "$work/cloud-enroll.log" >&2 || true
-    error "Cloud enrollment fixture did not start"
+run_cloud_phase() {
+    local phase=$1
+    if [ "$phase" = runtime ]; then
+        PLOYZ_QUALIFICATION_PHASE=$phase PLOYZ_QUALIFICATION_STATE=$CLOUD_STATE PLOYZ_QUALIFICATION_CONTEXT_OUT=$PLOYZ_CONFIG "$CLOUD_DRIVER"
+    else
+        PLOYZ_QUALIFICATION_PHASE=$phase PLOYZ_QUALIFICATION_STATE=$CLOUD_STATE "$CLOUD_DRIVER"
+    fi
 }
 
-finish_enroll_fixture() {
-    if ! wait "$ENROLL_FIXTURE_PID"; then
-        cat "$work/cloud-enroll.log" >&2 || true
-        error "Cloud enrollment fixture rejected the enrollment contract"
-    fi
-    ENROLL_FIXTURE_PID=
-    [ "$(wc -l <"$work/cloud-enroll-evidence.jsonl")" -eq 2 ] || error "Cloud enrollment fixture did not observe exactly two requests"
+cloud_token() {
+    python3 -c 'import json, sys
+value = json.load(open(sys.argv[1]))[sys.argv[2]]
+if not isinstance(value, str) or not value.startswith("pmet_"):
+    raise SystemExit("qualification state has no valid enrollment token")
+print(value)' "$CLOUD_STATE" "$1"
 }
 
 read_receipt() {
@@ -228,11 +228,6 @@ stop_traffic() {
 
 cleanup() {
     stop_traffic
-    if [ -n "$ENROLL_FIXTURE_PID" ]; then
-        kill "$ENROLL_FIXTURE_PID" >/dev/null 2>&1 || true
-        wait "$ENROLL_FIXTURE_PID" >/dev/null 2>&1 || true
-        ENROLL_FIXTURE_PID=
-    fi
     [ -z "${work:-}" ] || rm -rf "$work"
     [ -z "$CONFIG_DIR" ] || rm -rf "$CONFIG_DIR"
 }
@@ -243,6 +238,39 @@ stage_remote_release() {
     ssh_host "$first" "rm -rf '$upload' && mkdir -p '$upload'"
     scp_host "$directory/$archive" "$directory/checksums.txt" "$first:$upload/"
     ssh_host "$first" "sudo rm -rf '$REMOTE_RELEASE_ROOT/$label' && sudo install -d -m 0755 '$REMOTE_RELEASE_ROOT/$label' && sudo install -m 0644 '$upload/$archive' '$upload/checksums.txt' '$REMOTE_RELEASE_ROOT/$label/' && rm -rf '$upload'"
+}
+
+# Cloud enrollment intentionally requires local Unix access when it prepares
+# storage or synchronizes a daemon.  Bootstrap the archive daemon without
+# enrolling, then run the archived CLI on that uninitialized Machine.
+bootstrap_cloud_machine() {
+    local host=$1 storage=$2 arch archive remote
+    arch=$(ssh_host "$host" uname -m)
+    archive=$(daemon_archive "$arch")
+    need_file "$ARTIFACT_DIR" PLOYZ_ARTIFACT_DIR "$archive"
+    remote=/tmp/ployz-cloud-enroll-source-$source_version
+    ssh_host "$host" "rm -rf '$remote' && mkdir -p '$remote'"
+    scp_host "$ARTIFACT_DIR/$archive" "$ARTIFACT_DIR/checksums.txt" "$work/source-cli/ployz" "$host:$remote/"
+    ssh_host "$host" "cd '$remote' && sha256sum -c checksums.txt --ignore-missing && tar -xzf '$archive' && chmod 0755 ployz && sudo ./ployzd install --version '$source_version' --storage '$storage' --release-dir '$remote'"
+}
+
+stage_cloud_cli() {
+    local host=$1 arch archive remote=/tmp/ployz-cloud-enroll-source-$source_version
+    arch=$(ssh_host "$host" uname -m)
+    archive=$(daemon_archive "$arch")
+    ssh_host "$host" "mkdir -p '$remote'"
+    scp_host "$ARTIFACT_DIR/$archive" "$ARTIFACT_DIR/checksums.txt" "$work/source-cli/ployz" "$host:$remote/"
+    ssh_host "$host" "chmod 0755 '$remote/ployz'"
+}
+
+cloud_enroll_on_machine() {
+    local host=$1 token=$2 name=$3 storage=$4 label=${5:-}
+    local remote=/tmp/ployz-cloud-enroll-source-$source_version
+    local command="cd '$remote' && PLOYZ_RELEASE_DIR='$remote' ./ployz cloud enroll '$token' --name '$name' --storage '$storage' --no-dns --accepts-ingress=false --cloud-url '$CLOUD_URL'"
+    if [ -n "$label" ]; then
+        command+=" --label-add '$label'"
+    fi
+    ssh_host "$host" "$command"
 }
 
 select_remote_release() {
@@ -261,7 +289,7 @@ assert_remote_hash() {
 command -v python3 >/dev/null 2>&1 || error "python3 is required to inspect qualification evidence"
 
 read -r -a HOST_LIST <<<"$HOSTS"
-[ "${#HOST_LIST[@]}" -ge 1 ] || error "PLOYZ_QUALIFY_HOSTS is empty"
+[ "${#HOST_LIST[@]}" -ge 2 ] || error "PLOYZ_QUALIFY_HOSTS must name founder and joining Machines"
 
 for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
     need_file "$ARTIFACT_DIR" PLOYZ_ARTIFACT_DIR "$archive"
@@ -279,21 +307,36 @@ if [ "$DRY_RUN" != 0 ]; then
     echo "compose: $COMPOSE_DIR/compose.yaml"
     echo "ssh-key: ${SSH_KEY:-cli-default}"
     if [ "$RESET" != 0 ]; then
-        echo "reset: yes (--yes on machine init)"
+        echo "reset: yes (only for the later archive upgrade fixtures)"
     else
         echo "reset: no (initialized hosts fail without PLOYZ_QUALIFY_RESET=1)"
     fi
-    echo "steps: normal ZFS machine init/add from the source release; synthetic loopback Cloud Pairing; persistent application traffic; target upgrade with client disconnect and reconnect; corrupt preflight; failed activation; explicit previous-binary repair"
+    echo "steps: source archive daemon bootstrap on uninitialized Machines, isolated live Cloud founder/join, runtime fallback, and revocation; persistent application traffic; target upgrade with client disconnect and reconnect; corrupt preflight; failed activation; explicit previous-binary repair"
     exit 0
 fi
 
 work=$(mktemp -d)
 trap cleanup EXIT
+[ -n "$CLOUD_URL" ] || error "set PLOYZ_QUALIFY_CLOUD_URL to the isolated Cloud HTTPS origin"
+[ -n "$CLOUD_DRIVER" ] || error "PLOYZ_QUALIFY_CLOUD_DRIVER is required"
+[ -x "$CLOUD_DRIVER" ] || error "Cloud qualification driver is not executable: $CLOUD_DRIVER"
+if [ -z "$CLOUD_STATE" ]; then
+    CLOUD_STATE=$work/cloud-state.json
+fi
+mkdir -p "$(dirname "$CLOUD_STATE")"
+umask 077
+touch "$CLOUD_STATE"
+chmod 0600 "$CLOUD_STATE"
 mkdir -p "$work/source-cli" "$work/target-cli"
 verify_archive "$ARTIFACT_DIR" source "$(cli_archive)"
 verify_archive "$UPGRADE_ARTIFACT_DIR" target "$(cli_archive)"
 tar -xzf "$ARTIFACT_DIR/$(cli_archive)" -C "$work/source-cli"
 tar -xzf "$UPGRADE_ARTIFACT_DIR/$(cli_archive)" -C "$work/target-cli"
+controller_daemon_archive=$(daemon_archive "$(uname -m)")
+need_file "$ARTIFACT_DIR" PLOYZ_ARTIFACT_DIR "$controller_daemon_archive"
+tar -xzf "$ARTIFACT_DIR/$controller_daemon_archive" -C "$work/source-cli"
+[ -x "$work/source-cli/ployz-tailcat" ] || error "source daemon archive did not contain ployz-tailcat"
+export PATH="$work/source-cli:$PATH"
 PLOYZ=$work/source-cli/ployz
 TARGET_PLOYZ=$work/target-cli/ployz
 [ -x "$PLOYZ" ] || error "source CLI archive did not contain ployz"
@@ -306,33 +349,49 @@ export PLOYZ_CONFIG=$CONFIG_DIR/config.yaml
 export PLOYZ_RELEASE_DIR=$ARTIFACT_DIR
 
 first=${HOST_LIST[0]}
-echo "machine init $first at $source_version"
-init_cmd=("$PLOYZ" machine init --version "$source_version" --storage zfs --name qualify-1 --label-add qualify=primary --context "$CONTEXT" --no-dns --accepts-ingress=false)
-if [ "$RESET" != 0 ]; then
-    init_cmd+=(--yes)
-fi
-if [ -n "$SSH_KEY" ]; then
-    init_cmd+=(--ssh-key "$SSH_KEY")
-fi
-"${init_cmd[@]}" "$first"
 
-i=1
-while [ "$i" -lt "${#HOST_LIST[@]}" ]; do
-    echo "machine add ${HOST_LIST[$i]}"
-    add_cmd=("$PLOYZ" machine add --yes --version "$source_version" --storage zfs --name "qualify-$((i + 1))" --context "$CONTEXT")
-    if [ -n "$SSH_KEY" ]; then
-        add_cmd+=(--ssh-key "$SSH_KEY")
-    fi
-    "${add_cmd[@]}" "${HOST_LIST[$i]}"
-    i=$((i + 1))
-done
-
-echo "establish a synthetic non-null Cloud Pairing through Cloud enrollment"
-start_enroll_fixture
-"$PLOYZ" cloud enroll pmet_qualification --name qualify-1 --label-add qualify=primary --storage none --no-dns --accepts-ingress=false --cloud-url "http://127.0.0.1:$ENROLL_PORT" --context "$CONTEXT"
-finish_enroll_fixture
+if [ "$RESUME_ENROLLMENT" != 2 ]; then
+echo "seed isolated Cloud actor and enroll founder plus joining Machine over HTTPS"
+if [ "$RESUME_ENROLLMENT" = 0 ]; then
+    run_cloud_phase seed
+else
+    [ -s "$CLOUD_STATE" ] || error "PLOYZ_QUALIFY_RESUME_ENROLLMENT requires existing Cloud state"
+fi
+founder_token=$(cloud_token founderToken)
+join_token=$(cloud_token joinToken)
+if [ "$RESUME_ENROLLMENT" = 0 ]; then
+    ssh_host "$first" 'test ! -e /var/lib/ployz/machine.json' || error "founding Machine was initialized before Cloud enrollment"
+bootstrap_cloud_machine "$first" zfs
+else
+    stage_cloud_cli "$first"
+fi
+cloud_enroll_on_machine "$first" "$founder_token" qualify-1 zfs qualify=primary
+if [ "$RESUME_ENROLLMENT" = 0 ]; then
+    ssh_host "${HOST_LIST[1]}" 'test ! -e /var/lib/ployz/machine.json' || error "joining Machine was initialized before Cloud enrollment"
+    bootstrap_cloud_machine "${HOST_LIST[1]}" none
+else
+    stage_cloud_cli "${HOST_LIST[1]}"
+fi
+cloud_enroll_on_machine "${HOST_LIST[1]}" "$join_token" qualify-2 none
+ssh_host "${HOST_LIST[1]}" 'test -f /var/lib/ployz/machine.json' || error "Cloud enrollment did not initialize the joining Machine"
+fi
+touch "$PLOYZ_CONFIG"
+chmod 0600 "$PLOYZ_CONFIG"
 pairing_before=$(machine_cloud_pairing)
-[ "$pairing_before" = "$PAIRING" ] || error "Machine did not persist the exact synthetic Cloud Pairing"
+[ "$pairing_before" != null ] || error "Machine did not persist the Cloud Pairing"
+run_cloud_phase runtime
+python3 - "$PLOYZ_CONFIG" <<'CONTEXT_EOF'
+import json, sys
+config = json.load(open(sys.argv[1]))
+connections = config["contexts"]["qualify"]["connections"]
+if len(connections) < 2 or any(set(connection) - {"tailcat", "machine_id"} or not connection.get("tailcat") for connection in connections):
+    raise SystemExit("Cloud driver did not write an all-Tailcat qualification context")
+CONTEXT_EOF
+
+echo "prove ordered runtime fallback with the preferred helper stopped"
+ssh_host "$first" 'sudo systemctl stop ployz-tailcat.service'
+run_cloud_phase fallback
+ssh_host "$first" 'sudo systemctl start ployz-tailcat.service'
 
 machine_arch=$(ssh_host "$first" uname -m)
 machine_archive=$(daemon_archive "$machine_arch")
@@ -357,7 +416,7 @@ echo 'intentional qualification activation failure' >&2
 exit 42
 EOF
 chmod 0755 "$work/target-payload/ployzd"
-tar -czf "$work/releases/failure/$machine_archive" -C "$work/target-payload" ployzd ployz-uninstall
+tar -czf "$work/releases/failure/$machine_archive" -C "$work/target-payload" ployzd ployz-tailcat ployz-uninstall
 failure_daemon_hash=$(sha256 "$work/target-payload/ployzd")
 printf '%s  %s\n' "$(sha256 "$work/releases/failure/$machine_archive")" "$machine_archive" >"$work/releases/failure/checksums.txt"
 
@@ -437,6 +496,16 @@ assert_remote_hash /usr/local/bin/ployzd "$target_daemon_hash"
 wait_for_application
 [ "$(machine_state_signature)" = "$state_before" ] || error "Machine identity, pairing, or configuration changed after explicit repair"
 [ "$(machine_cloud_pairing)" = "$pairing_before" ] || error "Cloud Pairing changed after explicit repair"
+
+echo "record truthful Cloud revocation with an unreachable helper, then confirm online"
+if [ "${PLOYZ_QUALIFY_PAUSE_BEFORE_REVOCATION:-0}" != 0 ]; then
+    echo "paused before Cloud revocation; pairing remains live for additional qualification phases"
+    exit 0
+fi
+ssh_host "${HOST_LIST[1]}" 'sudo systemctl stop ployz-tailcat.service'
+run_cloud_phase revoke-offline
+ssh_host "${HOST_LIST[1]}" 'sudo systemctl start ployz-tailcat.service'
+run_cloud_phase revoke-online
 
 stop_traffic
 if grep -q '^failure:' "$work/traffic.log"; then

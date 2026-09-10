@@ -39,14 +39,12 @@ def select(paths):
             selected.add("macos-cli")
             if crate == "ployz-testkit":
                 continue
-            if crate not in {"ployz", "ployz-core", "ployz-build", "ployz-relay", "ployz-sdk", "ployz-config-wasm"}:
+            if crate not in {"ployz", "ployz-core", "ployz-build", "ployz-sdk", "ployz-config-wasm"}:
                 return JOBS.copy()
             if not relative.startswith("tests/") or crate == "ployz-sdk":
                 selected |= {"cloud", "sdk-types"}
             if relative.startswith("compose-helper/"):
                 selected.add("compose")
-            if path == "crates/ployz-relay/Dockerfile":
-                selected.add("release-contracts")
         elif path == "install.sh" or path.startswith("scripts/qualify-release/"):
             continue
         elif path in {"scripts/build-cloud-sdk.sh", "scripts/build-config-browser.sh"}:

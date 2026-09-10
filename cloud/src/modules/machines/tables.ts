@@ -1,5 +1,5 @@
 import type { EnrollmentAssignment } from "@ployz/sdk";
-import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
+import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
 
@@ -106,12 +106,7 @@ export const machineRemoveAttempt = pgTable(
   ],
 );
 
-/**
- * Compatibility table only. App code must not read or write it.
- * Membership is the live Cluster snapshot (#300). Keep the table through
- * the first deploy so old application instances can still reference it.
- * A follow-up migration drops it only after those instances are gone.
- */
+/** Backend-only connection metadata; neither membership nor live presence. */
 export const organizationMachine = pgTable(
   "organization_machine",
   {
@@ -119,6 +114,8 @@ export const organizationMachine = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
+    clusterKey: text("cluster_key").notNull(),
+    encryptedTailcat: jsonb("encrypted_tailcat").notNull().$type<EncryptedSecretValue>(),
     isDialEntry: boolean("is_dial_entry").default(false).notNull(),
     createdAt,
     updatedAt,
@@ -131,6 +128,7 @@ export const organizationMachine = pgTable(
     uniqueIndex("organization_machine_one_dial_entry_idx")
       .on(table.organizationId)
       .where(sql`${table.isDialEntry}`),
+    check("organization_machine_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
     check(
       "organization_machine_id_format_check",
       sql`${table.machineId} ~ '^[0-9a-f]{32}$'`,

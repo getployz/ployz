@@ -1,6 +1,6 @@
-import type { Client, ConnectOptions } from "@ployz/sdk";
+import type { Client, Connection } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import {
@@ -9,19 +9,19 @@ import {
   PloyzProviderError,
 } from "#/modules/runtime/ployz.server";
 
-const options = asTestDouble<ConnectOptions>()({
-  relayUrl: "wss://relay.example.test",
-  bearer: "tenant-token",
-  pairing: "ppair_test",
-  machineId: "machine-a",
-});
+const options = {
+  connections: [{ tailcat: "tailcat://candidate" }] satisfies Connection[],
+};
 
 it.effect("scopes each connected Ployz session", () =>
   Effect.gen(function* () {
     let opened = 0;
+    const signals: AbortSignal[] = [];
     let closed = 0;
     const layer = makePloyzLayer({
-      connect: async () => {
+      connect: async (options) => {
+        if (!("signal" in options) || !options.signal) throw new Error("missing connection signal");
+        signals.push(options.signal);
         opened += 1;
         return asTestDouble<Client>()({
           close: async () => {
@@ -36,11 +36,13 @@ it.effect("scopes each connected Ployz session", () =>
         const ployz = yield* Ployz;
         yield* ployz.connect(options);
         assert.strictEqual(opened, 1);
+        assert.isFalse(signals[0]?.aborted);
         assert.strictEqual(closed, 0);
       }),
     ).pipe(Effect.provide(layer));
 
     assert.strictEqual(closed, 1);
+    assert.isTrue(signals[0]?.aborted);
   }),
 );
 
@@ -166,5 +168,27 @@ it.effect("preserves exact execute-time Data Loss refusals", () =>
 
     assert.instanceOf(error, MissingDataLossIdentities);
     assert.deepStrictEqual(error.identities, missing);
+  }),
+);
+
+
+it.effect("cancels an in-flight SDK connection when its fiber is interrupted", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<AbortSignal>();
+    const layer = makePloyzLayer({
+      connect: (options) => new Promise<Client>((_resolve, reject) => {
+        if (!("signal" in options) || !options.signal) throw new Error("missing connection signal");
+        const signal = options.signal;
+        signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+        Effect.runSync(Deferred.succeed(started, signal));
+      }),
+    });
+    const fiber = yield* Effect.scoped(
+      Effect.flatMap(Ployz, (ployz) => ployz.connect(options)),
+    ).pipe(Effect.provide(layer), Effect.forkChild);
+    const signal = yield* Deferred.await(started);
+    assert.isFalse(signal.aborted);
+    yield* Fiber.interrupt(fiber);
+    assert.isTrue(signal.aborted);
   }),
 );

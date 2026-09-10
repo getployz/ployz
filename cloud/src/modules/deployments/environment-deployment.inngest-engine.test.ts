@@ -1,3 +1,4 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -37,6 +38,8 @@ function runtimeFailure(
   }
   return new PloyzProviderError({ operation, cause });
 }
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(
   runtimeLifecycle,

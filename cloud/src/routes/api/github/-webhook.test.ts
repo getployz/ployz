@@ -50,7 +50,6 @@ it.live(
                 GITHUB_CLIENT_ID: "github-client-id",
                 GITHUB_CLIENT_SECRET: "github-client-secret",
                 GITHUB_APP_WEBHOOK_SECRET: webhookSecret,
-                PLOYZ_RELAY_URL: "https://relay.example.test",
                 APP_ENCRYPTION_SECRET:
                   "app-encryption-secret-at-least-32-characters",
               },

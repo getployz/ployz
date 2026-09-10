@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Option, Schema } from "effect";
-import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import {
   buildMachineJoinCommand,
-  dialAccessFromRelayList,
   enrollmentExpiry,
   enrollmentIdentitySchema,
   mintedEnrollment,
@@ -147,31 +145,5 @@ describe("versioned enrollment identity", () => {
 
   it("waits for two seconds without advertising a claim expiry", () => {
     expect(waitForFounder()).toEqual({ kind: "not_yet", retryAfter: 2 });
-  });
-});
-
-describe("organization Dial access", () => {
-  const pairing = {
-    relayUrl: "https://relay.example.test",
-    secret: "ppair_test",
-  };
-
-  it("does not treat empty or indeterminate Relay state as no Cluster", () => {
-    expect(
-      dialAccessFromRelayList({
-        list: { kind: "empty", pairing, bearer: "pdial_secret" },
-        dialUrl: "wss://relay.example/dial",
-      }),
-    ).toEqual({ kind: "unreachable", cause: "empty", error: null });
-
-    const error = new PloyzProviderError({
-      operation: "list held registers",
-      cause: "down",
-    });
-    const access = dialAccessFromRelayList({
-      list: { kind: "indeterminate", error },
-      dialUrl: "wss://relay.example/dial",
-    });
-    expect(access.kind).toBe("unreachable");
   });
 });

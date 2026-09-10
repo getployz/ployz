@@ -1,6 +1,5 @@
 import type {
   Client,
-  ClusterTeardown,
   DeployOutcome,
   ExecutionError,
   MachineId,
@@ -14,7 +13,6 @@ import {
   InngestClient,
   InngestEventSendError,
 } from "#/modules/inngest/client";
-import type { DialTenant } from "#/modules/runtime/dial-entry";
 import {
   makeOrganizationRuntimeLayer,
 } from "#/modules/runtime/organization-runtime.server";
@@ -22,7 +20,6 @@ import {
   makePloyzLayer,
 } from "#/modules/runtime/ployz.server";
 import {
-  destroyClusterActivity,
   destroyEnvironmentActivity,
 } from "#/modules/runtime/teardown-activities.server";
 import { dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
@@ -50,13 +47,7 @@ describe("teardown provider outcomes", () => {
         },
         unexecuted: [],
       };
-      const tenant = {
-        relayUrl: "wss://relay.example.test",
-        bearer: "tenant-token",
-        pairing: "ppair_test",
-        preferredMachineId: "machine-a",
-        enrolledMachineIds: ["machine-a"],
-      } satisfies DialTenant;
+      const connections = [{ tailcat: "tailcat://candidate" }];
       const client = asTestDouble<Client>()({
         destroyProject: async (
           ...args: Parameters<Client["destroyProject"]>
@@ -75,7 +66,7 @@ describe("teardown provider outcomes", () => {
         connect: async () => client,
       });
       const runtime = makeOrganizationRuntimeLayer(() =>
-        Effect.succeed({ kind: "ready", tenant }),
+        Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
       ).pipe(Layer.provide(ployz));
 
       const result = yield* Effect.scoped(
@@ -94,59 +85,6 @@ describe("teardown provider outcomes", () => {
       expect(result).toEqual(projectOutcome);
       expect(calls).toEqual([["app-production", { confirmed: [volume] }, true]]);
       expect(closed).toBe(1);
-    }),
-  );
-
-  effectIt.effect("returns the cluster partial result without local orchestration", () =>
-    Effect.gen(function* () {
-      const clusterTeardown: ClusterTeardown = {
-        destroyed_projects: [],
-        machines: {
-          successes: [],
-          failures: [
-            {
-              machine_id: volume.id.machine_id,
-              error: {
-                code: "unavailable",
-                message: "machine did not answer",
-                details: null,
-              },
-            },
-          ],
-          omissions: [],
-        },
-        pairing_revoked: false,
-      };
-      const calls: unknown[] = [];
-      const tenant = {
-        relayUrl: "wss://relay.example.test",
-        bearer: "tenant-token",
-        pairing: "ppair_test",
-        preferredMachineId: "machine-a",
-        enrolledMachineIds: ["machine-a"],
-      } satisfies DialTenant;
-      const client = asTestDouble<Client>()({
-        destroyCluster: async (
-          ...args: Parameters<Client["destroyCluster"]>
-        ) => {
-          calls.push(args);
-          return clusterTeardown;
-        },
-        close: async () => undefined,
-      });
-      const runtime = makeOrganizationRuntimeLayer(() =>
-        Effect.succeed({ kind: "ready", tenant }),
-      ).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
-
-      const result = yield* Effect.scoped(
-        destroyClusterActivity({
-          organizationId: "org-1",
-          confirmDataLoss: [volume],
-        }),
-      ).pipe(Effect.provide(runtime));
-
-      expect(result).toEqual(clusterTeardown);
-      expect(calls).toEqual([[{ confirmed: [volume] }]]);
     }),
   );
 

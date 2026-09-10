@@ -8,12 +8,11 @@ const { AbortController } = globalThis;
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
-const relayUrl = process.env.PLOYZ_RELAY_URL;
-const bearer = process.env.PLOYZ_BEARER;
-const pairing = process.env.PLOYZ_PAIRING;
+const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
+const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
 
-if (!addon || !pkg || !relayUrl || !bearer || !pairing || !machineId) {
+if (!addon || !pkg || !socketDirectory || !machineId) {
   throw new Error("Node Watch smoke is missing environment");
 }
 
@@ -82,7 +81,7 @@ async function takeOne(client) {
 }
 
 (async () => {
-  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
+  const client = await sdk.connect({ connections: connectionsFor(machineId) });
   const first = await takeOne(client);
   assertFrame(first, "first Watch");
   const about = await client.about();

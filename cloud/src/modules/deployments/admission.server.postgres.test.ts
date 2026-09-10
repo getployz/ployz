@@ -129,6 +129,7 @@ describe("Saved deployment admission", () => {
       organizationId,
       encryptedPairingSecret,
       founderPublicKey: "founder-public-key",
+      founderClaimMachineId: machineId,
     });
   }
 

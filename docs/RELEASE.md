@@ -24,7 +24,7 @@ git push origin v0.2.0
 
 Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and other suffixes are rejected.
 
-4. Wait for the Release workflow. The tag run validates the tag and commit, builds the eight archives and the `ployz-relay` image using the shared kache/R2 cache, and opens a **draft** GitHub release (`--prerelease` on beta tags).
+4. Wait for the Release workflow. The tag run validates the tag and commit, builds the six CLI and daemon archives using the shared kache/R2 cache, and opens a **draft** GitHub release (`--prerelease` on beta tags).
 5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
 
 Automatic releases run the workflow version stored in the tagged commit. For recovery using the current workflow, dispatch `release.yml` from `main` with `tag` and its expected commit `sha`; dispatch `publish-sdk.yml` from `main` with `tag` to retry SDK publication.
@@ -87,8 +87,13 @@ Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.
 
 `ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
 
-## Cloud Relay
+## Tailcat helper
 
-Linux musl archives `ployz-relay_linux_amd64.tar.gz` and `ployz-relay_linux_arm64.tar.gz` are GitHub Release assets. They are not in `checksums.txt`, Homebrew, or `ployz.sh`.
+Every CLI and daemon archive includes the matching native `ployz-tailcat` helper;
+all six archives are covered by `checksums.txt`. Homebrew and the CLI installer
+install the helper beside the CLI. Machine installation manages the helper as
+`ployzd-tailcat` through the existing daemon lifecycle. Each native SDK package
+also bundles its platform helper.
 
-The same binary is published as `ghcr.io/getployz/ployz-relay:<tag>` when the tag workflow runs. TLS stays on the terminator in front. Required env: `PLOYZ_RELAY_DIAL_CREDENTIAL`. Listen: `--listen` / `PLOYZ_RELAY_LISTEN` (default `0.0.0.0:8080`).
+Tailcat uses public DERP infrastructure; Ployz builds and deploys no hosted relay
+process or image.

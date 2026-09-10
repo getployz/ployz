@@ -13,5 +13,4 @@ process.env["POLAR_PRODUCT_TEAMS_ID"] ??= "33333333-3333-4333-8333-333333333333"
 process.env["POLAR_PRODUCT_HOBBY_ID"] = process.env["POLAR_PRODUCT_SOLO_ID"];
 process.env["POLAR_PRODUCT_PRO_ID"] = process.env["POLAR_PRODUCT_TEAMS_ID"];
 process.env["PLOYZ_INSTALLER_URL"] ??= "https://ployz.sh/";
-process.env["PLOYZ_RELAY_URL"] ??= "https://relay.example.test";
 process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890";

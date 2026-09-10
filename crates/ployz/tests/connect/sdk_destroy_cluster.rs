@@ -4,14 +4,14 @@ use std::{collections::BTreeMap, time::Duration};
 
 use ployz::sdk;
 use ployz_core::{
-    ContractDescription, DataLoss, DockerVolumeId, MachineId, MachineName, MachineObservation,
+    ContractDescription, DataLoss, DockerVolumeId, MachineName, MachineObservation,
     MembershipObservation, RpcErrorCode, UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::support::{DiscoveryService, confirmation, machine};
 use super::support::{docker_volume, owned_volume, volume_id};
+use super::unix_session::{self, UnixSession};
 
 struct ClusterLoss {
     shop_data: DockerVolumeId,
@@ -44,7 +44,7 @@ async fn data_loss_if_cluster_destroyed_unions_project_and_machine_volumes() {
 
 #[tokio::test]
 async fn destroy_cluster_refuses_unconfirmed_data_loss_and_names_what_was_missing() {
-    let (client, loss, _worker, _down, service, session, _machine) = cluster_session().await;
+    let (client, loss, _worker, _down, service, _session, _machine) = cluster_session().await;
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client.destroy_cluster(&confirmation).await.unwrap_err();
@@ -53,14 +53,11 @@ async fn destroy_cluster_refuses_unconfirmed_data_loss_and_names_what_was_missin
     assert_eq!(missing.missing, loss.all());
     assert!(service.reset_machines.lock().unwrap().is_empty());
     assert!(service.removed_machines.lock().unwrap().is_empty());
-    relay::register_with_pairing(&session.url, relay::PAIRING, MachineId::random())
-        .await
-        .expect("pairing must still authenticate before a confirmed teardown");
 }
 
 #[tokio::test]
-async fn destroy_cluster_resets_machines_destroys_projects_and_revokes_pairing() {
-    let (client, loss, worker, down, service, session, _machine) = cluster_session().await;
+async fn destroy_cluster_resets_machines_destroys_projects() {
+    let (client, loss, worker, down, service, _session, _machine) = cluster_session().await;
     let confirmation = confirmation(loss.all());
 
     let teardown = client.destroy_cluster(&confirmation).await.unwrap();
@@ -68,7 +65,8 @@ async fn destroy_cluster_resets_machines_destroys_projects_and_revokes_pairing()
         teardown.destroyed_projects,
         [ployz_core::ProjectName::parse("shop").unwrap()]
     );
-    assert!(teardown.pairing_revoked);
+
+    assert!(!teardown.pairing_revoked);
     let reset = service.reset_machines.lock().unwrap().clone();
     assert!(reset.contains(&worker.id), "{reset:?}");
     assert!(
@@ -105,19 +103,14 @@ async fn destroy_cluster_resets_machines_destroys_projects_and_revokes_pairing()
             .contains(&loss.shop_logs)
     );
 
-    let error = relay::register_with_pairing(&session.url, relay::PAIRING, MachineId::random())
-        .await
-        .expect_err("revoked pairing must not Register");
-    assert_eq!(error.status(), Some(http::StatusCode::UNAUTHORIZED));
-
     let again = client.destroy_cluster(&confirmation).await.unwrap();
-    assert!(again.pairing_revoked, "{again:?}");
+    assert!(!again.pairing_revoked, "{again:?}");
 }
 
 #[tokio::test]
 async fn node_destroy_cluster_covers_teardown_and_unconfirmed_missing_names() {
     let (description, loss, worker, _down, service) = cluster_fixture();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
@@ -138,22 +131,17 @@ async fn cluster_session() -> (
     ployz_core::Machine,
     ployz_core::Machine,
     DiscoveryService,
-    RelaySession,
-    super::relay::FakeMachine,
+    UnixSession,
+    super::unix_session::FakeMachine,
 ) {
     let (description, loss, worker, down, service) = cluster_fixture();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")

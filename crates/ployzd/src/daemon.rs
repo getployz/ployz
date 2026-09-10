@@ -186,7 +186,6 @@ impl Daemon {
         );
         let (participating, participating_rx) =
             watch::channel(local_phase == LocalMachinePhase::Participating);
-        let (cloud_pairing_tx, cloud_pairing_rx) = watch::channel(local_record.cloud_pairing);
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
@@ -210,7 +209,6 @@ impl Daemon {
             .with_optional_containers(containers.clone())
             .with_ingress_data_dir(config.data_dir.clone())
             .with_image_ingest(Arc::clone(&ingest))
-            .with_cloud_pairing(cloud_pairing_tx)
             .build()
             .map_err(|_| Error::StorePoisoned)?;
 
@@ -330,12 +328,6 @@ impl Daemon {
                     }
                 }
             };
-            let relay_register = async {
-                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
-                    return Ok(());
-                }
-                crate::relay::run(cloud_pairing_rx, machine_api.clone(), shutdown.clone()).await
-            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 publisher,
@@ -345,7 +337,6 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
-                relay_register,
             )
             .map(|_| ())
         });
@@ -428,7 +419,7 @@ impl Daemon {
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
-        // Reset must not wait for held Machine API or Relay Attach connections.
+        // Reset must not wait for active Machine API connections.
         // CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
         let server_result = stop_servers(
             completed_servers,

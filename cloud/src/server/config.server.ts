@@ -79,11 +79,6 @@ const rawConfig = Config.all({
   installerUrl: Config.url("PLOYZ_INSTALLER_URL").pipe(
     Config.withDefault(DEFAULT_INSTALLER_URL),
   ),
-  relayUrl: Config.url("PLOYZ_RELAY_URL"),
-  relayPrivateUrl: optional(Config.url("PLOYZ_RELAY_PRIVATE_URL")),
-  relayDialCredential: optional(
-    Config.schema(NonEmptySecret, "PLOYZ_RELAY_DIAL_CREDENTIAL"),
-  ),
   installerSha256: optional(Config.schema(Sha256, "PLOYZ_INSTALLER_SHA256")),
   inngestEventKey: optional(Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY")),
   inngestSigningKey: optional(
@@ -195,9 +190,6 @@ const makeAppConfig = Effect.gen(function* () {
     polarSuccessUrl: `${appUrl}/cloud?checkout_id={CHECKOUT_ID}`,
     ployz: {
       installerUrl: raw.installerUrl,
-      relayUrl: raw.relayUrl,
-      relayPrivateUrl: raw.relayPrivateUrl,
-      relayDialCredential: raw.relayDialCredential,
       installerSha256: raw.installerSha256,
     },
     inngest: {

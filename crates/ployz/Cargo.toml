@@ -19,7 +19,6 @@ ipnet = "2.12.1"
 oci-client = "0.17.0"
 ployz-build.workspace = true
 ployz-core.workspace = true
-ployz-relay.workspace = true
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }

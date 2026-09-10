@@ -31,6 +31,7 @@ import {
   confirmTeardown,
   loadTeardownDataLoss,
 } from "#/modules/runtime/teardown.server";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { Validation } from "#/server/public-error";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
@@ -104,6 +105,7 @@ const clusterOnlyVolume = {
 
 function connectedRuntime(session: PloyzSession): OrganizationRuntimeService {
   return {
+    cancel: () => Effect.void,
     open: () =>
       Effect.succeed({
         status: "connected" as const,
@@ -256,6 +258,7 @@ describe("teardown Data Loss observation", () => {
         ).pipe(
           Effect.provideService(OrganizationRuntime, runtime),
           Effect.provideService(InngestClient, inngest),
+          Effect.provideService(SecretEncryption, makeSecretEncryption("teardown-data-loss-test-encryption")),
         ),
       ),
     );
@@ -288,6 +291,7 @@ describe("teardown Data Loss observation", () => {
         ).pipe(
           Effect.provideService(OrganizationRuntime, runtime),
           Effect.provideService(InngestClient, inngest),
+          Effect.provideService(SecretEncryption, makeSecretEncryption("teardown-data-loss-test-encryption")),
         ),
       ),
     );

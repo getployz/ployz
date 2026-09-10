@@ -5,8 +5,8 @@
 use std::{collections::BTreeMap, fs, process::Output};
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, founder_machine, ingress_on,
-    registration, serve_machine,
+    EnrollListen, JoinDaemon, PAIRING, TOKEN, founder_machine, ingress_on, registration,
+    serve_machine,
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
@@ -113,9 +113,7 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -129,10 +127,10 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
         ensure_failures,
     );
     let address = serve_machine(daemon.clone()).await;
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = super::harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{address}"),
+            &format!("ssh://root@{address}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -190,13 +188,13 @@ async fn machine_add_with_membership(
     )
     .save()
     .unwrap();
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = super::harness::cli()
         .args([
             "--ployz-config",
             config.to_str().unwrap(),
             "machine",
             "add",
-            &format!("tcp://{target_address}"),
+            &format!("ssh://root@{target_address}"),
             "--no-install",
             "--name",
             "joiner",

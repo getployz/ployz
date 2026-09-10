@@ -7,9 +7,8 @@ const expectRpcError = require("./expect-rpc-error");
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
-const relayUrl = process.env.PLOYZ_RELAY_URL;
-const bearer = process.env.PLOYZ_BEARER;
-const pairing = process.env.PLOYZ_PAIRING;
+const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
+const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const isolatedMachineId = process.env.PLOYZ_ISOLATED_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
@@ -17,9 +16,7 @@ const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
 if (
   !addon ||
   !pkg ||
-  !relayUrl ||
-  !bearer ||
-  !pairing ||
+  !socketDirectory ||
   !machineId ||
   !isolatedMachineId ||
   !unknownMachineId
@@ -63,19 +60,9 @@ function joinerIdentity() {
 }
 
 (async () => {
-  const held = await sdk.listHeld(relayUrl, bearer, pairing);
-  const target = held.find((row) => row.machineId === machineId);
-  if (!target) {
-    throw new Error(`listHeld missing Dial target ${machineId}: ${JSON.stringify(held)}`);
-  }
-
-  const registered = await sdk.register(
-    relayUrl,
-    bearer,
-    pairing,
-    target.machineId,
-    joinerIdentity(),
-  );
+  const client = await sdk.connect({ connections: connectionsFor(machineId) });
+  const assignment = sdk.allocateEnrollment(joinerIdentity(), await client.observeEnrollment(), []);
+  const registered = await client.register(assignment);
   if (!registered || !registered.assigned_machine) {
     throw new Error(`expected Registered, got ${JSON.stringify(registered)}`);
   }
@@ -88,67 +75,48 @@ function joinerIdentity() {
     throw new Error("Registered.visible_peers must be an array");
   }
 
-  const again = await sdk.register(
-    relayUrl,
-    bearer,
-    pairing,
-    target.machineId,
-    joinerIdentity(),
-  );
+  const again = await client.register(assignment);
   if (again.assigned_machine.name !== "joiner") {
-    throw new Error("second register must reuse a closed Dial");
+    throw new Error("second register must reuse the saved assignment");
   }
 
-  const isolated = await expectRpc(
-    () =>
-      sdk.register(relayUrl, bearer, pairing, isolatedMachineId, joinerIdentity()),
-    "unavailable",
-  );
+  const isolatedClient = await sdk.connect({ connections: connectionsFor(isolatedMachineId) });
+  const isolated = await expectRpc(() => isolatedClient.register(assignment), "unavailable");
+  await isolatedClient.close();
   if (isolated.message !== "this Machine is isolation-locked") {
     throw new Error(`expected isolation lock, got ${isolated.message}`);
   }
 
   await expectRpc(
-    () => sdk.register(relayUrl, "wrong-secret", pairing, machineId, joinerIdentity()),
-    "unauthenticated",
+    () =>
+      sdk.connect({ connections: connectionsFor(unknownMachineId) }),
+    "internal",
   );
   await expectRpc(
-    () => sdk.register(relayUrl, bearer, "", machineId, joinerIdentity()),
+    () => client.register({ not: "EnrollmentAssignment" }),
     "invalid_argument",
   );
   await expectRpc(
     () =>
-      sdk.register(relayUrl, bearer, pairing, unknownMachineId, joinerIdentity()),
-    "not_found",
-  );
-  await expectRpc(
-    () => sdk.register(relayUrl, bearer, pairing, machineId, { not: "RegisterRequest" }),
-    "invalid_argument",
-  );
-  await expectRpc(
-    () =>
-      sdk.register(relayUrl, bearer, pairing, machineId, {
-        ...joinerIdentity(),
-        storage: "other",
+      client.register({
+        ...assignment,
+        request: { ...assignment.request, storage: "other" },
       }),
     "invalid_argument",
   );
 
-  if (typeof sdk.Client.prototype.register !== "undefined") {
-    throw new Error("Client.register must not exist");
+  if (typeof sdk.Client.prototype.register !== "function") {
+    throw new Error("Client.register must exist");
   }
   if (Object.hasOwn(sdk, "connectHeld")) {
     throw new Error("connectHeld must not be exported");
   }
-  if (typeof sdk.register !== "function") {
-    throw new Error("register must be exported");
-  }
-
-  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
-  if (typeof client.register !== "undefined") {
-    throw new Error("operator Client must not grow register");
+  for (const obsolete of ["register", "observeEnrollment", "publishEnrollment", "listHeld", "revokePairing"]) {
+    if (Object.hasOwn(sdk, obsolete)) throw new Error(`${obsolete} must not be exported`);
   }
   await client.close();
+  await expectRpc(() => client.observeEnrollment(), "unavailable");
+  await expectRpc(() => client.register(assignment), "unavailable");
 
   console.log("ok");
 })().catch((error) => {

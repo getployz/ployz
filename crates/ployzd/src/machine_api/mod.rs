@@ -10,7 +10,7 @@ use std::{
     task::Context,
 };
 
-use ployz_core::{CloudPairing, MachineId, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT};
+use ployz_core::{MachineId, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT};
 use tokio::sync::watch;
 use tonic::{
     body::Body,
@@ -100,15 +100,6 @@ impl MachineApiBuilder {
     #[must_use]
     pub(crate) fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.service = self.service.with_image_ingest(ingest);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_cloud_pairing(
-        mut self,
-        pairing: watch::Sender<Option<CloudPairing>>,
-    ) -> Self {
-        self.service = self.service.with_cloud_pairing(pairing);
         self
     }
 

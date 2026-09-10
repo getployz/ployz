@@ -9,9 +9,9 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::support::{DiscoveryService, confirmation, machine};
 use super::support::{owned_volume, volume_id};
+use super::unix_session::{self, UnixSession};
 
 struct ProjectVolumes {
     shop_data: DockerVolumeId,
@@ -180,7 +180,7 @@ async fn destroy_project_refuses_the_reserved_project() {
 #[tokio::test]
 async fn node_destroy_project_covers_volumes_and_unconfirmed_missing_names() {
     let (description, volumes, service) = project_cluster();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
@@ -198,22 +198,17 @@ async fn project_session() -> (
     sdk::Session,
     ProjectVolumes,
     DiscoveryService,
-    RelaySession,
-    super::relay::FakeMachine,
+    UnixSession,
+    super::unix_session::FakeMachine,
 ) {
     let (description, volumes, service) = project_cluster();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")

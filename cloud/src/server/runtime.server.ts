@@ -1,6 +1,5 @@
 import "@tanstack/react-start/server-only";
 import { Layer, ManagedRuntime } from "effect";
-import { EnrollmentRelayLive } from "#/modules/machines/enrollment.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { PolarLive } from "#/modules/billing/polar-provider.server";
@@ -15,7 +14,6 @@ const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
   PolarLive,
   InngestLive,
-  EnrollmentRelayLive,
   GithubApiLive,
 ).pipe(
   Layer.provideMerge(DatabaseLive),

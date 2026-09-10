@@ -200,6 +200,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "enrollment_allocation",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "machine_enrollment_token",
       "entityType": "tables",
       "schema": "public"
@@ -3151,6 +3157,32 @@
       "table": "organization_pairing"
     },
     {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removal_started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removal_endpoints",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -3159,6 +3191,19 @@
       "generated": null,
       "identity": null,
       "name": "founder_public_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "founder_claim_machine_id",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_pairing"
@@ -3636,6 +3681,45 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "enrollment_allocation"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cluster_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "enrollment_allocation"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "assignments",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "enrollment_allocation"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
       "default": "gen_random_uuid()",
       "generated": null,
       "identity": null,
@@ -3926,6 +4010,32 @@
       "generated": null,
       "identity": null,
       "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_machine"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cluster_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_machine"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "encrypted_tailcat",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_machine"
@@ -8198,6 +8308,23 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "enrollment_allocation_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "enrollment_allocation"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "machine_enrollment_token_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -8419,6 +8546,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "environment_node_introduction_secret"
+    },
+    {
+      "columns": [
+        "organization_id",
+        "cluster_key"
+      ],
+      "nameExplicit": false,
+      "name": "enrollment_allocation_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "enrollment_allocation"
     },
     {
       "columns": [
@@ -9354,8 +9492,22 @@
       "table": "environment_node_introduction"
     },
     {
+      "value": "\n      (\"removal_started_at\" is null and \"removal_endpoints\" is null)\n      or (\"removal_started_at\" is not null and \"removal_endpoints\" is not null and jsonb_typeof(\"removal_endpoints\") = 'array')\n    ",
+      "name": "organization_pairing_removal_shape_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
       "value": "\"founder_public_key\" is not null or \"founder_machine_id\" is not null",
       "name": "organization_pairing_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
+      "value": "\"founder_claim_machine_id\" ~ '^[0-9a-f]{32}$'",
+      "name": "organization_pairing_founder_claim_machine_id_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_pairing"
@@ -9431,6 +9583,20 @@
       "table": "volume_remove_attempt"
     },
     {
+      "value": "\"cluster_key\" ~ '^[0-9a-f]{64}$'",
+      "name": "enrollment_allocation_cluster_key_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "enrollment_allocation"
+    },
+    {
+      "value": "jsonb_typeof(\"assignments\") = 'array'",
+      "name": "enrollment_allocation_assignments_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "enrollment_allocation"
+    },
+    {
       "value": "\"token_hash\" ~ '^[0-9a-f]{64}$'",
       "name": "machine_enrollment_token_hash_check",
       "entityType": "checks",
@@ -9464,6 +9630,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "machine_remove_attempt"
+    },
+    {
+      "value": "\"cluster_key\" ~ '^[0-9a-f]{64}$'",
+      "name": "organization_machine_cluster_key_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_machine"
     },
     {
       "value": "\"machine_id\" ~ '^[0-9a-f]{32}$'",

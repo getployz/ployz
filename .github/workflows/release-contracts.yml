@@ -15,9 +15,6 @@ on:
       goreleaser-args:
         type: string
         default: release --snapshot --clean --skip=publish
-      push-relay-image:
-        type: boolean
-        default: false
       release-tag:
         type: string
         default: ''
@@ -30,7 +27,6 @@ concurrency:
 permissions:
   contents: read
   actions: write
-  packages: write
 
 env:
   # Only protected main pushes receive write keys; all other runs use R2 read-only keys.
@@ -53,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        binary: [ployz, ployzd, ployz-relay]
+        binary: [ployz, ployzd]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -73,8 +69,10 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
+          go-version-file: native/tailcat/go.mod
+          cache-dependency-path: |
+            crates/ployz/compose-helper/go.sum
+            native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -110,6 +108,15 @@ jobs:
           sync: false
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
           pr-comment: false
+      - name: Build Tailcat helper
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          PLOYZ_VERSION=$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n1)
+          export PLOYZ_VERSION
+          bash native/tailcat/build.sh "$PWD/target/tailcat/linux_${{ matrix.arch }}/ployz-tailcat"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -143,8 +150,10 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
+          go-version-file: native/tailcat/go.mod
+          cache-dependency-path: |
+            crates/ployz/compose-helper/go.sum
+            native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -174,6 +183,15 @@ jobs:
           sync: false
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
           pr-comment: false
+      - name: Build Tailcat helper
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          PLOYZ_VERSION=$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n1)
+          export PLOYZ_VERSION
+          bash native/tailcat/build.sh "$PWD/target/tailcat/darwin_${{ matrix.arch }}/ployz-tailcat"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -252,28 +270,3 @@ jobs:
           path: .
       - run: sudo apt-get update && sudo apt-get install -y file qemu-user
       - run: scripts/verify-release.sh linux
-      - run: scripts/verify-relay-image.sh
-
-  publish-relay-image:
-    needs: [build-linux]
-    if: ${{ inputs.push-relay-image }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.release-tag || github.sha }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: release-linux-*
-          merge-multiple: true
-          path: .
-      - run: bash scripts/publish-relay-image.sh "${{ inputs.release-tag || github.ref_name }}"

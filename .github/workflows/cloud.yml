@@ -68,9 +68,10 @@ jobs:
         with:
           path: |
             crates/ployz-sdk/ployz-sdk.node
+            crates/ployz-sdk/ployz-tailcat
             crates/ployz-sdk/generated/config-wasm.mjs
           # No restore prefix: a binding from different source is not valid evidence.
-          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/**', 'crates/**', '!crates/*/tests/**', '!crates/ployzd/**', '!crates/ployz-testkit/**', 'scripts/build-cloud-sdk.sh', 'scripts/build-config-browser.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
+          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/tailcat/**', 'Cargo.toml', 'Cargo.lock', '.cargo/**', 'crates/**', '!crates/*/tests/**', '!crates/ployzd/**', '!crates/ployz-testkit/**', 'scripts/build-cloud-sdk.sh', 'scripts/build-config-browser.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
       - uses: ./.github/actions/setup-rust
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
@@ -79,6 +80,11 @@ jobs:
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
           tool: wasm-bindgen@0.2.127
+      - uses: actions/setup-go@v5
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        with:
+          go-version-file: native/tailcat/go.mod
+          cache-dependency-path: native/tailcat/go.sum
       - name: Build SDK when its inputs changed
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: bash scripts/pr-check.sh sdk
@@ -89,6 +95,7 @@ jobs:
         with:
           path: |
             crates/ployz-sdk/ployz-sdk.node
+            crates/ployz-sdk/ployz-tailcat
             crates/ployz-sdk/generated/config-wasm.mjs
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
@@ -96,6 +103,7 @@ jobs:
           name: cloud-sdk
           path: |
             crates/ployz-sdk/ployz-sdk.node
+            crates/ployz-sdk/ployz-tailcat
             crates/ployz-sdk/generated/config-wasm.mjs
           compression-level: 0
           retention-days: 1
@@ -112,6 +120,7 @@ jobs:
         with:
           name: cloud-sdk
           path: crates/ployz-sdk
+      - run: chmod +x ../crates/ployz-sdk/ployz-tailcat
       - name: Build and verify frontend package
         run: pnpm pr:check build
 
@@ -126,6 +135,7 @@ jobs:
         with:
           name: cloud-sdk
           path: crates/ployz-sdk
+      - run: chmod +x ../crates/ployz-sdk/ployz-tailcat
       - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test

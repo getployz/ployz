@@ -223,7 +223,10 @@ fn ctx() -> Command {
         .subcommand(
             base("connection", "Show or select the default connection")
                 .visible_alias("conn")
-                .arg(positional("connection", false)),
+                .arg(
+                    positional("connection", false)
+                        .help("Connection label or 1-based index in the current context"),
+                ),
         )
         .subcommand(base("ls", "List contexts").visible_alias("list"))
         .subcommand(base("show", "Show a context"))

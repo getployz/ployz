@@ -36,11 +36,23 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                     let expected = expected.clone();
                     let attempts = attempts.clone();
                     async move {
+                        let body = rpc.get_ref().decode_request().unwrap().body;
+                        if matches!(body, RpcRequestBody::DescribeContract(_)) {
+                            return Ok(Response::new(
+                                RpcResponse::from(ployz_core::ContractDescription {
+                                    machine_id: target.id,
+                                    protocol_major: ployz_core::PROTOCOL_MAJOR,
+                                    daemon_version: "fixture".into(),
+                                    capabilities: Default::default(),
+                                })
+                                .encode()
+                                .unwrap(),
+                            ));
+                        }
                         assert_eq!(
                             rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).unwrap(),
                             target.id.as_str()
                         );
-                        let body = rpc.into_inner().decode_request().unwrap().body;
                         let inject_failure =
                             !placement || matches!(body, RpcRequestBody::CreateContainer(_));
                         #[expect(

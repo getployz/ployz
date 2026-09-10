@@ -1,3 +1,8 @@
+import type { Client, ClusterTeardown, MachineId } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { Cause, Effect, Exit } from "effect";
 import { Inngest } from "inngest";
 import {
@@ -15,6 +20,7 @@ import {
 import { InngestClient } from "#/modules/inngest/client";
 import {
   cancelTeardownAttemptActivity,
+  destroyClusterActivity,
   completeTeardownAttemptActivity,
   dropTeardownCloudRowsActivity,
   failOwnedTeardownAttemptActivity,
@@ -29,6 +35,7 @@ import {
 import { dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
 import { Validation } from "#/server/public-error";
 
+const encryption = makeSecretEncryption("teardown-test-encryption");
 const organizationId = "00000000-0000-4000-8000-000000000701";
 const userId = "00000000-0000-4000-8000-000000000702";
 const projectId = "00000000-0000-4000-8000-000000000703";
@@ -79,9 +86,15 @@ describe("teardown durable state", () => {
   let harness: GithubPostgresTestHarness;
 
   function runPromiseDb<A, E>(
-    operation: Effect.Effect<A, E, import("#/server/database.server").Database>,
+    operation: Effect.Effect<A, E, import("#/server/database.server").Database | OrganizationRuntime | SecretEncryption>,
   ) {
-    return harness.runEffect(operation);
+    return harness.runEffect(operation.pipe(
+      Effect.provideService(SecretEncryption, encryption),
+      Effect.provideService(OrganizationRuntime, {
+        cancel: () => Effect.void,
+        open: () => Effect.die("durable state checks must not open runtime sessions"),
+      }),
+    ));
   }
 
   beforeAll(async () => {
@@ -107,6 +120,46 @@ describe("teardown durable state", () => {
       ) values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'app-production', '{"version":1,"environmentSlug":"app-production","services":[],"variableGroups":[],"volumes":[]}'
       );
     `);
+  });
+
+  it("returns the cluster partial result using only the protected removal credential", async () => {
+    const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
+    const volume = { kind: "docker_volume" as const, id: { machine_id: machineId, name: "data" } };
+    const clusterTeardown: ClusterTeardown = {
+      destroyed_projects: [],
+      machines: {
+        successes: [],
+        failures: [{ machine_id: machineId, error: { code: "unavailable", message: "machine did not answer", details: null } }],
+        omissions: [],
+      },
+      pairing_revoked: false,
+    };
+    const retained = "tailcat://protected-removal";
+    await harness.pool.query(`
+      insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id,
+        founder_machine_id, removal_started_at, removal_endpoints)
+      values ($1,$2,$3,$3,now(),$4)
+    `, [organizationId, encryption.encrypt("pairing-secret"), machineId, JSON.stringify([
+      { machineId, status: "pending", encryptedExpected: encryption.encrypt(retained) },
+    ])]);
+    const calls: unknown[] = [];
+    let closed = 0;
+    const ployz = makePloyzLayer({ connect: async (options) => {
+      expect(options).toEqual(expect.objectContaining({ connections: [{ tailcat: retained, machine_id: machineId }] }));
+      return asTestDouble<Client>()({
+        destroyCluster: async (...args: Parameters<Client["destroyCluster"]>) => {
+          calls.push(args);
+          return clusterTeardown;
+        },
+        close: async () => { closed += 1; },
+      });
+    } });
+    const result = await runPromiseDb(Effect.scoped(destroyClusterActivity({
+      organizationId, confirmDataLoss: [volume],
+    })).pipe(Effect.provide(ployz)));
+    expect(result).toEqual(clusterTeardown);
+    expect(calls).toEqual([[{ confirmed: [volume] }]]);
+    expect(closed).toBe(1);
   });
 
   it("preserves a pending row when post-commit dispatch fails", async () => {
@@ -168,7 +221,7 @@ describe("teardown durable state", () => {
         inngestRunId: "run-1",
         status: "completed",
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
         },
         now: new Date("2026-09-04T05:03:00Z"),
@@ -230,7 +283,7 @@ describe("teardown durable state", () => {
       }),
     );
     const failedEvidence = {
-      rustMustRevokePairing: false,
+      pairingRevocationUnconfirmed: false,
       runtimeMembership: "untouched" as const,
       projectTeardowns: [
         {
@@ -283,7 +336,7 @@ describe("teardown durable state", () => {
       }),
     );
     const cancelledEvidence = {
-      rustMustRevokePairing: false,
+      pairingRevocationUnconfirmed: false,
       runtimeMembership: "untouched" as const,
       projectTeardowns: [
         {

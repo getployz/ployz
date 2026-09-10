@@ -61,6 +61,7 @@ export const commitFirstConnectAdmission = Effect.fn(
       encryptedPairingSecret:
         schemaOrganizationPairing.encryptedPairingSecret,
       founderMachineId: schemaOrganizationPairing.founderMachineId,
+      removalStartedAt: schemaOrganizationPairing.removalStartedAt,
       firstConnectDeploymentEvaluatedAt:
         schemaOrganizationPairing.firstConnectDeploymentEvaluatedAt,
     })
@@ -76,6 +77,7 @@ export const commitFirstConnectAdmission = Effect.fn(
   const pairing = pairingRows[0];
   if (
     pairing === undefined ||
+    pairing.removalStartedAt !== null ||
     !isDeepStrictEqual(
       pairing.encryptedPairingSecret,
       input.encryptedPairingSecret,

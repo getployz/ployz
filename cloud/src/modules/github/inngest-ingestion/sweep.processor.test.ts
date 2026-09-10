@@ -1,9 +1,12 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it, vi } from "vitest";
 import * as repository from "#/modules/github/github-ingestion.repository";
 import { createSweepGithubIngestionOutboxes } from "./sweep";
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(
   repository,

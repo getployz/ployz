@@ -160,8 +160,7 @@ export function handleMachineEnrollmentCallback<R>(
 
     const input = {
       token,
-      machineId: parsed.value.machineId,
-      pairingCredential: parsed.value.pairingCredential,
+      ...parsed.value,
     };
     const stored = completeOperation
       ? yield* Effect.result(completeOperation(input))

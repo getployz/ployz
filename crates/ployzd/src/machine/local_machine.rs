@@ -39,6 +39,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+mod tailcat_removal;
 mod upgrade;
 
 #[derive(Clone)]
@@ -474,7 +475,7 @@ impl LocalMachine {
     }
 
     /// Isolation lock: replica larger than three and every other Machine
-    /// uncontactable on Membership Observation. Mesh membership, not Relay.
+    /// uncontactable on Membership Observation.
     ///
     /// # Errors
     ///
@@ -541,8 +542,7 @@ impl LocalMachine {
             .await
     }
 
-    /// Persist Cloud Pairing so this Machine can hold Relay Register, or clear
-    /// it so Register is dropped.
+    /// Persist or clear the current Cloud Pairing credential.
     ///
     /// # Errors
     ///
@@ -556,18 +556,6 @@ impl LocalMachine {
         }
         store.persist_cloud_pairing(pairing)?;
         Ok(())
-    }
-
-    /// Persist or clear Cloud Pairing under local mutation admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns when mutation admission is busy, the local task fails, this Machine is not
-    /// participating, or the local record cannot be persisted.
-    pub async fn set_cloud_pairing(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.set_cloud_pairing_admitted(pairing) })
-            .await
     }
 
     /// Membership Observation of Machines visible from this participating Machine.

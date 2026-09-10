@@ -5,7 +5,7 @@ use std::{
 
 use clap::ArgMatches;
 
-use crate::context::{Config, RemovedContext, expand_home};
+use crate::context::{Config, ConnectionError, RemovedContext, expand_home, is_tailcat_address};
 
 use super::{Error, leaf_matches, required};
 
@@ -122,11 +122,34 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
         );
         return Ok(());
     };
-    let index = context
-        .connections
-        .iter()
-        .position(|connection| connection.to_string() == requested)
-        .ok_or_else(|| Error::usage(format!("connection {requested:?} not found")))?;
+    if is_tailcat_address(requested) {
+        return Err(Error::usage(ConnectionError::TailcatConfigOnly.to_string()));
+    }
+    let index = if let Ok(index) = requested.parse::<usize>() {
+        index
+            .checked_sub(1)
+            .filter(|index| *index < context.connections.len())
+            .ok_or_else(|| Error::usage("connection index is out of range"))?
+    } else {
+        let mut matches = context
+            .connections
+            .iter()
+            .enumerate()
+            .filter(|(_, connection)| connection.to_string() == requested);
+        let (index, _) = matches.next().ok_or_else(|| {
+            if requested.starts_with("tailcat:") {
+                Error::usage("Tailcat connection label not found; select its 1-based index")
+            } else {
+                Error::usage(format!("connection {requested:?} not found"))
+            }
+        })?;
+        if matches.next().is_some() {
+            return Err(Error::usage(
+                "connection label is ambiguous; select its 1-based index",
+            ));
+        }
+        index
+    };
     context.select_connection(index);
     let selected = context
         .connections

@@ -40,7 +40,7 @@ impl Default for InspectRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 pub struct MachineDetails {
     pub id: MachineId,
     pub phase: LocalMachinePhase,

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, str::FromStr};
 
 use ployz::{
-    connect::{DialCredential, PairingCredential, resolve_connections},
+    connect::resolve_connections,
     context::{
         Config, ConfigError, Connection, ConnectionSource, Context, ContextError, SshDestination,
         select_connections,
@@ -167,23 +167,6 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
 }
 
 #[test]
-fn relay_connections_are_not_persisted() {
-    let error = serde_norway::to_string(&Connection::relay(
-        ployz_core::RelayEndpoint::parse("http://127.0.0.1:1").unwrap(),
-        DialCredential::parse("dial-secret").unwrap(),
-        PairingCredential::parse("pairing-secret").unwrap(),
-        machine_id('a'),
-    ))
-    .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Cloud Relay connections are not persisted"),
-        "{error}"
-    );
-}
-
-#[test]
 fn stored_connections_reject_missing_multiple_malformed_and_removed_transports() {
     for yaml in [
         "{}".into(),
@@ -191,6 +174,7 @@ fn stored_connections_reject_missing_multiple_malformed_and_removed_transports()
         "tcp: localhost".into(),
         "unix: relative.sock".into(),
         format!("tcp: 127.0.0.1:{MACHINE_API_PORT}\nssh_key_file: /tmp/key"),
+        "relay: https://obsolete.invalid".into(),
         "ssh_go: root@example.com".into(),
         "ssh_cli: root@example.com".into(),
     ] {
@@ -487,4 +471,97 @@ fn selecting_connections_with_a_missing_name_is_context_not_found() {
             path,
         })
     );
+}
+
+#[test]
+fn tailcat_context_preserves_order_identity_and_redacts_capability() {
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("config.yaml");
+    let secret = "tailcat-private-capability";
+    let connection = Connection::tailcat(secret)
+        .unwrap()
+        .with_machine_id(MachineId::parse("0123456789abcdef0123456789abcdef").unwrap());
+    let ssh = Connection::ssh(SshDestination::parse("root@example.com").unwrap());
+    let config = Config::new(
+        &path,
+        Some("tailcat".into()),
+        BTreeMap::from([
+            (
+                "tailcat".into(),
+                Context {
+                    connections: vec![connection.clone(), ssh.clone()],
+                },
+            ),
+            (
+                "ssh".into(),
+                Context {
+                    connections: vec![ssh.clone()],
+                },
+            ),
+        ]),
+    );
+    config.save().unwrap();
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(loaded, config);
+    assert!(fs::read_to_string(&path).unwrap().contains(secret));
+    assert!(!format!("{loaded:?} {connection}").contains(secret));
+    assert_eq!(
+        resolve_connections(&path, None, None, "/missing".as_ref())
+            .unwrap()
+            .connections,
+        vec![connection, ssh.clone()]
+    );
+    assert_eq!(
+        resolve_connections(&path, None, Some("ssh"), "/missing".as_ref())
+            .unwrap()
+            .connections,
+        vec![ssh]
+    );
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    assert!(matches!(
+        Config::load(&path),
+        Err(ConfigError::PrivatePermissions(_))
+    ));
+    config.save().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o750)).unwrap();
+    assert!(matches!(
+        Config::load(&path),
+        Err(ConfigError::PrivatePermissions(_))
+    ));
+    assert!(matches!(
+        config.save(),
+        Err(ConfigError::PrivatePermissions(_))
+    ));
+}
+
+#[test]
+fn tailcat_config_rejects_other_selectors_ssh_options_and_secret_in_arguments() {
+    let secret = "private-capability-never-in-errors";
+    for extra in [
+        "ssh: root@example.com",
+        "unix: /tmp/daemon.sock",
+        "tcp: 127.0.0.1:1234",
+        "ssh_key_file: /tmp/key",
+    ] {
+        let yaml = format!("tailcat: {secret}\n{extra}\n");
+        assert!(serde_norway::from_str::<Connection>(&yaml).is_err());
+    }
+    for value in ["", "has\nnewline", "has space", "nul\0byte"] {
+        assert!(Connection::tailcat(value).is_err());
+    }
+    let error = format!("tailcat://{secret}")
+        .parse::<Connection>()
+        .unwrap_err();
+    assert!(!format!("{error:?} {error}").contains(secret));
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.yaml");
+    fs::write(
+        &path,
+        format!("contexts:\n  prod:\n    connections:\n      - tailcat: {{ {secret}: invalid }}"),
+    )
+    .unwrap();
+    let error = Config::load(path).unwrap_err();
+    assert!(!format!("{error:?} {error}").contains(secret));
 }

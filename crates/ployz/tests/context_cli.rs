@@ -658,3 +658,170 @@ fn ctx_rm_help_describes_local_removal() {
     let parent = String::from_utf8(parent.stdout).unwrap();
     assert!(parent.contains("[aliases: remove, delete]"), "{parent}");
 }
+
+#[test]
+fn tailcat_context_selection_and_listing_never_print_capabilities() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("config.yaml");
+    let secret = "tailcat-private-cli-capability";
+    Config::new(
+        &path,
+        Some("private".into()),
+        BTreeMap::from([(
+            "private".into(),
+            Context {
+                connections: vec![Connection::tailcat(secret).unwrap()],
+            },
+        )]),
+    )
+    .save()
+    .unwrap();
+    for args in [
+        vec!["ctx", "ls"],
+        vec!["ctx", "show"],
+        vec!["ctx", "connection"],
+        vec!["ctx", "connection", "tailcat:[redacted]"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--ployz-config")
+            .arg(&path)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+        if args.get(1) == Some(&"connection") {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("tailcat:[redacted]"));
+        }
+    }
+}
+
+#[test]
+fn tailcat_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_context() {
+    use ployz::context::SshDestination;
+    use ployz_core::MachineId;
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("config.yaml");
+    let ssh = Connection::ssh(SshDestination::parse("root@example.com").unwrap());
+    let first = Connection::tailcat("private-first-capability")
+        .unwrap()
+        .with_machine_id(MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap());
+    let second = Connection::tailcat("private-second-capability")
+        .unwrap()
+        .with_machine_id(MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap());
+    Config::new(
+        &path,
+        Some("mixed".into()),
+        BTreeMap::from([(
+            "mixed".into(),
+            Context {
+                connections: vec![ssh.clone(), first.clone(), second.clone()],
+            },
+        )]),
+    )
+    .save()
+    .unwrap();
+    for (selector, expected) in [
+        (
+            "3".to_owned(),
+            vec![second.clone(), ssh.clone(), first.clone()],
+        ),
+        (
+            first.to_string(),
+            vec![first.clone(), second.clone(), ssh.clone()],
+        ),
+        (
+            ssh.to_string(),
+            vec![ssh.clone(), first.clone(), second.clone()],
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--ployz-config")
+            .arg(&path)
+            .args(["ctx", "connection", &selector])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rendered = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!rendered.contains("private-first-capability"));
+        assert!(!rendered.contains("private-second-capability"));
+        assert_eq!(
+            Config::load(&path)
+                .unwrap()
+                .contexts
+                .get("mixed")
+                .unwrap()
+                .connections,
+            expected
+        );
+    }
+}
+
+#[test]
+fn ambiguous_tailcat_labels_fail_without_mutation_and_index_selects_the_second() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("config.yaml");
+    let first = Connection::tailcat("first-private-capability").unwrap();
+    let second = Connection::tailcat("second-private-capability").unwrap();
+    let config = Config::new(
+        &path,
+        Some("private".into()),
+        BTreeMap::from([(
+            "private".into(),
+            Context {
+                connections: vec![first.clone(), second.clone()],
+            },
+        )]),
+    );
+    config.save().unwrap();
+    for (selector, message) in [
+        ("tailcat:[redacted]", "ambiguous"),
+        ("0", "out of range"),
+        ("3", "out of range"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--ployz-config")
+            .arg(&path)
+            .args(["ctx", "connection", selector])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+        assert_eq!(Config::load(&path).unwrap(), config);
+    }
+    let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--ployz-config")
+        .arg(&path)
+        .args(["ctx", "connection", "2"])
+        .output()
+        .unwrap();
+    assert!(selected.status.success());
+    assert_eq!(
+        Config::load(&path)
+            .unwrap()
+            .contexts
+            .get("private")
+            .unwrap()
+            .connections,
+        vec![second, first]
+    );
+}

@@ -29,14 +29,5 @@ services:
       - -u
       - https://ployz-cloud.localhost/api/inngest
 
-  relay:
-    image: ghcr.io/getployz/ployz-relay:v0.1.2-beta.17
-    container_name: ployz-cloud-relay
-    ports:
-      - '50051:50051'
-    environment:
-      PLOYZ_RELAY_LISTEN: 0.0.0.0:50051
-      PLOYZ_RELAY_DIAL_CREDENTIAL: ${PLOYZ_RELAY_DIAL_CREDENTIAL:-pdial_local-dev}
-
 volumes:
   postgres-data:

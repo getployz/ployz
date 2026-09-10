@@ -344,7 +344,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
 /// Assemble one complete Runtime Watch frame.
 ///
 /// Services can be derived from the replicated Containers. Certificate Material,
-/// HTTP-01 challenge bytes, hosted DNS token/endpoint, Relay credentials, and Pairing
+/// HTTP-01 challenge bytes, hosted DNS token/endpoint, Tailcat capabilities, and Pairing
 /// credentials are not copied onto the frame. Incomplete IDs are preserved as IDs.
 ///
 /// When `telemetry` is `None`, replicated Machine rows stay and membership is unknown

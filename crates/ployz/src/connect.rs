@@ -18,7 +18,7 @@ use ployz_core::{
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
@@ -29,11 +29,7 @@ use crate::context::{
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
-mod relay;
-pub(crate) use relay::{list_held, revoke_pairing as revoke_cloud_pairing};
-
 pub use crate::cluster::{Client, MachineImagesObservation};
-pub use ployz_relay::{DialCredential, HeldRegister, PairingCredential};
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
@@ -77,6 +73,7 @@ pub trait Connector: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct SystemConnector {
     ssh_program: PathBuf,
+    tailcat_program: PathBuf,
     ssh_timeout: Duration,
 }
 
@@ -90,8 +87,16 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
+            tailcat_program: PathBuf::from("ployz-tailcat"),
             ssh_timeout: Duration::from_secs(5),
         }
+    }
+
+    /// Select the installed native helper (also used by packaged SDK hosts).
+    #[must_use]
+    pub fn with_tailcat_program(mut self, program: impl Into<PathBuf>) -> Self {
+        self.tailcat_program = program.into();
+        self
     }
 
     /// Set the budget for SSH connection establishment, including the probe.
@@ -106,6 +111,12 @@ impl SystemConnector {
 impl Connector for SystemConnector {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
         match connection.transport() {
+            Transport::Tailcat(capability) => tokio::time::timeout(
+                Duration::from_secs(15),
+                connect_tailcat(capability, &self.tailcat_program),
+            )
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Tailcat connection timed out"))?,
             Transport::Tcp(address) => connect_endpoint(format!("http://{address}")).await,
             Transport::Unix(path) => connect_endpoint(format!("unix:{}", path.display())).await,
             Transport::Ssh {
@@ -131,16 +142,6 @@ impl Connector for SystemConnector {
                     ),
                 )
             })?,
-            Transport::Relay {
-                url,
-                credential,
-                pairing,
-            } => {
-                let machine_id = connection
-                    .machine_id()
-                    .expect("Relay connections carry an entry Machine ID");
-                relay::connect_channel(url, credential, pairing, machine_id).await
-            }
         }
     }
 
@@ -154,7 +155,9 @@ impl Connector for SystemConnector {
             return Err(ConnectError::UnsupportedNetwork(network.into()));
         }
         match connection.transport() {
-            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
+            Transport::Tailcat(_) | Transport::Tcp(_) => {
+                Err(ConnectError::ProxyUnsupported(connection.to_string()))
+            }
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
@@ -170,13 +173,37 @@ impl Connector for SystemConnector {
                     self.ssh_timeout,
                 );
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
-                spawn_ssh(&self.ssh_program, &args)
+                spawn_child(&self.ssh_program, &args)
                     .map(|stream| Box::new(stream) as BoxProxyStream)
                     .map_err(ConnectError::from_ssh_spawn)
             }
-            Transport::Relay { .. } => Err(ConnectError::ProxyUnsupported(connection.to_string())),
         }
     }
+}
+
+async fn connect_tailcat(
+    capability: &ployz_core::TailcatCapability,
+    program: &Path,
+) -> Result<Channel, ConnectError> {
+    let mut stream = spawn_child(program, &["connect".into()])?;
+    stream.write_all(capability.as_str().as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    connect_child(stream, Duration::from_secs(15)).await
+}
+
+async fn connect_child(stream: ChildIo, timeout: Duration) -> Result<Channel, ConnectError> {
+    let mut stream = Some(stream);
+    Endpoint::from_static("http://[::]:50051")
+        .connect_timeout(timeout)
+        .connect_with_connector(tower::service_fn(move |_| {
+            // A redial must pass shared Machine confirmation before another RPC.
+            // Let Client decide whether the failed operation may be retried.
+            std::future::ready(stream.take().map(TokioIo::new).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotConnected, "transport session closed")
+            }))
+        }))
+        .await
+        .map_err(ConnectError::from)
 }
 
 async fn connect_endpoint(target: String) -> Result<Channel, ConnectError> {
@@ -217,16 +244,7 @@ async fn connect_ssh(
         });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
-    let program = program.to_owned();
-    Endpoint::from_static("http://[::]:50051")
-        .connect_timeout(timeout)
-        .connect_with_connector(tower::service_fn(move |_| {
-            let args = args.clone();
-            let program = program.clone();
-            async move { spawn_ssh(&program, &args).map(TokioIo::new) }
-        }))
-        .await
-        .map_err(ConnectError::from)
+    connect_child(spawn_child(program, &args)?, timeout).await
 }
 
 fn ssh_args(
@@ -244,7 +262,7 @@ fn ssh_args(
     args
 }
 
-fn ssh_base_args(
+pub(crate) fn ssh_base_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
@@ -302,7 +320,7 @@ pub(crate) fn control_path() -> Option<PathBuf> {
         .then(|| directory.join("ployz_ssh_%C.sock"))
 }
 
-fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
+fn spawn_child(program: &Path, args: &[String]) -> io::Result<ChildIo> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
@@ -313,25 +331,25 @@ fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
     let reader = child
         .stdout
         .take()
-        .ok_or_else(|| io::Error::other("ssh stdout was not piped"))?;
+        .ok_or_else(|| io::Error::other("child stdout was not piped"))?;
     let writer = child
         .stdin
         .take()
-        .ok_or_else(|| io::Error::other("ssh stdin was not piped"))?;
-    Ok(SshIo {
+        .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+    Ok(ChildIo {
         reader,
-        writer,
+        writer: Some(writer),
         _child: child,
     })
 }
 
-struct SshIo {
+struct ChildIo {
     reader: ChildStdout,
-    writer: ChildStdin,
+    writer: Option<ChildStdin>,
     _child: Child,
 }
 
-impl AsyncRead for SshIo {
+impl AsyncRead for ChildIo {
     fn poll_read(
         mut self: Pin<&mut Self>,
         context: &mut TaskContext<'_>,
@@ -341,24 +359,35 @@ impl AsyncRead for SshIo {
     }
 }
 
-impl AsyncWrite for SshIo {
+impl AsyncWrite for ChildIo {
     fn poll_write(
         mut self: Pin<&mut Self>,
         context: &mut TaskContext<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.writer).poll_write(context, buffer)
+        match self.writer.as_mut() {
+            Some(writer) => Pin::new(writer).poll_write(context, buffer),
+            None => Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.writer).poll_flush(context)
+        match self.writer.as_mut() {
+            Some(writer) => Pin::new(writer).poll_flush(context),
+            None => Poll::Ready(Ok(())),
+        }
     }
 
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
         context: &mut TaskContext<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.writer).poll_shutdown(context)
+        if let Some(writer) = self.writer.as_mut() {
+            std::task::ready!(Pin::new(writer).poll_shutdown(context))?;
+        }
+        // Pipe shutdown alone does not deliver EOF; close the owned write descriptor.
+        self.writer.take();
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -366,20 +395,14 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        ConnectError::InvalidDialCredential => RpcError {
+        error @ ConnectError::IdentityMismatch { .. } => RpcError {
             code: RpcErrorCode::Unauthenticated,
-            message: ConnectError::InvalidDialCredential.to_string(),
-            details: Value::Null,
-        },
-        ConnectError::UnknownMachine => RpcError {
-            code: RpcErrorCode::NotFound,
-            message: ConnectError::UnknownMachine.to_string(),
+            message: error.to_string(),
             details: Value::Null,
         },
         error @ (ConnectError::Attempt(_)
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
-        | ConnectError::Relay(_)
         | ConnectError::MissingMachineDetails
         | ConnectError::SshClientMissing(_)
         | ConnectError::SshProbe { .. }
@@ -444,7 +467,7 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
 /// # Errors
 ///
 /// Returns [`ConnectError::SshClientMissing`] when the local ssh client cannot
-/// be spawned; further connections cannot succeed. Returns
+/// be spawned and only SSH connections remain. Returns
 /// [`ConnectError::AllFailed`] after every connection is tried.
 pub async fn connect_selected_with(
     selected: SelectedConnections,
@@ -452,10 +475,17 @@ pub async fn connect_selected_with(
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
     let mut setup_retryable = false;
-    for connection in &selected.connections {
+    for (index, connection) in selected.connections.iter().enumerate() {
         match connect_one(connection, &selected.source, &connector).await {
             Ok(client) => return Ok(client),
-            Err(error) if matches!(error, ConnectError::SshClientMissing(_)) => {
+            Err(error)
+                if matches!(error, ConnectError::SshClientMissing(_))
+                    && selected
+                        .connections
+                        .iter()
+                        .skip(index + 1)
+                        .all(|next| matches!(next.transport(), Transport::Ssh { .. })) =>
+            {
                 return Err(error);
             }
             Err(error) => {
@@ -560,43 +590,13 @@ pub(crate) async fn connect_with_ssh_timeout(
     .await
 }
 
-/// Open a Machine RPC channel through Cloud Relay.
-///
-/// Succeeds only after Relay Dial and Machine Attach produce a usable RPC
-/// channel. Does not mint Attach credentials, perform Cloud Pairing, or choose
-/// an entry Machine.
-///
-/// # Errors
-///
-/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
-/// [`ConnectError::UnknownMachine`] when the Machine ID is not registered, or
-/// another [`ConnectError`] when the Relay or inner RPC channel fails.
-pub async fn connect_relay(
-    url: impl AsRef<str>,
-    credential: DialCredential,
-    pairing: PairingCredential,
-    machine_id: MachineId,
-) -> Result<Client, ConnectError> {
-    let connector: Arc<dyn Connector> = Arc::new(SystemConnector::default());
-    connect_one(
-        &Connection::relay(
-            ployz_core::RelayEndpoint::parse(url.as_ref())?,
-            credential,
-            pairing,
-            machine_id,
-        ),
-        &ConnectionSource::Direct,
-        &connector,
-    )
-    .await
-}
-
 #[derive(Debug, Error)]
 pub enum ConnectError {
-    #[error("invalid Dial Credential")]
-    InvalidDialCredential,
-    #[error("unknown Machine ID")]
-    UnknownMachine,
+    #[error("entry Machine identity mismatch: expected {expected}, received {actual}")]
+    IdentityMismatch {
+        expected: MachineId,
+        actual: MachineId,
+    },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
     #[error("connection attempt failed: {0}")]
@@ -637,8 +637,6 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error(transparent)]
-    Relay(ployz_relay::ClientError),
     #[error("Machine RPC failed: {0}")]
     Rpc(TransportError),
     #[error("Machine RPC payload failed: {0}")]
@@ -673,13 +671,9 @@ impl ConnectError {
             | Self::Dial(_)
             | Self::SshProbe { .. }
             | Self::Join(_) => true,
-            Self::Relay(error) => error
-                .status()
-                .is_none_or(|status| matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)),
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
-            | Self::InvalidDialCredential
-            | Self::UnknownMachine
+            | Self::IdentityMismatch { .. }
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)
@@ -741,7 +735,6 @@ impl ConnectError {
             self,
             Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
-            || matches!(self, Self::Relay(_) if self.is_retryable())
     }
 }
 

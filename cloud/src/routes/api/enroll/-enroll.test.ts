@@ -66,13 +66,12 @@ function callback(body: JsonValue, extra?: RequestInit) {
 describe("machine enrollment routes", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("returns initialize pairing for the first machine without leaking the token or Dial credential", async () => {
+  it("returns initialize pairing for the first machine without leaking the token", async () => {
     mocks.enroll.mockReturnValue(
       Effect.succeed({
         kind: "initialize",
         resumed: false,
         pairing: {
-          relayUrl: "https://relay.example.test",
           secret: "ppair_secret",
         },
         storage: "zfs",
@@ -92,14 +91,11 @@ describe("machine enrollment routes", () => {
       kind: "initialize",
       resumed: false,
       pairing: {
-        relayUrl: "https://relay.example.test",
         secret: "ppair_secret",
       },
       storage: "zfs",
     });
-    expect(body).not.toHaveProperty("dial");
     expect(JSON.stringify(body)).not.toContain(token);
-    expect(JSON.stringify(body)).not.toContain("pdial_");
   });
 
   it("returns not_yet for a concurrent public key without leaking the token", async () => {
@@ -121,7 +117,7 @@ describe("machine enrollment routes", () => {
     expect(JSON.stringify(body)).not.toContain(token);
   });
 
-  it("returns join pairing and Register payload when Relay List is live without leaking the token or Dial credential", async () => {
+  it("returns join pairing and Register payload when a connection candidate is available without leaking the token", async () => {
     const registration = {
       assigned_machine: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       visible_peers: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
@@ -131,7 +127,6 @@ describe("machine enrollment routes", () => {
       Effect.succeed({
         kind: "join",
         pairing: {
-          relayUrl: "https://relay.example.test",
           secret: "ppair_secret",
         },
         storage: "zfs",
@@ -150,15 +145,12 @@ describe("machine enrollment routes", () => {
     expect(body).toEqual({
       kind: "join",
       pairing: {
-        relayUrl: "https://relay.example.test",
         secret: "ppair_secret",
       },
       storage: "zfs",
       registration,
     });
-    expect(body).not.toHaveProperty("dial");
     expect(JSON.stringify(body)).not.toContain(token);
-    expect(JSON.stringify(body)).not.toContain("pdial_");
     expect(JSON.stringify(body)).not.toMatch(/10\.\d+\.\d+\.\d+\/24/u);
   });
 
@@ -269,7 +261,6 @@ describe("machine enrollment routes", () => {
         kind: "initialize",
         resumed: false,
         pairing: {
-          relayUrl: "https://relay.example.test",
           secret: "ppair_secret",
         },
         storage: "none",
@@ -330,6 +321,22 @@ describe("machine enrollment routes", () => {
     });
     expect(body).toEqual({ machineId });
     expect(JSON.stringify(body)).not.toContain(token);
+  });
+
+  it("accepts a bounded protected candidate without reflecting capabilities", async () => {
+    mocks.completeFounding.mockReturnValue(Effect.succeed({ machineId }));
+    const published = { stage: "publish", machineId, pairingCredential: "ppair_secret", tailcat: "private-capability" };
+    const accepted = await callback(published);
+    expect(accepted.status).toBe(200);
+    expect(mocks.completeFounding).toHaveBeenCalledWith({ token, ...published });
+    expect(await accepted.json()).toEqual({ machineId });
+    mocks.completeFounding.mockClear();
+    for (const tailcat of ["", "x".repeat(16 * 1024 + 1)]) {
+      const rejected = await callback({ ...published, tailcat });
+      expect(rejected.status).toBe(422);
+      expect(await rejected.text()).not.toContain("private-capability");
+    }
+    expect(mocks.completeFounding).not.toHaveBeenCalled();
   });
 
   it("rejects prefixed or extra callback bodies", async () => {

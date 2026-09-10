@@ -24,10 +24,10 @@ there is no automatic reclamation, cross-store synchronization, or subnet repair
 
 - `crates/ployz-core`: domain and wire contracts shared by both binaries
 - `crates/ployz`: CLI for Linux, macOS, and Windows through WSL
-- `crates/ployz-relay`: Cloud Relay HTTP/1.1 WebSocket splice (Linux binary + `ghcr.io/getployz/ployz-relay`)
 - `crates/ployz-sdk`: napi package `@ployz/sdk` (linux and macOS x64/arm64 gnu bindings; published on GitHub Release Publish). Its TypeScript declarations are derived from the Rust wire types by `cargo test -p ployz --test sdk_payloads`
 - `crates/ployzd`: Linux-only daemon
 - `crates/ployz-testkit`: unpublished support crate used only by tests
+- `native/tailcat`: Machine RPC transport helper bundled with CLI, daemon, and native SDK releases
 
 Building `ployz` also requires Go 1.24 or newer. Cargo builds and embeds the Compose helper; installed users need neither Go nor the Docker Compose plugin. Local builds require Docker with Buildx and the containerd image store.
 

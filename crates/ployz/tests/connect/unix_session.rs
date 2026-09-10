@@ -1,108 +1,15 @@
+use super::support::DiscoveryService;
+use ployz::{connect::SystemConnector, context::Connection, sdk};
+use ployz_core::{MachineId, MachineRpcServer, RpcError};
 use std::{
     io,
-    net::Ipv4Addr,
     path::PathBuf,
-    pin::Pin,
     process::{Command, Output, Stdio},
-    task::{Context, Poll},
+    sync::{Arc, Mutex},
     time::Duration,
 };
-
-use ployz::connect::{ConnectError, DialCredential, connect_relay};
-use ployz_core::{DescribeContractRequest, MachineId, MachineRpcServer, op};
-use ployz_relay::{
-    ClientError, Open, PairingCredential, RegisterRequest, Relay, RelayClient, RelayWs, TunnelIo,
-};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
-    time::timeout,
-};
-use tonic::{codec::CompressionEncoding, transport::server::Connected};
-
-use super::support::{DiscoveryService, test_description};
-
-pub(super) const PAIRING: &str = "pairing-secret";
-pub(super) const DIAL: &str = "dial-secret";
-
-#[tokio::test]
-async fn client_rpc_round_trip_through_relay_attach() {
-    let description = test_description();
-    let machine_id = description.machine_id;
-    let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(machine_id, DiscoveryService::new(description.clone()))
-        .await;
-
-    let mut client = connect_relay(
-        &session.url,
-        dial_credential(),
-        pairing_credential(),
-        machine_id,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .unwrap(),
-        description
-    );
-}
-
-#[tokio::test]
-async fn bad_dial_credential_fails_closed() {
-    let machine_id = MachineId::random();
-    let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(machine_id, DiscoveryService::new(test_description()))
-        .await;
-    let bad = DialCredential::parse("wrong-secret").unwrap();
-
-    let result = timeout(
-        Duration::from_secs(2),
-        connect_relay(&session.url, bad, pairing_credential(), machine_id),
-    )
-    .await
-    .expect("bad Dial Credential must not hang");
-    let error = match result {
-        Ok(_) => panic!("expected invalid Dial Credential to fail"),
-        Err(error) => error,
-    };
-
-    assert!(
-        matches!(error, ConnectError::InvalidDialCredential),
-        "{error:?}"
-    );
-}
-
-#[tokio::test]
-async fn unknown_machine_id_fails_closed() {
-    let registered = MachineId::random();
-    let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(registered, DiscoveryService::new(test_description()))
-        .await;
-
-    let result = timeout(
-        Duration::from_secs(2),
-        connect_relay(
-            &session.url,
-            dial_credential(),
-            pairing_credential(),
-            MachineId::random(),
-        ),
-    )
-    .await
-    .expect("unknown Machine ID must not hang");
-    let error = match result {
-        Ok(_) => panic!("expected unknown Machine ID to fail"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(error, ConnectError::UnknownMachine), "{error:?}");
-}
+use tokio::{io::AsyncReadExt, time::timeout};
+use tonic::codec::CompressionEncoding;
 
 #[tokio::test]
 async fn sdk_script_temporary_files_are_removed_after_exit_and_timeout() {
@@ -215,12 +122,20 @@ async fn sdk_script_output(
     result
 }
 
-pub(super) struct RelaySession {
-    pub(super) url: String,
-    _server: tokio::task::JoinHandle<io::Result<()>>,
+pub(super) struct UnixSession {
+    pub(super) directory: String,
+    _temp: tempfile::TempDir,
 }
 
-impl RelaySession {
+pub(super) async fn connect(directory: &str, machine_id: &str) -> Result<sdk::Session, RpcError> {
+    sdk::connect_connections(
+        vec![Connection::unix(format!("{directory}/{machine_id}.sock")).unwrap()],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+}
+
+impl UnixSession {
     pub(super) async fn assert_sdk_script(
         &self,
         script: &str,
@@ -233,9 +148,7 @@ impl RelaySession {
                 .arg(package.join("tests").join(script))
                 .env("PLOYZ_SDK_ADDON", native_addon())
                 .env("PLOYZ_SDK_PACKAGE", package)
-                .env("PLOYZ_RELAY_URL", &self.url)
-                .env("PLOYZ_BEARER", DIAL)
-                .env("PLOYZ_PAIRING", PAIRING)
+                .env("PLOYZ_SOCKET_DIRECTORY", &self.directory)
                 .env("PLOYZ_MACHINE_ID", machine_id.as_str())
                 .envs(environment.iter().copied()),
             Duration::from_secs(20),
@@ -251,12 +164,10 @@ impl RelaySession {
     }
 
     pub(super) async fn start() -> Self {
-        let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
-        let listen = (Ipv4Addr::LOCALHOST, 0).into();
-        let (address, server, _) = relay.serve(listen).await.unwrap();
+        let temp = tempfile::tempdir().unwrap();
         Self {
-            url: format!("http://{address}"),
-            _server: server,
+            directory: temp.path().to_str().unwrap().to_owned(),
+            _temp: temp,
         }
     }
 
@@ -265,107 +176,51 @@ impl RelaySession {
         machine_id: MachineId,
         service: DiscoveryService,
     ) -> FakeMachine {
-        FakeMachine::register(&self.url, machine_id, service).await
+        let listener =
+            tokio::net::UnixListener::bind(format!("{}/{machine_id}.sock", self.directory))
+                .unwrap();
+        let sockets = Arc::new(Mutex::new(Vec::new()));
+        let accepted = Arc::clone(&sockets);
+        let accept = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let socket = stream.into_std().unwrap();
+                accepted.lock().unwrap().push(socket.try_clone().unwrap());
+                let stream = tokio::net::UnixStream::from_std(socket).unwrap();
+                let service = service.clone();
+                connections.spawn(async move {
+                    let _ = tonic::transport::Server::builder()
+                        .add_service(
+                            MachineRpcServer::new(service)
+                                .send_compressed(CompressionEncoding::Gzip),
+                        )
+                        .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(stream)))
+                        .await;
+                });
+            }
+        });
+        FakeMachine { accept, sockets }
     }
 }
 
 pub(super) struct FakeMachine {
     accept: tokio::task::JoinHandle<()>,
+    sockets: Arc<Mutex<Vec<std::os::unix::net::UnixStream>>>,
 }
-
 impl FakeMachine {
-    async fn register(url: &str, machine_id: MachineId, service: DiscoveryService) -> Self {
-        let client = RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
-            .expect("test Relay URL is http");
-        let mut register = client.register(PAIRING, &machine_id).await.unwrap();
-        let url = url.to_owned();
-        let accept = tokio::spawn(async move {
-            let mut tunnels = tokio::task::JoinSet::new();
-            while let Ok(Some(open)) = register.recv::<Open>().await {
-                if let Some(nonce) = open.ping_nonce() {
-                    let _ = register.send(&RegisterRequest::pong(nonce)).await;
-                    continue;
-                }
-                let url = url.clone();
-                let service = service.clone();
-                tunnels.spawn(async move {
-                    serve_attach(&url, open, service).await;
-                });
-            }
-        });
-        Self { accept }
-    }
-
     pub(super) fn disconnect(&self) {
         self.accept.abort();
+        // Tonic owns each accepted connection after the server future is dropped.
+        for socket in self.sockets.lock().unwrap().drain(..) {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
-
-async fn serve_attach(url: &str, open: Open, service: DiscoveryService) {
-    let tunnel = RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
-        .expect("test Relay URL is http")
-        .attach(open.tunnel_id().expect("Open carries a Tunnel ID").as_str())
-        .await
-        .unwrap();
-    let io = Incoming(tunnel.into_io());
-    let _ = tonic::transport::Server::builder()
-        .add_service(MachineRpcServer::new(service).send_compressed(CompressionEncoding::Gzip))
-        .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(io)))
-        .await;
-}
-
-pub(super) async fn register_with_pairing(
-    url: &str,
-    pairing: &str,
-    machine_id: MachineId,
-) -> Result<RelayWs, ClientError> {
-    RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())?
-        .register(pairing, &machine_id)
-        .await
-}
-
-struct Incoming(TunnelIo);
-
-impl Connected for Incoming {
-    type ConnectInfo = ();
-
-    fn connect_info(&self) -> Self::ConnectInfo {}
-}
-
-impl AsyncRead for Incoming {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(context, buffer)
+impl Drop for FakeMachine {
+    fn drop(&mut self) {
+        self.disconnect();
     }
-}
-
-impl AsyncWrite for Incoming {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(context, buffer)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_flush(context)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_shutdown(context)
-    }
-}
-
-fn pairing_credential() -> PairingCredential {
-    PairingCredential::parse(PAIRING).unwrap()
-}
-
-fn dial_credential() -> DialCredential {
-    DialCredential::parse(DIAL).unwrap()
 }
 
 fn native_addon() -> PathBuf {

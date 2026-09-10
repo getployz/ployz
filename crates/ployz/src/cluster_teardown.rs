@@ -7,8 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::{Client, evict_machine},
-    connect::revoke_cloud_pairing,
-    context::Transport,
     deploy::{DeploySnapshot, VolumeFate},
 };
 
@@ -35,7 +33,7 @@ impl Client {
     /// Re-reads Data Loss at execute time. Confirmed identities that
     /// disappeared are ignored.
     /// User Projects are destroyed with [`VolumeFate::Destroy`]. Every Machine
-    /// is reset. The Cloud Pairing is revoked when this Client is on Relay.
+    /// is reset. Endpoint revocation is confirmed separately by Cloud.
     /// Unreachable Machines are reported. A repeated call can finish leftover work.
     ///
     /// # Errors
@@ -124,20 +122,10 @@ impl Client {
                 }
             }
         }
-        let pairing_revoked = match self.connection().transport() {
-            Transport::Relay {
-                url,
-                credential,
-                pairing,
-            } => revoke_cloud_pairing(url.as_str(), credential, pairing)
-                .await
-                .is_ok(),
-            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => false,
-        };
         Ok(ClusterTeardown {
             destroyed_projects,
             machines: result,
-            pairing_revoked,
+            pairing_revoked: false,
         })
     }
 }

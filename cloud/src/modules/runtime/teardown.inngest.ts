@@ -101,7 +101,7 @@ export async function executeProcessTeardown({
   let outcome: TeardownOutcome;
   let finalRuntimeEvidenceRecorded = false;
   if (attempt.scope === "organization" && membership === "verified") {
-    const clusterTeardown = await step.run("destroy-cluster", () =>
+    const destroyed = await step.run("destroy-cluster", () =>
       runInngestEffect(
         Effect.scoped(
           destroyClusterActivity({
@@ -111,15 +111,19 @@ export async function executeProcessTeardown({
         ),
       ),
     );
+    const revocation = await step.run("revoke-pairing", () => runInngestEffect(
+      revokeTeardownPairingActivity({ organizationId: attempt.organizationId }),
+    ));
+    const clusterTeardown = { ...destroyed, pairing_revoked: !revocation.pairingRevocationUnconfirmed };
     const machineTeardownIncomplete =
       clusterTeardown.machines.failures.length > 0 ||
       clusterTeardown.machines.omissions.length > 0;
     const clusterOutcome =
       machineTeardownIncomplete || !clusterTeardown.pairing_revoked
         ? clusterTeardown.pairing_revoked
-          ? incompleteTeardownOutcome("verified", { clusterTeardown })
-          : teardownOutcome("unknown", true, { clusterTeardown })
-        : teardownOutcome("verified", false, { clusterTeardown });
+          ? incompleteTeardownOutcome("verified", { clusterTeardown, pairingRemovals: revocation.pairingRemovals })
+          : teardownOutcome("unknown", true, { clusterTeardown, pairingRemovals: revocation.pairingRemovals })
+        : teardownOutcome("verified", false, { clusterTeardown, pairingRemovals: revocation.pairingRemovals });
     await step.run("record-cluster-teardown", () =>
       runInngestEffect(
         recordTeardownRuntimeEvidenceActivity({
@@ -205,7 +209,8 @@ export async function executeProcessTeardown({
       }
     }
 
-    let rustMustRevokePairing = false;
+    let pairingRevocationUnconfirmed = false;
+    let pairingRemovals: TeardownOutcome["pairingRemovals"];
     if (attempt.targets.revokePairing) {
       const revoked = await step.run("revoke-pairing", () =>
         runInngestEffect(
@@ -214,10 +219,12 @@ export async function executeProcessTeardown({
           }),
         ),
       );
-      rustMustRevokePairing = revoked.rustMustRevokePairing;
+      pairingRevocationUnconfirmed = revoked.pairingRevocationUnconfirmed;
+      pairingRemovals = revoked.pairingRemovals;
     }
-    outcome = teardownOutcome(membership, rustMustRevokePairing, {
+    outcome = teardownOutcome(membership, pairingRevocationUnconfirmed, {
       projectTeardowns: [...projectTeardowns],
+      pairingRemovals,
     });
   }
 
@@ -232,6 +239,18 @@ export async function executeProcessTeardown({
         }),
       ),
     );
+  }
+  if (outcome.pairingRevocationUnconfirmed) {
+    const partial = await step.run("persist-partial-teardown-outcome", () => runInngestEffect(
+      completeTeardownAttemptActivity({
+        attemptId: attempt.id,
+        inngestRunId: runId,
+        status: "partial",
+        outcome,
+        now: new Date(),
+      }),
+    ));
+    return { attemptId: partial.id, status: partial.status };
   }
   await step.run("drop-cloud-rows", () =>
     runInngestEffect(dropTeardownCloudRowsActivity(attempt)),

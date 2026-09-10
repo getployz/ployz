@@ -7,7 +7,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, CloudPairing, DescribeContractRequest, InitializeRequest, InspectRequest,
     JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken,
-    MachineTokenRequest, SetCloudPairingRequest, StorageChoice, op,
+    MachineTokenRequest, SetCloudPairingRequest, StorageChoice, TailcatCapability, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -77,7 +77,16 @@ where
         .await?;
         match outcome {
             Outcome::Join(join) => {
-                enroll_join(matches, client, details, *join, &initial_policy, install).await
+                enroll_join(
+                    matches,
+                    client,
+                    details,
+                    *join,
+                    &initial_policy,
+                    &cloud_enroll::callback_url(cloud_url, &token),
+                    install,
+                )
+                .await
             }
             Outcome::Initialize {
                 mode,
@@ -143,6 +152,7 @@ async fn enroll_join<Install, InstallFuture>(
     details: MachineDetails,
     join: Join,
     initial_policy: &ployz_core::InitialMachinePolicy,
+    callback_url: &str,
     install: &Install,
 ) -> Result<(), Error>
 where
@@ -163,34 +173,37 @@ where
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
-    if already_assigned(&details, &assigned) {
-        println!("Initialised Machine {} ({})", assigned.name, assigned.id);
-        return Ok(());
-    }
-
-    client = ensure_uninitialized(
-        matches,
-        matches.get_flag("yes"),
-        matches.get_flag("reset"),
-        client,
-    )
-    .await?;
-    client = provision_storage(matches, client, join.storage, install).await?;
-    crate::handlers::machine::join(
-        &mut client,
-        JoinRequest {
-            registration: join.registration,
-            wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-            cloud_pairing: Some(join.pairing),
-        },
-    )
-    .await?;
-    let mut ready = wait_phase(
-        matches,
-        LocalMachinePhase::Participating,
-        "joined Machine did not become ready",
-    )
-    .await?;
+    let pairing = join.pairing.clone();
+    let mut ready = if already_assigned(&details, &assigned) {
+        client
+    } else {
+        client = ensure_uninitialized(
+            matches,
+            matches.get_flag("yes"),
+            matches.get_flag("reset"),
+            client,
+        )
+        .await?;
+        client = provision_storage(matches, client, join.storage, install).await?;
+        crate::handlers::machine::join(
+            &mut client,
+            JoinRequest {
+                registration: join.registration,
+                wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                cloud_pairing: Some(join.pairing),
+            },
+        )
+        .await?;
+        wait_phase(
+            matches,
+            LocalMachinePhase::Participating,
+            "joined Machine did not become ready",
+        )
+        .await?
+    };
+    let tailcat = machine_capability(matches, ready.connection(), install).await?;
+    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &tailcat).await?;
+    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
     if let Err(error) = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
@@ -228,6 +241,14 @@ where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
+    if !matches!(
+        client.connection().transport(),
+        Transport::Unix(_) | Transport::Ssh { .. } | Transport::Tailcat(_)
+    ) {
+        return Err(Error::usage(
+            "Cloud founder enrollment requires local Unix, SSH, or Tailcat access to publish its capability",
+        ));
+    }
     let state = match (mode, details.phase) {
         (InitializeMode::Resume, LocalMachinePhase::Participating) => FounderLocalState::Resume {
             machine: Box::new(details.machine.ok_or_else(|| {
@@ -322,8 +343,16 @@ where
         }
     }
     // Setting the same pairing is idempotent.
-    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { cloud_pairing: Some(pairing.clone()) }, None)
+    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest::Set { pairing: pairing.clone() }, None)
         .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+    let tailcat = machine_capability(matches, ready.connection(), install).await?;
+    cloud_enroll::publish(
+        &cloud_enroll::callback_url(cloud_url, token),
+        machine.id,
+        pairing.secret(),
+        &tailcat,
+    )
+    .await?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -332,6 +361,65 @@ where
     .await?;
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
+}
+
+async fn machine_capability<Install, InstallFuture>(
+    matches: &ArgMatches,
+    connection: &crate::context::Connection,
+    install: &Install,
+) -> Result<TailcatCapability, Error>
+where
+    Install: Fn(StorageChoice) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
+    use std::process::Stdio;
+    let mut command = match connection.transport() {
+        Transport::Tailcat(capability) => return Ok(capability.clone()),
+        Transport::Unix(_) => {
+            install(StorageChoice::None).await?;
+            let mut command = tokio::process::Command::new("ployzd-tailcat");
+            command.arg("export");
+            command
+        }
+        Transport::Ssh {
+            destination,
+            key_file,
+        } => {
+            let mut command = tokio::process::Command::new("ssh");
+            command.args(crate::connect::ssh_base_args(
+                destination,
+                key_file.as_deref(),
+                crate::connect::control_path().as_deref(),
+                crate::cli::ssh_timeout(matches),
+            ));
+            command.arg(destination.target()).arg(format!(
+                "if [ \"$(id -u)\" = 0 ]; then ployzd install --software-only --version {version} >/dev/null && ployzd-tailcat export; else sudo -n ployzd install --software-only --version {version} >/dev/null && sudo -n ployzd-tailcat export; fi",
+                version = env!("CARGO_PKG_VERSION"),
+            ));
+            command
+        }
+        Transport::Tcp(_) => {
+            return Err(Error::usage(
+                "Cloud enrollment requires local Unix, SSH, or Tailcat access to publish its capability",
+            ));
+        }
+    };
+    // Export is credential-bearing: capture both streams and never print process output.
+    let output = tokio::time::timeout(
+        Duration::from_secs(300),
+        command.stdin(Stdio::null()).kill_on_drop(true).output(),
+    ).await.map_err(|_| Error::usage("Tailcat endpoint preparation timed out; rerun the same enrollment command without --reset"))?
+        .map_err(|_| Error::usage("could not export Tailcat endpoint capability"))?;
+    if !output.status.success() {
+        return Err(Error::usage(
+            "Tailcat endpoint preparation or capability export failed; rerun the same enrollment command without --reset",
+        ));
+    }
+    let capability = String::from_utf8(output.stdout)
+        .map_err(|_| Error::usage("invalid Tailcat endpoint capability output"))?;
+    let capability = capability.strip_suffix('\n').unwrap_or(&capability);
+    TailcatCapability::parse(capability)
+        .map_err(|_| Error::usage("invalid Tailcat endpoint capability output"))
 }
 
 async fn provision_storage<Install, InstallFuture>(
@@ -550,7 +638,6 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::Context(
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
-        assert!(!retry_local_connect(&ConnectError::InvalidDialCredential));
     }
 
     #[test]

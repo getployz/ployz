@@ -10,6 +10,7 @@ import { Pool } from "pg";
 import {
   Database,
   makeDatabaseService,
+  subscribeDatabaseNotifications,
 } from "#/server/database.server";
 import {
   createDefaultServiceHealthcheck,
@@ -147,7 +148,7 @@ export async function startGithubPostgresTestHarness() {
           const effectDatabase = yield* makeWithDefaults().pipe(
             Effect.provideService(PgClient.PgClient, client),
           );
-          return makeDatabaseService(effectDatabase);
+          return makeDatabaseService(effectDatabase, (channel) => subscribeDatabaseNotifications(pool, channel));
         }),
       ).pipe(Layer.provide(Reactivity.layer)),
     );

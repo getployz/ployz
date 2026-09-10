@@ -88,7 +88,9 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
     if [ "$SCENARIO" != absent ]; then touch "$TMP/run/worker" "$TMP/run/daemon"; fi
-    touch "$TMP/install/ployzd" "$TMP/install/ployz-uninstall" "$TMP/install/ployz-corrosion"
+    touch "$TMP/install/ployzd" "$TMP/install/ployzd-tailcat" "$TMP/install/ployz-uninstall" "$TMP/install/ployz-corrosion"
+    printf 'CLI retained\n' > "$TMP/install/ployz"
+    printf 'CLI helper retained\n' > "$TMP/install/ployz-tailcat"
     chmod 0755 "$TMP/install/ployzd" "$TMP/install/ployz-uninstall"
     touch "$TMP/docker" "$TMP/images" "$TMP/volumes" "$TMP/docker-config"
 
@@ -131,6 +133,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     if [ "$result" -eq 0 ]; then
         case "$SCENARIO" in *failure|busy) echo "unexpected uninstall success: $SCENARIO" >&2; exit 1 ;; esac
         [ ! -e "$TMP/install/ployzd" ]
+        [ ! -e "$TMP/install/ployzd-tailcat" ]
         [ ! -e "$TMP/install/ployz-uninstall" ]
         [ ! -e "$TMP/state" ]
         # Keep the lock inode: unlinking it lets a concurrent installer bypass ownership.
@@ -143,11 +146,14 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     else
         case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
+        [ -e "$TMP/install/ployzd-tailcat" ]
         [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ]
         if grep -q '^docker ' "$LOG"; then exit 1; fi
     fi
     if grep -q '^unsafe cleanup:' "$LOG"; then exit 1; fi
     if [ "$SCENARIO" = busy ]; then exec {lock_fd}>&-; fi
+    [ "$(cat "$TMP/install/ployz")" = 'CLI retained' ]
+    [ "$(cat "$TMP/install/ployz-tailcat")" = 'CLI helper retained' ]
     [ -e "$TMP/install/ployz-corrosion" ]
     [ -f "$TMP/docker" ] && [ -f "$TMP/images" ] && [ -f "$TMP/volumes" ] && [ -f "$TMP/docker-config" ]
     sudo rm -rf "$TMP/run" "$TMP/state"

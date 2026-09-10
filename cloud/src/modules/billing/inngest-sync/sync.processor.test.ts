@@ -1,3 +1,4 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -8,6 +9,8 @@ import {
   createScheduleNightlyBillingReconcile,
   createSyncOrganizationBillingStateFunction,
 } from "./sync";
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(workspaceRepository, "listOrganizationIds").mockImplementation(() =>
   Effect.succeed(["organization-1"]),

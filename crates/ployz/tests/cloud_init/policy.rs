@@ -13,9 +13,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             visible_peers: Vec::new(),
             target_versions: Default::default(),
         };
-        let relay = RelayListen::start().await;
-        let pairing =
-            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
         let response = if resume_founder {
             json!({"kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing})
         } else {
@@ -46,7 +44,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             .await
             .unwrap();
         let output = init_cloud(
-            &format!("tcp://{address}"),
+            &format!("ssh://root@{address}"),
             &enroll.url,
             "founder",
             false,
@@ -110,13 +108,13 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
             .save()
             .unwrap();
         }
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        let mut command = super::harness::cli();
         command.args([
             "--ployz-config",
             config.to_str().unwrap(),
             "machine",
             if adding { "add" } else { "init" },
-            &format!("tcp://{target_address}"),
+            &format!("ssh://root@{target_address}"),
             "--no-install",
             "--name",
             "builder",

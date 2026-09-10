@@ -1,3 +1,4 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import type {
@@ -30,6 +31,8 @@ const activity = {
   complete: vi.fn(),
   failOwned: vi.fn(),
 };
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(activities, "prepareTeardownAttemptActivity").mockImplementation(
   (input) => Effect.promise(() => activity.prepare(input)),
@@ -115,7 +118,7 @@ describe("teardown Inngest boundary", () => {
     }));
     activity.dropCloudRows.mockResolvedValue(undefined);
     activity.recordRuntimeEvidence.mockResolvedValue(undefined);
-    activity.revokePairing.mockResolvedValue({ rustMustRevokePairing: false });
+    activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: false });
     activity.failOwned.mockResolvedValue({ state: "partial" });
   });
 
@@ -246,7 +249,7 @@ describe("teardown Inngest boundary", () => {
     expect(activity.recordRuntimeEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "unknown",
           clusterTeardown,
         },
@@ -256,7 +259,7 @@ describe("teardown Inngest boundary", () => {
       expect.objectContaining({
         status: "partial",
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "unknown",
           clusterTeardown,
         },
@@ -265,6 +268,8 @@ describe("teardown Inngest boundary", () => {
   });
 
   it("records a complete ClusterTeardown before Cloud cleanup", async () => {
+    const pairingRemovals = [{ machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", status: "confirmed" }];
+    activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: false, pairingRemovals });
     const clusterTeardown = {
       destroyed_projects: ["app-production"],
       machines: {
@@ -277,7 +282,7 @@ describe("teardown Inngest boundary", () => {
         failures: [],
         omissions: [],
       },
-      pairing_revoked: true,
+      pairing_revoked: false,
     } satisfies ClusterTeardown;
     activity.destroyCluster.mockResolvedValue(clusterTeardown);
 
@@ -290,12 +295,14 @@ describe("teardown Inngest boundary", () => {
     );
 
     expect(result).toEqual({ attemptId: "attempt-1", status: "completed" });
+    expect(activity.revokePairing).toHaveBeenCalledWith({ organizationId: "organization-1" });
     expect(activity.recordRuntimeEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "verified_zero",
-          clusterTeardown,
+          clusterTeardown: { ...clusterTeardown, pairing_revoked: true },
+          pairingRemovals,
         },
       }),
     );
@@ -308,6 +315,7 @@ describe("teardown Inngest boundary", () => {
   });
 
   it("does not clean Cloud rows when Cluster pairing revocation is incomplete", async () => {
+    activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: true });
     const clusterTeardown = {
       destroyed_projects: [],
       machines: { successes: [], failures: [], omissions: [] },
@@ -329,12 +337,30 @@ describe("teardown Inngest boundary", () => {
       expect.objectContaining({
         status: "partial",
         outcome: {
-          rustMustRevokePairing: true,
+          pairingRevocationUnconfirmed: true,
           runtimeMembership: "unknown",
           clusterTeardown,
         },
       }),
     );
+  });
+
+  it("keeps Cloud rows and records partial when abandon cannot confirm endpoint revocation", async () => {
+    const pairingRemovals = [{ machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", status: "unconfirmed" }];
+    activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: true, pairingRemovals });
+    const result = await execute(serializedAttempt({
+      scope: "organization", runtimeMembership: "unknown", destroyRuntimeProjects: false,
+    }));
+    expect(result).toEqual({ attemptId: "attempt-1", status: "partial" });
+    expect(activity.destroyCluster).not.toHaveBeenCalled();
+    expect(activity.destroyEnvironment).not.toHaveBeenCalled();
+    expect(activity.revokePairing).toHaveBeenCalledWith({ organizationId: "organization-1" });
+    expect(activity.dropCloudRows).not.toHaveBeenCalled();
+    expect(activity.complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "partial", outcome: {
+        pairingRevocationUnconfirmed: true, runtimeMembership: "unknown", projectTeardowns: [], pairingRemovals,
+      },
+    }));
   });
 
   it("persists a failed project DeployOutcome before Cloud cleanup", async () => {
@@ -377,7 +403,7 @@ describe("teardown Inngest boundary", () => {
     expect(activity.recordRuntimeEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
           projectTeardowns: [{ projectName: "app-production", outcome: projectOutcome }],
         },
@@ -387,7 +413,7 @@ describe("teardown Inngest boundary", () => {
       expect.objectContaining({
         status: "partial",
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
           projectTeardowns: [{ projectName: "app-production", outcome: projectOutcome }],
         },
@@ -428,7 +454,7 @@ describe("teardown Inngest boundary", () => {
     expect(activity.recordRuntimeEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
           projectTeardowns: [
             { projectName: "app-production", outcome: firstOutcome },
@@ -461,7 +487,7 @@ describe("teardown Inngest boundary", () => {
     expect(activity.recordRuntimeEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
           projectTeardowns: [],
         },

@@ -839,10 +839,9 @@ validated_string_newtype!(
     }
 );
 
-/// Bearer Cloud Pairing grants a Machine to authenticate Register for one Relay Tenant.
+/// Bearer identifying the current Cluster-scoped Cloud pairing.
 ///
-/// It is rejected on Dial. The Dial Credential is a different type and never
-/// lives on a Machine.
+/// Enrollment callbacks and endpoint removal authenticate against this credential.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct PairingCredential(String);
@@ -895,7 +894,7 @@ impl From<PairingCredential> for String {
 
 /// Cloud's bearer that authorizes founding and joining of one Cluster.
 ///
-/// It is not a Pairing Credential and not a Dial Credential.
+/// It is not a Pairing Credential.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CloudEnrollToken(String);

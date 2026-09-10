@@ -2,7 +2,7 @@
 //! (`ployz::sdk::typescript_declarations`).
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / listHeld / register / revokePairing /
+//! The handwritten façade is connect / session observation and registration /
 //! about / runtime.watch / preview / run / previewProjectRemoval /
 //! remove_volumes / dataLossIfMachineRemoved / removeMachine /
 //! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
@@ -28,24 +28,77 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value> {
     ployz_core::config::config_request(input).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-/// Dial Credential, Pairing Credential, and selected entry Machine for a
-/// Relay-only session.
-#[napi(object)]
-pub struct ConnectOptions {
-    pub relay_url: String,
-    pub bearer: String,
-    pub pairing: String,
-    pub machine_id: String,
+/// One cancellable connection attempt. Owns no shared helper manager.
+#[napi]
+pub struct PendingConnection {
+    connections: std::sync::Mutex<Option<Vec<ployz::context::Connection>>>,
+    helper: String,
+    cancel: tokio_util::sync::CancellationToken,
 }
 
-/// One held Register from [`list_held`].
-#[napi(object)]
-pub struct HeldRegister {
-    pub machine_id: String,
-    pub register_rtt_ns: Option<i64>,
+/// Parse the shared descriptor shape without reflecting capabilities in errors.
+///
+/// # Errors
+/// Returns InvalidArgument for malformed or empty connections.
+#[napi]
+pub fn start_connections(
+    connections: serde_json::Value,
+    helper: String,
+) -> Result<PendingConnection> {
+    let connections: Vec<ployz::context::Connection> = serde_json::from_value(connections)
+        .map_err(|_| {
+            rpc_to_napi(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "invalid management connections".into(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+    if connections.is_empty() {
+        return Err(rpc_to_napi(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: "connections must not be empty".into(),
+            details: serde_json::Value::Null,
+        }));
+    }
+    Ok(PendingConnection {
+        connections: std::sync::Mutex::new(Some(connections)),
+        helper,
+        cancel: tokio_util::sync::CancellationToken::new(),
+    })
 }
 
-/// Cloud session over one Relay Attach.
+#[napi]
+impl PendingConnection {
+    /// Cancel this attempt; dropping the dial future reaps its helper.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Await one confirmed session.
+    ///
+    /// # Errors
+    /// Returns cancellation, connection failure, or an already-consumed attempt.
+    #[napi]
+    pub async fn wait(&self) -> Result<Client> {
+        let connections = self
+            .connections
+            .lock()
+            .map_err(|_| Error::from_reason("connection lock failed"))?
+            .take()
+            .ok_or_else(|| Error::from_reason("connection already awaited"))?;
+        let connector = std::sync::Arc::new(
+            ployz::connect::SystemConnector::default().with_tailcat_program(&self.helper),
+        );
+        tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null })),
+            result = sdk::connect_connections(connections, connector) => Ok(Client { inner: result.map_err(rpc_to_napi)? }),
+        }
+    }
+}
+
+/// Session over one confirmed management connection.
 #[napi]
 pub struct Client {
     inner: sdk::Session,
@@ -71,6 +124,54 @@ pub struct RunningDeployHandle {
 
 #[napi]
 impl Client {
+    /// Request endpoint revocation. Confirm separately through the successor.
+    ///
+    /// # Errors
+    /// Returns invalid input or uncertain mutation failures.
+    #[napi]
+    pub async fn remove_cloud_pairing(&self, removal: serde_json::Value) -> Result<()> {
+        let removal = serde_json::from_value(removal)
+            .map_err(|_| Error::from_reason("invalid Tailcat removal"))?;
+        self.inner
+            .remove_cloud_pairing(removal)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
+    /// Inspect identity and Cloud Pairing presence on this session.
+    ///
+    /// # Errors
+    /// Returns transport or inspection errors.
+    #[napi]
+    pub async fn inspect(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.inner.inspect().await.map_err(rpc_to_napi)?).map_err(invalid_json)
+    }
+
+    /// Read enrollment facts from this confirmed Entry Machine.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or missing enrollment facts.
+    #[napi]
+    pub async fn observe_enrollment(&self) -> Result<serde_json::Value> {
+        to_json(&self.inner.observe_enrollment().await.map_err(rpc_to_napi)?)
+    }
+
+    /// Send Register on this confirmed session without mutation replay.
+    ///
+    /// # Errors
+    /// Returns invalid input, transport failures or Register domain errors.
+    #[napi]
+    pub async fn register(&self, assignment: serde_json::Value) -> Result<serde_json::Value> {
+        let assignment = serde_json::from_value(assignment).map_err(invalid_json)?;
+        to_json(
+            &self
+                .inner
+                .register(&assignment)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors
@@ -306,7 +407,7 @@ impl Client {
         to_json(&teardown)
     }
 
-    /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
+    /// Drop the Client and transport session. Aborts in-flight Watch and Deploy.
     #[napi]
     pub async fn close(&self) {
         self.inner.close().await;
@@ -363,10 +464,10 @@ impl RunningDeployHandle {
     ///
     /// # Errors
     ///
-    /// Returns when the outcome cannot be encoded as JSON.
+    /// Returns a typed error if session closure interrupts execution, or if JSON encoding fails.
     #[napi]
     pub async fn finished(&self) -> Result<serde_json::Value> {
-        let outcome = self.inner.finished().await;
+        let outcome = self.inner.finished().await.map_err(rpc_to_napi)?;
         to_json(&outcome)
     }
 }
@@ -393,87 +494,6 @@ impl WatchStream {
     pub fn cancel(&self) {
         self.inner.cancel();
     }
-}
-
-/// Connect to one selected Machine through Cloud Relay.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] JSON payload when the Dial Credential,
-/// pairing, or Machine ID is rejected, or when the Relay or inner RPC channel
-/// fails.
-#[napi]
-pub async fn connect(options: ConnectOptions) -> Result<Client> {
-    let inner = sdk::connect(
-        &options.relay_url,
-        &options.bearer,
-        &options.pairing,
-        &options.machine_id,
-    )
-    .await
-    .map_err(rpc_to_napi)?;
-    Ok(Client { inner })
-}
-
-/// Dial a held Machine, send Machine RPC Register, then close.
-///
-/// Same Dial tuple as [`connect`]. Callers never see the session.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] JSON payload when the Dial Credential,
-/// pairing, or Machine ID is rejected, when `identity` is not Register request
-/// data, or when Machine RPC Register fails.
-#[napi]
-pub async fn register(
-    relay_url: String,
-    bearer: String,
-    pairing: String,
-    machine_id: String,
-    identity: serde_json::Value,
-) -> Result<serde_json::Value> {
-    let identity = serde_json::from_value(identity).map_err(invalid_json)?;
-    let registered = sdk::register(&relay_url, &bearer, &pairing, &machine_id, identity)
-        .await
-        .map_err(rpc_to_napi)?;
-    to_json(&registered)
-}
-
-/// List Machines currently holding Register for this pairing.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] JSON payload when the Dial Credential or
-/// pairing is rejected, or when the Relay call fails.
-#[napi]
-pub async fn list_held(
-    relay_url: String,
-    bearer: String,
-    pairing: String,
-) -> Result<Vec<HeldRegister>> {
-    let held = sdk::list_held(&relay_url, &bearer, &pairing)
-        .await
-        .map_err(rpc_to_napi)?;
-    Ok(held
-        .into_iter()
-        .map(|row| HeldRegister {
-            machine_id: row.as_str().to_string(),
-            register_rtt_ns: row.register_rtt_ns,
-        })
-        .collect())
-}
-
-/// Revoke a Pairing Credential so later Register with that bearer fails.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] JSON payload when the Dial Credential or
-/// pairing is rejected, or when the Relay call fails.
-#[napi]
-pub async fn revoke_pairing(relay_url: String, bearer: String, pairing: String) -> Result<()> {
-    sdk::revoke_pairing(&relay_url, &bearer, &pairing)
-        .await
-        .map_err(rpc_to_napi)
 }
 
 fn volume_fate(destroy_volumes: bool) -> ployz::deploy::VolumeFate {
@@ -530,40 +550,36 @@ pub fn allocate_enrollment(
     to_json(&assignment)
 }
 
-/// Read an observer-relative enrollment snapshot.
+/// Prepare an offline removal successor without exposing capabilities in argv.
 ///
 /// # Errors
-/// Returns invalid connection inputs, transport failures, or a nonparticipating Entry Machine.
+/// Returns a redacted error for invalid input or helper failure.
 #[napi]
-pub async fn observe_enrollment(
-    relay_url: String,
-    bearer: String,
-    pairing: String,
-    machine_id: String,
-) -> Result<serde_json::Value> {
-    to_json(
-        &sdk::observe_enrollment(&relay_url, &bearer, &pairing, &machine_id)
-            .await
-            .map_err(rpc_to_napi)?,
-    )
-}
-
-/// Publish the caller's durably saved assignment.
-///
-/// # Errors
-/// Rejects invalid JSON or connection inputs, conflicting assignments, and RPC failures.
-#[napi]
-pub async fn publish_enrollment(
-    relay_url: String,
-    bearer: String,
-    pairing: String,
-    machine_id: String,
-    assignment: serde_json::Value,
-) -> Result<serde_json::Value> {
-    let assignment = serde_json::from_value(assignment).map_err(invalid_json)?;
-    to_json(
-        &sdk::publish_enrollment(&relay_url, &bearer, &pairing, &machine_id, &assignment)
-            .await
-            .map_err(rpc_to_napi)?,
-    )
+pub async fn prepare_tailcat_removal(expected: String, helper: String) -> Result<String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let failure = || Error::from_reason("Tailcat successor preparation failed");
+    let expected = ployz_core::TailcatCapability::parse(expected).map_err(|_| failure())?;
+    let mut child = tokio::process::Command::new(helper)
+        .arg("successor")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| failure())?;
+    let mut input = child.stdin.take().ok_or_else(failure)?;
+    input
+        .write_all(format!("{}\n", expected.as_str()).as_bytes())
+        .await
+        .map_err(|_| failure())?;
+    drop(input);
+    let output = child.wait_with_output().await.map_err(|_| failure())?;
+    if !output.status.success() {
+        return Err(failure());
+    }
+    let successor = String::from_utf8(output.stdout).map_err(|_| failure())?;
+    let successor = successor.strip_suffix('\n').ok_or_else(failure)?;
+    let successor = ployz_core::TailcatCapability::parse(successor).map_err(|_| failure())?;
+    Ok(successor.into())
 }

@@ -1,9 +1,11 @@
-import type { EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
+import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
-import { ConfigProvider, Effect, Exit, Layer, Result, Schema } from "effect";
+import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
 import { Inngest } from "inngest";
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -16,19 +18,18 @@ import {
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import {
   completeMachineEnrollment,
+  publishMachineEnrollment,
   enrollMachine,
-  registerThroughHeldList,
   reserveEnrollmentAssignment,
-  EnrollmentRelay,
   hashEnrollmentToken,
-  heldMachineIds,
   loadOrganizationEnrollmentStatus,
   mintMachineEnrollment,
   resetPendingOrganizationEnrollment,
-  tryRevokeOrganizationRelayPairing,
-  type EnrollmentRelayService,
 } from "#/modules/machines/enrollment.server";
-import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { asTestDouble } from "#/lib/test-double";
+import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -37,21 +38,14 @@ import {
   SecretEncryption,
 } from "#/utils/encrypted-secret.server";
 
+const disposeClients: Array<() => Promise<void>> = [];
 const organizationId = "00000000-0000-4000-8000-000000000401";
 const userId = "00000000-0000-4000-8000-000000000402";
 const tokens = ["pmet_founding_cas_a", "pmet_founding_cas_b"];
-const heldMachineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const [heldMachine] = heldMachineIds([{ machineId: heldMachineId }]);
-if (heldMachine === undefined) throw new Error("Invalid test Machine id.");
-const registration = {
-  assigned_machine: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  visible_peers: [heldMachineId],
-  target_versions: {},
-};
+const founderMachineId = Schema.decodeUnknownSync(rustMachineIdSchema)("00000000000000000000000000000001");
+const tailcat = "tailcat://protected-founder";
 const snapshot: EnrollmentSnapshot = { network: "10.42.0.0/16", machines: [], target_versions: {} };
 const enrollmentSettings = {
-  publicRelayUrl: "https://relay.example.test/",
-  deploymentDialBearer: "pdial_test",
   encryption: makeSecretEncryption("test-app-encryption-secret-1234567890"),
 };
 
@@ -73,87 +67,46 @@ function identity(index: number) {
   };
 }
 
-function fakeRelay(database: GithubPostgresTestHarness["database"]) {
-  let listCalls = 0;
+function fakeSession(database: GithubPostgresTestHarness["database"]) {
   let registerCalls = 0;
-  const revokedPairings: string[] = [];
-  const held: unknown[] = [];
-  const fail = { list: false, revoke: false, publish: false, conflict: false };
+  let observations = 0;
+  const fail = { publish: false, conflict: false };
   const published: EnrollmentAssignment[] = [];
-  const inspectHolding: EnrollmentRelayService["inspectHolding"] = () =>
-    Effect.gen(function* () {
-      listCalls += 1;
-      if (fail.list) {
-        return yield* new PloyzProviderError({
-          operation: "list held registers",
-          cause: new Error("Relay unreachable"),
-        });
-      }
-      if (held.length === 0) return { kind: "empty" as const };
-      const machineIds = heldMachineIds(held);
-      if (machineIds.length === 0) {
-        return yield* new PloyzProviderError({
-          operation: "list held registers",
-          cause: new Error("Relay returned no usable Machine ids"),
-        });
-      }
-      return { kind: "held" as const, held: machineIds };
-    });
-  const relay: EnrollmentRelayService = {
-    inspectHolding,
-    registerAvailable: (input) => registerThroughHeldList(input).pipe(
-      Effect.provideService(Database, database),
-      Effect.provide(makePloyzLayer({
-        connect: async () => { throw new Error("unused"); },
-        observeEnrollment: async () => snapshot,
-        publishEnrollment: async (_url, _bearer, _pairing, _entry, assignment) => {
-          registerCalls += 1;
-          published.push(assignment);
-          if (fail.conflict) throw Object.assign(new Error("Assignment conflicts"), { code: "conflict" });
-          if (fail.publish) throw new Error("Lost publication response");
-          return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
-        },
-      })),
-    ),
-    revokeIfEmpty: (input) =>
-      Effect.gen(function* () {
-        const holding = yield* inspectHolding(input);
-        if (holding.kind === "held") return "held" as const;
-        if (fail.revoke) {
-          return yield* new PloyzProviderError({
-            operation: "revoke relay pairing",
-            cause: new Error("Relay revoke failed"),
-          });
-        }
-        revokedPairings.push(input.pairing);
-        return "revoked" as const;
-      }),
-    revokePairing: (input) =>
-      Effect.gen(function* () {
-        if (fail.revoke) {
-          return yield* new PloyzProviderError({
-            operation: "revoke relay pairing",
-            cause: new Error("Relay revoke failed"),
-          });
-        }
-        revokedPairings.push(input.pairing);
-      }),
+  const connected: ConnectOptions[] = [];
+  let closed = 0;
+  const connection = {
+    error: null as Error | null,
+    beforeConnect: async (_options: ConnectOptions) => {},
+    beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
-  const coordinator = enrollmentTestClient(database, relay);
+  const coordinator = enrollmentTestClient(database, async (options) => {
+    connected.push(options);
+    await connection.beforeConnect(options);
+    if (connection.error) throw connection.error;
+    return asTestDouble<Client>()({
+      close: async () => { closed += 1; },
+      observeEnrollment: async () => { observations += 1; return snapshot; },
+      register: async (assignment: EnrollmentAssignment) => {
+        registerCalls += 1;
+        published.push(assignment);
+        await connection.beforeRegister(assignment);
+        if (fail.conflict) throw Object.assign(new Error("Assignment conflicts"), { code: "conflict" });
+        if (fail.publish) throw new Error("Lost publication response");
+        return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
+      },
+    });
+  });
   return {
-    coordinator,
-    published,
-    held,
-    fail,
-    revokedPairings,
-    listCalls: () => listCalls,
+    coordinator, connected, connection, published, fail,
+    closed: () => closed,
+    observations: () => observations,
     registerCalls: () => registerCalls,
   };
 }
 
 function enrollmentTestClient(
   database: GithubPostgresTestHarness["database"],
-  relay: EnrollmentRelayService,
+  connect: (options: ConnectOptions) => Promise<Client>,
 ) {
   const provider = ConfigProvider.fromEnv({
     env: {
@@ -163,9 +116,6 @@ function enrollmentTestClient(
       BETTER_AUTH_SECRET: "better-auth-secret",
       GITHUB_CLIENT_ID: "github-client-id",
       GITHUB_CLIENT_SECRET: "github-client-secret",
-      PLOYZ_RELAY_URL: enrollmentSettings.publicRelayUrl,
-      PLOYZ_RELAY_DIAL_CREDENTIAL:
-        enrollmentSettings.deploymentDialBearer ?? "",
       APP_ENCRYPTION_SECRET:
         "app-encryption-secret-at-least-32-characters",
     },
@@ -173,26 +123,37 @@ function enrollmentTestClient(
   const config = AppConfig.layer.pipe(
     Layer.provide(ConfigProvider.layer(provider)),
   );
-  const layer = Layer.mergeAll(
+  const dependencies = Layer.mergeAll(
     config,
+    makePloyzLayer({ connect }),
     Layer.succeed(Database, database),
-    Layer.succeed(EnrollmentRelay, relay),
     Layer.succeed(InngestClient, new Inngest({ id: "enrollment-test" })),
     Layer.succeed(SecretEncryption, enrollmentSettings.encryption),
   );
+  const layer = OrganizationRuntimeLive.pipe(Layer.provideMerge(dependencies));
+  const runtime = ManagedRuntime.make(layer);
+  disposeClients.push(() => runtime.dispose());
   return {
+    disable: (id = organizationId) => runtime.runPromise(disableOrganizationPairing(id)),
+    publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
+      Effect.result(publishMachineEnrollment(input)),
+    ),
+    connections: (id = organizationId) => runtime.runPromise(loadOrganizationConnections(id)),
+    open: (id = organizationId) => runtime.runPromise(Effect.scoped(
+      Effect.gen(function* () { return yield* (yield* OrganizationRuntime).open(id); }),
+    )),
     enroll: (input: Parameters<typeof enrollMachine>[0]) =>
-      Effect.runPromise(
-        Effect.result(enrollMachine(input).pipe(Effect.provide(layer))),
+      runtime.runPromise(
+        Effect.result(enrollMachine(input)),
       ),
     completeFounding: (input: Parameters<typeof completeMachineEnrollment>[0]) =>
-      Effect.runPromise(
+      runtime.runPromise(
         Effect.result(
-          completeMachineEnrollment(input).pipe(Effect.provide(layer)),
+          completeMachineEnrollment(input),
         ),
       ),
     resetPendingEnrollment: (_organizationId: string) =>
-      Effect.runPromise(
+      runtime.runPromise(
         Effect.result(
           resetPendingOrganizationEnrollment(
             { userId },
@@ -200,12 +161,13 @@ function enrollmentTestClient(
               organizationSlug: "enroll",
               confirmedFounderStoppedOrErased: true,
             },
-          ).pipe(Effect.provide(layer)),
+          ),
         ),
       ),
     tryRevokePairing: (organizationId: string) =>
-      Effect.runPromise(
-        tryRevokeOrganizationRelayPairing(organizationId).pipe(
+      runtime.runPromise(
+        revokeOrganizationPairing(organizationId).pipe(
+          Effect.map((outcome) => outcome.confirmed),
           Effect.provide(layer),
         ),
       ),
@@ -218,6 +180,10 @@ describe("organization enrollment coordinator", () => {
   beforeAll(async () => {
     harness = await startGithubPostgresTestHarness();
   }, 60_000);
+
+  afterEach(async () => {
+    await Promise.all(disposeClients.splice(0).map((dispose) => dispose()));
+  });
 
   afterAll(async () => {
     await harness.stop();
@@ -250,7 +216,6 @@ describe("organization enrollment coordinator", () => {
         BETTER_AUTH_SECRET: "better-auth-secret",
         GITHUB_CLIENT_ID: "github-client-id",
         GITHUB_CLIENT_SECRET: "github-client-secret",
-        PLOYZ_RELAY_URL: "https://relay.example.test",
         APP_ENCRYPTION_SECRET:
           "app-encryption-secret-at-least-32-characters",
       },
@@ -292,7 +257,7 @@ describe("organization enrollment coordinator", () => {
   });
 
   it("grants exactly one Organization founding attempt across twenty calls and multiple tokens", async () => {
-    const fake = fakeRelay(harness.database);
+    const fake = fakeSession(harness.database);
     const coordinator = fake.coordinator;
 
     const outcomes = await Promise.all(
@@ -314,12 +279,12 @@ describe("organization enrollment coordinator", () => {
     expect(directives.filter((value) => value.kind === "not_yet")).toHaveLength(
       19,
     );
-    expect(fake.listCalls()).toBe(0);
+    expect(fake.observations()).toBe(0);
   });
 
-  it("resumes only the matching founder forever and parks every other Machine without Relay", async () => {
-    const fake = fakeRelay(harness.database);
-    fake.fail.list = true;
+  it("resumes only the matching founder forever and parks every other Machine without connecting", async () => {
+    const fake = fakeSession(harness.database);
+    fake.connection.error = new Error("Candidate unreachable");
     const coordinator = fake.coordinator;
 
     const first = await coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
@@ -339,38 +304,38 @@ describe("organization enrollment coordinator", () => {
     if (Result.isFailure(resumed) || Result.isFailure(waiter)) return;
     expect(resumed.success).toEqual({ ...first.success, resumed: true });
     expect(waiter.success).toEqual({ kind: "not_yet", retryAfter: 2 });
-    expect(fake.listCalls()).toBe(0);
+    expect(fake.observations()).toBe(0);
   });
 
-  it("commits ready only after Relay holds the founder, then joins all waiters", async () => {
-    const fake = fakeRelay(harness.database);
+  it("commits ready only after protected publication and scoped negotiation, then joins waiters", async () => {
+    const fake = fakeSession(harness.database);
     const coordinator = fake.coordinator;
     const first = await coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
     expect(Result.isFailure(first)).toBe(false);
     if (Result.isFailure(first) || first.success.kind !== "initialize") return;
 
-    const beforeHeld = await coordinator.completeFounding({
+    const beforePublication = await coordinator.completeFounding({
       token: tokens[1] ?? "",
-      machineId: heldMachineId,
+      machineId: founderMachineId,
       pairingCredential: first.success.pairing.secret,
     });
-    expect(Result.isFailure(beforeHeld)).toBe(true);
+    expect(Result.isFailure(beforePublication)).toBe(true);
 
-    fake.held.push({ machineId: heldMachineId });
+    await coordinator.publish({ token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: first.success.pairing.secret, tailcat });
     const completed = await coordinator.completeFounding({
       token: tokens[1] ?? "",
-      machineId: heldMachineId,
+      machineId: founderMachineId,
       pairingCredential: first.success.pairing.secret,
     });
     const repeated = await coordinator.completeFounding({
       token: tokens[0] ?? "",
-      machineId: heldMachineId,
+      machineId: founderMachineId,
       pairingCredential: first.success.pairing.secret,
     });
     expect(Result.isFailure(completed)).toBe(false);
     expect(Result.isFailure(repeated)).toBe(false);
     if (Result.isFailure(completed) || Result.isFailure(repeated)) return;
-    expect(completed.success).toEqual({ machineId: heldMachineId });
+    expect(completed.success).toEqual({ machineId: founderMachineId });
     expect(repeated.success).toEqual(completed.success);
 
     const waiters = await Promise.all(
@@ -398,42 +363,35 @@ describe("organization enrollment coordinator", () => {
       `select founder_machine_id from organization_pairing
        where organization_id = '${organizationId}'`,
     );
-    expect(state.rows[0]?.founder_machine_id).toBe(heldMachineId);
+    expect(state.rows[0]?.founder_machine_id).toBe(founderMachineId);
 
-    fake.held.length = 0;
-    const empty = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(30),
-    });
-    expect(Result.isFailure(empty)).toBe(false);
-    if (Result.isFailure(empty)) return;
-    expect(empty.success).toEqual({ kind: "not_yet", retryAfter: 2 });
-
-    fake.fail.list = true;
+    const calls = fake.registerCalls();
+    fake.connection.error = new Error("Candidate unreachable");
     const indeterminate = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(31),
+      token: tokens[0] ?? "", identity: identity(31),
     });
-    expect(Result.isFailure(indeterminate)).toBe(true);
-    if (!Result.isFailure(indeterminate)) return;
-    expect(indeterminate.failure._tag).toBe("PloyzProviderError");
+    expect(indeterminate).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(fake.registerCalls()).toBe(calls);
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows)
+      .toEqual([{ founder_machine_id: founderMachineId }]);
   });
 
   it("retains the committed assignment after publication failure and conflicts on changed retry inputs", async () => {
-    const fake = fakeRelay(harness.database);
+    const fake = fakeSession(harness.database);
     const founder = await fake.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(0) });
     if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
-    fake.held.push({ machineId: heldMachineId });
-    await fake.coordinator.completeFounding({ token: (tokens[0] ?? ""), machineId: heldMachineId, pairingCredential: founder.success.pairing.secret });
+    await fake.coordinator.publish({ token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: founder.success.pairing.secret, tailcat });
+    await fake.coordinator.completeFounding({ token: (tokens[0] ?? ""), machineId: founderMachineId, pairingCredential: founder.success.pairing.secret });
     fake.fail.publish = true;
     const failed = await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: identity(1) });
-    expect(failed).toMatchObject({ success: { kind: "not_yet" } });
+    expect(failed).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(fake.registerCalls()).toBe(1);
+    expect(fake.closed()).toBe(2);
     const saved = await harness.pool.query("select assignments from enrollment_allocation");
     expect(saved.rows[0].assignments).toEqual(fake.published);
     fake.fail.publish = false;
     // A fresh coordinator has no worker-local retry state.
-    const fresh = fakeRelay(harness.database);
-    fresh.held.push({ machineId: heldMachineId });
+    const fresh = fakeSession(harness.database);
     const resumed = await fresh.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(1) });
     expect(resumed).toMatchObject({ success: { kind: "join" } });
     expect(fresh.published).toEqual(fake.published);
@@ -443,12 +401,11 @@ describe("organization enrollment coordinator", () => {
   });
 
   it("returns a permanent publication conflict without trying a stale Entry or freeing the assignment", async () => {
-    const fake = fakeRelay(harness.database);
+    const fake = fakeSession(harness.database);
     const founder = await fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
     if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
-    fake.held.push({ machineId: heldMachineId });
-    await fake.coordinator.completeFounding({ token: tokens[0] ?? "", machineId: heldMachineId, pairingCredential: founder.success.pairing.secret });
-    fake.held.push({ machineId: identity(0).machineId });
+    await fake.coordinator.publish({ token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: founder.success.pairing.secret, tailcat });
+    await fake.coordinator.completeFounding({ token: tokens[0] ?? "", machineId: founderMachineId, pairingCredential: founder.success.pairing.secret });
     fake.fail.conflict = true;
 
     const outcome = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
@@ -482,421 +439,363 @@ describe("organization enrollment coordinator", () => {
     expect(histories.rows).toEqual([{ count: 1 }, { count: 1 }, { count: 2 }]);
   });
 
-  it("releases transaction locks before publication and falls back to another held Entry", async () => {
-    const tried: string[] = [];
-    const assignment = await harness.runEffect(registerThroughHeldList({
-      organizationId, relayUrl: "https://relay.example.test", bearer: "dial", pairing: "cluster-a",
-      held: [heldMachine, identity(0).machineId], identity: registerRequestFromEnrollmentIdentity(identity(1)),
-    }).pipe(Effect.provide(makePloyzLayer({
-      connect: async () => { throw new Error("unused"); },
-      observeEnrollment: async () => snapshot,
-      publishEnrollment: async (_url, _bearer, pairing, entry, assignment) => {
-        tried.push(entry);
-        // Independent transaction must proceed while the network call is in flight.
-        const next = await harness.runEffect(reserveEnrollmentAssignment({
-          organizationId, pairing, identity: registerRequestFromEnrollmentIdentity(identity(2)), snapshot,
-        }));
-        expect(next.machine.subnet).not.toBe(assignment.machine.subnet);
-        if (entry === heldMachine) throw new Error("Entry unreachable");
-        return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
-      },
-    }))));
-    expect(assignment.kind).toBe("registered");
-    expect(tried).toEqual([heldMachine, identity(0).machineId]);
-  });
-
-  it("accepts both exact completions when concurrent callbacks race the ready CAS", async () => {
-    let releaseLists!: () => void;
-    let reportBothListed!: () => void;
-    const allowLists = new Promise<void>((resolve) => {
-      releaseLists = resolve;
-    });
-    const bothListed = new Promise<void>((resolve) => {
-      reportBothListed = resolve;
-    });
-    let listCalls = 0;
-    const relay: EnrollmentRelayService = {
-      inspectHolding: () =>
-        Effect.promise(async () => {
-        listCalls += 1;
-        if (listCalls === 2) reportBothListed();
-        await allowLists;
-          return { kind: "held" as const, held: [heldMachine] };
-        }),
-      registerAvailable: () =>
-        Effect.succeed({ kind: "registered" as const, registration }),
-      revokeIfEmpty: () => Effect.succeed("held" as const),
-      revokePairing: () => Effect.void,
+  it("releases transaction locks before publication and never retries a failed mutation", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    await fake.coordinator.completeFounding(attempt);
+    await harness.runEffect(reserveEnrollmentAssignment({
+      organizationId, pairing: attempt.pairingCredential,
+      identity: registerRequestFromEnrollmentIdentity(identity(3)), snapshot,
+    }));
+    await fake.coordinator.publish({ ...attempt, machineId: identity(3).machineId, tailcat: "tailcat://other-entry" });
+    fake.connection.beforeRegister = async (assignment) => {
+      // Independent transaction must proceed while the network call is in flight.
+      const next = await harness.runEffect(reserveEnrollmentAssignment({
+        organizationId, pairing: attempt.pairingCredential,
+        identity: registerRequestFromEnrollmentIdentity(identity(2)), snapshot,
+      }));
+      expect(next.machine.subnet).not.toBe(assignment.machine.subnet);
     };
-    const coordinator = enrollmentTestClient(
-      harness.database,
-      relay,
-    );
-    const pending = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(pending)).toBe(false);
-    if (Result.isFailure(pending) || pending.success.kind !== "initialize") return;
-    const pairingCredential = pending.success.pairing.secret;
-
-    const callback = () =>
-      coordinator.completeFounding({
-        token: tokens[0] ?? "",
-        machineId: heldMachineId,
-        pairingCredential,
-      });
-    const completions = Promise.all([callback(), callback()]);
-    await bothListed;
-    releaseLists();
-    const outcomes = await completions;
-
-    expect(outcomes.every((outcome) => !Result.isFailure(outcome))).toBe(true);
+    fake.fail.publish = true;
+    expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(1) }))
+      .toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(fake.connected).toHaveLength(2);
+    expect(fake.connected.at(-1)).toMatchObject({ connections: [
+      { tailcat, machine_id: attempt.machineId },
+      { tailcat: "tailcat://other-entry", machine_id: identity(3).machineId },
+    ] });
+    expect(fake.observations()).toBe(1);
+    expect(fake.registerCalls()).toBe(1);
+    expect(fake.closed()).toBe(2);
   });
 
-  it("abandons an empty pending attempt without invalidating enrollment tokens", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    const pending = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(pending)).toBe(false);
-    if (Result.isFailure(pending) || pending.success.kind !== "initialize") return;
+  async function pendingFounder(fake: ReturnType<typeof fakeSession>) {
+    const result = await fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
+    if (Result.isFailure(result) || result.success.kind !== "initialize") throw new Error("Founder missing");
+    return { token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: result.success.pairing.secret };
+  }
 
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-
-    expect(Result.isFailure(reset)).toBe(false);
-    expect(fake.revokedPairings).toEqual([pending.success.pairing.secret]);
-    const persisted = await harness.pool.query<{
-      pairing_count: number;
-      token_count: number;
-    }>(`
-      select
-        (select count(*)::int from organization_pairing where organization_id = '${organizationId}') as pairing_count,
-        (select count(*)::int from machine_enrollment_token where organization_id = '${organizationId}') as token_count
-    `);
-    expect(persisted.rows[0]).toEqual({ pairing_count: 0, token_count: 2 });
-  });
-
-  it("rejects a concurrent completion once reset owns the pending generation", async () => {
-    let releaseResetList!: () => void;
-    let reportResetListStarted!: () => void;
-    let reportCompletionListStarted!: () => void;
-    const resetListStarted = new Promise<void>((resolve) => {
-      reportResetListStarted = resolve;
-    });
-    const completionListStarted = new Promise<void>((resolve) => {
-      reportCompletionListStarted = resolve;
-    });
-    const allowResetList = new Promise<void>((resolve) => {
-      releaseResetList = resolve;
-    });
-    let listCalls = 0;
-    const relay: EnrollmentRelayService = {
-      inspectHolding: () =>
-        Effect.sync(() => {
-          listCalls += 1;
-          reportCompletionListStarted();
-          return { kind: "held" as const, held: [heldMachine] };
-        }),
-      registerAvailable: () =>
-        Effect.succeed({ kind: "registered" as const, registration }),
-      revokeIfEmpty: () =>
-        Effect.promise(async () => {
-          listCalls += 1;
-          reportResetListStarted();
-          await allowResetList;
-          return "revoked" as const;
-        }),
-      revokePairing: () => Effect.void,
-    };
-    const coordinator = enrollmentTestClient(
-      harness.database,
-      relay,
-    );
-    const pending = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(pending)).toBe(false);
-    if (Result.isFailure(pending) || pending.success.kind !== "initialize") return;
-
-    const resetPromise = coordinator.resetPendingEnrollment(organizationId);
-    await resetListStarted;
-    const completionPromise = coordinator.completeFounding({
-      token: tokens[0] ?? "",
-      machineId: heldMachineId,
-      pairingCredential: pending.success.pairing.secret,
-    });
-    await completionListStarted;
-    releaseResetList();
-    const [reset, completion] = await Promise.all([
-      resetPromise,
-      completionPromise,
+  it("encrypts the authenticated candidate before completion and preserves it on exact retry", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.completeFounding({ ...attempt, stage: "publish", tailcat })).toMatchObject({ success: { machineId: attempt.machineId } });
+    const saved = await harness.pool.query("select encrypted_tailcat, cluster_key from organization_machine");
+    expect(JSON.stringify(saved.rows)).not.toContain(tailcat);
+    expect(enrollmentSettings.encryption.decrypt(saved.rows[0].encrypted_tailcat)).toBe(tailcat);
+    expect(saved.rows[0].cluster_key).toBe(hashEnrollmentToken(attempt.pairingCredential));
+    expect(await fake.coordinator.publish({ ...attempt, tailcat })).toMatchObject({ success: { machineId: attempt.machineId } });
+    expect((await harness.pool.query("select encrypted_tailcat, cluster_key from organization_machine")).rows).toEqual(saved.rows);
+    expect(await fake.coordinator.publish({ ...attempt, tailcat: "tailcat://replacement" })).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect((await harness.pool.query("select founder_machine_id, founder_claim_machine_id from organization_pairing")).rows).toEqual([
+      { founder_machine_id: null, founder_claim_machine_id: attempt.machineId },
     ]);
-
-    expect(Result.isFailure(reset)).toBe(false);
-    expect(Result.isFailure(completion)).toBe(true);
-    if (!Result.isFailure(completion)) return;
-    expect(completion.failure._tag).toBe("Conflict");
-    const pairing = await harness.pool.query(
-      `select 1 from organization_pairing where organization_id = '${organizationId}'`,
-    );
-    expect(pairing.rowCount).toBe(0);
+    expect(fake.connected).toEqual([]);
+    expect(fake.observations()).toBe(0);
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ tailcat, machine_id: attempt.machineId }] })]);
+    expect(fake.closed()).toBe(1);
+    expect(fake.observations()).toBe(0);
+    expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(0) })).toMatchObject({ success: { kind: "initialize", resumed: true } });
+    expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(false);
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ failure: { _tag: "Conflict" } });
   });
 
-  it("refuses reset when Relay still holds the pending founder", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    const pending = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(pending)).toBe(false);
-    if (Result.isFailure(pending) || pending.success.kind !== "initialize") return;
-    fake.held.push({ machineId: heldMachineId });
+  it("publishes and confirms a joining candidate from its saved assignment without changing the founder", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const joined = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    expect(joined).toMatchObject({ success: { kind: "join" } });
+    const assignment = fake.published[0];
+    expect(assignment?.machine.id).toBe(identity(1).machineId);
+    expect(assignment?.machine.public_key).toEqual(registerRequestFromEnrollmentIdentity(identity(1)).public_key);
+    expect(await fake.coordinator.enroll({ token: founder.token, identity: { ...identity(1), publicKey: identity(2).publicKey } }))
+      .toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.published).toHaveLength(1);
 
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
+    const candidate = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    const connectionCount = fake.connected.length;
+    for (const invalid of [
+      { ...candidate, machineId: identity(2).machineId },
+      { ...candidate, pairingCredential: "ppair_stale" },
+      { ...candidate, token: "pmet_invalid" },
+    ]) {
+      expect(Result.isFailure(await fake.coordinator.publish({ ...invalid, tailcat: "tailcat://joining" }))).toBe(true);
+      expect(Result.isFailure(await fake.coordinator.completeFounding(invalid))).toBe(true);
+    }
+    expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.connected).toHaveLength(connectionCount);
+    expect(await fake.coordinator.completeFounding({ ...candidate, stage: "publish", tailcat: "tailcat://joining" }))
+      .toMatchObject({ success: { machineId: candidate.machineId } });
+    expect(await fake.coordinator.publish({ ...candidate, tailcat: "tailcat://joining" }))
+      .toMatchObject({ success: { machineId: candidate.machineId } });
+    expect(await fake.coordinator.publish({ ...candidate, tailcat: "tailcat://replacement" }))
+      .toMatchObject({ failure: { _tag: "Conflict" } });
 
-    expect(Result.isFailure(reset)).toBe(true);
-    if (!Result.isFailure(reset)) return;
-    expect(reset.failure._tag).toBe("Conflict");
-    expect(fake.revokedPairings).toEqual([]);
-    const pairing = await harness.pool.query(
-      `select founder_machine_id from organization_pairing where organization_id = '${organizationId}'`,
-    );
-    expect(pairing.rows[0]?.founder_machine_id).toBeNull();
-
-    const completed = await coordinator.completeFounding({
-      token: tokens[0] ?? "",
-      machineId: heldMachineId,
-      pairingCredential: pending.success.pairing.secret,
-    });
-    expect(Result.isFailure(completed)).toBe(false);
+    fake.connection.error = new Error("Joining candidate unavailable");
+    expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    fake.connection.error = null;
+    expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ success: { machineId: candidate.machineId } });
+    expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ success: { machineId: candidate.machineId } });
+    expect(fake.connected.at(-1)).toMatchObject({ connections: [{ tailcat: "tailcat://joining", machine_id: candidate.machineId }] });
+    expect((await harness.pool.query("select founder_machine_id, founder_claim_machine_id from organization_pairing")).rows)
+      .toEqual([{ founder_machine_id: founder.machineId, founder_claim_machine_id: founder.machineId }]);
+    await harness.pool.query("update organization_machine set is_dial_entry = (machine_id = $1)", [candidate.machineId]);
+    expect(await fake.coordinator.connections()).toEqual({ kind: "ready", generation: hashEnrollmentToken(founder.pairingCredential), connections: [
+      { tailcat: "tailcat://joining", machine_id: candidate.machineId },
+      { tailcat, machine_id: founder.machineId },
+    ] });
+    expect(await fake.coordinator.open()).toMatchObject({ status: "connected" });
+    expect(fake.connected.at(-1)).toMatchObject({ connections: [
+      { tailcat: "tailcat://joining", machine_id: candidate.machineId },
+      { tailcat, machine_id: founder.machineId },
+    ] });
   });
 
-  it("refuses reset when Relay evidence is indeterminate", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    fake.fail.list = true;
-
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-
-    expect(Result.isFailure(reset)).toBe(true);
-    if (!Result.isFailure(reset)) return;
-    expect(reset.failure._tag).toBe("PloyzProviderError");
-    expect(fake.revokedPairings).toEqual([]);
-    const pairing = await harness.pool.query(
-      `select 1 from organization_pairing where organization_id = '${organizationId}'`,
-    );
-    expect(pairing.rowCount).toBe(1);
+  it("rejects unauthorized, stale, and wrong-Machine publications and completions before connecting", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    for (const input of [
+      { ...attempt, token: "pmet_invalid" },
+      { ...attempt, pairingCredential: "ppair_stale" },
+      { ...attempt, machineId: identity(1).machineId },
+    ]) {
+      expect(Result.isFailure(await fake.coordinator.publish({ ...input, tailcat }))).toBe(true);
+      expect(Result.isFailure(await fake.coordinator.completeFounding(input))).toBe(true);
+    }
+    expect((await harness.pool.query("select * from organization_machine")).rowCount).toBe(0);
+    expect(fake.connected).toEqual([]);
+    const changedMachine = await fake.coordinator.enroll({ token: attempt.token, identity: { ...identity(0), machineId: identity(1).machineId } });
+    expect(changedMachine).toMatchObject({ success: { kind: "not_yet" } });
+    await harness.pool.query("update machine_enrollment_token set expires_at = now() - interval '1 second'");
+    expect(Result.isFailure(await fake.coordinator.publish({ ...attempt, tailcat }))).toBe(true);
+    expect(Result.isFailure(await fake.coordinator.completeFounding(attempt))).toBe(true);
   });
 
-  it("keeps the pending attempt when Relay cannot revoke its credential", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    fake.fail.revoke = true;
-
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-
-    expect(Result.isFailure(reset)).toBe(true);
-    if (!Result.isFailure(reset)) return;
-    expect(reset.failure._tag).toBe("PloyzProviderError");
-    const pairing = await harness.pool.query(
-      `select 1 from organization_pairing where organization_id = '${organizationId}'`,
-    );
-    expect(pairing.rowCount).toBe(1);
+  it("scopes colliding Machine IDs by Organization and current pairing", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    const otherId = "00000000-0000-4000-8000-000000000403";
+    const otherToken = "pmet_other_organization";
+    await harness.pool.query("insert into organization(id,name,slug) values($1,'Other','other')", [otherId]);
+    await harness.pool.query("insert into machine_enrollment_token(organization_id,created_by_user_id,token_hash,expires_at) values($1,$2,$3,now()+interval '1 day')", [otherId, userId, hashEnrollmentToken(otherToken)]);
+    const other = await fake.coordinator.enroll({ token: otherToken, identity: identity(0) });
+    if (Result.isFailure(other) || other.success.kind !== "initialize") throw new Error("Other founder missing");
+    const otherAttempt = { ...attempt, token: otherToken, pairingCredential: other.success.pairing.secret };
+    expect(await fake.coordinator.publish({ ...attempt, token: otherToken, tailcat })).toMatchObject({ failure: { _tag: "Conflict" } });
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    await fake.coordinator.publish({ ...otherAttempt, tailcat: "tailcat://other" });
+    expect(await fake.coordinator.connections()).toEqual({ kind: "ready", generation: hashEnrollmentToken(attempt.pairingCredential), connections: [{ tailcat, machine_id: attempt.machineId }] });
+    expect(await fake.coordinator.connections(otherId)).toEqual({ kind: "ready", generation: hashEnrollmentToken(otherAttempt.pairingCredential), connections: [{ tailcat: "tailcat://other", machine_id: attempt.machineId }] });
+    await harness.pool.query("update organization_pairing set encrypted_pairing_secret = $1::jsonb where organization_id = $2", [JSON.stringify(enrollmentSettings.encryption.encrypt("ppair_replacement")), organizationId]);
+    expect(await fake.coordinator.connections()).toEqual({ kind: "ready", generation: hashEnrollmentToken("ppair_replacement"), connections: [] });
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.publish({ ...attempt, tailcat })).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.completeFounding({ ...attempt, pairingCredential: "ppair_replacement" })).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.connected).toEqual([]);
   });
 
-  it("refuses reset when Relay returns a nonempty list without Machine evidence", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    fake.held.push({ unexpected: true });
-
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-
-    expect(Result.isFailure(reset)).toBe(true);
-    if (!Result.isFailure(reset)) return;
-    expect(reset.failure._tag).toBe("PloyzProviderError");
-    expect(fake.revokedPairings).toEqual([]);
-    const pairing = await harness.pool.query(
-      `select 1 from organization_pairing where organization_id = '${organizationId}'`,
-    );
-    expect(pairing.rowCount).toBe(1);
+  it.each(["connection timed out", "Machine identity mismatch"])("keeps the published claim pending after %s", async (message) => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    fake.connection.error = new Error(message);
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
+    expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(0) })).toMatchObject({ success: { kind: "initialize", resumed: true } });
+    expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) })).toMatchObject({ success: { kind: "not_yet" } });
+    fake.connection.error = null;
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+    expect(fake.observations()).toBe(0);
   });
 
-  it("refuses reset after the Organization is ready", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    const pending = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(pending)).toBe(false);
-    if (Result.isFailure(pending) || pending.success.kind !== "initialize") return;
-    fake.held.push({ machineId: heldMachineId });
-    await coordinator.completeFounding({
-      token: tokens[0] ?? "",
-      machineId: heldMachineId,
-      pairingCredential: pending.success.pairing.secret,
-    });
-    const listCallsBeforeReset = fake.listCalls();
-
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-
-    expect(Result.isFailure(reset)).toBe(true);
-    if (!Result.isFailure(reset)) return;
-    expect(reset.failure._tag).toBe("Conflict");
-    expect(fake.listCalls()).toBe(listCallsBeforeReset);
-    const pairing = await harness.pool.query<{
-      founder_machine_id: string | null;
-    }>(
-      `select founder_machine_id from organization_pairing where organization_id = '${organizationId}'`,
-    );
-    expect(pairing.rows[0]?.founder_machine_id).toBe(heldMachineId);
+  it("accepts both exact completions racing the ready transaction", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fake.connection.beforeConnect = async () => {
+      if (fake.connected.length === 2) release();
+      await gate;
+    };
+    const results = await Promise.all([fake.coordinator.completeFounding(attempt), fake.coordinator.completeFounding(attempt)]);
+    expect(results.every(Result.isSuccess)).toBe(true);
+    expect(fake.closed()).toBe(2);
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: attempt.machineId }]);
   });
 
-  it("refuses reset when no pending attempt exists", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-
-    expect(Result.isFailure(reset)).toBe(true);
-    if (!Result.isFailure(reset)) return;
-    expect(reset.failure._tag).toBe("Conflict");
-    expect(fake.listCalls()).toBe(0);
+  it("rejects a pairing replacement during joining before allocating or registering", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    fake.connection.beforeConnect = async () => {
+      await harness.pool.query("update organization_pairing set encrypted_pairing_secret = $1::jsonb where organization_id = $2", [
+        JSON.stringify(enrollmentSettings.encryption.encrypt("ppair_replacement")), organizationId,
+      ]);
+    };
+    expect(await fake.coordinator.enroll({ token: founder.token, identity: identity(1) }))
+      .toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.observations()).toBe(1);
+    expect(fake.registerCalls()).toBe(0);
+    expect(fake.closed()).toBe(2);
+    expect((await harness.pool.query("select * from enrollment_allocation")).rowCount).toBe(0);
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows)
+      .toEqual([{ founder_machine_id: founder.machineId }]);
   });
 
-  it("lets one waiting Machine claim a new generation after reset", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    const abandoned = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(abandoned)).toBe(false);
-    if (Result.isFailure(abandoned) || abandoned.success.kind !== "initialize")
-      return;
-    await coordinator.resetPendingEnrollment(organizationId);
-
-    const retriedWaiters = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
-        coordinator.enroll({
-          token: tokens[index % tokens.length] ?? "",
-          identity: identity(index + 1),
-        }),
-      ),
-    );
-    const directives = retriedWaiters.flatMap((result) =>
-      Result.isFailure(result) ? [] : [result.success],
-    );
-
-    expect(directives).toHaveLength(20);
-    const founders = directives.filter(
-      (directive) => directive.kind === "initialize",
-    );
-    expect(founders).toHaveLength(1);
-    expect(
-      directives.filter((directive) => directive.kind === "not_yet"),
-    ).toHaveLength(19);
-    const founder = founders[0];
-    if (founder?.kind !== "initialize") return;
-    expect(founder.resumed).toBe(false);
-    expect(founder.pairing.secret).not.toBe(abandoned.success.pairing.secret);
+  it("rejects a pairing replacement that races shared connection confirmation", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    fake.connection.beforeConnect = async () => {
+      await harness.pool.query("update organization_pairing set encrypted_pairing_secret = $1::jsonb where organization_id = $2", [
+        JSON.stringify(enrollmentSettings.encryption.encrypt("ppair_replacement")), organizationId,
+      ]);
+    };
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.closed()).toBe(1);
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
+    await harness.pool.query("delete from organization_pairing where organization_id = $1", [organizationId]);
+    expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
+    expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(false);
   });
 
-  it("rejects completion from an abandoned Pairing generation", async () => {
-    const fake = fakeRelay(harness.database);
-    const coordinator = fake.coordinator;
-    const abandoned = await coordinator.enroll({
-      token: tokens[0] ?? "",
-      identity: identity(0),
-    });
-    expect(Result.isFailure(abandoned)).toBe(false);
-    if (Result.isFailure(abandoned) || abandoned.success.kind !== "initialize")
-      return;
+  it("retains an unconfirmed founding claim while reset disables Cloud access", async () => {
+    const fake = fakeSession(harness.database);
+    expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
+    expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(true);
+    const attempt = await pendingFounder(fake);
+    for (const failed of [false, true]) {
+      fake.connection.error = failed ? new Error("Candidate unreachable") : null;
+      expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ failure: { _tag: "Conflict" } });
+    }
+    expect(fake.observations()).toBe(0);
+    expect((await harness.pool.query("select founder_claim_machine_id from organization_pairing")).rows).toEqual([{ founder_claim_machine_id: attempt.machineId }]);
+    expect((await harness.pool.query("select * from machine_enrollment_token")).rowCount).toBe(0);
+    expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
+    expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
+      .toMatchObject({ failure: { _tag: "Unauthorized" } });
+    expect(await fake.coordinator.publish({ ...attempt, tailcat }))
+      .toMatchObject({ failure: { _tag: "Unauthorized" } });
+    const removal = (await harness.pool.query("select removal_started_at, removal_endpoints from organization_pairing")).rows[0];
+    expect(removal.removal_started_at).toBeInstanceOf(Date);
+    expect(removal.removal_endpoints).toEqual([
+      { machineId: attempt.machineId, status: "unknown" },
+    ]);
+  });
 
-    const reset = await coordinator.resetPendingEnrollment(organizationId);
-    expect(Result.isFailure(reset)).toBe(false);
-    const replacement = await coordinator.enroll({
-      token: tokens[1] ?? "",
-      identity: identity(1),
+  it.each(["join", "completion"])("removal cancels an in-progress %s connection and retains its protected credential", async (phase) => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    if (phase === "join") await fake.coordinator.completeFounding(attempt);
+    let entered = () => {};
+    const dialing = new Promise<void>((resolve) => { entered = resolve; });
+    let aborted = false;
+    fake.connection.beforeConnect = (options) => new Promise<void>((_resolve, reject) => {
+      if (!("connections" in options) || !options.signal) throw new Error("Expected scoped SDK signal");
+      options.signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(new Error("Cloud access removed"));
+      }, { once: true });
+      entered();
     });
-    expect(Result.isFailure(replacement)).toBe(false);
-    if (Result.isFailure(replacement) || replacement.success.kind !== "initialize")
-      return;
-    expect(replacement.success.pairing.secret).not.toBe(
-      abandoned.success.pairing.secret,
-    );
+    const pending = phase === "join"
+      ? fake.coordinator.enroll({ token: attempt.token, identity: identity(1) })
+      : fake.coordinator.completeFounding(attempt);
+    await dialing;
+    await fake.coordinator.disable();
+    expect(await pending).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(aborted).toBe(true);
+    expect(fake.registerCalls()).toBe(0);
+    expect(fake.observations()).toBe(0);
+    expect(await fake.coordinator.open()).toEqual({ status: "no_connection" });
+    expect((await harness.pool.query("select * from organization_machine")).rowCount).toBe(0);
+    expect((await harness.pool.query("select * from enrollment_allocation")).rowCount).toBe(0);
+    const row = (await harness.pool.query("select founder_claim_machine_id, founder_machine_id, removal_endpoints from organization_pairing")).rows[0];
+    expect(row.founder_claim_machine_id).toBe(attempt.machineId);
+    expect(row.founder_machine_id).toBe(phase === "join" ? attempt.machineId : null);
+    expect(enrollmentSettings.encryption.decrypt(row.removal_endpoints[0].encryptedExpected)).toBe(tailcat);
+  });
 
-    fake.held.push({ machineId: heldMachineId });
-    const stale = await coordinator.completeFounding({
-      token: tokens[0] ?? "",
-      machineId: heldMachineId,
-      pairingCredential: abandoned.success.pairing.secret,
-    });
-    expect(Result.isFailure(stale)).toBe(true);
-    if (!Result.isFailure(stale)) return;
-    expect(stale.failure._tag).toBe("Conflict");
+  it("opens the actual Organization runtime from one protected candidate without connecting List", async () => {
+    const fake = fakeSession(harness.database);
+    expect(await fake.coordinator.open()).toEqual({ status: "no_connection" });
+    const attempt = await pendingFounder(fake);
+    expect(await fake.coordinator.open()).toEqual({ status: "unreachable", error: null });
+    await fake.coordinator.publish({ ...attempt, tailcat });
+    expect(await fake.coordinator.open()).toMatchObject({ status: "connected" });
+    expect(fake.connected).toEqual([expect.objectContaining({ connections: [{ tailcat, machine_id: attempt.machineId }] })]);
+    expect(fake.closed()).toBe(1);
+    fake.connection.error = new Error("candidate unreachable");
+    expect(await fake.coordinator.open()).toMatchObject({ status: "unreachable", error: { _tag: "PloyzProviderError" } });
+    expect(fake.observations()).toBe(0);
+    expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
   });
 
   it("keeps pairing decrypt failures in the typed Effect channel", async () => {
     const stale = makeSecretEncryption("stale-app-encryption-secret-1234567890");
     await harness.pool.query(
       `insert into organization_pairing (
-        organization_id, encrypted_pairing_secret, founder_public_key
-      ) values ($1, $2::jsonb, $3)`,
+        organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id
+      ) values ($1, $2::jsonb, $3, $4)`,
       [
         organizationId,
         JSON.stringify(stale.encrypt("ppair_stale")),
         identity(0).publicKey,
+        identity(0).machineId,
       ],
     );
 
-    const fake = fakeRelay(harness.database);
+    const fake = fakeSession(harness.database);
     const enrolled = await fake.coordinator.enroll({
       token: tokens[0] ?? "",
       identity: identity(0),
     });
     expect(Result.isFailure(enrolled)).toBe(true);
     if (!Result.isFailure(enrolled)) return;
-    expect(enrolled.failure._tag).toBe("PairingSecretDecryptFailure");
+    expect(enrolled.failure).toMatchObject({ _tag: "PairingSecretDecryptFailure" });
 
-    const revoked = await fake.coordinator.tryRevokePairing(organizationId);
-    expect(revoked).toBe(false);
-    expect(fake.revokedPairings).toEqual([]);
+    await expect(fake.coordinator.tryRevokePairing(organizationId)).rejects.toMatchObject({ _tag: "Conflict" });
+    expect((await harness.pool.query("select removal_started_at from organization_pairing")).rows)
+      .toEqual([{ removal_started_at: null }]);
   });
+
+  it("requires a valid Machine owner for pending and ready claims", async () => {
+    for (const completedMachineId of [null, identity(0).machineId]) {
+      await expect(harness.pool.query(`
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id)
+        values ($1, '{}'::jsonb, 'founder', $2)
+      `, [organizationId, completedMachineId])).rejects.toMatchObject({ code: "23502" });
+      await expect(harness.pool.query(`
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id)
+        values ($1, '{}'::jsonb, 'founder', $2, 'not-a-machine')
+      `, [organizationId, completedMachineId])).rejects.toMatchObject({ code: "23514" });
+    }
+  });
+
 
   it("rejects invalid pending and ready Organization Pairing shapes", async () => {
     await expect(
       harness.pool.query(`
         insert into organization_pairing (
-          organization_id, encrypted_pairing_secret
-        ) values ('${organizationId}', '{}'::jsonb)
+          organization_id, encrypted_pairing_secret, founder_claim_machine_id
+        ) values ('${organizationId}', '{}'::jsonb, '${identity(0).machineId}')
       `),
     ).rejects.toMatchObject({ code: "23514" });
 
     await expect(
       harness.pool.query(`
         insert into organization_pairing (
-          organization_id, encrypted_pairing_secret, founder_machine_id
+          organization_id, encrypted_pairing_secret, founder_machine_id, founder_claim_machine_id
         ) values (
           '${organizationId}', '{}'::jsonb,
-          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
         )
       `),
     ).resolves.toBeDefined();
@@ -909,9 +808,9 @@ describe("organization enrollment coordinator", () => {
       harness.pool.query(`
         insert into organization_pairing (
           organization_id, encrypted_pairing_secret,
-          founder_public_key, founder_machine_id
+          founder_public_key, founder_machine_id, founder_claim_machine_id
         ) values (
-          '${organizationId}', '{}'::jsonb, 'founder', 'not-a-machine'
+          '${organizationId}', '{}'::jsonb, 'founder', 'not-a-machine', '${identity(0).machineId}'
         )
       `),
     ).rejects.toMatchObject({ code: "23514" });
