@@ -203,17 +203,17 @@ importers:
         version: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@26.0.1)(jsdom@29.0.2(@noble/hashes@2.0.1))(msw@2.12.14(@types/node@26.0.1)(typescript@7.0.1-rc))(vite@8.0.9(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
     optionalDependencies:
       '@ployz/sdk-darwin-arm64':
-        specifier: 0.1.2-beta.35
-        version: 0.1.2-beta.35
+        specifier: 0.1.2-beta.36
+        version: 0.1.2-beta.36
       '@ployz/sdk-darwin-x64':
-        specifier: 0.1.2-beta.35
-        version: 0.1.2-beta.35
+        specifier: 0.1.2-beta.36
+        version: 0.1.2-beta.36
       '@ployz/sdk-linux-arm64':
-        specifier: 0.1.2-beta.35
-        version: 0.1.2-beta.35
+        specifier: 0.1.2-beta.36
+        version: 0.1.2-beta.36
       '@ployz/sdk-linux-x64':
-        specifier: 0.1.2-beta.35
-        version: 0.1.2-beta.35
+        specifier: 0.1.2-beta.36
+        version: 0.1.2-beta.36
 
 packages:
 
@@ -2109,26 +2109,26 @@ packages:
     resolution: {integrity: sha512-Ypt8KeRYw+4jUtlPirfcHWMrn5ms12VrrFPD+Mds477/7tJxG1Kcz2Yrg2nVcTQEUx/GdlhS+BUg1kmxNm04Ug==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
-  '@ployz/sdk-darwin-arm64@0.1.2-beta.35':
-    resolution: {integrity: sha512-lUJSrxAMbXWoZfo63krDsfb4iDTxVBk6Gs8GfhlKwD6Gin7k0HsDvYbDhdXELWI18w6yHdFpUU6XTpWusXGn0A==}
+  '@ployz/sdk-darwin-arm64@0.1.2-beta.36':
+    resolution: {integrity: sha512-k4JO2AeRl8TwtqLI5R9rRCqs/LII0ZPTlFneXWDHWc74I0d8r+bggm0/a8abXa6yT9eW3PgafV7g1qlANS1/iA==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [darwin]
 
-  '@ployz/sdk-darwin-x64@0.1.2-beta.35':
-    resolution: {integrity: sha512-bEL1rfPztvo/4FHfe5xy6rAHvj0JrcZTvIZJTWOC1UGpkSe7MKkvA23MbOd1wu9PxtrELgnXDcNej96ILNzgeg==}
+  '@ployz/sdk-darwin-x64@0.1.2-beta.36':
+    resolution: {integrity: sha512-c/m1JmazG9uaJgL0LHQ+QuAj4mNBcZwORn7dPlRl/75PzZyNPFxBR3x21WNT8TSuO1HmO9CaSpFhuFVsFo8jxA==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [darwin]
 
-  '@ployz/sdk-linux-arm64@0.1.2-beta.35':
-    resolution: {integrity: sha512-+x6S06UCv4BOH4gp0BYcwWFdixj5bxotq5tjBHutZQP1ldoptZbgZOOALcakalOQSZ4mdvOZWuP0eoJlHgPRSQ==}
+  '@ployz/sdk-linux-arm64@0.1.2-beta.36':
+    resolution: {integrity: sha512-JSXZkvBFpsNbDovBVO+rT1MQEuVi9xNjEHicefZ9ERujMcyGDaqM3G6Qodwm3/cxBo0PvYOLgl0BZ4Tmz0PF3g==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [linux]
 
-  '@ployz/sdk-linux-x64@0.1.2-beta.35':
-    resolution: {integrity: sha512-Fc8+8MxNMNHXugADLRhmeQqgwhJYBJrtwldGSpbvsT/F/BSID3z0ACLmEOtAhxix2IQdpAZz/sTy2WBaw+NpAg==}
+  '@ployz/sdk-linux-x64@0.1.2-beta.36':
+    resolution: {integrity: sha512-Pkn34U8nk3NRzz1B9sdrqg+liAVWs+Oh0uZ4GfkmxWZACZh4aODMhmoDKD/qM0jvV20Rki4bnIuMmcHAFzr3hw==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
@@ -8708,16 +8708,16 @@ snapshots:
 
   '@oxlint/plugins@1.78.0': {}
 
-  '@ployz/sdk-darwin-arm64@0.1.2-beta.35':
+  '@ployz/sdk-darwin-arm64@0.1.2-beta.36':
     optional: true
 
-  '@ployz/sdk-darwin-x64@0.1.2-beta.35':
+  '@ployz/sdk-darwin-x64@0.1.2-beta.36':
     optional: true
 
-  '@ployz/sdk-linux-arm64@0.1.2-beta.35':
+  '@ployz/sdk-linux-arm64@0.1.2-beta.36':
     optional: true
 
-  '@ployz/sdk-linux-x64@0.1.2-beta.35':
+  '@ployz/sdk-linux-x64@0.1.2-beta.36':
     optional: true
 
   '@polar-sh/better-auth@1.8.4(99b2e7f0411d51510a6643c2380a4f96)':
