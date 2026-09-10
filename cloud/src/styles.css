@@ -1335,3 +1335,155 @@
     color: var(--color-accent-ink);
   }
 }
+
+/* The public pirate world is deliberately separate from the operations UI. */
+.pirate-home {
+  --pirate-paper: #f8f5eb;
+  --pirate-ink: #202b28;
+  --pirate-coral: #f37756;
+  --pirate-rule: #cbcdbf;
+  background: var(--pirate-paper);
+  color: var(--pirate-ink);
+  font-family: 'Geist Variable', sans-serif;
+  overflow: clip;
+}
+.pirate-home * { box-sizing: border-box; }
+.pirate-home a { text-decoration: none; }
+.pirate-home button, .pirate-home a { -webkit-tap-highlight-color: transparent; }
+.pirate-home :is(a, button):focus-visible { outline: 3px solid #aa3d25; outline-offset: 5px; }
+.pirate-home button { cursor: pointer; }
+.pirate-frame { width: min(1280px, calc(100% - 96px)); margin-inline: auto; }
+.pirate-nav { min-height: 100px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--pirate-rule); gap: 28px; }
+.pirate-wordmark { display: inline-flex; align-items: center; gap: 9px; font-weight: 850; font-size: 34px; letter-spacing: -2px; }
+.pirate-wordmark svg { width: 31px; height: 31px; stroke-width: 2.6; }
+.pirate-wordmark span { font-size: 11px; align-self: flex-start; margin-top: 10px; letter-spacing: 0; }
+.pirate-nav-links { display: flex; align-items: center; gap: 32px; font-size: 13px; font-weight: 550; }
+.pirate-home nav a:hover { text-decoration: underline; text-underline-offset: 5px; }
+.pirate-login { display: flex; align-items: center; gap: 20px; font-size: 13px; font-weight: 650; border: 1px solid var(--pirate-ink); padding: 12px 17px; }
+.pirate-login svg { width: 16px; height: 16px; }
+.pirate-hero { padding-top: 54px; padding-bottom: 44px; }
+.pirate-eyebrow, .pirate-caption, .pirate-world-bar, .pirate-map-coordinate, .pirate-map-hint, .pirate-world-caption, .pirate-quest-top, .pirate-quest-bottom { font-family: 'Geist Mono Variable', monospace; font-size: 10px; font-weight: 500; letter-spacing: 1px; }
+.pirate-eyebrow { display: flex; align-items: center; gap: 9px; }
+.pirate-eyebrow > span { color: #b74c32; font-size: 22px; }
+.pirate-hero h1 { position: relative; width: fit-content; font-size: clamp(78px, 8.3vw, 122px); line-height: .93; letter-spacing: -.075em; font-weight: 850; margin: 22px 0 30px; }
+.pirate-star { display: inline-block; color: var(--pirate-coral); font-size: .83em; margin-left: 34px; vertical-align: top; transform: rotate(12deg); }
+.pirate-hero-bottom { display: flex; align-items: end; justify-content: space-between; gap: 30px; }
+.pirate-hero-bottom p { font-size: 17px; line-height: 1.6; }
+.pirate-hero-actions { display: flex; flex-direction: column; gap: 14px; }
+.pirate-button { display: inline-flex; align-items: center; justify-content: space-between; gap: 25px; padding: 17px 22px; min-height: 54px; background: var(--pirate-ink); color: var(--pirate-paper); border: 1px solid var(--pirate-ink); box-shadow: 3px 3px 0 var(--pirate-coral); font-size: 14px; font-weight: 600; transition: transform 120ms, box-shadow 120ms; }
+.pirate-button svg { width: 18px; height: 18px; flex-shrink: 0; }
+.pirate-button:hover { transform: translate(-2px, -2px); box-shadow: 5px 5px 0 var(--pirate-coral); }
+.pirate-button:active { transform: translate(2px, 2px); box-shadow: none; }
+.pirate-world { scroll-margin-top: 20px; }
+.pirate-world-bar { min-height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: var(--pirate-ink); color: var(--pirate-paper); }
+.pirate-world-bar > span { display: flex; align-items: center; gap: 12px; }
+.pirate-world-bar svg { width: 16px; height: 16px; }
+.pirate-demo-label { color: #b5c6bb; border-left: 1px solid #627068; padding-left: 12px; font-size: 9px; }
+.pirate-game { display: grid; grid-template-columns: minmax(0, 1fr) 330px; border: 1px solid var(--pirate-ink); border-top: none; }
+.pirate-map { position: relative; min-height: 490px; background: #a8d9ce; isolation: isolate; }
+.pirate-map > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; z-index: -1; }
+.pirate-map-coordinate { position: absolute; top: 20px; left: 20px; line-height: 1.7; color: #264e45; }
+.pirate-map-pin { position: absolute; display: flex; align-items: center; gap: 8px; border: 1px solid var(--pirate-ink); padding: 5px 10px 5px 5px; background: var(--pirate-paper); box-shadow: 3px 3px 0 #203b3355; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.pirate-map-pin[aria-pressed='true'] { background: var(--pirate-coral); transform: translateY(-4px); }
+.pirate-map-pin:hover { transform: translateY(-4px); }
+.pirate-map-pin[data-island='0'] { top: 51%; left: 49%; }
+.pirate-map-pin[data-island='1'] { top: 24%; left: 12%; }
+.pirate-map-pin[data-island='2'] { top: 27%; right: 6%; }
+.pirate-pin-number { display: grid; place-items: center; width: 27px; height: 27px; font-family: monospace; background: var(--pirate-ink); color: white; }
+.pirate-pin-number svg { width: 16px; height: 16px; }
+.pirate-map-hint { position: absolute; left: 20px; bottom: 20px; font-size: 9px; color: #264e45; }
+.pirate-compass { position: absolute; bottom: 15px; right: 20px; text-align: center; font-family: Georgia, serif; font-size: 33px; line-height: .9; color: #264e45; }
+.pirate-compass::first-line { font-size: 11px; line-height: 2; }
+.pirate-quest { padding: 23px; border-left: 1px solid var(--pirate-ink); display: flex; flex-direction: column; background: #edeedf; }
+.pirate-quest-top { display: flex; justify-content: space-between; gap: 10px; }
+.pirate-quest progress { appearance: none; width: 100%; height: 5px; margin: 13px 0 24px; border: 0; background: #d7dacb; }
+.pirate-quest progress::-webkit-progress-bar { background: #d7dacb; }
+.pirate-quest progress::-webkit-progress-value { background: #b94c32; }
+.pirate-quest progress::-moz-progress-bar { background: #b94c32; }
+.pirate-quest-copy { flex: 1; }
+.pirate-quest-icon { width: 36px; height: 36px; stroke-width: 1.3; margin-bottom: 18px; }
+.pirate-quest h2 { font-weight: 750; font-size: 30px; letter-spacing: -1.3px; line-height: 1.1; margin: 12px 0 15px; }
+.pirate-quest-copy > p:not(.pirate-caption) { font-size: 13px; line-height: 1.65; color: #4b574c; }
+.pirate-quest-copy > .pirate-quest-detail { margin-top: 14px; padding-left: 10px; border-left: 2px solid #aa3d25; font-size: 11px; }
+.pirate-quest > .pirate-button { margin-top: 24px; padding: 13px; font-size: 12px; min-height: 46px; }
+.pirate-quest-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 15px; letter-spacing: 0; font-size: 9px; }
+.pirate-quest-bottom button { display: grid; place-items: center; min-width: 28px; min-height: 28px; }
+.pirate-quest-bottom svg { width: 14px; height: 14px; }
+.pirate-world-caption { display: flex; justify-content: space-between; gap: 20px; padding-block: 15px; font-size: 9px; }
+.pirate-world-caption span:last-child { font-family: 'Geist Variable', sans-serif; letter-spacing: 0; font-size: 12px; }
+.pirate-manifesto { display: flex; align-items: center; justify-content: space-evenly; gap: 25px; padding: 23px 30px; margin-top: 58px; background: var(--pirate-coral); border-block: 1px solid var(--pirate-ink); font-size: 16px; font-weight: 800; letter-spacing: -0.4px; }
+.pirate-manifesto span[aria-hidden] { font-size: 30px; line-height: 1; }
+.pirate-equipment { padding-block: 90px; scroll-margin-top: 25px; }
+.pirate-section-heading { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: end; }
+.pirate-section-heading > .pirate-eyebrow { grid-column: 1 / -1; }
+.pirate-section-heading h2 { font-size: clamp(42px, 5vw, 64px); font-weight: 750; letter-spacing: -.065em; line-height: 1.05; }
+.pirate-section-heading > p:last-child { font-size: 15px; line-height: 1.65; justify-self: end; }
+.pirate-equipment-list { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 45px; border-block: 1px solid var(--pirate-rule); }
+.pirate-equipment-item { padding: 30px; border-right: 1px solid var(--pirate-rule); }
+.pirate-equipment-item:first-child { padding-left: 0; }
+.pirate-equipment-item:last-child { border: 0; padding-right: 0; }
+.pirate-item-icon { width: 58px; height: 58px; display: grid; place-items: center; background: #e4e9d9; margin-bottom: 24px; border: 1px solid #c0c9b7; box-shadow: 3px 3px 0 #c0c9b7; }
+.pirate-item-icon svg { width: 28px; height: 28px; stroke-width: 1.5; }
+.pirate-equipment-item h3 { font-size: 22px; letter-spacing: -.8px; font-weight: 700; margin: 10px 0; }
+.pirate-equipment-item p { font-size: 14px; line-height: 1.7; color: #596055; }
+.pirate-end { background: #dce7d9; border-block: 1px solid var(--pirate-rule); }
+.pirate-end-inner { display: flex; flex-direction: column; align-items: center; padding-block: 64px; text-align: center; }
+.pirate-end-inner > svg { width: 48px; height: 48px; margin-bottom: 23px; }
+.pirate-end h2 { font-size: clamp(58px, 7vw, 88px); font-weight: 800; line-height: 1; letter-spacing: -.07em; margin: 23px 0 30px; }
+.pirate-source { display: flex; align-items: center; gap: 8px; font-size: 11px; margin-top: 20px; }
+.pirate-source svg { width: 15px; height: 15px; }
+.pirate-footer { padding-block: 32px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.pirate-footer > span, .pirate-footer nav { font-size: 12px; }
+.pirate-footer nav { display: flex; gap: 24px; }
+.pirate-skip { position: fixed; top: -100px; left: 12px; z-index: 50; padding: 12px; background: var(--pirate-paper); }
+.pirate-skip:focus { top: 12px; }
+@media (prefers-reduced-motion: reduce) { .pirate-home * { transition: none !important; scroll-behavior: auto !important; } }
+@media (max-width: 1000px) {
+  .pirate-frame { width: calc(100% - 48px); }
+  .pirate-game { grid-template-columns: minmax(0, 1fr) 300px; }
+  .pirate-map-pin[data-island='0'] { left: 36%; }
+  .pirate-map-pin[data-island='2'] { right: 4%; top: 38%; }
+  .pirate-hero-actions .pirate-caption { max-width: 230px; line-height: 1.6; }
+  .pirate-equipment-item { padding-inline: 20px; }
+}
+@media (max-width: 700px) {
+  .pirate-frame { width: calc(100% - 36px); }
+  .pirate-nav { min-height: 78px; }
+  .pirate-nav-links { display: none; }
+  .pirate-login { gap: 10px; padding: 10px 12px; font-size: 12px; }
+  .pirate-wordmark { font-size: 29px; }
+  .pirate-hero { padding-top: 34px; padding-bottom: 32px; }
+  .pirate-eyebrow { font-size: 8px; letter-spacing: .6px; }
+  .pirate-hero h1 { font-size: clamp(65px, 14vw, 94px); }
+  .pirate-star { margin-left: 12px; font-size: .65em; }
+  .pirate-hero-bottom { align-items: start; flex-direction: column; gap: 24px; }
+  .pirate-hero-bottom p { font-size: 15px; }
+  .pirate-hero-actions .pirate-caption { max-width: none; font-size: 8px; }
+  .pirate-game { grid-template-columns: 1fr; }
+  .pirate-map { min-height: 350px; }
+  .pirate-map-pin[data-island='0'] { left: 43%; top: 56%; }
+  .pirate-map-pin[data-island='1'] { left: 6%; top: 28%; }
+  .pirate-map-pin[data-island='2'] { right: 4%; top: 24%; }
+  .pirate-map-pin { font-size: 10px; gap: 6px; padding-right: 7px; }
+  .pirate-pin-number { width: 23px; height: 23px; }
+  .pirate-world-bar { font-size: 9px; padding-inline: 12px; }
+  .pirate-world-bar > span { gap: 7px; }
+  .pirate-demo-label { display: none; }
+  .pirate-quest { border-left: 0; border-top: 1px solid var(--pirate-ink); }
+  .pirate-quest h2 { font-size: 32px; }
+  .pirate-quest-copy > p:not(.pirate-caption) { font-size: 14px; }
+  .pirate-world-caption { flex-direction: column; gap: 5px; }
+  .pirate-manifesto { gap: 12px; padding: 18px 12px; margin-top: 25px; font-size: 10px; }
+  .pirate-manifesto span[aria-hidden] { font-size: 18px; }
+  .pirate-manifesto span:last-child { display: none; }
+  .pirate-equipment { padding-block: 50px; }
+  .pirate-section-heading { grid-template-columns: 1fr; }
+  .pirate-section-heading > p:last-child { justify-self: start; font-size: 14px; }
+  .pirate-equipment-list { grid-template-columns: 1fr; margin-top: 28px; }
+  .pirate-equipment-item, .pirate-equipment-item:first-child, .pirate-equipment-item:last-child { padding: 25px 0; border-right: 0; }
+  .pirate-equipment-item + .pirate-equipment-item { border-top: 1px solid var(--pirate-rule); }
+  .pirate-end-inner { padding-block: 46px; }
+  .pirate-footer { flex-wrap: wrap; }
+  .pirate-footer > span { font-size: 10px; }
+  .pirate-footer nav { width: 100%; justify-content: space-between; }
+}

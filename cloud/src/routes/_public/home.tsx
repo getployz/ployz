@@ -5,9 +5,9 @@ import { HomePage } from '#/routes/_public/-components/home/HomePage'
 export const Route = createFileRoute('/_public/home')({
   head: () => ({
     meta: buildMarketingMeta({
-      title: 'Ployz — The platform experience, on your servers.',
+      title: 'Ployz — Your ship. Your rules.',
       description:
-        'Connect your repo and your servers. Ployz gives your team a clear path from preview to production without taking over your infrastructure.',
+        'Bring your stack and your sense of adventure. Open-source deployment on servers you control. Your ship. Your rules.',
     }),
   }),
   component: HomePage,
