@@ -16,15 +16,15 @@ fn input(
     working: Value,
     saved: Value,
     applied: Value,
-    runtime: Value,
+    submitted: Option<Value>,
 ) -> Value {
     let node = json!({"type":node_type,"id":"stable-id"});
     json!({
         "working":{"token":"working","nodes":[{"node":node,"config":working}]},
-        "saved":{"kind":"saved_revision","savedStateSnapshotId":"saved-id","token":"saved","nodes":[{"node":node,"config":saved}]},
+        "saved":{"token":"saved","nodes":[{"node":node,"config":saved}]},
         "applied":{"token":"applied","nodes":[{"node":node,"config":applied}]},
         "nodeIntroductions":{"token":"introduced","nodes":[{"node":node,"config":introduced}]},
-        "runtimeObserved":{"token":"observed","nodes":[{"node":node,"config":runtime}]}
+        "submitted":submitted.map(|config| json!({"token":"submitted","nodes":[{"node":node,"config":config}]}))
     })
 }
 
@@ -77,39 +77,22 @@ fn variable_group_attachment_changes_have_one_restorable_authored_owner() {
             baseline_nodes[0]["config"]["env"],
             current_nodes[0]["config"]["env"]
         );
-        for slice in ["unsaved", "pending"] {
-            let saved = if slice == "unsaved" {
-                &baseline_nodes
-            } else {
-                &current_nodes
-            };
+        for saved in [&baseline_nodes, &current_nodes] {
             let review = project(json!({
                 "working":{"token":"working","nodes":current_nodes},
-                "saved":{"kind":"saved_revision","savedStateSnapshotId":id(5),"token":"saved","nodes":saved},
+                "saved":{"token":"saved","nodes":saved},
                 "applied":{"token":"applied","nodes":baseline_nodes},
-                "nodeIntroductions":{"token":"none","nodes":[]},"runtimeObserved":null
+                "nodeIntroductions":{"token":"none","nodes":[]},"submitted":null
             }));
-            assert_eq!(
-                review[slice]["totalCount"], 1,
-                "{slice}: {before} -> {after}"
-            );
-            let row = &review[slice]["groups"][0]["settings"][0];
-            assert_eq!(
-                row["owner"],
-                json!({"node":{"type":"service","id":id(1)},"setting":"variableGroupAttachments"})
-            );
-            assert_eq!(
-                row["discardPlan"]["config"]["variableGroupAttachments"],
-                before
-            );
-            assert_eq!(
-                row["discardPlan"]["target"],
-                if slice == "unsaved" {
-                    "working"
-                } else {
-                    "saved"
-                }
-            );
+            assert_eq!(review["totalCount"], 1, "{before} -> {after}");
+            assert_eq!(review["canSave"], saved != &current_nodes);
+            let group = &review["groups"][0];
+            assert_eq!(group["node"], json!({"type":"service","id":id(1)}));
+            let row = &group["settings"][0];
+            assert_eq!(row["path"], "variableGroupAttachments");
+            assert_eq!(row["before"], before);
+            assert_eq!(row["after"], after);
+            assert_eq!(row["canRestore"], true);
         }
         let restored = config_request(json!({"operation":"restore_environment",
             "current":current,"baseline":baseline,"node_type":"service","node_id":id(1),
@@ -121,7 +104,7 @@ fn variable_group_attachment_changes_have_one_restorable_authored_owner() {
 }
 
 #[test]
-fn presence_and_setting_ownership_preserve_each_comparison_role() {
+fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
     for (node_type, original, changed, setting, resettable) in [
         ("service", service(1), service(2), "replicas", true),
         (
@@ -139,53 +122,34 @@ fn presence_and_setting_ownership_preserve_each_comparison_role() {
             false,
         ),
     ] {
-        for slice in ["unsaved", "pending", "drift"] {
+        for submitted in [false, true] {
             for (before, after, lifecycle) in [
-                (false, false, None),
-                (false, true, Some("create")),
-                (true, false, Some("delete")),
-                (true, true, None),
+                (Value::Null, Value::Null, None),
+                (Value::Null, original.clone(), Some("create")),
+                (original.clone(), Value::Null, Some("delete")),
+                (original.clone(), original.clone(), None),
+                (original.clone(), changed.clone(), Some("update")),
             ] {
-                let before = if before {
-                    original.clone()
-                } else {
-                    Value::Null
-                };
-                let after = if after { original.clone() } else { Value::Null };
-                let value = match slice {
-                    "unsaved" => input(
-                        node_type,
-                        &original,
-                        after,
-                        before,
-                        Value::Null,
-                        Value::Null,
-                    ),
-                    "pending" => input(
-                        node_type,
-                        &original,
-                        after.clone(),
-                        after,
-                        before.clone(),
-                        before,
-                    ),
-                    _ => input(
-                        node_type,
-                        &original,
-                        before.clone(),
-                        before.clone(),
-                        before,
-                        after,
-                    ),
-                };
-                let result = project(value);
-                let groups = result[slice]["groups"].as_array().unwrap();
+                let result = project(input(
+                    node_type,
+                    &original,
+                    after.clone(),
+                    after.clone(),
+                    if submitted { after } else { before.clone() },
+                    submitted.then_some(before),
+                ));
+                let groups = result["groups"].as_array().unwrap();
                 if let Some(lifecycle) = lifecycle {
-                    assert_eq!(groups.len(), 1, "{node_type} {slice}");
-                    assert_eq!(groups[0]["lifecycle"]["kind"], lifecycle);
-                    assert_eq!(!groups[0]["discardPlan"].is_null(), slice != "drift");
+                    assert_eq!(groups.len(), 1, "{node_type}, submitted={submitted}");
+                    assert_eq!(groups[0]["lifecycle"], lifecycle);
+                    assert_eq!(result["totalCount"], 1);
+                    if lifecycle == "update" {
+                        assert_eq!(groups[0]["settings"][0]["path"], setting);
+                        assert_eq!(groups[0]["settings"][0]["canRestore"], resettable);
+                    }
                 } else {
-                    assert!(groups.is_empty(), "{node_type} {slice}");
+                    assert!(groups.is_empty(), "{node_type}, submitted={submitted}");
+                    assert_eq!(result["totalCount"], 0);
                 }
             }
         }
@@ -195,48 +159,28 @@ fn presence_and_setting_ownership_preserve_each_comparison_role() {
             changed.clone(),
             Value::Null,
             Value::Null,
-            Value::Null,
+            None,
         ));
-        let row = &result["unsaved"]["groups"][0]["settings"][0];
-        assert_eq!(row["owner"]["setting"], setting);
-        assert_eq!(row["baselineSource"]["role"], "node_introduction");
-        assert_eq!(!row["discardPlan"].is_null(), resettable);
+        let row = &result["groups"][0]["settings"][0];
+        assert_eq!(result["groups"][0]["lifecycle"], "create");
+        assert_eq!(result["totalCount"], 2);
+        assert_eq!(row["path"], setting);
+        assert_eq!(row["canRestore"], resettable);
         let result = project(input(
             node_type,
             &original,
             changed.clone(),
-            Value::Null,
-            original.clone(),
-            original.clone(),
-        ));
-        assert!(
-            result["unsaved"]["groups"][0]["settings"]
-                .as_array()
-                .unwrap()
-                .is_empty(),
-            "Applied is not an unsaved baseline"
-        );
-        let result = project(input(
-            node_type,
-            &original,
             changed.clone(),
-            changed,
             original.clone(),
-            original.clone(),
+            Some(changed),
         ));
-        assert_eq!(
-            result["pending"]["groups"][0]["settings"][0]["baselineSource"]["role"],
-            "applied"
-        );
-        assert_eq!(
-            result["pending"]["groups"][0]["settings"][0]["id"],
-            row["id"]
-        );
+        assert_eq!(result["groups"], json!([]));
+        assert_eq!(result["totalCount"], 0);
     }
 }
 
 #[test]
-fn derived_secrets_unknown_runtime_and_partial_runtime_evidence_stay_honest() {
+fn derived_variables_are_not_counted_and_secret_values_stay_redacted() {
     let mut current = service(1);
     current["env"] = json!({"TOKEN":{"kind":"secret","fingerprint":"private-fingerprint","source":{"kind":"variable_group","resourceId":"group","resourceName":"Shared","variableGroupId":"group-id","key":"TOKEN"}}});
     let mut candidate = input(
@@ -245,34 +189,16 @@ fn derived_secrets_unknown_runtime_and_partial_runtime_evidence_stay_honest() {
         current,
         service(1),
         service(1),
-        service(1),
+        None,
     );
-    candidate["runtimeObserved"] = Value::Null;
     let result = project(candidate.clone());
-    assert_eq!(result["unsaved"]["totalCount"], 0);
-    assert_eq!(result["drift"]["totalCount"], 0);
-    assert_eq!(
-        result["drift"]["provenance"]["target"]["token"],
-        "runtime:unavailable"
-    );
+    assert_eq!(result["totalCount"], 0);
     assert!(!result.to_string().contains("private-fingerprint"));
-    candidate["runtimeObserved"] = candidate["applied"].clone();
-    candidate["runtimeObservations"] = json!({"token":"fresh-machine","settings":[{"node":{"type":"service","id":"stable-id"},"setting":"image.observed","label":"Image","appliedValue":"a","observedValue":"b"}],"presence":[{"node":{"type":"service","id":"other-id"},"applied":"present","observed":"absent"}]});
+    candidate["working"]["nodes"][0]["config"]["env"]["TOKEN"] =
+        json!({"kind":"secret","fingerprint":"private-fingerprint"});
     let result = project(candidate.clone());
-    assert_eq!(result["drift"]["totalCount"], 2);
-    assert_eq!(
-        result["drift"]["discardPlans"],
-        json!({"nodes":[],"settings":[]})
-    );
+    assert_eq!(result["totalCount"], 1);
+    assert_eq!(result["groups"][0]["settings"][0]["path"], "env.TOKEN");
+    assert!(!result.to_string().contains("private-fingerprint"));
     assert_eq!(result, project(candidate));
-}
-
-#[test]
-fn review_setting_kinds_reject_unknown_wire_values() {
-    use ployz_core::config::ReviewSettingKind;
-
-    for kind in ["add", "update", "remove", "drift"] {
-        assert!(serde_json::from_value::<ReviewSettingKind>(json!(kind)).is_ok());
-    }
-    assert!(serde_json::from_value::<ReviewSettingKind>(json!("unknown")).is_err());
 }
