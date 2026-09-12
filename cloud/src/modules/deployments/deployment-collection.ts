@@ -32,7 +32,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
 
   const rows = createLiveQueryCollection({
     id: `collections:${organizationSlug}:deployment-relationships`,
-    gcTime: 1,
     query: (q) => q
       .from({ deployment: deployments })
       .innerJoin({ environment: environments }, ({ deployment, environment }) =>
@@ -66,10 +65,11 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
     plainRowCollection(
       createLiveQueryCollection({
         id: `collections:${organizationSlug}:deployment-summaries`,
-    gcTime: 1,
     query: (q) =>
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
         const deployment = deploymentRelationships.deployment;
+        const snapshots = deploymentRelationships.nodeSnapshots ?? [];
+        const volumeAttempts = deploymentRelationships.volumeRemoveAttempts ?? [];
         const decoded = decodeStrict(
           environmentDeploymentSummarySchema,
           {
@@ -80,22 +80,24 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             inngestRunId: deployment.inngestRunId,
             coreDeployId: deployment.coreDeployId,
             deployPreview: deployment.deployPreview,
+            runtimeProgress: deployment.runtimeProgress,
             canRetry:
               deployment.status === "failed" &&
-              deploymentRelationships.volumeRemoveAttempts.length === 0,
+              volumeAttempts.length === 0,
             failureCode: deployment.failureCode,
             dispatchRequestedAt: deployment.dispatchRequestedAt,
             startedAt: deployment.startedAt,
             finishedAt: deployment.finishedAt,
+            cancellationRequestedAt: deployment.cancellationRequestedAt,
             createdAt: deployment.createdAt,
             updatedAt: deployment.updatedAt,
-            serviceCount: deploymentRelationships.nodeSnapshots.filter(
+            serviceCount: snapshots.filter(
               (snapshot) => snapshot.nodeType === "service",
             ).length,
             projectSlug: deploymentRelationships.projectSlug,
             environmentSlug: deploymentRelationships.environmentSlug,
             volumeRemoveAttempts:
-              deploymentRelationships.volumeRemoveAttempts.map((attempt) => ({
+              volumeAttempts.map((attempt) => ({
                 id: attempt.id,
                 environmentDeploymentId: attempt.environmentDeploymentId,
                 environmentResourceId: attempt.environmentResourceId,

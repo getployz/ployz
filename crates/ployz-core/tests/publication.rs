@@ -48,11 +48,6 @@ fn publication_review_binds_exact_basis_removals_and_visible_revision() {
     assert_eq!(before, canonical(state.clone()));
     state["revisionMarkers"] = json!(["revision-2"]);
     assert_ne!(before, canonical(state));
-    let basis = json!({"kind":"saved_revision","savedStateSnapshotId":"00000000-0000-4000-8000-000000000001"});
-    let operation =
-        json!({"kind":"node","nodeType":"volume","nodeId":"00000000-0000-4000-8000-000000000002"});
-    assert!(config_request(json!({"operation":"parse_saved_discard","value":{"kind":"discard","basis":basis,"operations":[operation.clone()]}})).is_ok());
-    assert!(config_request(json!({"operation":"parse_saved_discard","value":{"kind":"discard","basis":basis,"operations":[operation.clone(),operation]}})).is_err());
     let candidate = json!({"intent":{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]},"volumeDeletionAuthorizations":[]});
     assert_eq!(config_request(json!({"operation":"reuse_publication","policy":"reuse_latest_if_equivalent","current":candidate,"latest":candidate})).unwrap(), true);
     assert_eq!(config_request(json!({"operation":"reuse_publication","policy":"always_create","current":candidate,"latest":candidate})).unwrap(), false);

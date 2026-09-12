@@ -1,0 +1,1 @@
+ALTER TABLE "environment_deployment" ADD COLUMN "runtime_progress" jsonb;

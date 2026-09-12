@@ -1,11 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { desc, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import * as schema from "#/db/schema";
-import { decodeStrict } from "./schema";
-import { savedEnvironmentIntentSchema } from "./saved-intent";
 import {
-  discardEnvironmentSavedState,
   publishEnvironmentSavedState,
 } from "./saved-state-operations.server";
 import type { EnvironmentSavedStateBasis } from "./saved-state";
@@ -193,44 +189,5 @@ describe("Environment Saved State aggregate", () => {
     expect(restored.volumeDeletionAuthorizations).toEqual([]);
   });
 
-  it("publishes one replacement revision for an atomic multi-node discard", async () => {
-    const initial = await harness.runTransaction(() =>
-        publishEnvironmentSavedState(
-          publication({
-            basis: { kind: "no_saved_state" },
-            intent: volumeIntent(),
-          })
-        ).pipe(Effect.provideService(SecretEncryption, encryption)),
-    );
-    const discarded = await harness.runTransaction(() =>
-        discardEnvironmentSavedState(
-          {
-            environmentId,
-            actorId: userId,
-            command: {
-              kind: "discard",
-              basis: {
-                kind: "saved_revision",
-                savedStateSnapshotId: initial.savedStateSnapshotId,
-              },
-              operations: [
-                { kind: "node", nodeType: "volume", nodeId: firstVolumeId },
-                { kind: "node", nodeType: "volume", nodeId: secondVolumeId },
-              ],
-            },
-          }
-        ).pipe(Effect.provideService(SecretEncryption, encryption)),
-    );
-    const rows = await harness.db
-      .select({ id: schema.environmentSavedStateSnapshot.id, intent: schema.environmentSavedStateSnapshot.intent })
-      .from(schema.environmentSavedStateSnapshot)
-      .where(eq(schema.environmentSavedStateSnapshot.environmentId, environmentId))
-      .orderBy(desc(schema.environmentSavedStateSnapshot.createdAt));
 
-    expect(rows).toHaveLength(2);
-    expect(rows[0]?.id).toBe(discarded.savedStateSnapshotId);
-    expect(
-      decodeStrict(savedEnvironmentIntentSchema, rows[0]?.intent).volumes,
-    ).toEqual([]);
-  });
 });

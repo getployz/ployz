@@ -1,7 +1,13 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
+import { executeLatestEnvironmentDeployment } from "./runtime-activities.server";
+import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
+import { loadDeploymentEvents, persistDeploymentProgress } from "./deployment-events.server";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { Effect, Redacted } from "effect";
-import type { ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
+import { Effect, Layer, Redacted } from "effect";
+import type { Client, PreparedDeploy, ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
 import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { collectionReadInput } from "#/collections/read.contract";
 import { Inngest } from "inngest";
@@ -146,6 +152,85 @@ describe("deployment runtime persistence", () => {
         createdAt: new Date("2026-09-04T02:00:00.000Z"),
       },
     ]);
+  });
+
+  it("cancels a quiet runner from the persisted row and retains its cancellation outcome", async () => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "deploying", startedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
+    let aborted = false;
+    let closed = false;
+    let started = false;
+    let finish: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => { finish = resolve; });
+    const operation = { type: "run_container" as const,
+      machine_id: runtimeWatchMachineFixture("a".repeat(32), "machine").id,
+      spec: resolvedServiceSpecFixture(), skip_health_monitor: false };
+    const outcome: DeployOutcome<ExecutionError> = { type: "failed", completed: [],
+      failed: { type: "operation", operation, error: { type: "cancelled" } }, unexecuted: [] };
+    const prepared = asTestDouble<PreparedDeploy>()({
+      ...preview(), operations: [{ index: 0, operation, machine_id: operation.machine_id,
+        service_name: operation.spec.name, machine_name: null, display_name: null, status: { type: "pending" } }],
+      confirm: () => ({
+        abort: () => { aborted = true; },
+        finished: stopped.then(() => outcome),
+        async *[Symbol.asyncIterator]() {
+          started = true;
+          await stopped;
+          yield { type: "outcome" as const, outcome };
+        },
+      }),
+    });
+    const client = asTestDouble<Client>()({ preview: async () => prepared, close: async () => { closed = true; } });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "grant-1", connections: [{ tailcat: "tailcat://candidate" }],
+    })).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
+      Effect.provide(runtime), Effect.provideService(SecretEncryption, encryption),
+    ));
+    const settled = result.then(value => ({ value }), error => ({ error }));
+    try {
+      await vi.waitFor(() => expect(started).toBe(true));
+      expect(await harness.runEffect(requestDeploymentCancellation(admitted.id))).toBe(false);
+      await vi.waitFor(() => expect(aborted).toBe(true), { timeout: 2000 });
+      const [cancelling] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+      expect(cancelling?.status).toBe("deploying");
+      expect(cancelling?.cancellationRequestedAt).toBeInstanceOf(Date);
+      expect(cancelling?.finishedAt).toBeNull();
+      expect(closed).toBe(false);
+      finish();
+      expect(await settled).toEqual({ value: { type: "failed", completed: 0, unexecuted: 0, reason: "cancelled" } });
+      await harness.runEffect(markDeploymentCancelled({ deploymentId: admitted.id }, "Runtime cancelled."));
+      const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+      expect(row?.status).toBe("cancelled");
+      expect(row?.runtimeProgress?.outcome).toBe("failed");
+      const [secret] = await harness.db.select().from(schema.environmentDeploymentSecret);
+      expect(secret?.encryptedRuntimeOutcome).toBeTruthy();
+      expect(closed).toBe(true);
+    } finally {
+      finish();
+      await settled;
+    }
+  });
+
+  it("updates current state and retained logs atomically, and scopes log reads to the organization", async () => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    const progress = { completed: 0, total: 0, rows: [], outcome: null, compensation: [] };
+    await harness.runEffect(persistDeploymentProgress(admitted.id, progress));
+    const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(row?.runtimeProgress).toEqual(progress);
+    const page = await harness.runEffect(loadDeploymentEvents({ organizationId, deploymentId: admitted.id, after: 0 }));
+    expect(page.events).toHaveLength(1);
+    expect(page.events[0]?.progress).toEqual(progress);
+    const first = page.events[0];
+    if (!first) throw new Error("Missing retained progress");
+    expect((await harness.runEffect(loadDeploymentEvents({ organizationId, deploymentId: admitted.id, after: first.id }))).events).toEqual([]);
+    await expect(harness.runEffect(loadDeploymentEvents({ organizationId: userId, deploymentId: admitted.id, after: 0 }))).rejects.toThrow();
   });
 
   it("retains a normally admitted outcome and applies the deployment", async () => {

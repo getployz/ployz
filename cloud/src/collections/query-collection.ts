@@ -8,13 +8,14 @@ export function createApiCollection<T extends object>(input: {
   queryKey: readonly string[];
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
   getKey: (row: T) => string | number;
+  refetchInterval?: number | false;
 }) {
   // Default snapshot retention lets a loader hand data to its consumer after releasing its observer.
   const options = queryCollectionOptions({
     ...input,
     id: input.queryKey.join(":"),
     startSync: false,
-    refetchInterval: 15_000,
+    refetchInterval: input.refetchInterval ?? 15_000,
     staleTime: 15_000,
     refetchOnWindowFocus: "always",
     refetchOnReconnect: "always",

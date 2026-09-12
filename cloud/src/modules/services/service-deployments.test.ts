@@ -85,7 +85,7 @@ describe("service deployment state", () => {
         }),
       },
       comparison: {
-        role: "saved",
+        role: "baseline",
         value: { ...currentConfig, source: baselineSource },
       },
     });

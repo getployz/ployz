@@ -5,7 +5,6 @@ const deployed = {
   isEmpty: false,
   hasBeenDeployed: true,
   currentDiffRowCount: 0,
-  latestDeploymentDiffRowCount: 1,
   hasRecordedTargetSnapshot: true,
   latestDeploymentStatus: "applied" as const,
 };
@@ -31,7 +30,7 @@ describe("getServiceDeploymentSemantics", () => {
         latestDeploymentStatus: "deploying",
       }),
     ).toEqual({
-      state: "changed",
+      state: undefined,
       statusText: "Deploying…",
       showNewBadge: false,
     });
@@ -42,7 +41,6 @@ describe("getServiceDeploymentSemantics", () => {
       getServiceDeploymentSemantics({
         ...deployed,
         currentDiffRowCount: 2,
-        latestDeploymentDiffRowCount: 0,
         latestDeploymentStatus: null,
       }),
     ).toEqual({
@@ -58,7 +56,6 @@ describe("getServiceDeploymentSemantics", () => {
         ...deployed,
         hasBeenDeployed: false,
         currentDiffRowCount: 0,
-        latestDeploymentDiffRowCount: 0,
         hasRecordedTargetSnapshot: false,
         latestDeploymentStatus: null,
       }),
@@ -74,14 +71,12 @@ describe("getServiceDeploymentSemantics", () => {
       getServiceDeploymentSemantics({
         ...deployed,
         isEmpty: true,
-        latestDeploymentDiffRowCount: 0,
         latestDeploymentStatus: null,
       }),
     ).toMatchObject({ statusText: "Empty" });
     expect(
       getServiceDeploymentSemantics({
         ...deployed,
-        latestDeploymentDiffRowCount: 0,
         latestDeploymentStatus: null,
       }),
     ).toMatchObject({ statusText: "Deployed" });

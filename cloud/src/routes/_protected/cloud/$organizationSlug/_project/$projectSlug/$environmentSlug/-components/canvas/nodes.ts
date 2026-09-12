@@ -66,7 +66,6 @@ function toServiceNode(
     height: SERVICE_NODE_HEIGHT,
     handles: CANVAS_NODE_HANDLES,
     draggable: true,
-    selectable: true,
     data: {
       resourceType: "service",
       resourceId: service.service.id,
@@ -88,7 +87,6 @@ function toVariableGroupNode(
     height: SERVICE_NODE_HEIGHT,
     handles: CANVAS_NODE_HANDLES,
     draggable: true,
-    selectable: true,
     data: {
       resourceType: "variable_group",
       resourceId: resource.resource.id,
@@ -109,7 +107,6 @@ function toVolumeNode(
     height: SERVICE_NODE_HEIGHT,
     handles: CANVAS_NODE_HANDLES,
     draggable: true,
-    selectable: true,
     data: {
       resourceType: "volume",
       resourceId: resource.resource.id,

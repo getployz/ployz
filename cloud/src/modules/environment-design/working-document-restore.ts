@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { OrganizationSlug, Uuid } from "./workspace-schemas";
 import { environmentSnapshotSourceSchema } from "./environment-snapshot-source";
+import { environmentSavedStateBasisSchema } from "./saved-state";
 
 const restoreScope = {
   organizationSlug: OrganizationSlug,
@@ -20,3 +21,11 @@ export const restoreWorkingDocumentSchema = Schema.Union([
   ])), command: nodeCommand }),
 ]);
 export type RestoreWorkingDocumentInput = typeof restoreWorkingDocumentSchema.Type;
+
+export const discardEnvironmentChangesSchema = Schema.Struct({
+  ...restoreScope,
+  savedStateBasis: environmentSavedStateBasisSchema,
+  baselineToken: Schema.NonEmptyString,
+  command: Schema.Union([Schema.Struct({ kind: Schema.Literal("all") }), nodeCommand]),
+});
+export type DiscardEnvironmentChangesInput = typeof discardEnvironmentChangesSchema.Type;

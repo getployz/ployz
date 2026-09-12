@@ -1,3 +1,9 @@
+import { loadDeploymentEvents } from "./deployment-events.server";
+import { requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
+import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
+import { sendInngestEvent } from "#/modules/inngest/client";
+import { createEnvironmentDeployCancelRequestedEvent } from "#/modules/inngest/events";
+import type { CancelEnvironmentDeploymentInput } from "./deployment-contract";
 import "@tanstack/react-start/server-only";
 
 import { and, eq } from "drizzle-orm";
@@ -39,7 +45,6 @@ import {
   getDestructiveVolumeReviewMismatch,
 } from "#/modules/environment-design/destructive-volume-review";
 import {
-  discardEnvironmentSavedState,
   saveReviewedEnvironmentState,
 } from "#/modules/environment-design/saved-state-operations.server";
 import {
@@ -53,7 +58,6 @@ import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.se
 import type {
   CreateEnvironmentDeploymentSnapshotInput,
   DeploymentOperationEvidencePageQueryInput,
-  DiscardEnvironmentSavedChangeInput,
   DispatchQueuedEnvironmentDeploymentInput,
   EnvironmentChangeStateNodeProjection,
   EnvironmentChangeStateProjection,
@@ -347,20 +351,6 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
   return { state: "saved" as const };
 });
 
-export const discardEnvironmentSavedChange = Effect.fn(
-  "Deployments.discardEnvironmentSavedChange",
-)(function* (actor: Actor, input: DiscardEnvironmentSavedChangeInput) {
-  const context = yield* requireEnvironment(actor, input);
-  return yield* withMutationResult(
-    discardEnvironmentSavedState({
-      environmentId: context.environment.id,
-      actorId: actor.userId,
-      command: input.command,
-    }),
-    { isolationLevel: "repeatable read" },
-  );
-});
-
 export const dispatchExistingQueuedEnvironmentDeployment = Effect.fn(
   "Deployments.dispatchExistingQueuedEnvironmentDeployment",
 )(function* (actor: Actor, input: DispatchQueuedEnvironmentDeploymentInput) {
@@ -397,4 +387,26 @@ export const retryEnvironmentDeployment = Effect.fn(
       userId: actor.userId,
       failedDeploymentId: input.failedDeploymentId,
     });
+});
+
+export const cancelEnvironmentDeployment = Effect.fn("Deployments.cancelEnvironmentDeployment")(
+  function* (actor: Actor, input: CancelEnvironmentDeploymentInput) {
+    const context = yield* requireEnvironment(actor, input);
+    const { drizzle } = yield* Database;
+    const [deployment] = yield* drizzle.select().from(schemaEnvironmentDeployment).where(and(
+      eq(schemaEnvironmentDeployment.id, input.deploymentId),
+      eq(schemaEnvironmentDeployment.environmentId, context.environment.id),
+    )).limit(1);
+    if (!deployment) return yield* new NotFound({ message: "Deployment not found." });
+    if (!ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES.has(deployment.status)) return;
+    const cancelled = yield* requestDeploymentCancellation(deployment.id);
+    if (cancelled) yield* sendInngestEvent(createEnvironmentDeployCancelRequestedEvent(deployment.id));
+  },
+);
+
+export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
+  const organization = yield* requireOrganization(actor, input.organizationSlug);
+  const after = Number(input.afterSequence ?? 0);
+  if (!Number.isSafeInteger(after) || after < 0) return yield* new Validation({ message: "Invalid log cursor." });
+  return yield* loadDeploymentEvents({ organizationId: organization.id, deploymentId: input.deploymentId, after });
 });

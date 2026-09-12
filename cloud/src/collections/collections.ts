@@ -119,6 +119,7 @@ export const getRawEnvironmentResourcesCollection = cachedByCollectionScope(
 export const getEnvironmentDeploymentsCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createApiCollection<EnvironmentDeploymentRow>({
+    refetchInterval: 2_000,
       queryClient: scope.queryClient,
       queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "environment_deployment"],
       queryFn: async ({ signal }) => {

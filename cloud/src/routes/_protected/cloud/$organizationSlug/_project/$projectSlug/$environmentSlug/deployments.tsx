@@ -1,6 +1,6 @@
 import { preloadCollection } from "#/collections/query-collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { Await, createFileRoute } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { RocketIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
 import { DeploymentRow } from "#/components/deployment-row";
@@ -25,10 +25,10 @@ import { useDeploymentsCollection } from "#/modules/services/services.collection
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments",
 )({
-  loader: ({ params, context }) => {
+  loader: async ({ params, context }) => {
     const organizationSlug = params.organizationSlug;
     const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    const deploymentsReady = Promise.all([
+    await Promise.all([
       preloadCollection(getProjectsCollection(organizationSlug, scope)),
       preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
       preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
@@ -36,23 +36,19 @@ export const Route = createFileRoute(
       preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
       preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
     ]);
-
-    return { deploymentsReady };
+    return {
+      projectName: [...getProjectsCollection(organizationSlug, scope).values()].find((project) => project.slug === params.projectSlug)?.name ?? params.projectSlug,
+      environmentName: [...getEnvironmentsCollection(organizationSlug, scope).values()].find((environment) => environment.namespace === params.environmentSlug)?.name ?? params.environmentSlug,
+    };
   },
+  pendingComponent: () => <DashboardPage density="compact" width="content"><DeploymentHistorySkeleton /></DashboardPage>,
   component: RouteComponent,
 });
 
 function RouteComponent() {
-  const { deploymentsReady } = Route.useLoaderData();
-
   return (
     <DashboardPage density="compact" width="content">
-      <Await
-        promise={deploymentsReady}
-        fallback={<DeploymentHistorySkeleton />}
-      >
-        {() => <DeploymentHistory />}
-      </Await>
+      <DeploymentHistory />
     </DashboardPage>
   );
 }
@@ -60,6 +56,7 @@ function RouteComponent() {
 function DeploymentHistory() {
   const params = Route.useParams();
   const { projectSlug, environmentSlug } = params;
+  const { projectName, environmentName } = Route.useLoaderData();
   const deployments = useDeploymentsCollection(params.organizationSlug);
 
   const { data: rows } = useLiveSuspenseQuery({
@@ -84,7 +81,7 @@ function DeploymentHistory() {
           <EmptyMedia variant="icon">
             <RocketIcon />
           </EmptyMedia>
-          <EmptyTitle>No deployments yet</EmptyTitle>
+          <EmptyTitle>{projectName} / {environmentName} has no deployments yet</EmptyTitle>
           <EmptyDescription>
             Deploy a service to see deployment history here.
           </EmptyDescription>

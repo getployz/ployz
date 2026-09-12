@@ -9,7 +9,6 @@ import type { EnvironmentServiceViewRecord } from "#/modules/services/services.c
 export type CanvasServiceState = {
   serviceView: EnvironmentServiceViewRecord;
   diffRowCount: number;
-  latestDeploymentDiffRowCount: number;
   hasRecordedTargetSnapshot: boolean;
   latestDeploymentStatus: EnvironmentDeploymentStatus | null;
 };

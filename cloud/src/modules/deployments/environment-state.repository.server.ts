@@ -16,6 +16,7 @@ import {
   environmentNodeConfigSnapshotSecret as schemaEnvironmentNodeConfigSnapshotSecret,
 } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
+import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { EncryptedSecretValue, JsonObject } from "#/db/tables";
 import type {
@@ -56,6 +57,7 @@ export type EnvironmentExplicitStateProjection = {
   };
   deploymentEvidence: {
     id: string;
+    savedStateSnapshotId: string;
     status: EnvironmentDeploymentStatus;
     token: string;
     createdAt: Date;
@@ -344,8 +346,13 @@ function projectSnapshotHeads(scope: SnapshotScope) {
   const appliedIds = appliedHeads.map((head) => head.id);
   const partialIds = partialHeads.map((head) => head.id);
   const liveCandidateIds = [...new Set([...appliedIds, ...partialIds])];
-  const [deploymentNodes, liveCandidateNodes, privateOutcomes] = yield* Effect.all([
-    loadNodeConfigSnapshots(deploymentIds),
+  const [submittedSavedStates, liveCandidateNodes, privateOutcomes] = yield* Effect.all([
+    deploymentIds.length === 0 ? Effect.succeed([]) : drizzle.select({
+      id: schemaEnvironmentSavedStateSnapshot.id,
+      environmentId: schemaEnvironmentSavedStateSnapshot.environmentId,
+      intent: schemaEnvironmentSavedStateSnapshot.intent,
+    }).from(schemaEnvironmentSavedStateSnapshot).where(inArray(schemaEnvironmentSavedStateSnapshot.id,
+      activeDeploymentHeads.map(head => head.savedStateSnapshotId))),
     loadNodeConfigSnapshots(liveCandidateIds),
     partialIds.length === 0
       ? Effect.succeed([])
@@ -448,11 +455,11 @@ function projectSnapshotHeads(scope: SnapshotScope) {
       const appliedTokenParts = appliedEntries.map(
         ([key, node]) => `${key}:${node.environmentDeploymentId}`,
       );
-      const targetNodes = activeDeployment
-        ? deploymentNodes.filter(
-            (node) => node.environmentDeploymentId === activeDeployment.id,
-          )
-        : [];
+      const submittedSaved = activeDeployment ? submittedSavedStates.find(
+        saved => saved.id === activeDeployment.savedStateSnapshotId,
+      ) : null;
+      if (activeDeployment && !submittedSaved) return yield* new Conflict({ message: "Submitted Saved State is missing." });
+      const targetNodes = submittedSaved ? (yield* decodePersistedSavedEnvironmentState(submittedSaved)).nodeSnapshots : [];
       const targetKeys = new Set(
         targetNodes.map((node) => nodeKey(node.nodeType, node.nodeId)),
       );
@@ -511,8 +518,9 @@ function projectSnapshotHeads(scope: SnapshotScope) {
         deploymentEvidence: activeDeployment
           ? {
               id: activeDeployment.id,
+              savedStateSnapshotId: activeDeployment.savedStateSnapshotId,
               status: activeDeployment.status,
-              token: `deployment:${activeDeployment.id}`,
+              token: `deployment:${activeDeployment.id}:${activeDeployment.savedStateSnapshotId}`,
               createdAt: activeDeployment.createdAt,
               nodes: evidenceNodes,
             }

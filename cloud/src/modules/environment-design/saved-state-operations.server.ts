@@ -24,23 +24,16 @@ import {
 } from "./saved-intent";
 import { strictParseOptions } from "./schema";
 import {
-  discardSavedServiceIntentSetting,
-  replaceSavedEnvironmentIntentNode,
-} from "./saved-intent-mutations";
-import {
   destructiveVolumeReviewsSchema,
   resolveSavedVolumeDeletionAuthorizations,
   type DestructiveVolumeReview,
 } from "./destructive-volume-review";
 import {
-  loadAppliedServiceSavedIntents,
-  loadEnvironmentSavedIntentById,
   loadLatestEnvironmentSavedState,
 } from "./saved-state-repository.server";
 import {
   environmentSavedStateBasisMatches,
   type EnvironmentSavedStateBasis,
-  type EnvironmentSavedStateDiscardCommand,
 } from "./saved-state";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "./working-state-fingerprint.server";
 import {
@@ -50,7 +43,7 @@ import {
   type ReviewedEnvironmentPublication,
 } from "./working-state-review";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { Conflict } from "#/server/public-error";
 
 export type EnvironmentSavedStatePublication =
   CompiledSavedEnvironmentIntent & {
@@ -229,94 +222,4 @@ export const saveReviewedEnvironmentState = Effect.fn(
     revisionPolicy: "always_create",
   });
   return { savedStateSnapshotId: saved.savedStateSnapshotId };
-});
-
-/** Applies all basis-bound reset operations before publishing one revision. */
-export const discardEnvironmentSavedState = Effect.fn(
-  "EnvironmentDesign.discardEnvironmentSavedState",
-)(function* (input: {
-  environmentId: string;
-  actorId: string;
-  command: EnvironmentSavedStateDiscardCommand;
-}) {
-  yield* lockEnvironmentDeploymentQueue(input.environmentId);
-  const projection = yield* loadEnvironmentSnapshotProjection({
-    kind: "environment",
-    environmentId: input.environmentId,
-  });
-  const latest = yield* loadLatestEnvironmentSavedState(input.environmentId);
-  if (latest === null) {
-    return yield* new NotFound({
-      message: "Saved Environment State not found.",
-    });
-  }
-  if (!environmentSavedStateBasisMatches(input.command.basis, latest.id)) {
-    return yield* new Conflict({
-      message:
-        "Saved State changed after this discard was planned. Review the latest changes and try again.",
-    });
-  }
-
-  let intent = latest.intent;
-  for (const change of input.command.operations) {
-    const key = `${change.nodeType}:${change.nodeId}`;
-    const appliedNode = projection.appliedSavedNodeByKey.get(key) ?? null;
-    let baselineIntent: SavedEnvironmentIntent | null = null;
-    if (appliedNode !== null) {
-      const baseline = yield* loadEnvironmentSavedIntentById({
-        environmentId: input.environmentId,
-        savedStateSnapshotId: appliedNode.sourceSavedStateSnapshotId,
-      });
-      if (baseline === null) {
-        return yield* new Conflict({
-          message: "The Applied State is missing.",
-        });
-      }
-      baselineIntent = baseline.intent;
-    }
-
-    if (change.kind === "node") {
-      if (baselineIntent !== null && change.nodeType !== "service") {
-        baselineIntent = {
-          ...baselineIntent,
-          services: yield* loadAppliedServiceSavedIntents({
-            environmentId: input.environmentId,
-            services: [...projection.appliedSavedNodeByKey.values()].filter(
-              (node) => node.nodeType === "service",
-            ),
-          }),
-        };
-      }
-      intent = yield* replaceSavedEnvironmentIntentNode({
-        current: intent,
-        baseline: baselineIntent,
-        node: change,
-      });
-      continue;
-    }
-
-    if (baselineIntent === null) {
-      return yield* new Validation({
-        field: "command",
-        message: "The pending Service setting no longer exists.",
-      });
-    }
-    intent = yield* discardSavedServiceIntentSetting({
-      current: intent,
-      baseline: baselineIntent,
-      serviceId: change.nodeId,
-      path: change.setting,
-    });
-  }
-
-  const published = yield* publishEnvironmentSavedState({
-    environmentId: input.environmentId,
-    actorId: input.actorId,
-    message: "Discard pending change",
-    basis: input.command.basis,
-    intent,
-    destructiveVolumeReviews: [],
-    revisionPolicy: "always_create",
-  });
-  return { savedStateSnapshotId: published.savedStateSnapshotId };
 });

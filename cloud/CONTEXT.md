@@ -28,6 +28,14 @@ _Avoid_: Project cluster, environment cluster, cluster draft
 The user-facing name for a host participating in an Organization Cluster. Rust calls its runtime identity a machine; Cloud does not define a separate server truth.
 _Avoid_: Machine in user-facing copy, Cloud server record
 
+**Server Policy**:
+The roles (accepts builds, services, ingress) and labels of one Server, mirroring the runtime's Machine Role and Machine Label. Cloud requests a policy change as a queued operation and reads the resulting policy back from machine observation; it keeps no separate desired-policy record and policy is not part of any Environment's Saved State.
+_Avoid_: Server settings draft, machine config, cluster-wide roles
+
+**Volume Kind**:
+The explicit, user-chosen kind of a Cloud Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local; the kind is chosen at creation and shown with its trade-offs, never inferred from whether a size was typed.
+_Avoid_: Storage class, volume type dropdown, managed volume toggle
+
 **Cloud Bootstrap Token**:
 The single-redemption bearer secret embedded in a copied Cloud Bootstrap Invite command. The token is not the org, cluster, machine identity, join token, or callback credential.
 _Avoid_: Bootstrap token, server bootstrap token, callback token
@@ -77,19 +85,19 @@ The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into run
 _Avoid_: Prepared snapshot, build workflow, Core Deploy
 
 **Working State**:
-The mutable Environment configuration currently being edited, also called the draft. Preserving edits does not publish them or make them eligible for deployment.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
-The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save publishes without starting a deployment; Deploy publishes the exact reviewed configuration and starts an attempt against that revision, while later Working State edits remain unpublished.
+The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save and Deploy both plan against a selected Working State revision and obtain any required approval before publishing it; Save stops at publication without building images or changing running resources, while Deploy starts an attempt against that exact Saved revision.
 _Avoid_: Applied state, frozen attempt target, unsaved draft
 
 **Environment Publication Review**:
-Authority to publish one exact Working State revision against one exact Saved State basis. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Every Saved-state publisher supplies this authority, including automated publishers that are permitted to publish only non-destructive changes. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
+Authority to publish one exact captured Working State revision against one exact Saved State basis; later Working State edits remain unpublished and do not invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Every Saved-state publisher supplies this authority, including automated publishers that are permitted to publish only non-destructive changes. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
 
 **Saved State Command**:
-One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Discard All is one command containing every Saved reset operation and publishes one replacement revision.
+One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Discard publishes at most one replacement revision in the same transaction as its Working State reset.
 _Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
 
 **Derived Service Configuration**:
@@ -105,20 +113,24 @@ The immutable complete runtime target frozen when a queued deployment request st
 _Avoid_: Saved state, deploy preview, mutable queued request
 
 **Deployment Requirement**:
-Whether one Service in an Attempt Target is required or opportunistic for that attempt. An opportunistic failure preserves the prior working service and does not fail its phase; a required failure cancels later phases.
-_Avoid_: Healthcheck policy, optional service, independent deployment
+The caller-selected failure policy for updating one Service in an Attempt Target: required or opportunistic; manual Deploy makes every included Service update required. An opportunistic failure preserves or attempts to restore the prior working version and allows deployment work to continue only when that version is retained or recovery succeeds; a required failure or failed recovery cancels later phases.
+_Avoid_: Healthcheck policy, application version constraint, optional service, independent deployment
+
+**Opportunistic Update**:
+An approved pending update to an opted-in Service included alongside another Service's Git-triggered deployment, where the triggering Service is required. An eligible pending revision is attempted once per new triggering deployment, even if an earlier attempt failed and recovered; pending updates do not start background retry loops.
+_Avoid_: Optimistic UI update, background updater
 
 **Node Introduction**:
 The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the reset source for edits made before the node has Saved or Applied State; it is not a second editable draft.
 _Avoid_: Initial diff, creation event log, default config
 
 **Environment Change Set**:
-The pure, serializable projection that separates Working-to-Saved unsaved edits, Applied-to-Saved pending work, and runtime drift, using Node Introductions only when neither Saved nor Applied State exists. Lifecycle changes and setting changes are explicit and counted separately.
+One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only before a node has Saved or Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
-**Discard All Plan**:
-The single aggregate reset plan that converges every discardable node's Working and Saved roles on its final reset baseline. A node with both Unsaved and Pending changes receives one Applied-based plan; all Saved resets share one exact basis and publish atomically before Working resets use the resulting revision. Discard All never sequences independently captured Working-to-Saved and Saved-to-Applied plans.
-_Avoid_: Loop of Discard commands, stale slice plan, bulk UI shortcut
+**Discard**:
+One command restoring a field, node, or the whole Environment to the Environment Change Set's comparison baseline in Working and Saved State. It guards the Working revision, Saved basis, and comparison baseline and writes both states atomically. A new-node field reset uses its Node Introduction without publishing that node. Discard never changes an accepted deployment's target.
+_Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Cloud Deployment Stage**:
 The current progress of a Cloud Deployment Attempt: queued, planning, building, or deploying before a terminal outcome. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.

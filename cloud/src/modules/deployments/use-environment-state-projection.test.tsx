@@ -17,7 +17,7 @@ it("refreshes the Environment projection when API deployment or revision metadat
     id: "deploy", organizationId: "org", environmentId: "env", status: "deploying", updatedAt: new Date(0),
     triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: "saved-1", serviceActionPolicy: null,
     inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, variableProducers: null,
-    deployManifest: null, deployPreview: null, failureCode: null, failureMessage: null, message: null,
+    deployManifest: null, deployPreview: null, runtimeProgress: null, failureCode: null, failureMessage: null, message: null,
     cancellationRequestedAt: null, dispatchRequestedAt: null, startedAt: null, finishedAt: null, createdAt: new Date(0),
   };
   let revisions = [{ id: "saved-1", environmentId: "env", organizationId: "org" }];

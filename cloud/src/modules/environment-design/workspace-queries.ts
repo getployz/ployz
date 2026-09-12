@@ -1,4 +1,6 @@
-import { queryOptions } from "@tanstack/react-query";
+import { toast } from "sonner";
+import type { EnvironmentBySlug } from "./workspace-schemas";
+import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { hasPublicErrorCode } from "#/lib/public-error";
 import {
   getEnvironmentBySlugServerFn,
@@ -7,6 +9,7 @@ import {
   listEnvironmentsServerFn,
   listProjectsServerFn,
   resolvePreferredEnvironmentServerFn,
+  selectEnvironmentServerFn,
 } from "./workspace-functions";
 
 const DEFAULT_CLIENT_QUERY_RETRY_COUNT = 3;
@@ -137,4 +140,35 @@ export function preferredEnvironmentQueryOptions(
       }),
     retry: retryWorkspaceQuery,
   });
+}
+
+/** Called by Router only when an environment route is entered or retained, never by preload. */
+export async function rememberSelectedEnvironment(queryClient: QueryClient, input: EnvironmentBySlug, selectEnvironment = selectEnvironmentServerFn) {
+  const { organizationSlug, projectSlug, environmentSlug } = input;
+  const environment = queryClient.getQueryData(
+    environmentBySlugQueryOptions(organizationSlug, projectSlug, environmentSlug).queryKey,
+  );
+  if (!environment) return;
+  const preferredKey = environmentKeys.preferred(organizationSlug, projectSlug);
+  if (queryClient.getQueryData<{ id: string }>(preferredKey)?.id === environment.id) return;
+  const projectsKey = projectListQueryOptions(organizationSlug).queryKey;
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: preferredKey, exact: true }),
+    queryClient.cancelQueries({ queryKey: projectsKey, exact: true }),
+  ]);
+  queryClient.setQueryData(preferredKey, environment);
+  queryClient.setQueryData(projectsKey, (projects) => projects?.map((project) =>
+    project.id === environment.projectId
+      ? { ...project, userDefaultEnvironmentId: environment.id, resolvedEnvironment: environment }
+      : project,
+  ));
+  try {
+    // TanStack serializes writes for this project so rapid switching persists the final selection last.
+    await queryClient.getMutationCache().build(queryClient, {
+      scope: { id: `environment-preference:${environment.projectId}` },
+      mutationFn: () => selectEnvironment({ data: input }),
+    }).execute(undefined);
+  } catch {
+    toast.error("Could not remember your selected environment.");
+  }
 }

@@ -14,7 +14,7 @@ import {
   ownsDeploymentRun,
   recordInngestRun,
 } from "./runtime-lifecycle.repository.server";
-import { markCancelledByInngestRunId } from "./runtime-cancellation.repository.server";
+import { markCancelledByInngestRunId, markDeploymentCancelled } from "./runtime-cancellation.repository.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000601";
 const userId = "00000000-0000-4000-8000-000000000602";
@@ -189,6 +189,22 @@ describe("durable deployment activities", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("cancels a queued deployment before a run claims it", async () => {
+    expect(await runEffect(markDeploymentCancelled(
+      { deploymentId: firstDeploymentId }, "Cancelled by user.",
+    ))).toBe(true);
+    expect(await runEffect(recordInngestRun({
+      environmentDeploymentId: firstDeploymentId, runId: "late-run",
+    }))).toBe(false);
+    const row = await harness.pool.query(
+      "select status, cancellation_requested_at, finished_at from environment_deployment where id = $1",
+      [firstDeploymentId],
+    );
+    expect(row.rows[0]).toMatchObject({ status: "cancelled" });
+    expect(row.rows[0].cancellation_requested_at).not.toBeNull();
+    expect(row.rows[0].finished_at).not.toBeNull();
   });
 
   it("terminalizes cancellation only for the persisted run owner", async () => {

@@ -69,7 +69,6 @@ export function createGithubReposCollection(raw: Collection<GithubRepositoryRow>
   return plainRowCollection(
     createLiveQueryCollection({
       id,
-      gcTime: 1,
       query: (q) =>
         q.from({ repository: raw }).fn.select(
           ({ repository }): GithubRepositoryView => ({

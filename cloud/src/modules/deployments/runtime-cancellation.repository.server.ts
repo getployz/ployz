@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { coreOperationWatch as schemaCoreOperationWatch } from "#/modules/operations/tables";
@@ -16,7 +16,11 @@ import { Database } from "#/server/database.server";
 
 export const markCancelledByInngestRunId = Effect.fn(
   "Deployments.markCancelledByInngestRunId",
-)(function* (runId: string, message = "Cancelled in Inngest.") {
+)((runId: string, message = "Cancelled in Inngest.") =>
+  markDeploymentCancelled({ runId }, message));
+
+export const markDeploymentCancelled = Effect.fn("Deployments.markDeploymentCancelled")(
+function* (target: { runId: string } | { deploymentId: string; beforeExecution?: true }, message: string) {
   const database = yield* Database;
   const [record] = yield* database.drizzle
     .select({
@@ -33,7 +37,9 @@ export const markCancelledByInngestRunId = Effect.fn(
       schemaOrganization,
       eq(schemaOrganization.id, schemaProject.organizationId),
     )
-    .where(eq(schemaEnvironmentDeployment.inngestRunId, runId))
+    .where("runId" in target
+      ? eq(schemaEnvironmentDeployment.inngestRunId, target.runId)
+      : eq(schemaEnvironmentDeployment.id, target.deploymentId))
     .limit(1);
   if (!record || record.deployment.status === "cancelled") return false;
   if (!ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES.has(record.deployment.status)) {
@@ -55,9 +61,9 @@ export const markCancelledByInngestRunId = Effect.fn(
         .where(
           and(
             eq(schemaEnvironmentDeployment.id, record.deployment.id),
-            eq(schemaEnvironmentDeployment.inngestRunId, runId),
+            "runId" in target ? eq(schemaEnvironmentDeployment.inngestRunId, target.runId) : undefined,
             inArray(schemaEnvironmentDeployment.status, [
-              ...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
+              ...("beforeExecution" in target ? ["queued" as const, "planning" as const] : ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES),
             ]),
           ),
         )
@@ -95,3 +101,20 @@ export const markCancelledByInngestRunId = Effect.fn(
     }),
   );
 });
+
+export const requestDeploymentCancellation = Effect.fn("Deployments.requestDeploymentCancellation")(
+  function* (deploymentId: string) {
+    // The status guard is atomic with terminalization: a runner that has entered
+    // deploying must keep its admission slot until the SDK returns its outcome.
+    const cancelled = yield* markDeploymentCancelled(
+      { deploymentId, beforeExecution: true }, "Cancelled before runtime execution.",
+    );
+    if (cancelled) return true;
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(schemaEnvironmentDeployment).set({
+      cancellationRequestedAt: sql`coalesce(${schemaEnvironmentDeployment.cancellationRequestedAt}, now())`,
+      updatedAt: new Date(),
+    }).where(and(eq(schemaEnvironmentDeployment.id, deploymentId), eq(schemaEnvironmentDeployment.status, "deploying")));
+    return false;
+  },
+);

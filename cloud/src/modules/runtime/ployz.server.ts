@@ -9,6 +9,7 @@ import type {
   Connection,
   DataLossConfirmation,
   DeployOutcome,
+  DeployEvent,
   DeployIntent,
   ExecutionError,
   MachineDetails,
@@ -45,7 +46,7 @@ export type PloyzSdkError =
   | MissingDataLossIdentities;
 
 export type PloyzPreparedDeploy = Omit<PreparedDeploy, "confirm"> & {
-  readonly confirm: () => Effect.Effect<unknown, PloyzSdkError>;
+  readonly confirm: (onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal) => Effect.Effect<unknown, PloyzSdkError>;
 };
 
 export interface PloyzSession {
@@ -147,17 +148,28 @@ function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<
 function wrapPrepared(prepared: PreparedDeploy): PloyzPreparedDeploy {
   return {
     ...prepared,
-    confirm: () =>
-      sdkPromise("confirm", async (signal) => {
+    confirm: (onEvent, cancellation) =>
+      sdkPromise("confirm", async (interruption) => {
+        const signal = cancellation ? AbortSignal.any([interruption, cancellation]) : interruption;
         const running = prepared.confirm({ signal });
         const abort = () => running.abort();
-        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
         try {
           let outcome: unknown;
           for await (const event of running) {
+            await onEvent?.(event);
             if (event.type === "outcome") outcome = event.outcome;
           }
-          return outcome ?? (await running.finished);
+          if (outcome === undefined) {
+            const finished = await running.finished;
+            await onEvent?.({ type: "outcome", outcome: finished });
+            outcome = finished;
+          }
+          return outcome;
+        } catch (cause) {
+          running.abort();
+          throw cause;
         } finally {
           signal.removeEventListener("abort", abort);
         }

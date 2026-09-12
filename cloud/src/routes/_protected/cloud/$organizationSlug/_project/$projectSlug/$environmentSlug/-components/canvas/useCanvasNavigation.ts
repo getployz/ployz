@@ -239,21 +239,11 @@ export function useCanvasNavigation(
     canvasInspectorGeometryVersion,
   );
 
-  function selectNode(node: CanvasResourceNode) {
-    flow.setNodes((nodes) =>
-      nodes.map((currentNode) => {
-        const nextSelected = currentNode.id === node.id;
-
-        if (currentNode.selected === nextSelected) {
-          return currentNode;
-        }
-
-        return {
-          ...currentNode,
-          selected: nextSelected,
-        };
-      }),
-    );
+  function onNodeClick(event: Pick<MouseEvent, "detail" | "target">) {
+    // Mouse navigation must not leave a focus outline after the inspector closes.
+    if (event.detail > 0 && event.target instanceof Element) {
+      event.target.closest("a")?.blur();
+    }
   }
 
   useEffect(() => {
@@ -400,5 +390,5 @@ export function useCanvasNavigation(
     };
   }
 
-  return { selectNode, getViewportCenter };
+  return { onNodeClick, getViewportCenter };
 }

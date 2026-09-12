@@ -1,12 +1,10 @@
 import {
-  Await,
   createFileRoute,
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { DashboardPage } from "#/components/dashboard-page";
-import { Skeleton } from "#/components/ui/skeleton";
 import {
   loadOrganizationEnrollmentStatusServerFn,
   resetPendingOrganizationEnrollmentServerFn,
@@ -17,8 +15,8 @@ import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organi
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
-  loader: ({ params }) => ({
-    enrollmentStatus: loadOrganizationEnrollmentStatusServerFn({
+  loader: async ({ params }) => ({
+    enrollmentStatus: await loadOrganizationEnrollmentStatusServerFn({
       data: { organizationSlug: params.organizationSlug },
     }),
   }),
@@ -37,24 +35,20 @@ function RouteComponent() {
   return (
     <DashboardPage width="content">
       <h1 className="sr-only">Server Settings</h1>
-      <Await promise={enrollmentStatus} fallback={<Skeleton className="h-24 w-full" />}>
-        {(status) => (
-          <PendingEnrollmentResetSection
-            status={status}
-            onReset={({ confirmedFounderStoppedOrErased }) =>
-              resetPendingEnrollment({
-                data: {
-                  organizationSlug,
-                  confirmedFounderStoppedOrErased,
-                },
-              }).then(() => undefined)
-            }
-            onCompleted={() => {
-              void router.invalidate();
-            }}
-          />
-        )}
-      </Await>
+      <PendingEnrollmentResetSection
+        status={enrollmentStatus}
+        onReset={({ confirmedFounderStoppedOrErased }) =>
+          resetPendingEnrollment({
+            data: {
+              organizationSlug,
+              confirmedFounderStoppedOrErased,
+            },
+          }).then(() => undefined)
+        }
+        onCompleted={() => {
+          void router.invalidate();
+        }}
+      />
       <TeardownDangerSection
         organizationSlug={organizationSlug}
         scope="organization"

@@ -12,6 +12,11 @@ import { Route as EnvironmentLayoutRoute } from "./route";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
 )({
+  loader: async ({ params, context }) => {
+    await context.queryClient.ensureQueryData(
+      projectBySlugQueryOptions(params.organizationSlug, params.projectSlug),
+    );
+  },
   component: RouteComponent,
 });
 

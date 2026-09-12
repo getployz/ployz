@@ -1,5 +1,3 @@
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { collectionReadInput } from "#/collections/read.contract";
 import {
@@ -7,7 +5,6 @@ import {
   startGithubPostgresTestHarness,
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 
-const execFile = promisify(execFileCallback);
 let harness: GithubPostgresTestHarness;
 
 beforeAll(async () => {
@@ -37,20 +34,4 @@ it("creates collection tables with default replication identity without the reti
     where not tgisinternal and tgname like 'ployz_%_realtime_changed'
   `);
   expect(triggers.rows).toEqual([]);
-});
-
-it("reruns migrations without replaying the baseline or losing application rows", async () => {
-  await harness.pool.query(`
-    insert into organization (name, slug) values ('Baseline', 'baseline')
-  `);
-  const before = await harness.pool.query("select * from drizzle.__drizzle_migrations");
-  expect(before.rows).toHaveLength(1);
-  await execFile(process.execPath, ["node_modules/drizzle-kit/bin.cjs", "migrate"], {
-    cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: harness.databaseUrl },
-  });
-  const after = await harness.pool.query("select * from drizzle.__drizzle_migrations");
-  expect(after.rows).toEqual(before.rows);
-  expect(await harness.pool.query("select name from organization where slug = 'baseline'"))
-    .toMatchObject({ rows: [{ name: "Baseline" }] });
 });

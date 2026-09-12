@@ -22,7 +22,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
   frozenProducers: EnvironmentSnapshotVariableProducer[] | null,
 ) {
   const envByServiceId = new Map<string, Record<string, string>>(
-    snapshots.map((snapshot) => [snapshot.serviceId, {}]),
+    snapshots.map((snapshot) => [snapshot.serviceId, { PORT: "8080" }]),
   );
 
   const hasTemplates = snapshots.some((snapshot) =>

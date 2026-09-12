@@ -12,7 +12,6 @@ export type ServiceDeploymentSemanticInput = {
   isEmpty: boolean;
   hasBeenDeployed: boolean;
   currentDiffRowCount: number;
-  latestDeploymentDiffRowCount: number;
   hasRecordedTargetSnapshot: boolean;
   latestDeploymentStatus: EnvironmentDeploymentStatus | null;
 };
@@ -46,15 +45,8 @@ export function getServiceDeploymentSemantics(
   const hasEditsAfterCancelledAttempt =
     input.latestDeploymentStatus === "cancelled" &&
     input.currentDiffRowCount > 0;
-  const latestAttemptChangesDeployedState =
-    input.latestDeploymentDiffRowCount > 0;
-  const isDeploying =
-    input.latestDeploymentStatus != null &&
-    ACTIVE_DEPLOYMENT_STATUSES.has(input.latestDeploymentStatus) &&
-    (latestAttemptChangesDeployedState || input.currentDiffRowCount > 0);
-  const lastDeployFailed =
-    input.latestDeploymentStatus === "failed" &&
-    latestAttemptChangesDeployedState;
+  const isDeploying = input.latestDeploymentStatus != null && ACTIVE_DEPLOYMENT_STATUSES.has(input.latestDeploymentStatus);
+  const lastDeployFailed = input.latestDeploymentStatus === "failed";
 
   if (lastDeployFailed) {
     return {
@@ -66,7 +58,7 @@ export function getServiceDeploymentSemantics(
 
   if (isDeploying) {
     return {
-      state: "changed",
+      state: input.currentDiffRowCount > 0 ? "changed" : undefined,
       statusText: "Deploying…",
       showNewBadge: false,
     };

@@ -1,3 +1,5 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { getEnvironmentNodeConfigSnapshotsCollection } from "#/collections/collections";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useParams } from "@tanstack/react-router";
 import { DeploymentRow } from "#/components/deployment-row";
@@ -12,14 +14,15 @@ export function ServiceDeploymentsTab() {
   });
   const deployments = useDeploymentsCollection(organizationSlug);
 
-  // ponytail: shows the environment's deploy history in the service tab.
-  // Deployments are namespace-scoped and carry no service ids, so true
-  // per-service filtering needs `serviceIds` added to
-  // environmentDeploymentSummarySchema + listOrganizationDeployments.
+  const { serviceId } = useParams({ strict: false });
+  const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, useCollectionScope());
   const { data: rows } = useLiveSuspenseQuery({
     query: (q) =>
       q
         .from({ deployment: deployments })
+        .innerJoin({ snapshot: snapshots }, ({ deployment, snapshot }) => eq(deployment.id, snapshot.environmentDeploymentId))
+        .where(({ snapshot }) => eq(snapshot.nodeId, serviceId ?? ""))
+        .where(({ snapshot }) => eq(snapshot.nodeType, "service"))
         .where(({ deployment }) => eq(deployment.projectSlug, projectSlug))
         .where(({ deployment }) =>
           eq(deployment.environmentSlug, environmentSlug),
@@ -42,7 +45,7 @@ export function ServiceDeploymentsTab() {
         </Alert>
       ) : (
         sorted.map((deployment) => (
-          <DeploymentRow key={deployment.id} deployment={deployment} />
+          <DeploymentRow key={deployment.id} deployment={deployment} serviceId={serviceId} />
         ))
       )}
     </TabsContent>

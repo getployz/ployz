@@ -311,15 +311,26 @@ describe("process environment deployment", () => {
     );
   });
 
-  it("records a cancelled runtime outcome with its partial counts", async () => {
+  it("cancels the job only after the SDK outcome and row finalization", async () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
-    mocks.executeEnvironmentDeployment.mockResolvedValue({
-      type: "failed", completed: 1, unexecuted: 2, reason: "cancelled",
+    let finish: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => { finish = resolve; });
+    mocks.executeEnvironmentDeployment.mockImplementation(async () => {
+      await stopped;
+      return { type: "failed", completed: 1, unexecuted: 2, reason: "cancelled" };
     });
     mocks.markCancelledByInngestRunId.mockResolvedValue(true);
-    const result = await runDeploy({ event: { data: { environmentDeploymentId: "deployment-1" } } });
-    expect(result).toEqual({ environmentDeploymentId: "deployment-1", status: "cancelled" });
+    const step = createStepTools();
+    const running = runDeploy({ event: { data: { environmentDeploymentId: "deployment-1" } }, step });
+    await vi.waitFor(() => expect(mocks.executeEnvironmentDeployment).toHaveBeenCalled());
+    expect(mocks.markCancelledByInngestRunId).not.toHaveBeenCalled();
+    expect(step.sendEvent).not.toHaveBeenCalled();
+    finish();
+    expect(await running).toEqual({ environmentDeploymentId: "deployment-1", status: "cancelled" });
     expect(mocks.markCancelledByInngestRunId).toHaveBeenCalledWith("run-1", expect.stringContaining("1 operations completed; 2 not attempted"));
+    expect(step.sendEvent).toHaveBeenCalledWith("cancel-job-after-sdk-stopped", {
+      name: "environment/deploy.cancel.requested", data: { environmentDeploymentId: "deployment-1" },
+    });
     expect(mocks.persistDeployApplyResult).not.toHaveBeenCalled();
   });
 

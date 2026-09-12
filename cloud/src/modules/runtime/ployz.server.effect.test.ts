@@ -192,3 +192,31 @@ it.effect("cancels an in-flight SDK connection when its fiber is interrupted", (
     assert.isTrue(signal.aborted);
   }),
 );
+
+it.effect("forwards progress and the finished outcome, aborting if the evidence consumer fails", () =>
+  Effect.gen(function* () {
+    for (const failConsumer of [false, true]) {
+      let aborted = false;
+      const received: string[] = [];
+      const outcome = { type: "success" as const, completed: [] };
+      const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
+        preview: async () => ({
+          noop: false, project_name: "test", storage: [], prune_refusal: null, operations: [], warnings: [], would_remove: [], volumes_to_create: [], preserved_volumes: [],
+          confirm: () => ({ abort: () => { aborted = true; }, finished: Promise.resolve(outcome), async *[Symbol.asyncIterator]() { yield { type: "progress" as const, completed: 0, total: 0, rows: [] }; } }),
+        }),
+        close: async () => undefined,
+      }) });
+      const result = yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* Ployz).connect(options);
+        const prepared = yield* session.preview(asTestDouble<Parameters<Client["preview"]>[0]>()({}));
+        return yield* prepared.confirm(async (event) => {
+          received.push(event.type);
+          if (failConsumer) throw new Error("Evidence storage unavailable");
+        });
+      })).pipe(Effect.provide(layer), Effect.result);
+      assert.deepStrictEqual(received, failConsumer ? ["progress"] : ["progress", "outcome"]);
+      assert.strictEqual(aborted, failConsumer);
+      assert.strictEqual(result._tag, failConsumer ? "Failure" : "Success");
+    }
+  }),
+);

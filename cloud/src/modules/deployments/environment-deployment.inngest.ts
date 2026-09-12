@@ -1,3 +1,4 @@
+import { environmentDeployCancelRequestedEvent, createEnvironmentDeployCancelRequestedEvent } from "#/modules/inngest/events";
 import { NonRetriableError } from "inngest";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -302,6 +303,7 @@ export async function executeProcessEnvironmentDeployment(
           ));
           return { environmentDeploymentId, status: latest?.deployment.status ?? "missing", skipped: true };
         }
+        await step.sendEvent("cancel-job-after-sdk-stopped", createEnvironmentDeployCancelRequestedEvent(environmentDeploymentId));
         return { environmentDeploymentId, status: "cancelled" };
       }
       throw new DeploymentExecutionError({ message, failureCode: "sdk_deploy_failed" });
@@ -419,6 +421,7 @@ export const createProcessEnvironmentDeployment = (
     id: PROCESS_ENVIRONMENT_DEPLOYMENT_FUNCTION_ID,
     // A lost execution may have mutated Machines. A new attempt must be explicit.
     retries: 0,
+    cancelOn: [{ event: environmentDeployCancelRequestedEvent, match: "data.environmentDeploymentId" }],
     triggers: [{ event: environmentDeployRequestedEventType }],
     concurrency: [...PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY],
     onFailure: async ({ event, error }) =>

@@ -6,7 +6,7 @@ import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import type { EnvironmentChangeStateNodeProjection } from "#/modules/deployments/deployment-contract";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import {
   getServiceDeploymentDiffState,
   type ServiceDeploymentDiffState,
@@ -61,14 +61,14 @@ function resolveDefaultTargetPort(
 }
 
 function serviceConfig(
-  nodes: EnvironmentChangeStateNodeProjection[],
+  nodes: Array<{ nodeType: string; nodeId: string; config: unknown }>,
   serviceId: string,
 ) {
   const node = nodes.find(
     (candidate) =>
       candidate.nodeType === "service" && candidate.nodeId === serviceId,
   );
-  return node?.nodeType === "service" ? node.config : null;
+  return node?.config ? parseServiceConfig(node.config) : null;
 }
 
 export function useServiceDrawerState(
@@ -142,6 +142,7 @@ export function useServiceDrawerState(
   const serviceIntroductionRow = serviceIntroductionRows[0];
   const serviceIntroduction = serviceIntroductionRow
     ? decodeStrict(environmentNodeIntroductionSchema, {
+        organizationId: serviceIntroductionRow.organizationId,
         environmentId: serviceIntroductionRow.environmentId,
         nodeType: serviceIntroductionRow.nodeType,
         nodeId: serviceIntroductionRow.nodeId,
@@ -198,9 +199,10 @@ export function useServiceDrawerState(
     diff: getServiceDeploymentDiffState({
       service,
       comparison: resolveEnvironmentWorkingComparison({
-        saved,
-        applied,
-        introduction,
+        baseline: environmentChangeState?.deploymentEvidence
+          ? serviceConfig(environmentChangeState.deploymentEvidence.nodes, params.serviceId)
+          : applied,
+        introduction: !saved && !applied ? introduction : null,
       }),
     }),
     collection: serviceWriter,

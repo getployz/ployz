@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { Schema } from "effect";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -9,6 +10,9 @@ import { useServiceDrawerState } from "#/routes/_protected/cloud/$organizationSl
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
 )({
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
+    tab: Schema.optional(Schema.Literals(["settings", "variables", "deployments"])),
+  })),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Service" />,
   component: RouteComponent,

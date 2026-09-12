@@ -188,6 +188,20 @@ function createCanvasPosition(
 }
 
 describe("buildNodes", () => {
+  it("leaves every node unselected when no inspector is open", () => {
+    const nodes = buildNodes(
+      [createServiceRecord()],
+      [createVariableGroupRecord()],
+      [],
+      null,
+      [createVolumeRecord()],
+    );
+    for (const node of nodes) {
+      expect(node.selected).toBe(false);
+      expect(node.selectable).not.toBe(true);
+    }
+  });
+
   it("uses the collection position", () => {
     const [node] = buildNodes(
       [createServiceRecord()],

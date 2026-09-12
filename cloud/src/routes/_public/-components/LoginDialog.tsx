@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useState,
   useTransition,
   type FormEvent,
@@ -40,39 +41,47 @@ export function LoginPanel() {
   });
   const callbackURL = isPublicShell ? "/cloud" : currentLocation;
   const [error, setError] = useState<string | null>(null);
-  const [isGithubPending, startGithubTransition] = useTransition();
+  const [isGithubPending, setIsGithubPending] = useState(false);
   const [isRandomAccountPending, startRandomAccountTransition] =
     useTransition();
   const isPending = isGithubPending || isRandomAccountPending;
 
-  function signInWithGithub(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    const reset = () => setIsGithubPending(false);
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
+
+  async function signInWithGithub(event: FormEvent<HTMLFormElement>) {
     if (!isHydrated) {
       return;
     }
 
     event.preventDefault();
+    if (isPending) return;
     setError(null);
-    startGithubTransition(async () => {
-      try {
-        const response = await authClient.signIn.social({
-          provider: "github",
-          callbackURL,
-        });
+    setIsGithubPending(true);
+    try {
+      const response = await authClient.signIn.social({
+        provider: "github",
+        callbackURL,
+      });
 
-        if (response.error) {
-          const detail = response.error.message || response.error.code;
-          setError(
-            detail
-              ? `Could not start GitHub sign-in: ${detail}`
-              : "Could not start GitHub sign-in.",
-          );
-        }
-      } catch {
+      if (response.error) {
+        const detail = response.error.message || response.error.code;
         setError(
-          "Could not reach the auth server. Check that the dev server is running.",
+          detail
+            ? `Could not start GitHub sign-in: ${detail}`
+            : "Could not start GitHub sign-in.",
         );
+        setIsGithubPending(false);
       }
-    });
+    } catch {
+      setError(
+        "Could not reach the auth server. Check that the dev server is running.",
+      );
+      setIsGithubPending(false);
+    }
   }
 
   function createRandomDevAccount() {
@@ -130,7 +139,7 @@ export function LoginPanel() {
             ) : (
               <GitHubMarkIcon data-icon="inline-start" />
             )}
-            Continue with GitHub
+            {isGithubPending ? "Connecting to GitHub…" : "Continue with GitHub"}
           </Button>
         </form>
         {import.meta.env.DEV ? (

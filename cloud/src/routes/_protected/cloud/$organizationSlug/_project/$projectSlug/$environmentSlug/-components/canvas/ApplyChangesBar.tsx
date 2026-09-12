@@ -1,26 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Badge } from "#/components/ui/badge";
 import type {
   CanvasEnvironmentChangeGroup,
-  CanvasEnvironmentChangeSlice,
-  CanvasDeploymentEvidence,
-  CanvasDiscardAllPlan,
 } from "#/modules/environment-design/canvas-environment-change-state";
 import { ApplyChangesDialog } from "./ApplyChangesDialog";
 import { ApplyChangesToolbar } from "./ApplyChangesToolbar";
 
 type ApplyChangesBarProps = {
   groups: CanvasEnvironmentChangeGroup[];
-  slices?: Record<
-    "unsaved" | "pending" | "drift",
-    CanvasEnvironmentChangeSlice
-  >;
   totalChanges: number;
-  discardAllPlan: CanvasDiscardAllPlan;
   canDeploy?: boolean;
-  deploymentEvidence?: CanvasDeploymentEvidence | null;
   commitMessage: string;
   canSaveWithoutDeploying: boolean;
   className?: string;
@@ -34,11 +24,8 @@ type ApplyChangesBarProps = {
 
 export function ApplyChangesBar({
   groups,
-  slices,
   totalChanges,
-  discardAllPlan,
   canDeploy,
-  deploymentEvidence,
   commitMessage,
   canSaveWithoutDeploying,
   className,
@@ -50,23 +37,15 @@ export function ApplyChangesBar({
   onDiscardRow,
 }: ApplyChangesBarProps) {
   const [open, setOpen] = useState(false);
-  const canDiscardAll = discardAllPlan.nodes.length > 0;
-  if (totalChanges <= 0) {
-    return deploymentEvidence ? (
-      <Badge className={className} variant="secondary">
-        Deployment {deploymentEvidence.status}
-      </Badge>
-    ) : null;
-  }
+  if (totalChanges <= 0) return null;
 
   return (
     <>
       <ApplyChangesToolbar
         className={className}
-        canDiscardAll={canDiscardAll}
+        canDiscardAll={groups.some(group => group.canDiscard)}
         canSaveWithoutDeploying={canSaveWithoutDeploying}
         canDeploy={canDeploy ?? true}
-        deploymentEvidence={deploymentEvidence}
         totalChanges={totalChanges}
         onOpenDetails={() => setOpen(true)}
         onDeploy={() => {
@@ -86,14 +65,15 @@ export function ApplyChangesBar({
       <ApplyChangesDialog
         open={open}
         groups={groups}
-        slices={slices}
         totalChanges={totalChanges}
         canDeploy={canDeploy ?? true}
-        deploymentEvidence={deploymentEvidence}
         commitMessage={commitMessage}
         onOpenChange={setOpen}
         onCommitMessageChange={onCommitMessageChange}
-        onDeploy={onDeploy}
+        onDeploy={() => {
+          setOpen(false);
+          onDeploy();
+        }}
         onDiscardNode={onDiscardNode}
         onDiscardRow={onDiscardRow}
       />

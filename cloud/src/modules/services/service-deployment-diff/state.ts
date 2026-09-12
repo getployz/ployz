@@ -16,7 +16,7 @@ import {
 
 export type ServiceDeploymentFieldState = {
   changed: boolean;
-  baselineLabel?: "Saved" | "Introduced" | "Runtime";
+  baselineLabel?: "Current" | "Introduced";
   baselineValue?: string;
   currentValue?: string;
   kind?: ServiceDeploymentDiffKind;
@@ -59,8 +59,8 @@ export function getServiceDeploymentDiffState(input: {
         ? {
             changed: true,
             baselineLabel: input.comparison
-              ? input.comparison.role === "saved"
-                ? "Saved"
+              ? input.comparison.role === "baseline"
+                ? "Current"
                 : "Introduced"
               : undefined,
             baselineValue: row.currentValue,

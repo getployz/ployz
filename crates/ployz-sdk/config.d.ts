@@ -18,13 +18,11 @@ export function parseResourceConfig(nodeType: 'volume', value: unknown): import(
 export function parseResourceConfig(nodeType: 'variable_group', value: unknown): import('./generated/payloads').VariableGroupConfig;
 export function compareResourceSettings(nodeType: 'volume' | 'variable_group', current: import('./generated/payloads').VolumeConfig | import('./generated/payloads').VariableGroupConfig, baseline: import('./generated/payloads').VolumeConfig | import('./generated/payloads').VariableGroupConfig | null): ServiceSettingChange[];
 export function projectEnvironmentChanges(value: import('./generated/payloads').ChangeSetInput): import('./generated/payloads').ReviewChangeSet;
-export function resolveWorkingComparison<T>(input: { saved: T | null; applied: T | null; introduction: T | null }): { role: 'saved' | 'node_introduction'; value: T } | null;
 export function publicationBasisMatches(basis: { kind: 'no_saved_state' } | { kind: 'saved_revision'; savedStateSnapshotId: string }, latest: string | null): boolean;
 export function destructivePublication(value: unknown): { serviceIds: string[]; volumeIds: string[] };
 export function destructivePublicationMismatch(value: { expected: { serviceIds: string[]; volumeIds: string[] }; reviewed: { serviceIds: string[]; volumeIds: string[] } }): string | null;
 export function canonicalWorkingReview(value: unknown): string;
 export function parsePublicationBasis(value: unknown): import('./generated/payloads').PublicationBasis;
-export function parseSavedDiscard(value: unknown): import('./generated/payloads').SavedDiscardCommand;
 export function reusePublication(input: { policy: 'always_create' | 'reuse_latest_if_equivalent'; current: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown }; latest: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown } | null }): boolean;
 export function lowerDeployment(value: { projectName: string; snapshots: readonly { config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; healthcheckPort?: number }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
 

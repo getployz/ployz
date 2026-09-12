@@ -1,7 +1,5 @@
 import { MoreVerticalIcon, Trash2Icon } from "lucide-react";
 import { Button } from "#/components/ui/button";
-import { Badge } from "#/components/ui/badge";
-import type { CanvasDeploymentEvidence } from "#/modules/environment-design/canvas-environment-change-state";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,7 +16,6 @@ export function ApplyChangesToolbar({
   canDiscardAll,
   canSaveWithoutDeploying,
   canDeploy,
-  deploymentEvidence,
   totalChanges,
   onDeploy,
   onDiscardAll,
@@ -29,7 +26,6 @@ export function ApplyChangesToolbar({
   canDiscardAll: boolean;
   canSaveWithoutDeploying: boolean;
   canDeploy: boolean;
-  deploymentEvidence?: CanvasDeploymentEvidence | null;
   totalChanges: number;
   onDeploy: () => void;
   onDiscardAll: () => void;
@@ -46,9 +42,6 @@ export function ApplyChangesToolbar({
       <span className="px-2 text-sm font-medium whitespace-nowrap">
         Apply {totalChanges} {totalChanges === 1 ? "change" : "changes"}
       </span>
-      {deploymentEvidence ? (
-        <Badge variant="secondary">Deployment {deploymentEvidence.status}</Badge>
-      ) : null}
       <Button variant="outline" onClick={onOpenDetails}>
         Details
       </Button>

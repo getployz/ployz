@@ -8,20 +8,15 @@ import {
   DialogTitle,
 } from "#/components/ui/dialog";
 import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
-import { Badge } from "#/components/ui/badge";
 import type {
   CanvasEnvironmentChangeGroup,
-  CanvasEnvironmentChangeSlice,
-  CanvasDeploymentEvidence,
 } from "#/modules/environment-design/canvas-environment-change-state";
 import { ApplyChangeGroupCard } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeGroupCard";
 
 export function ApplyChangesDialog({
   groups,
-  slices,
   totalChanges,
   canDeploy,
-  deploymentEvidence,
   commitMessage,
   open,
   onCommitMessageChange,
@@ -31,10 +26,8 @@ export function ApplyChangesDialog({
   onOpenChange,
 }: {
   groups: CanvasEnvironmentChangeGroup[];
-  slices?: Record<"unsaved" | "pending" | "drift", CanvasEnvironmentChangeSlice>;
   totalChanges: number;
   canDeploy: boolean;
-  deploymentEvidence?: CanvasDeploymentEvidence | null;
   commitMessage: string;
   open: boolean;
   onCommitMessageChange: (value: string) => void;
@@ -51,18 +44,6 @@ export function ApplyChangesDialog({
       >
         <div className="px-6 py-4 pr-14">
           <DialogTitle>Environment changes</DialogTitle>
-          {slices ? <div className="mt-2 flex flex-wrap gap-2">
-            <Badge variant="changed">{slices.unsaved.totalCount} unsaved</Badge>
-            <Badge variant="secondary">{slices.pending.totalCount} pending</Badge>
-            <Badge variant="outline">{slices.drift.totalCount} drift</Badge>
-          </div> : null}
-          {deploymentEvidence ? (
-            <div className="mt-2">
-              <Badge variant="secondary">
-                Deployment {deploymentEvidence.status}
-              </Badge>
-            </div>
-          ) : null}
         </div>
 
         <div className="flex items-center gap-3 border-y px-6 py-3">
@@ -85,7 +66,7 @@ export function ApplyChangesDialog({
           <div className="flex flex-col gap-3">
             {groups.map((group) => (
               <ApplyChangeGroupCard
-                key={`${group.slice ?? "change"}:${group.nodeType}:${group.nodeId}`}
+                key={`${group.nodeType}:${group.nodeId}`}
                 group={group}
                 totalChanges={totalChanges}
                 visibleGroupCount={groups.length}

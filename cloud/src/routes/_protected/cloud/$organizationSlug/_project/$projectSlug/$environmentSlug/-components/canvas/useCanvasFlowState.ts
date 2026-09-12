@@ -5,7 +5,6 @@ import {
 import type {
   EnvironmentNodeIntroductionProjection,
   EnvironmentNodeProjection,
-  EnvironmentSavedStateProjection,
   EnvironmentStateProjection,
 } from "#/modules/environment-design/environment-change-set";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
@@ -117,23 +116,20 @@ export function useCanvasFlowState({
       .join("|"),
     nodes: workingNodes,
   };
-  const saved: EnvironmentSavedStateProjection =
+  const saved: EnvironmentStateProjection =
     environmentChangeState?.saved
       ? {
-          kind: "saved_revision",
           token: environmentChangeState.saved.token,
-          savedStateSnapshotId: environmentChangeState.saved.snapshotId,
           nodes: environmentChangeState.saved.nodes.map(projectedNode),
         }
       : {
-          kind: "no_saved_state",
           token: `saved:none:${environmentNamespace}`,
           nodes: [],
         };
   const applied: EnvironmentStateProjection = {
     token:
       environmentChangeState?.applied.token ??
-      `applied:none:${environmentNamespace}`,
+      "applied:none",
     nodes: environmentChangeState?.applied.nodes.map(projectedNode) ?? [],
   };
   const introductions = {
@@ -173,7 +169,6 @@ export function useCanvasFlowState({
     saved,
     applied,
     nodeIntroductions: introductions,
-    runtimeObserved: null,
     deploymentEvidence,
     nodes: [
       ...servicesWithBoundEnv.map(({ service }) => ({
@@ -197,15 +192,8 @@ export function useCanvasFlowState({
       })),
     ],
   });
-  const diffGroups = [
-    ...canvasChangeState.slices.unsaved.groups,
-    ...canvasChangeState.slices.pending.groups,
-    ...canvasChangeState.slices.drift.groups,
-  ];
+  const diffGroups = canvasChangeState.groups;
   const countByNodeId = countGroupsByNode(diffGroups);
-  const latestDeploymentDiffRowCountByServiceId = countGroupsByNode(
-    canvasChangeState.slices.pending.groups,
-  );
   const recordedNodeIds = new Set([
     ...(environmentChangeState?.saved?.nodes.map((node) => node.nodeId) ?? []),
     ...(environmentChangeState?.applied.nodes.map((node) => node.nodeId) ?? []),
@@ -221,8 +209,6 @@ export function useCanvasFlowState({
       {
         serviceView: service,
         diffRowCount: countByNodeId.get(service.service.id) ?? 0,
-        latestDeploymentDiffRowCount:
-          latestDeploymentDiffRowCountByServiceId.get(service.service.id) ?? 0,
         hasRecordedTargetSnapshot: recordedNodeIds.has(service.service.id),
         latestDeploymentStatus: evidenceNodeIds.has(service.service.id)
           ? (environmentChangeState?.deploymentEvidence?.status ?? null)
@@ -280,13 +266,11 @@ export function useCanvasFlowState({
 
   return {
     canvasChangeState,
-    changeSlices: canvasChangeState.slices,
     diffGroups,
     totalChanges: canvasChangeState.totalCount,
-    canDeploy: canvasChangeState.canDeploy,
-    canSave: canvasChangeState.slices.unsaved.totalCount > 0,
+    canDeploy: true,
+    canSave: canvasChangeState.canSave,
     diffRowCountByServiceId: countByNodeId,
-    latestDeploymentDiffRowCountByServiceId,
     servicesById,
     selectedNodePositionKey,
     environmentResourcesById,

@@ -1,6 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { Suspense } from "react";
+import { Suspense, useRef } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -144,6 +144,7 @@ function CanvasWithData() {
           eq(introduction.environmentId, environmentId),
         )
         .select(({ introduction }) => ({
+          organizationId: introduction.organizationId,
           environmentId: introduction.environmentId,
           nodeType: introduction.nodeType,
           nodeId: introduction.nodeId,
@@ -215,6 +216,7 @@ function CanvasWithData() {
 }
 
 export function EnvironmentCanvasScene() {
+  const servicesRef = useRef<HTMLDivElement>(null);
   const { projectSlug, environmentSlug } = useParams({
     from: ENVIRONMENT_ROUTE_FROM,
   });
@@ -222,12 +224,18 @@ export function EnvironmentCanvasScene() {
   const { isInspectorOpen: isInspectorPage } = useCanvasInspectorSelection();
 
   return (
-    <div className="relative h-full w-full">
-      <Suspense key={canvasKey} fallback={<PendingCanvas />}>
+    <div
+      ref={servicesRef}
+      role="region"
+      aria-label="Environment services"
+      tabIndex={0}
+      className="relative h-full w-full outline-none"
+    >
+      <Suspense fallback={<PendingCanvas />}>
         <CanvasWithData key={canvasKey} />
       </Suspense>
       {isInspectorPage ? (
-        <CanvasInspectorOverlay>
+        <CanvasInspectorOverlay finalFocus={servicesRef}>
           <Outlet />
         </CanvasInspectorOverlay>
       ) : null}

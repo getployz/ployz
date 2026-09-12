@@ -16,13 +16,11 @@ exports.restoreEnvironmentNode = (current, baseline, node, path = null) => reque
 exports.parseResourceConfig = (nodeType, value) => request({ operation: 'parse_resource', node_type: nodeType, value });
 exports.compareResourceSettings = (nodeType, current, baseline) => request({ operation: 'compare_resource', node_type: nodeType, current, baseline });
 exports.projectEnvironmentChanges = value => request({ operation: 'project_changes', value });
-exports.resolveWorkingComparison = input => request({ operation: 'working_comparison', ...input });
 exports.publicationBasisMatches = (basis, latest) => request({ operation: 'publication_basis_matches', basis, latest });
 exports.destructivePublication = value => request({ operation: 'destructive_publication', value });
 exports.destructivePublicationMismatch = input => request({ operation: 'destructive_publication_mismatch', ...input });
 exports.canonicalWorkingReview = value => request({ operation: 'canonical_working_review', value });
 exports.parsePublicationBasis = value => request({ operation: 'parse_publication_basis', value });
-exports.parseSavedDiscard = value => request({ operation: 'parse_saved_discard', value });
 exports.reusePublication = input => request({ operation: 'reuse_publication', ...input });
 exports.lowerDeployment = value => request({ operation: 'lower_deployment', value });
 

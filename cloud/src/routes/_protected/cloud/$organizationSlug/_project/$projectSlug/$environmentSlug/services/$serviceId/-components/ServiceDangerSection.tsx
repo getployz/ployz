@@ -1,13 +1,8 @@
 "use client";
 
-import { useNavigate, useParams } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
-import {
-  ENVIRONMENT_INDEX_ROUTE_TO,
-  ENVIRONMENT_ROUTE_FROM,
-} from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { useDeleteService } from "./useDeleteService";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 
 export function ServiceDangerSection({
@@ -15,34 +10,7 @@ export function ServiceDangerSection({
 }: {
   state: ServiceDrawerState;
 }) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const navigate = useNavigate();
-
-  async function deleteService() {
-    try {
-      const transaction = state.collection.update(state.service.id, (draft) => {
-        draft.deletedAt = new Date();
-      });
-      await transaction.isPersisted.promise;
-      await navigate({
-        to: ENVIRONMENT_INDEX_ROUTE_TO,
-        params: {
-          organizationSlug: params.organizationSlug,
-          projectSlug: params.projectSlug,
-          environmentSlug: params.environmentSlug,
-        },
-        replace: true,
-        search: (prev) => prev,
-      });
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to delete service.",
-      );
-      throw error;
-    }
-  }
+  const deleteService = useDeleteService(state.service.id);
 
   return (
     <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">

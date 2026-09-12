@@ -9,11 +9,7 @@ import {
   compileSdkDeployIntent,
   parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
-import {
-  deployEventForDeployment,
-  sdkDeployOperationKind,
-  stubPendingDeployProgress,
-} from "#/modules/deployments/deployment-presentation";
+
 import {
   createDefaultServiceHealthcheck,
   createDefaultServiceRestartPolicy,
@@ -224,40 +220,6 @@ describe("parseSdkDeployPreview", () => {
     expect(() => parseSdkDeployPreview({ ...rustPreview, operations: [{ type: "unknown" }] })).toThrow();
   });
 
-});
-
-describe("stubPendingDeployProgress", () => {
-  it("emits a DeployEvent progress snapshot with every row pending", () => {
-    const event = stubPendingDeployProgress(parseSdkDeployPreview(rustPreview));
-
-    expect(event).toEqual({
-      type: "progress",
-      completed: 0,
-      total: 1,
-      rows: [
-        {
-          ...rustPreview.operations[0],
-          status: { type: "pending" },
-        },
-      ],
-    });
-  });
-
-  it("labels a tagged operation and overlays Applied on the stub", () => {
-    const row = rustPreview.operations[0];
-    if (row === undefined) {
-      throw new Error("fixture is missing a preview operation");
-    }
-    expect(sdkDeployOperationKind(row.operation)).toBe(
-      "run_container",
-    );
-    expect(
-      deployEventForDeployment(parseSdkDeployPreview(rustPreview), "applied").rows[0]
-        ?.status,
-    ).toEqual(
-      { type: "completed" },
-    );
-  });
 });
 
 it.each(["incomplete_snapshot", "selected_services", "filtered_profiles", "guessed_project_name"] as const)(

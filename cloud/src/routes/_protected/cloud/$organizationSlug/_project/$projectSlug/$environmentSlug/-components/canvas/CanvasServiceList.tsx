@@ -1,4 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
+import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import {
@@ -42,7 +43,6 @@ function ServiceListItem({
     isEmpty: service.source.type === "empty",
     hasBeenDeployed: service.firstDeployedAt != null,
     currentDiffRowCount: serviceState.diffRowCount,
-    latestDeploymentDiffRowCount: serviceState.latestDeploymentDiffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
   });
@@ -52,53 +52,55 @@ function ServiceListItem({
   const statusClasses = getServiceStatusClasses(semantics.state);
 
   return (
-    <Link
-      to={ENVIRONMENT_SERVICE_ROUTE_TO}
-      params={{
-        organizationSlug: params.organizationSlug,
-        projectSlug: params.projectSlug,
-        environmentSlug: params.environmentSlug,
-        serviceId: service.id,
-      }}
-      search={(prev) => prev}
-      className="block"
-    >
-      <Card
-        state={semantics.state}
-        className={cn("gap-6", selected && "ring-2 ring-ring")}
+    <ServiceContextMenu serviceId={service.id}>
+      <Link
+        to={ENVIRONMENT_SERVICE_ROUTE_TO}
+        params={{
+          organizationSlug: params.organizationSlug,
+          projectSlug: params.projectSlug,
+          environmentSlug: params.environmentSlug,
+          serviceId: service.id,
+        }}
+        search={(prev) => prev}
+        className="block"
       >
-        <CardHeader>
-          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
-            <Avatar>
-              <AvatarFallback>{getServiceIcon(service)}</AvatarFallback>
-            </Avatar>
-            <div className="min-w-0">
-              <CardTitle className="truncate">{service.name}</CardTitle>
-              {subtitle ? (
-                <CardDescription className="truncate">{subtitle}</CardDescription>
-              ) : null}
+        <Card
+          state={semantics.state}
+          className={cn("gap-6", selected && "ring-2 ring-ring")}
+        >
+          <CardHeader>
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+              <Avatar>
+                <AvatarFallback>{getServiceIcon(service)}</AvatarFallback>
+              </Avatar>
+              <div className="min-w-0">
+                <CardTitle className="truncate">{service.name}</CardTitle>
+                {subtitle ? (
+                  <CardDescription className="truncate">{subtitle}</CardDescription>
+                ) : null}
+              </div>
+              {semantics.showNewBadge ? <Badge variant="success">New</Badge> : null}
             </div>
-            {semantics.showNewBadge ? <Badge variant="success">New</Badge> : null}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-3">
-            <span
-              className={cn(
-                "flex size-3 items-center justify-center rounded-full",
-                statusClasses.dot,
-              )}
-            >
-              <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
-            </span>
-            <span className="min-w-0 flex-1 truncate text-muted-foreground">
-              {semantics.statusText}
-              {observedContainers ? ` · ${observedContainers}` : null}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "flex size-3 items-center justify-center rounded-full",
+                  statusClasses.dot,
+                )}
+              >
+                <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {semantics.statusText}
+                {observedContainers ? ` · ${observedContainers}` : null}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+    </ServiceContextMenu>
   );
 }
 

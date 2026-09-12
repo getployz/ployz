@@ -10,7 +10,7 @@ export function createEnvironmentDocumentsCollection(organizationSlug: string, {
   projects: ReturnType<typeof getProjectsCollection>;
 }) {
   return plainRowCollection(createLiveQueryCollection({
-    id: `collections:${organizationSlug}:environment-documents`, gcTime: 1,
+    id: `collections:${organizationSlug}:environment-documents`,
     query: (q) => q.from({ environment: environments })
       .innerJoin({ project: projects }, ({ environment, project }) => eq(environment.projectId, project.id))
       .fn.select(({ environment, project }) => ({ ...withoutVirtualProps(environment), projectSlug: project.slug,

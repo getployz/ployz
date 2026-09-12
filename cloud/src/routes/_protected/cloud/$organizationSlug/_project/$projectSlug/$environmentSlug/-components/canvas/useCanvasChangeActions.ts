@@ -1,9 +1,8 @@
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { restoreWorkingDocumentServerFn } from "#/modules/environment-design/working-document-restore.functions";
-import { createWorkingSettingRestoreAction } from "#/modules/environment-design/working-setting-restore-action";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { discardEnvironmentChangesServerFn } from "#/modules/environment-design/working-document-restore.functions";
+import type { DiscardEnvironmentChangesInput } from "#/modules/environment-design/working-document-restore";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
@@ -14,28 +13,21 @@ import {
 import type {
   CanvasEnvironmentChangeGroup,
   CanvasEnvironmentChangeState,
-  CanvasWorkingNodeDiscardPlan,
 } from "#/modules/environment-design/canvas-environment-change-state";
-import { toCanvasWorkingNodeDiscardPlan } from "#/modules/environment-design/canvas-environment-change-state";
 import type {
   DestructiveVolumeReview,
   EnvironmentPublicationSubmissionOutcome,
 } from "#/modules/deployments/deployment-contract";
 import type {
   EnvironmentSavedStateBasis,
-  EnvironmentSavedStateDiscardCommand,
 } from "#/modules/environment-design/saved-state";
 import { getDeployTargetPreflight } from "#/modules/runtime/deploy-target-preflight";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   createEnvironmentDeploymentSnapshotServerFn,
-  discardEnvironmentSavedChangeServerFn,
   prepareEnvironmentDestructiveVolumesServerFn,
 } from "#/modules/deployments/deployment.functions";
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";
-import { discardServiceDeploymentDiffPath } from "#/modules/services/service-deployment-diff/mutations";
-import type { EnvironmentSnapshotSource } from "#/modules/environment-design/environment-snapshot-source";
-import { useServiceWriter } from "#/modules/services/services.collection";
 import type { PreparedDestructiveReview } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
 import { prepareVolumeDestructionReview } from "#/components/destructive-volume/destructive-volume-review";
 import {
@@ -83,12 +75,7 @@ export function useCanvasChangeActions({
   }
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const serviceWriter = useServiceWriter(params.organizationSlug);
   const environments = getEnvironmentsCollection(params.organizationSlug, collectionScope);
-  const restoreWorkingSetting = createWorkingSettingRestoreAction({
-    environments, environmentId, organizationSlug: params.organizationSlug,
-    restore: restoreWorkingDocumentServerFn,
-  });
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
     status: runtime.status,
@@ -106,9 +93,7 @@ export function useCanvasChangeActions({
   const createDeploymentSnapshot = useServerFn(
     createEnvironmentDeploymentSnapshotServerFn,
   );
-  const discardSavedChange = useServerFn(
-    discardEnvironmentSavedChangeServerFn,
-  );
+  const discard = useServerFn(discardEnvironmentChangesServerFn);
   const prepareEnvironmentDestructiveVolumes = useServerFn(
     prepareEnvironmentDestructiveVolumesServerFn,
   );
@@ -152,183 +137,33 @@ export function useCanvasChangeActions({
     },
   });
 
-  const discardableGroups = [
-    ...changeState.slices.unsaved.groups,
-    ...changeState.slices.pending.groups,
-  ].filter((group) => group.canDiscard || group.rows.some((row) => row.canDiscard));
-  const discardableGroupsByNodeId = new Map(
-    discardableGroups.map((group) => [group.nodeId, group]),
-  );
-
-  async function refreshExplicitChangeState() {
-    await queryClient.invalidateQueries({
-      queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
-        params.organizationSlug,
-      ),
-    });
-  }
-
-  async function discardPendingSavedChange(
-    command: EnvironmentSavedStateDiscardCommand,
-  ) {
-    const receipt: {
-      data: { savedStateSnapshotId: string };
-    } = await discardSavedChange({
-        data: {
-          organizationSlug: params.organizationSlug,
-          projectSlug: params.projectSlug,
-          environmentSlug: params.environmentSlug,
-          command,
-        },
+  async function discardChanges(command: DiscardEnvironmentChangesInput["command"]) {
+    try {
+      if (!document) throw new Error("Environment is not loaded.");
+      const result = await discard({ data: {
+        organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
+        savedStateBasis, baselineToken: changeState.baselineToken, command,
+      } });
+      await environments.writeCommitted(result.data);
+      await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
+      await queryClient.invalidateQueries({
+        queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(params.organizationSlug),
       });
-    await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
-    await refreshExplicitChangeState();
-    return receipt;
-  }
-
-  async function discardAllChanges() {
-    let workingSnapshotSource: EnvironmentSnapshotSource | null =
-      savedSnapshotSource;
-    if (changeState.discardAllPlan.savedCommand) {
-      const receipt = await discardPendingSavedChange(
-        changeState.discardAllPlan.savedCommand,
-      );
-      workingSnapshotSource = {
-        kind: "saved",
-        environmentSavedStateSnapshotId:
-          receipt.data.savedStateSnapshotId,
-      };
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not discard changes.");
     }
-    const document = environments.get(environmentId);
-    if (!document) throw new Error("Environment is not loaded.");
-    const result = await restoreWorkingDocumentServerFn({ data: {
-      organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
-      snapshotSource: workingSnapshotSource, command: { kind: "all" },
-    } });
-    await environments.writeCommitted(result.data);
   }
 
-  async function discardServiceChanges(serviceId: string) {
-    const group = discardableGroupsByNodeId.get(serviceId);
-    if (!group || group.nodeType !== "service") return;
-    await discardNodeChanges(group);
+  function discardAllChanges() {
+    return discardChanges({ kind: "all" });
   }
 
-  async function discardVariableGroupChanges(
-    group: CanvasEnvironmentChangeGroup,
-  ) {
-    if (group.nodeType !== "variable_group") {
-      return;
-    }
-
-    const plan = group.projectedChange.discardPlan;
-    if (!plan || plan.target !== "working") return;
-    await discardWorkingNodePlan(
-      toCanvasWorkingNodeDiscardPlan(plan),
-      savedSnapshotSource,
-    );
+  function discardNodeChanges(group: CanvasEnvironmentChangeGroup) {
+    return discardChanges({ kind: "node", nodeType: group.nodeType, nodeId: group.nodeId });
   }
 
-  async function discardWorkingNodePlan(
-    plan: CanvasWorkingNodeDiscardPlan,
-    snapshotSource: EnvironmentSnapshotSource | null,
-  ) {
-    const document = environments.get(environmentId);
-    if (!document) throw new Error("Environment is not loaded.");
-    const result = await restoreWorkingDocumentServerFn({ data: {
-      organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
-      snapshotSource: plan.kind === "delete" ? null : snapshotSource,
-      command: { kind: "node", nodeType: plan.node.type, nodeId: plan.node.id },
-    } });
-    await environments.writeCommitted(result.data);
-  }
-
-  async function discardVolumeChanges(group: CanvasEnvironmentChangeGroup) {
-    if (group.nodeType !== "volume") {
-      return;
-    }
-
-    const plan = group.projectedChange.discardPlan;
-    if (!plan || plan.target !== "working") return;
-    await discardWorkingNodePlan(
-      toCanvasWorkingNodeDiscardPlan(plan),
-      savedSnapshotSource,
-    );
-  }
-
-  async function discardNodeChanges(group: CanvasEnvironmentChangeGroup) {
-    const plan = group.projectedChange.discardPlan;
-    if (!plan) return;
-
-    if (plan.target === "saved") {
-      await discardPendingSavedChange({
-        kind: "discard",
-        basis: plan.basis,
-        operations: [
-          {
-            kind: "node",
-            nodeType: plan.node.type,
-            nodeId: plan.node.id,
-          },
-        ],
-      });
-      return;
-    }
-
-    await discardWorkingNodePlan(
-      toCanvasWorkingNodeDiscardPlan(plan),
-      savedSnapshotSource,
-    );
-  }
-
-  async function discardRowChange(
-    group: CanvasEnvironmentChangeGroup,
-    path: string,
-  ) {
-    if (group.nodeType !== "service" || group.slice === "drift") return;
-    const setting = group.projectedChange.settings.find(
-      (candidate) => candidate.owner.setting === path,
-    );
-    const plan = setting?.discardPlan;
-    if (!plan) return;
-
-    if (plan.target === "saved") {
-      await discardPendingSavedChange({
-        kind: "discard",
-        basis: plan.basis,
-        operations: [
-          {
-            kind: "setting",
-            nodeType: "service",
-            nodeId: group.nodeId,
-            setting: plan.owner.setting,
-          },
-        ],
-      });
-      return;
-    }
-
-    if (path === "variableGroupAttachments" || path === "source.credentials" || path === "source") {
-      const current = environments.get(environmentId);
-      if (!current) throw new Error("Environment is not loaded.");
-      await restoreWorkingSetting({ serviceId: group.nodeId, revision: current.revision, path,
-        baseline: parseServiceConfig(plan.config),
-        snapshotSource: setting?.baselineSource?.role === "node_introduction"
-          ? { kind: "introduction" } : savedSnapshotSource,
-      }).isPersisted.promise;
-      return;
-    }
-
-    const transaction = serviceWriter.update(group.nodeId, (draft) => {
-      // SAFETY: this path only runs for service groups; discard plans store a node-union config, and the row path is a service deployment diff path.
-      discardServiceDeploymentDiffPath({
-        draft,
-        baseline: parseServiceConfig(plan.config),
-        path,
-      });
-    });
-
-    await transaction.isPersisted.promise;
+  function discardRowChange(group: CanvasEnvironmentChangeGroup, path: string) {
+    return discardChanges({ kind: "node", nodeType: group.nodeType, nodeId: group.nodeId, path });
   }
 
   function deployTargetIsAvailable() {
@@ -475,9 +310,6 @@ export function useCanvasChangeActions({
 
   return {
     discardAllChanges,
-    discardServiceChanges,
-    discardVariableGroupChanges,
-    discardVolumeChanges,
     discardNodeChanges,
     discardRowChange,
     requestSave,

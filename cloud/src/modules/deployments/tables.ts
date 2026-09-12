@@ -15,7 +15,7 @@ import { type ServiceMode } from "#/modules/services/deploy-compile-types";
 
 import { sql } from "drizzle-orm";
 
-import { type AnyPgColumn, check, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, bigserial, check, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -94,6 +94,7 @@ export const environmentDeployment = pgTable(
     deployManifest: jsonb("deploy_manifest").$type<RedactedDeployManifest>(),
     deployPreview:
       jsonb("deploy_preview").$type<EnvironmentDeploymentPreview>(),
+    runtimeProgress: jsonb("runtime_progress").$type<import("./deployment-progress").DeploymentProgress>(),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     message: text("message"),
@@ -143,7 +144,7 @@ export const environmentDeployment = pgTable(
       "environment_deployment_cancellation_shape_check",
       sql`(
         (${table.status} = 'cancelled' and ${table.cancellationRequestedAt} is not null and ${table.finishedAt} is not null)
-        or (${table.status} <> 'cancelled' and ${table.cancellationRequestedAt} is null)
+        or (${table.status} <> 'cancelled')
       )`,
     ),
   ],
@@ -194,3 +195,11 @@ export const environmentSavedStateSnapshot = pgTable(
     ),
   ],
 );
+
+/** Safe SDK progress history, retained independently of the browser connection. */
+export const environmentDeploymentEvent = pgTable("environment_deployment_event", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
+  progress: jsonb("progress").notNull().$type<import("./deployment-progress").DeploymentProgress>(),
+  createdAt,
+}, (table) => [index("environment_deployment_event_cursor_idx").on(table.deploymentId, table.id)]);

@@ -409,7 +409,13 @@ export type InngestSendableEvent =
   | ReturnType<typeof createTeardownRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
+  | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>;
+
+export const environmentDeployCancelRequestedEvent = "environment/deploy.cancel.requested";
+export function createEnvironmentDeployCancelRequestedEvent(environmentDeploymentId: string) {
+  return { name: environmentDeployCancelRequestedEvent, data: { environmentDeploymentId } };
+}

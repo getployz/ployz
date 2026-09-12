@@ -182,6 +182,10 @@ _Avoid_: Desired state, workflow
 The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state.
 _Avoid_: persisted plan, cluster decision record
 
+**Destructive Change**:
+Removal of an existing Service or explicitly requested destruction of a Docker Volume, requiring operator approval. Ordinary Service updates, container replacements, and scaling changes do not require additional destructive confirmation.
+_Avoid_: Every container replacement, implicit Volume deletion
+
 **Deploy Progress**:
 Live evidence of one in-flight Deploy: the current operation, the completed prefix, and health/hook waits. It is not Cluster Watch, not a workflow status, and not persisted.
 _Avoid_: Watch frame, durable Deploy status, workflow state
@@ -189,6 +193,10 @@ _Avoid_: Watch frame, durable Deploy status, workflow state
 **Deploy Outcome**:
 The evidence from a Deploy Plan: completed operations, any failed operation, every unattempted operation, and narrow replacement compensation. Sequential failures retain prefix/suffix ordering, while a preflight rejection may name a later operation before any operation runs; neither implies atomicity or general rollback.
 _Avoid_: Bare deployment error, transaction result
+
+**Replacement Compensation**:
+A bounded attempt to clean up a failed replacement and restore the prior Service Container when it was stopped. Its outcome records recovery success or failure; it does not reverse application data writes or other completed changes.
+_Avoid_: General rollback, atomic deployment
 
 **Docker Volume**:
 A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.

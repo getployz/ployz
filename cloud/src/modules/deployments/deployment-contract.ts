@@ -1,3 +1,4 @@
+import { deploymentProgressSchema } from "./deployment-progress";
 import { Schema } from "effect";
 import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
@@ -10,7 +11,6 @@ import {
 import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
 import {
   environmentSavedStateBasisSchema,
-  environmentSavedStateDiscardCommandSchema,
 } from "#/modules/environment-design/saved-state";
 import {
   EnvironmentSlug,
@@ -101,11 +101,6 @@ export const createEnvironmentDeploymentSnapshotSchema = Schema.Struct({
   destructiveVolumeReviews: Schema.optional(destructiveVolumeReviewsSchema),
 });
 
-export const discardEnvironmentSavedChangeSchema = Schema.Struct({
-  ...EnvironmentContext,
-  command: environmentSavedStateDiscardCommandSchema,
-});
-
 export const organizationEnvironmentChangeStateQuerySchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
 });
@@ -136,11 +131,13 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   inngestRunId: Schema.NullOr(Schema.String),
   coreDeployId: Schema.NullOr(Schema.String),
   deployPreview: Schema.NullOr(runtimeDeployPreviewSchema),
+  runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),
   startedAt: Schema.NullOr(Schema.Date),
   finishedAt: Schema.NullOr(Schema.Date),
+  cancellationRequestedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
   serviceCount: finiteNumber({ integer: true, minimum: 0 }),
@@ -179,6 +176,7 @@ export type EnvironmentChangeStateProjection = {
   };
   deploymentEvidence: {
     id: string;
+    savedStateSnapshotId: string;
     status: EnvironmentDeploymentStatus;
     token: string;
     createdAt: Date;
@@ -207,8 +205,6 @@ export type EnvironmentPublicationSubmissionOutcome =
     >;
 export type OrganizationEnvironmentChangeStateQueryInput =
   typeof organizationEnvironmentChangeStateQuerySchema.Type;
-export type DiscardEnvironmentSavedChangeInput =
-  typeof discardEnvironmentSavedChangeSchema.Type;
 export type RetryEnvironmentDeploymentInput =
   typeof retryEnvironmentDeploymentSchema.Type;
 export type DispatchQueuedEnvironmentDeploymentInput =
@@ -219,3 +215,9 @@ export type EnvironmentDeploymentSummary = Omit<
   typeof environmentDeploymentSummarySchema.Type,
   "deployPreview"
 > & { deployPreview: SdkDeployPreview | null };
+
+export const cancelEnvironmentDeploymentSchema = Schema.Struct({
+  ...EnvironmentContext,
+  deploymentId: Uuid,
+});
+export type CancelEnvironmentDeploymentInput = typeof cancelEnvironmentDeploymentSchema.Type;

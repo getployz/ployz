@@ -1,19 +1,20 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import {
+  cancelEnvironmentDeploymentSchema,
   createEnvironmentDeploymentSnapshotSchema,
   deploymentOperationEvidencePageQuerySchema,
-  discardEnvironmentSavedChangeSchema,
   dispatchQueuedEnvironmentDeploymentSchema,
   organizationEnvironmentChangeStateQuerySchema,
   prepareEnvironmentDestructiveVolumesSchema,
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
+  cancelEnvironmentDeployment,
   createEnvironmentDeploymentSnapshot,
-  discardEnvironmentSavedChange,
   dispatchExistingQueuedEnvironmentDeployment,
   listDeploymentOperationEvidence,
+  listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
   prepareEnvironmentDestructiveVolumes,
   retryEnvironmentDeployment,
@@ -57,15 +58,6 @@ export const createEnvironmentDeploymentSnapshotServerFn = createServerFn({
     ),
   );
 
-export const discardEnvironmentSavedChangeServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(deploymentMiddleware)
-  .validator(strictValidator(discardEnvironmentSavedChangeSchema))
-  .handler(({ context, data }) =>
-    runActor(context, discardEnvironmentSavedChange(context.actor, data)),
-  );
-
 export const prepareEnvironmentDestructiveVolumesServerFn = createServerFn({
   method: "POST",
 })
@@ -104,3 +96,13 @@ export const listDeploymentOperationEvidenceServerFn = createServerFn({
   .handler(({ context, data }) =>
     runActor(context, listDeploymentOperationEvidence(context.actor, data)),
   );
+
+export const cancelEnvironmentDeploymentServerFn = createServerFn({ method: "POST" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(cancelEnvironmentDeploymentSchema))
+  .handler(({ context, data }) => runActor(context, cancelEnvironmentDeployment(context.actor, data)));
+
+export const listDeploymentProgressLogsServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(deploymentOperationEvidencePageQuerySchema))
+  .handler(({ context, data }) => runActor(context, listDeploymentProgressLogs(context.actor, data)));

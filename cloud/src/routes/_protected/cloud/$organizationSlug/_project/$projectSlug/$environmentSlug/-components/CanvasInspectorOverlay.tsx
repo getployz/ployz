@@ -1,4 +1,4 @@
-import { Suspense, useRef, useState, type ReactNode } from "react";
+import { Suspense, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
 import {
   Drawer,
@@ -15,8 +15,10 @@ import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
 
 export function CanvasInspectorOverlay({
   children,
+  finalFocus,
 }: {
   children: ReactNode;
+  finalFocus: RefObject<HTMLDivElement | null>;
 }) {
   const isMobile = useIsMobile();
   const navigate = useNavigate();
@@ -34,8 +36,8 @@ export function CanvasInspectorOverlay({
       <Drawer
         open={drawerOpen}
         showSwipeHandle
-        onOpenChange={setDrawerOpen}
-        onOpenChangeComplete={(open) => {
+        onOpenChange={(open) => {
+          setDrawerOpen(open);
           if (open) {
             return;
           }
@@ -48,7 +50,10 @@ export function CanvasInspectorOverlay({
           });
         }}
       >
-        <DrawerContent className="h-[calc(100dvh-6rem)]">
+        <DrawerContent
+          className="h-[calc(100dvh-6rem)] [view-transition-name:canvas-drawer] motion-safe:starting:transform-(--closed-transform)"
+          finalFocus={finalFocus}
+        >
           <DrawerTitle className="sr-only">Canvas inspector</DrawerTitle>
           {content}
         </DrawerContent>

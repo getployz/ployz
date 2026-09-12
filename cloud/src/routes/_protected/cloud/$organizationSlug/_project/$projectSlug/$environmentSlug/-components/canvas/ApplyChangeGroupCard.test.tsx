@@ -44,7 +44,6 @@ describe("ApplyChangeGroupCard", () => {
       <ApplyChangeGroupCard
         group={{
           ...lifecycleOnlyGroup,
-          slice: "pending",
           rows: [
             {
               changeKey: "service:00000000-0000-4000-8000-000000000001:source.branch",
@@ -67,6 +66,6 @@ describe("ApplyChangeGroupCard", () => {
 
     expect(screen.getByText("1 Setting")).toBeTruthy();
     expect(screen.getByText("Branch")).toBeTruthy();
-    expect(screen.getByText("Pending")).toBeTruthy();
+    expect(screen.queryByText("Pending")).toBeNull();
   });
 });

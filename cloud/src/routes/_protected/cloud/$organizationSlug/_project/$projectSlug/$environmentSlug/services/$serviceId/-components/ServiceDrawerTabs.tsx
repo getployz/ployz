@@ -1,3 +1,4 @@
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Tabs, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { ServiceDeploymentsTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceDeploymentsTab";
 import { ServiceSettingsTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingsTab";
@@ -9,9 +10,17 @@ export function ServiceDrawerTabs({
 }: {
   state: ServiceDrawerState;
 }) {
+  const from = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
+  const { tab } = useSearch({ from });
+  const navigate = useNavigate({ from: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId" });
   return (
     <Tabs
-      defaultValue="settings"
+      value={tab ?? "settings"}
+      onValueChange={(value) => {
+        if (value === "settings" || value === "variables" || value === "deployments") {
+          void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
+        }
+      }}
       className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6"
     >
       <TabsList variant="line">

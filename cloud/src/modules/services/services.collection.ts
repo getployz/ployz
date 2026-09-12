@@ -55,7 +55,6 @@ function createServicesCollection(organizationSlug: string, scope: CollectionSco
   const documents = getEnvironmentDocumentsCollection(organizationSlug, scope);
   return createLiveQueryCollection({
     id: `collections:${organizationSlug}:services-with-context`,
-    gcTime: 1,
     query: (q) => q.from({ identity: identities })
       .innerJoin({ document: documents }, ({ identity, document }) => eq(identity.environmentId, document.id))
       .fn.where(({ identity, document }) => document.intent.services.some((node) => node.id === identity.id))
@@ -137,7 +136,7 @@ export function getCanvasPositionCollectionKey(
   return `${item.resourceType}:${item.resourceId}`;
 }
 
-const getServicesCollection = cachedByCollectionScope(createServicesCollection);
+export const getServicesCollection = cachedByCollectionScope(createServicesCollection);
 
 const getServiceWriter = cachedByCollectionScope((organizationSlug, scope) =>
   createServiceWriter(
@@ -158,7 +157,7 @@ function resourceSources(organizationSlug: string, scope: CollectionScope) {
   };
 }
 
-const getEnvironmentResourcesCollection = cachedByCollectionScope(
+export const getEnvironmentResourcesCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createEnvironmentResourcesCollection({
       organizationSlug,
@@ -166,7 +165,7 @@ const getEnvironmentResourcesCollection = cachedByCollectionScope(
     }),
 );
 
-const getVolumeResourcesCollection = cachedByCollectionScope(
+export const getVolumeResourcesCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createVolumeResourcesCollection({
       organizationSlug,

@@ -37,15 +37,13 @@ function config(replicas: number): ServiceDeploymentConfig {
 describe("service drawer Working comparison", () => {
   it.each([
     {
-      saved: config(2),
-      applied: config(1),
+      baseline: config(2),
       introduction: config(0),
-      baselineLabel: "Saved",
+      baselineLabel: "Current",
       baselineValue: "2",
     },
     {
-      saved: null,
-      applied: null,
+      baseline: null,
       introduction: config(1),
       baselineLabel: "Introduced",
       baselineValue: "1",
@@ -54,7 +52,7 @@ describe("service drawer Working comparison", () => {
     const working = config(3);
     const diff = getServiceDeploymentDiffState({
       service: { id: "service-1", ...working },
-      comparison: resolveEnvironmentWorkingComparison({ saved: input.saved, applied: input.applied, introduction: input.introduction }),
+      comparison: resolveEnvironmentWorkingComparison({ baseline: input.baseline, introduction: input.introduction }),
     });
 
     expect(diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.replicas)).toMatchObject({
@@ -65,14 +63,13 @@ describe("service drawer Working comparison", () => {
     });
   });
 
-  it("does not invent field comparisons when Saved is absent after Applied exists", () => {
+  it("does not invent field comparisons without a baseline or Introduction", () => {
     const working = config(3);
     const diff = getServiceDeploymentDiffState({
       service: { id: "service-1", ...working },
-      comparison: resolveEnvironmentWorkingComparison({
-        saved: null,
-        applied: config(1),
-        introduction: config(0),
+      comparison: resolveEnvironmentWorkingComparison<ServiceDeploymentConfig>({
+        baseline: null,
+        introduction: null,
       }),
     });
 

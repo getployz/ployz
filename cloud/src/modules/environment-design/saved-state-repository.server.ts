@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
@@ -11,7 +11,6 @@ import { strictParseOptions } from "./schema";
 import {
   decodePersistedSavedEnvironmentIntent,
   decodePersistedSavedEnvironmentState,
-  type SavedEnvironmentIntent,
 } from "./saved-intent";
 import { destructiveVolumeReviewsSchema } from "./destructive-volume-review";
 
@@ -103,57 +102,6 @@ export const loadEnvironmentSavedIntentById = Effect.fn(
     ),
   );
   return { ...row, intent, volumeDeletionAuthorizations };
-});
-
-export const loadAppliedServiceSavedIntents = Effect.fn(
-  "EnvironmentDesign.loadAppliedServiceSavedIntents",
-)(function* (input: {
-  environmentId: string;
-  services: ReadonlyArray<{
-    nodeId: string;
-    sourceSavedStateSnapshotId: string;
-  }>;
-}) {
-  if (input.services.length === 0) {
-    const services: SavedEnvironmentIntent["services"] = [];
-    return services;
-  }
-  const snapshotIds = [
-    ...new Set(
-      input.services.map((service) => service.sourceSavedStateSnapshotId),
-    ),
-  ];
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle
-    .select(savedStateColumns)
-    .from(schemaEnvironmentSavedStateSnapshot)
-    .where(
-      and(
-        eq(
-          schemaEnvironmentSavedStateSnapshot.environmentId,
-          input.environmentId,
-        ),
-        inArray(schemaEnvironmentSavedStateSnapshot.id, snapshotIds),
-      ),
-    );
-  const intentBySnapshotId = new Map(
-    yield* Effect.forEach(rows, (row) =>
-      decodePersistedSavedEnvironmentIntent(row.intent).pipe(
-        Effect.map((intent) => [row.id, intent] as const),
-      ),
-    ),
-  );
-  return yield* Effect.forEach(input.services, (reference) => {
-    const service = intentBySnapshotId
-      .get(reference.sourceSavedStateSnapshotId)
-      ?.services.find((candidate) => candidate.id === reference.nodeId);
-    if (service === undefined) {
-      return new Conflict({
-        message: "The Applied Service State is missing.",
-      });
-    }
-    return Effect.succeed(service);
-  });
 });
 
 export const listLatestEnvironmentSavedStates = Effect.fn(

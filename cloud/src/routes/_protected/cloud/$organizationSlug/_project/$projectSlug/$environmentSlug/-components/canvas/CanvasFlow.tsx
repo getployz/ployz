@@ -86,7 +86,6 @@ export function CanvasFlow({
   const { selectedServiceId, selectedNodeId } = useCanvasInspectorSelection();
   const {
     canvasChangeState,
-    changeSlices,
     diffGroups,
     totalChanges,
     canDeploy,
@@ -109,7 +108,7 @@ export function CanvasFlow({
     canvasNodes,
     selectedNodeId,
   });
-  const { selectNode, getViewportCenter } = useCanvasNavigation(
+  const { onNodeClick, getViewportCenter } = useCanvasNavigation(
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
@@ -155,10 +154,6 @@ export function CanvasFlow({
     selectedNodeId,
   });
 
-  function handleNodeClick(node: Parameters<typeof selectNode>[0]) {
-    selectNode(node);
-  }
-
   function openVariableGroupCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
     variableGroupCreator.openCreatorAtPosition(creator.creatorPosition);
@@ -191,6 +186,8 @@ export function CanvasFlow({
               edges={canvasEdges}
               defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
               nodeTypes={canvasNodeTypes}
+              elementsSelectable={false}
+              nodesFocusable={false}
               fitView={!selectedNodeId}
               proOptions={{ hideAttribution: true }}
               snapToGrid
@@ -198,9 +195,7 @@ export function CanvasFlow({
               minZoom={0.4}
               maxZoom={1.35}
               onInit={() => setFlowReady(true)}
-              onNodeClick={(_, node) => {
-                handleNodeClick(node);
-              }}
+              onNodeClick={onNodeClick}
               onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDrag}
               onPaneContextMenu={(event) => {
@@ -225,11 +220,8 @@ export function CanvasFlow({
         <ApplyChangesBar
           className={selectedNodeId ? "w-full lg:w-auto" : "w-full sm:w-auto"}
           groups={diffGroups}
-          slices={changeSlices}
           totalChanges={totalChanges}
-          discardAllPlan={canvasChangeState.discardAllPlan}
           canDeploy={canDeploy}
-          deploymentEvidence={canvasChangeState.deploymentEvidence}
           commitMessage={commitMessage}
           canSaveWithoutDeploying={canSave}
           onCommitMessageChange={setCommitMessage}

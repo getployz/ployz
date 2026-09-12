@@ -1,4 +1,5 @@
 import { Handle, Position } from "@xyflow/react";
+import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Link, useParams } from "@tanstack/react-router";
 import {
   Avatar,
@@ -76,7 +77,6 @@ export function ServiceNode({
     isEmpty: service.source.type === "empty",
     hasBeenDeployed,
     currentDiffRowCount: serviceState.diffRowCount,
-    latestDeploymentDiffRowCount: serviceState.latestDeploymentDiffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
   });
@@ -90,79 +90,81 @@ export function ServiceNode({
   const statusClasses = getServiceStatusClasses(state);
 
   return (
-    <Link
-      to={ENVIRONMENT_SERVICE_ROUTE_TO}
-      params={{
-        organizationSlug: params.organizationSlug,
-        projectSlug: params.projectSlug,
-        environmentSlug: params.environmentSlug,
-        serviceId: service.id,
-      }}
-      search={(prev) => prev}
-      preload="intent"
-      draggable={false}
-      className="block h-[144px] w-[288px]"
-    >
-      <Handle
-        type="target"
-        position={Position.Bottom}
-        isConnectable={false}
-        style={{ opacity: 0 }}
-      />
-      <Handle
-        type="source"
-        position={Position.Top}
-        isConnectable={false}
-        style={{ opacity: 0 }}
-      />
-      <Card
-        size="node"
-        state={state}
-        className={cn(
-          "h-full justify-between",
-          selected && "ring-2 ring-primary",
-        )}
+    <ServiceContextMenu serviceId={service.id}>
+      <Link
+        to={ENVIRONMENT_SERVICE_ROUTE_TO}
+        params={{
+          organizationSlug: params.organizationSlug,
+          projectSlug: params.projectSlug,
+          environmentSlug: params.environmentSlug,
+          serviceId: service.id,
+        }}
+        search={(prev) => prev}
+        preload="intent"
+        draggable={false}
+        className="block h-[144px] w-[288px]"
       >
-        <CardHeader>
-          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
-            <Avatar>
-              <AvatarFallback>
-                {getServiceIcon(service)}
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0 overflow-hidden">
-              <CardTitle className="truncate">
-                {service.name}
-              </CardTitle>
-              {subtitle ? (
-                <CardDescription className="truncate">
-                  {subtitle}
-                </CardDescription>
-              ) : null}
+        <Handle
+          type="target"
+          position={Position.Bottom}
+          isConnectable={false}
+          style={{ opacity: 0 }}
+        />
+        <Handle
+          type="source"
+          position={Position.Top}
+          isConnectable={false}
+          style={{ opacity: 0 }}
+        />
+        <Card
+          size="node"
+          state={state}
+          className={cn(
+            "h-full justify-between",
+            selected && "ring-2 ring-primary",
+          )}
+        >
+          <CardHeader>
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+              <Avatar>
+                <AvatarFallback>
+                  {getServiceIcon(service)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 overflow-hidden">
+                <CardTitle className="truncate">
+                  {service.name}
+                </CardTitle>
+                {subtitle ? (
+                  <CardDescription className="truncate">
+                    {subtitle}
+                  </CardDescription>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {semantics.showNewBadge ? (
+                  <Badge variant="success">New</Badge>
+                ) : null}
+              </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {semantics.showNewBadge ? (
-                <Badge variant="success">New</Badge>
-              ) : null}
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "flex size-3 items-center justify-center rounded-full",
+                  statusClasses.dot,
+                )}
+              >
+                <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {statusCopy}
+              </span>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-3">
-            <span
-              className={cn(
-                "flex size-3 items-center justify-center rounded-full",
-                statusClasses.dot,
-              )}
-            >
-              <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
-            </span>
-            <span className="min-w-0 flex-1 truncate text-muted-foreground">
-              {statusCopy}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
+          </CardContent>
+        </Card>
+      </Link>
+    </ServiceContextMenu>
   );
 }

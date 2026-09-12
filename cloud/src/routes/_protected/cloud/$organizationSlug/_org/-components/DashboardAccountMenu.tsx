@@ -3,11 +3,13 @@ import {
   BookOpenIcon,
   ChevronsUpDownIcon,
   CheckIcon,
+  HomeIcon,
   LifeBuoyIcon,
   LogOutIcon,
   SunMoonIcon,
   UserIcon,
 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import {
   getSignOutErrorMessage,
   useAuth,
@@ -97,6 +99,10 @@ export default function DashboardAccountMenu({
       <DropdownMenuSeparator />
 
       <DropdownMenuGroup>
+        <DropdownMenuItem render={<Link to="/home" />}>
+          <HomeIcon />
+          Home Page
+        </DropdownMenuItem>
         <DropdownMenuItem disabled>
           <BookOpenIcon />
           Documentation

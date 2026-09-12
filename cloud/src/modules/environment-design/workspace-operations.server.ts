@@ -175,28 +175,27 @@ export const getEnvironmentBySlug = Effect.fn(
   "EnvironmentDesign.getEnvironmentBySlug",
 )(function* (actor: Actor, input: EnvironmentBySlug) {
   const context = yield* requireProjectContext(actor, input);
-  const [environment, preference] = yield* Effect.all(
-    [
-      getEnvironmentForProjectByNamespace(
-        context.project.id,
-        input.environmentSlug,
-      ),
-      getPreferenceForUserAndProject(actor.userId, context.project.id),
-    ],
-    { concurrency: "unbounded" },
+  const environment = yield* getEnvironmentForProjectByNamespace(
+    context.project.id,
+    input.environmentSlug,
   );
   if (environment === null) {
     return yield* new NotFound({ message: "Environment not found." });
   }
-  if (preference?.environmentId !== environment.id) {
-    yield* upsertUserProjectPreference({
-      userId: actor.userId,
-      projectId: context.project.id,
-      environmentId: environment.id,
-    });
-  }
   return environment;
 });
+
+export const selectEnvironment = Effect.fn("EnvironmentDesign.selectEnvironment")(
+  function* (actor: Actor, input: EnvironmentBySlug) {
+    const environment = yield* getEnvironmentBySlug(actor, input);
+    yield* upsertUserProjectPreference({
+      userId: actor.userId,
+      projectId: environment.projectId,
+      environmentId: environment.id,
+    });
+    return environment;
+  },
+);
 
 export const listEnvironments = Effect.fn(
   "EnvironmentDesign.listEnvironments",

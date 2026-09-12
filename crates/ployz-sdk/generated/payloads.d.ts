@@ -25,7 +25,7 @@ export type CertificateObservation = { hostname: IngressHost, status: Certificat
 
 export type ChangeKind = "add" | "update" | "remove";
 
-export type ChangeSetInput = { working: ReviewStateProjection, saved: ReviewSavedProjection, applied: ReviewStateProjection, nodeIntroductions: ReviewStateProjection, runtimeObserved: ReviewStateProjection | null, runtimeObservations?: ReviewRuntimeObservations, };
+export type ChangeSetInput = { working: ReviewStateProjection, saved: ReviewStateProjection, applied: ReviewStateProjection, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
 export type ClusterDomainLabel = string;
 
@@ -593,79 +593,17 @@ export type RestartAttempt<E> = { "type": "not_attempted" } | { "type": "restart
 
 export type RestartPolicy = { "name": "no" } | { "name": "always" } | { "name": "unless-stopped" } | { "name": "on-failure", maximum_retry_count: number | null, };
 
-export type ReviewAggregateDiscardPlan = { nodes: Array<ReviewAggregateNodePlan>, savedCommand: ReviewSavedDiscardCommand | null, };
+export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number, canSave: boolean, };
 
-export type ReviewAggregateNodePlan = { node: ReviewNodeIdentity, working: ReviewWorkingNodePlan, };
+export type ReviewLifecycleKind = "create" | "update" | "delete";
 
-export type ReviewChangeSet = { unsaved: ReviewChangeSlice, pending: ReviewChangeSlice, drift: ReviewChangeSlice, discardAllPlan: ReviewAggregateDiscardPlan, };
-
-export type ReviewChangeSlice = { provenance: ReviewProvenance, groups: Array<ReviewNodeChange>, lifecycleCount: number, settingCount: number, totalCount: number, discardPlans: ReviewDiscardPlans, };
-
-export type ReviewDiscardPlans = { nodes: Array<ReviewNodeDiscardPlan>, settings: Array<ReviewSettingDiscardPlan>, };
-
-export type ReviewLifecycleChange = { id: string, owner: ReviewLifecycleOwner, kind: ReviewLifecycleKind, };
-
-export type ReviewLifecycleKind = "create" | "update" | "delete" | "none";
-
-export type ReviewLifecycleOwner = { node: ReviewNodeIdentity, };
-
-export type ReviewNodeChange = { id: string, node: ReviewNodeIdentity, presence: ReviewNodePresence, lifecycle: ReviewLifecycleChange, settings: Array<ReviewSettingChange>, discardPlan: ReviewNodeDiscardPlan | null, };
-
-export type ReviewNodeDiscardKind = "restore" | "delete";
-
-export type ReviewNodeDiscardPlan = { kind: ReviewNodeDiscardKind, node: ReviewNodeIdentity, } & ({ "target": "working" } | { "target": "saved", basis: ReviewSavedBasis, });
+export type ReviewNodeChange = { node: ReviewNodeIdentity, lifecycle: ReviewLifecycleKind, settings: Array<ServiceSettingChange>, };
 
 export type ReviewNodeIdentity = { type: EnvironmentNodeType, id: string, };
 
-export type ReviewNodePresence = { baseline: ReviewPresence, target: ReviewPresence, };
-
 export type ReviewNodeProjection = { node: ReviewNodeIdentity, config: CompiledNodeConfig | null, };
 
-export type ReviewPresence = "present" | "absent";
-
-export type ReviewProvenance = { baseline: { role: Exclude<ReviewRole, 'node_introduction'>; token: string }, target: { role: Exclude<ReviewRole, 'node_introduction'>; token: string }, };
-
-export type ReviewRole = "working" | "saved" | "applied" | "runtime_observation" | "node_introduction";
-
-export type ReviewRuntimeObservations = { token: string, presence?: Array<ReviewRuntimePresence>, settings: Array<ReviewRuntimeSetting>, };
-
-export type ReviewRuntimePresence = { node: ReviewNodeIdentity, applied: ReviewPresence, observed: ReviewPresence, };
-
-export type ReviewRuntimeSetting = { node: ReviewNodeIdentity, setting: string, label: string, appliedValue: string | null, observedValue: string | null, };
-
-export type ReviewSavedBasis = { "kind": "saved_revision", savedStateSnapshotId: string, };
-
-export type ReviewSavedCommandKind = "discard";
-
-export type ReviewSavedDiscardCommand = { kind: ReviewSavedCommandKind, basis: ReviewSavedBasis, operations: Array<ReviewSavedNodeOperation>, };
-
-export type ReviewSavedNodeOperation = { kind: ReviewSavedOperationKind, nodeType: EnvironmentNodeType, nodeId: string, };
-
-export type ReviewSavedOperationKind = "node";
-
-export type ReviewSavedProjection = { "kind": "no_saved_state", token: string, nodes: Array<ReviewNodeProjection>, } | { "kind": "saved_revision", token: string, nodes: Array<ReviewNodeProjection>, savedStateSnapshotId: string, };
-
-export type ReviewSettingChange = { id: string, owner: ReviewSettingOwner,
-/**
- * Runtime adapter labels are retained. Authored labels are rendered by the consumer.
- */
-label: string | null, kind: ReviewSettingKind, baselineValue: JsonValue, targetValue: JsonValue, baselineSource: ReviewSource | null, discardPlan: ReviewSettingDiscardPlan | null, };
-
-export type ReviewSettingDiscardKind = "restore_setting";
-
-export type ReviewSettingDiscardPlan = { kind: ReviewSettingDiscardKind, owner: ReviewSettingOwner, config: CompiledNodeConfig, } & ({ "target": "working" } | { "target": "saved", basis: ReviewSavedBasis, });
-
-export type ReviewSettingKind = "add" | "update" | "remove" | "drift";
-
-export type ReviewSettingOwner = { node: ReviewNodeIdentity, setting: string, };
-
-export type ReviewSource = { role: ReviewRole, token: string, };
-
 export type ReviewStateProjection = { token: string, nodes: Array<ReviewNodeProjection>, };
-
-export type ReviewWorkingNodePlan = { kind: ReviewNodeDiscardKind, target: ReviewWorkingTarget, node: ReviewNodeIdentity, };
-
-export type ReviewWorkingTarget = "working";
 
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue, };
 
@@ -716,10 +654,6 @@ hosted_dns_hostname: string | null, incomplete_ids: RuntimeWatchIncompleteIds,
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */
 observed_at: string, };
-
-export type SavedDiscardCommand = { kind: 'discard', basis: ReviewSavedBasis, operations: Array<SavedDiscardOperation>, };
-
-export type SavedDiscardOperation = { "kind": "node", nodeType: EnvironmentNodeType, nodeId: string, } | { "kind": "setting", nodeType: 'service', nodeId: string, setting: string, };
 
 export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, variableGroups: Array<SavedVariableGroupIntent>, volumes: Array<SavedVolumeIntent>, };
 

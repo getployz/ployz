@@ -307,22 +307,20 @@ describe("manual environment saved-state persistence", () => {
       working: { token: "working:unchanged", nodes },
       saved: explicit.saved
         ? {
-            kind: "saved_revision",
-            savedStateSnapshotId: explicit.saved.snapshotId,
             token: explicit.saved.token,
             nodes,
           }
-        : { kind: "no_saved_state", token: "saved:none", nodes: [] },
+        : { token: "saved:none", nodes: [] },
       applied: { token: explicit.applied.token, nodes: [] },
       nodeIntroductions: { token: "introductions:none", nodes: [] },
-      runtimeObserved: { token: explicit.applied.token, nodes: [] },
+      submitted: null,
     });
 
-    expect(changeSet.unsaved.totalCount).toBe(0);
-    expect(changeSet.pending.groups).toMatchObject([
+    expect(changeSet.canSave).toBe(false);
+    expect(changeSet.groups).toMatchObject([
       {
         node: { type: "service", id: serviceId },
-        lifecycle: { kind: "create" },
+        lifecycle: "create",
       },
     ]);
   });

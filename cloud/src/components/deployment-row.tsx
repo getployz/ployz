@@ -1,239 +1,22 @@
+import { useState } from "react";
+import { useParams, useRouter } from "@tanstack/react-router";
+import { useLiveQuery } from "@tanstack/react-db";
+import { MoreVerticalIcon, XIcon } from "lucide-react";
+import { toast } from "sonner";
+import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
+import { DeploymentStatusCard } from "#/components/deployment-status-card";
+import { DeploymentLogs } from "#/components/deployment-logs";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useState } from "react";
-import { Link, useParams, useRouter } from "@tanstack/react-router";
-import { useLiveQuery } from "@tanstack/react-db";
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  LoaderIcon,
-  MinusIcon,
-  MoreVerticalIcon,
-  XIcon,
-} from "lucide-react";
-import { Result } from "effect";
-import { toast } from "sonner";
-import { Badge } from "#/components/ui/badge";
 import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
 import { Button } from "#/components/ui/button";
-import { buttonVariants } from "#/components/ui/button-variants";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "#/components/ui/collapsible";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "#/components/ui/dropdown-menu";
-import { Separator } from "#/components/ui/separator";
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "#/components/ui/alert";
-import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
-import { asString } from "#/lib/json";
-import {
-  getRawEnvironmentResourcesCollection,
-} from "#/collections/collections";
-import { cn } from "#/lib/utils";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
+import { getRawEnvironmentResourcesCollection } from "#/collections/collections";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
-import {
-  dispatchQueuedEnvironmentDeploymentServerFn,
-  retryEnvironmentDeploymentServerFn,
-} from "#/modules/deployments/deployment.functions";
-import {
-  deployEventForDeployment,
-  sdkDeployOperationKind,
-  type SdkDeployProgressEvent,
-} from "#/modules/deployments/deployment-presentation";
-import { formatRelativeTime } from "#/utils/relative-time";
-import { Spinner } from "#/components/ui/spinner";
-import {
-  managedNetworkingFailureLabel,
-  managedNetworkingProgressLabel,
-} from "#/components/deployment-networking-presentation";
-import {
-  useDeploymentOperationEvidence,
-  type ParsedOperationEvidenceRow,
-} from "#/modules/deployments/use-deployment-operation-evidence";
+import { dispatchQueuedEnvironmentDeploymentServerFn, retryEnvironmentDeploymentServerFn } from "#/modules/deployments/deployment.functions";
 
-type BadgeVariant =
-  | "secondary"
-  | "info"
-  | "success"
-  | "warning"
-  | "destructive";
-const STATUS_VARIANT = {
-  queued: "info",
-  planning: "info",
-  deploying: "info",
-  applied: "success",
-  failed: "destructive",
-  cancelled: "secondary",
-} as const satisfies Record<EnvironmentDeploymentStatus, BadgeVariant>;
-
-const STATUS_LABEL = {
-  queued: "Queued",
-  planning: "Planning",
-  deploying: "Deploying",
-  applied: "Applied",
-  failed: "Failed",
-  cancelled: "Cancelled",
-} as const satisfies Record<EnvironmentDeploymentStatus, string>;
-
-type DeploymentOutcome = "success" | "failure" | "neutral" | "progress";
-
-const STATUS_OUTCOME = {
-  queued: "progress",
-  planning: "progress",
-  deploying: "progress",
-  applied: "success",
-  failed: "failure",
-  cancelled: "neutral",
-} as const satisfies Record<EnvironmentDeploymentStatus, DeploymentOutcome>;
-
-const OUTCOME_HEADLINE = {
-  success: "Deployment successful",
-  failure: "Deployment failed",
-  neutral: "Deployment cancelled",
-  progress: "Deployment in progress",
-} as const satisfies Record<DeploymentOutcome, string>;
-
-const OUTCOME_TEXT_CLASS = {
-  success: "text-success",
-  failure: "text-destructive",
-  neutral: "text-muted-foreground",
-  progress: "text-info",
-} as const satisfies Record<DeploymentOutcome, string>;
-
-function evidenceLabel(event: ParsedOperationEvidenceRow) {
-  if (event.schemaVersion !== 1) {
-    return "Unsupported historical operation evidence";
-  }
-  const parsed = event.parsed;
-  if (!parsed) return "Unsupported historical operation evidence";
-  if (Result.isFailure(parsed)) return `Unsupported operation event: ${event.eventType}`;
-  switch (parsed.success.eventType) {
-    case "deploy_submitted":
-      return "Deployment submitted";
-    case "deploy_planning_started":
-      return "Planning deployment";
-    case "deploy_image_resolved":
-      return "Image resolved";
-    case "deploy_plan_created":
-      return "Deployment plan created";
-    case "deploy_running":
-      return (
-        managedNetworkingProgressLabel(parsed.success.payload.stage) ??
-        `Deploying: ${parsed.success.payload.stage}`
-      );
-    case "deploy_image_availability_verified":
-      return "Image availability verified";
-    case "deploy_container_started":
-      return "Container started";
-    case "deploy_health_check_started":
-      return "Health check started";
-    case "deploy_phase_started":
-      return `Phase ${parsed.success.payload.phase} started`;
-    case "deploy_cleanup_finished":
-      return parsed.success.payload.failedCount > 0
-        ? "Cleanup completed with warnings"
-        : "Cleanup completed";
-    case "deploy_completed": {
-      const { outcome } = parsed.success.payload;
-      if (outcome.includes("partially"))
-        return `Deployment partially completed: ${outcome}`;
-      return outcome.includes("warnings")
-        ? "Deployment completed with warnings"
-        : "Deployment completed";
-    }
-    case "deploy_failed": {
-      return (
-        managedNetworkingFailureLabel(parsed.success.payload.failure) ??
-        `Deployment failed: ${parsed.success.payload.failure.kind}`
-      );
-    }
-    case "cancelled":
-      return "Core operation cancelled";
-  }
-}
-
-function evidenceVariant(event: ParsedOperationEvidenceRow): BadgeVariant {
-  const parsed = event.parsed;
-  if (!parsed) return "secondary";
-  if (Result.isFailure(parsed)) return "secondary";
-  if (parsed.success.eventType === "deploy_failed") return "destructive";
-  if (
-    parsed.success.eventType === "deploy_cleanup_finished" &&
-    parsed.success.payload.failedCount > 0
-  )
-    return "warning";
-  if (parsed.success.eventType === "deploy_completed") {
-    return parsed.success.payload.outcome === "completed" ? "success" : "warning";
-  }
-  return "info";
-}
-
-function progressStatusVariant(
-  type: SdkDeployProgressEvent["rows"][number]["status"]["type"],
-): BadgeVariant {
-  switch (type) {
-    case "completed":
-      return "success";
-    case "failed":
-      return "destructive";
-    case "running":
-      return "info";
-    case "pending":
-    case "unexecuted":
-      return "secondary";
-    default:
-      return "secondary";
-  }
-}
-
-function DeployProgressStepper({ event }: { event: SdkDeployProgressEvent }) {
-  if (event.rows.length === 0) return null;
-  return (
-    <ol className="flex flex-col gap-2">
-      {event.rows.map((row) => (
-        <li key={row.index} className="flex items-center gap-2">
-          <Badge variant={progressStatusVariant(row.status.type)}>
-            {row.status.type}
-          </Badge>
-          <span className="min-w-0 flex-1 truncate">
-            {sdkDeployOperationKind(row.operation)}
-          </span>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function OutcomeIcon({ outcome }: { outcome: DeploymentOutcome }) {
-  switch (outcome) {
-    case "success":
-      return <CheckIcon className="size-4 text-success" />;
-    case "failure":
-      return <XIcon className="size-4 text-destructive" />;
-    case "neutral":
-      return <MinusIcon className="size-4 text-muted-foreground" />;
-    case "progress":
-      return <LoaderIcon className="size-4 animate-spin text-info" />;
-  }
-}
-
-export function DeploymentRow({
-  deployment,
-}: {
-  deployment: EnvironmentDeploymentSummary;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
+export function DeploymentRow({ deployment, serviceId }: { deployment: EnvironmentDeploymentSummary; serviceId?: string }) {
+  const [isOpen, setIsOpen] = useState(() => ["planning", "deploying"].includes(deployment.status));
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const router = useRouter();
@@ -256,31 +39,8 @@ export function DeploymentRow({
       resource.implementationType === "volume" ? [resource.id] : [],
     ),
   );
-  const outcome = STATUS_OUTCOME[deployment.status];
-  const parsedPreview = deployment.deployPreview;
-  const deployProgress = parsedPreview && deployment.status === "applied"
-    ? deployEventForDeployment(parsedPreview, deployment.status)
-    : null;
-  const hasDurableEvidence = Boolean(
-    deployment.coreDeployId &&
-      !deployment.coreDeployId.startsWith("local-preview:"),
-  );
-  const evidenceQuery = useDeploymentOperationEvidence({
-    organizationSlug: organizationSlug ?? "",
-    deploymentId: deployment.id,
-    enabled: Boolean(isOpen && organizationSlug && hasDurableEvidence),
-  });
-  const evidence = evidenceQuery.events;
-  const isLoadingEvidence = evidenceQuery.isFetching;
-  const queuedForNextTrigger =
-    deployment.status === "queued" && !deployment.dispatchRequestedAt;
-  const statusLabel =
-    deployment.status === "queued"
-      ? queuedForNextTrigger
-        ? "Queued for next trigger"
-        : "Waiting to deploy"
-      : STATUS_LABEL[deployment.status];
-
+  const [showLogs, setShowLogs] = useState(false);
+  const queuedForNextTrigger = deployment.status === "queued" && !deployment.dispatchRequestedAt;
   async function deployQueuedTarget() {
     if (!organizationSlug || !queuedForNextTrigger) return;
     setIsDispatching(true);
@@ -301,6 +61,8 @@ export function DeploymentRow({
       setIsDispatching(false);
     }
   }
+
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   async function retryDeployment() {
     if (!organizationSlug || !deployment.canRetry) return;
@@ -324,52 +86,10 @@ export function DeploymentRow({
   }
 
 
-  return (
-    <>
-    <Collapsible
-      open={isOpen}
-      onOpenChange={setIsOpen}
-      className="rounded-lg border"
-    >
-      <div className="flex items-center gap-3 p-3">
-          <Badge
-            variant={
-              queuedForNextTrigger
-                ? "secondary"
-                : STATUS_VARIANT[deployment.status]
-            }
-          >
-            {statusLabel}
-        </Badge>
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-medium">
-            {deployment.message ?? "Deployment"}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            {formatRelativeTime(deployment.createdAt)} ·{" "}
-            {deployment.serviceCount}{" "}
-            {deployment.serviceCount === 1 ? "service" : "services"}
-          </p>
-          {deployment.failureMessage ? (
-            <p className="truncate text-sm text-destructive">
-              {deployment.failureMessage}
-            </p>
-          ) : null}
-        </div>
-        {organizationSlug && hasDurableEvidence ? (
-          <Link
-            to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs"
-            params={{
-              organizationSlug,
-              projectSlug: deployment.projectSlug,
-              environmentSlug: deployment.environmentSlug,
-            }}
-            search={(prev) => prev}
-            className={buttonVariants({ variant: "outline", size: "sm" })}
-          >
-            View logs
-          </Link>
-        ) : null}
+  return <>
+    <DeploymentStatusCard deployment={deployment} serviceId={serviceId} progress={deployment.runtimeProgress}
+      showLogs={showLogs} onLogsChange={setShowLogs}
+      logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={
         <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon" />}
@@ -379,6 +99,12 @@ export function DeploymentRow({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuGroup>
+              {organizationSlug && ["queued", "planning", "deploying"].includes(deployment.status) ? (
+                <DropdownMenuItem variant="destructive" onClick={() => setCancelOpen(true)}>
+                  <XIcon />
+                  Cancel deployment
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem
                 onClick={() =>
                   void navigator.clipboard.writeText(deployment.id)
@@ -423,107 +149,13 @@ export function DeploymentRow({
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-
-      {parsedPreview ? (
-        <>
-          <Separator />
-          <div className="flex flex-col gap-3 p-3">
-            <Alert>
-            <AlertTitle>Deployment plan</AlertTitle>
-            <AlertDescription className="flex flex-col gap-2">
-              <span>
-                {parsedPreview.operations.length === 0
-                  ? "No operations were planned."
-                  : `${parsedPreview.operations.length} ${
-                      parsedPreview.operations.length === 1
-                        ? "operation"
-                        : "operations"
-                    }`}
-              </span>
-              {parsedPreview.warnings.length > 0 ? (
-                <ul className="flex flex-col gap-1">
-                  {parsedPreview.warnings.map((warning, index) => (
-                    <li key={index}>
-                      {asString(warning) ?? JSON.stringify(warning)}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </AlertDescription>
-          </Alert>
-          {deployProgress ? (
-            <DeployProgressStepper event={deployProgress} />
-          ) : null}
-        </div>
-        </>
-      ) : null}
-
-      {deployment.coreDeployId ||
-      deployment.volumeRemoveAttempts.length > 0 ? (
-        <>
-          <Separator />
-          <CollapsibleTrigger
-            render={
-              <Button
-                variant="ghost"
-                className="h-auto w-full justify-start rounded-none rounded-b-lg px-3 py-2.5 font-normal hover:bg-muted/50"
-              />
-            }
-          >
-            <OutcomeIcon outcome={outcome} />
-            <span className={cn("font-medium", OUTCOME_TEXT_CLASS[outcome])}>
-              {OUTCOME_HEADLINE[outcome]}
-            </span>
-            <ChevronDownIcon
-              className={cn(
-                "ml-auto size-4 text-muted-foreground transition-transform",
-                isOpen ? "rotate-180" : "rotate-0",
-              )}
-            />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="flex flex-col px-3 pb-2">
-              {deployment.volumeRemoveAttempts.length > 0 ? (
-                <VolumeRemoveAttemptHistory
-                  attempts={deployment.volumeRemoveAttempts}
-                  organizationSlug={organizationSlug ?? ""}
-                  projectSlug={deployment.projectSlug}
-                  environmentSlug={deployment.environmentSlug}
-                  availableVolumeResourceIds={availableVolumeResourceIds}
-                />
-              ) : null}
-              {evidence.map((event) => (
-                <div
-                  key={event.sequence}
-                  className="flex items-center gap-3 py-2"
-                >
-                  <Badge variant={evidenceVariant(event)}>
-                    {event.sequence}
-                  </Badge>
-                  <span className="min-w-0 flex-1 truncate">
-                    {evidenceLabel(event)}
-                  </span>
-                </div>
-              ))}
-              {evidenceQuery.hasNextPage ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={isLoadingEvidence}
-                  onClick={() => void evidenceQuery.fetchNextPage()}
-                >
-                  {isLoadingEvidence ? <Spinner /> : null}
-                  {isLoadingEvidence
-                    ? "Loading evidence"
-                    : "Load more evidence"}
-                </Button>
-              ) : null}
-            </div>
-          </CollapsibleContent>
-        </>
-      ) : null}
-    </Collapsible>
-    </>
-  );
+      }>
+      {deployment.volumeRemoveAttempts.length > 0 ? <div className="px-6 py-3"><VolumeRemoveAttemptHistory
+        attempts={deployment.volumeRemoveAttempts} organizationSlug={organizationSlug ?? ""}
+        projectSlug={deployment.projectSlug} environmentSlug={deployment.environmentSlug}
+        availableVolumeResourceIds={availableVolumeResourceIds}
+      /></div> : null}
+    </DeploymentStatusCard>
+    {organizationSlug ? <CancelDeploymentDialog open={cancelOpen} onOpenChange={setCancelOpen} organizationSlug={organizationSlug} deployment={deployment} /> : null}
+  </>;
 }

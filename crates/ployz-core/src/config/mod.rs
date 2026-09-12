@@ -49,9 +49,6 @@ enum ConfigRequest {
         current: PublicationCandidate,
         latest: Option<PublicationCandidate>,
     },
-    ParseSavedDiscard {
-        value: serde_json::Value,
-    },
     ParsePublicationBasis {
         value: serde_json::Value,
     },
@@ -71,11 +68,6 @@ enum ConfigRequest {
     },
     ProjectChanges {
         value: Box<ChangeSetInput>,
-    },
-    WorkingComparison {
-        saved: Option<serde_json::Value>,
-        applied: Option<serde_json::Value>,
-        introduction: Option<serde_json::Value>,
     },
     ParseResource {
         node_type: EnvironmentNodeType,
@@ -154,9 +146,6 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
             current,
             latest,
         } => serde_json::json!(reuse_publication(policy, current, latest)?),
-        ConfigRequest::ParseSavedDiscard { value } => {
-            serde_json::json!(parse_saved_discard(value)?)
-        }
         ConfigRequest::ParsePublicationBasis { value } => {
             serde_json::json!(parse_publication_basis(value)?)
         }
@@ -175,11 +164,6 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
         ConfigRequest::ProjectChanges { value } => {
             serde_json::json!(project_environment_changes(*value)?)
         }
-        ConfigRequest::WorkingComparison {
-            saved,
-            applied,
-            introduction,
-        } => resolve_working_comparison(saved, applied, introduction),
         ConfigRequest::ParseResource { node_type, value } => {
             parse_resource_config(node_type, value)?
         }

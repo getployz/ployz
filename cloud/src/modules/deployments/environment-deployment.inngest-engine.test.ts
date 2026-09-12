@@ -122,6 +122,13 @@ function makeEngine() {
   });
 }
 
+it("matches cancellation to the exact deployment", () => {
+  const fn = createProcessEnvironmentDeployment(new Inngest({ id: "cancel-test" }));
+  expect(fn.opts.cancelOn).toEqual([{
+    event: "environment/deploy.cancel.requested", match: "data.environmentDeploymentId",
+  }]);
+});
+
 describe("process-environment-deployment Inngest adapter", () => {
   beforeEach(() => {
     vi.clearAllMocks();

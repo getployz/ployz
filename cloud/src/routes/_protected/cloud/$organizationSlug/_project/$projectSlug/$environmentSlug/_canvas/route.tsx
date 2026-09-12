@@ -1,6 +1,5 @@
 import { preloadCollection } from "#/collections/query-collection";
 import {
-  Await,
   createFileRoute,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
@@ -18,6 +17,11 @@ import {
 } from "#/collections/collections";
 import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
 import {
+  getEnvironmentResourcesCollection,
+  getServicesCollection,
+  getVolumeResourcesCollection,
+} from "#/modules/services/services.collection";
+import {
   EnvironmentCanvasScene,
   PendingCanvas,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentCanvasScene";
@@ -25,10 +29,10 @@ import {
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
-  loader: ({ params, context }) => {
+  loader: async ({ params, context }) => {
     const organizationSlug = params.organizationSlug;
     const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    const canvasReady = Promise.all([
+    await Promise.all([
       preloadCollection(getProjectsCollection(organizationSlug, scope)),
       preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
       preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
@@ -43,21 +47,30 @@ export const Route = createFileRoute(
         organizationSlug,
       ),
     ]);
-
-    return { canvasReady };
+    // Derived live queries are ready before render, so the scene never suspends on a warm loader.
+    await Promise.all([
+      getServicesCollection(organizationSlug, scope).preload(),
+      getEnvironmentResourcesCollection(organizationSlug, scope).preload(),
+      getVolumeResourcesCollection(organizationSlug, scope).preload(),
+    ]);
   },
+  pendingComponent: CanvasPending,
   errorComponent: CanvasError,
   component: CanvasLayout,
 });
 
 function CanvasLayout() {
-  const { canvasReady } = Route.useLoaderData();
-
   return (
     <div className="h-full overflow-hidden">
-      <Await promise={canvasReady} fallback={<PendingCanvas />}>
-        {() => <EnvironmentCanvasScene />}
-      </Await>
+      <EnvironmentCanvasScene />
+    </div>
+  );
+}
+
+function CanvasPending() {
+  return (
+    <div className="h-full overflow-hidden">
+      <PendingCanvas />
     </div>
   );
 }

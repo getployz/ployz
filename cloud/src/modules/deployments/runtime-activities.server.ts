@@ -1,8 +1,10 @@
 import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
-import type { DeployIntent, PreparedDeploy } from "@ployz/sdk";
+import type { DeployEvent, DeployIntent, PreparedDeploy } from "@ployz/sdk";
 import { Data, Effect, Redacted, Schema } from "effect";
+import { eq } from "drizzle-orm";
+import { environmentDeployment } from "./tables";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
 import { DeployImageNotPullableError } from "#/modules/deployments/deployment-errors";
 import { findUnpullableSdkDeployImages } from "#/modules/deployments/image-gate";
@@ -17,6 +19,9 @@ import {
   compileSdkDeployIntent,
   parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
+import { Database } from "#/server/database.server";
+import { persistDeploymentProgress } from "./deployment-events.server";
+import { deploymentProgressForEvent, type DeploymentProgress } from "./deployment-progress";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 
 export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof executeRuntimeIntent>>["outcome"];
@@ -169,8 +174,8 @@ export const previewRuntimeIntent = Effect.fn(
 });
 
 const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
-  function* ({ prepared, preview }: Effect.Success<ReturnType<typeof previewRuntimeIntent>>) {
-  const outcome = yield* prepared.confirm();
+  function* ({ prepared, preview }: Effect.Success<ReturnType<typeof previewRuntimeIntent>>, onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal) {
+  const outcome = yield* prepared.confirm(onEvent, cancellation);
   const evidence = yield* Schema.decodeUnknownEffect(Schema.Json)({ version: 1, outcome });
   const projected = yield* Effect.try({
     try: () => projectRuntimeOutcome(preview, evidence),
@@ -193,7 +198,40 @@ export const executeEnvironmentDeployment = Effect.fn(
   const intent = yield* compileRuntimeIntent(context);
   const prepared = yield* previewRuntimeIntent(context.organization.id, intent);
   yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, preview: prepared.preview });
-  const { outcome, evidence } = yield* confirmRuntimeIntent(prepared);
+  const database = yield* Database;
+  const readStatus = database.drizzle.select({ status: environmentDeployment.status, cancellationRequestedAt: environmentDeployment.cancellationRequestedAt })
+    .from(environmentDeployment).where(eq(environmentDeployment.id, context.deployment.id)).limit(1);
+  const [current] = yield* readStatus;
+  if (!current || current.status === "cancelled") return yield* Effect.interrupt;
+  if (current.cancellationRequestedAt) return { type: "failed" as const, completed: 0, unexecuted: prepared.prepared.operations.length, reason: "cancelled" as const };
+  const cancellation = new AbortController();
+  // Inngest cancellation cannot interrupt an executing step. Check the durable
+  // row even when the SDK emits no progress, then await its cleanup and outcome.
+  const watchCancellation = Effect.gen(function* () {
+    while (true) {
+      const [deployment] = yield* readStatus;
+      if (!deployment || deployment.cancellationRequestedAt) {
+        cancellation.abort();
+        return yield* Effect.never;
+      }
+      yield* Effect.sleep("1 second");
+    }
+  });
+  let previous: DeploymentProgress | null = null;
+  const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
+    const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
+    const progress = { ...raw, rows: raw.rows.map((row) => {
+      const prior = previous?.rows.find((candidate) => candidate.index === row.index);
+      const projected = {
+        ...row,
+        serviceId: context.snapshots.find((snapshot) => snapshot.config.privateDns === row.serviceName)?.serviceId ?? null,
+      };
+      if (row.status === "failed" && prior) return { ...projected, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health };
+      return projected;
+    }) };
+    previous = progress;
+    await Effect.runPromise(persistDeploymentProgress(context.deployment.id, progress).pipe(Effect.provideService(Database, database)));
+  }, cancellation.signal).pipe(Effect.raceFirst(watchCancellation));
   yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, outcome: evidence });
   return outcome;
 });

@@ -11,6 +11,7 @@ import { AppSidebar } from "#/components/app-sidebar";
 import { NavigationProgress } from "#/components/navigation-progress";
 import {
   environmentBySlugQueryOptions,
+  rememberSelectedEnvironment,
   environmentListQueryOptions,
 } from "#/modules/environment-design/workspace-queries";
 import { projectBySlugQueryOptions } from "#/modules/environment-design/workspace-queries";
@@ -57,6 +58,12 @@ export const Route = createFileRoute(
       organizationId: environment.organizationId,
       navigationReady,
     };
+  },
+  onEnter: ({ context, params }) => {
+    void rememberSelectedEnvironment(context.queryClient, params);
+  },
+  onStay: ({ context, params }) => {
+    void rememberSelectedEnvironment(context.queryClient, params);
   },
   component: RouteComponent,
 });

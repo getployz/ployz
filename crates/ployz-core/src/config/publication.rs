@@ -1,4 +1,4 @@
-//! Publication identity, destructive review, and saved-state discard contracts.
+//! Publication identity and destructive review contracts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -171,82 +171,6 @@ pub fn canonical_reviewed_working_state(
     }
     serde_json::to_string(&reviewable(json!(state)))
         .map_err(|_| ConfigError::at("review", "Reviewed state must be JSON"))
-}
-
-/// A saved node or Service setting to restore from its authored baseline.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum SavedDiscardOperation {
-    Node {
-        node_type: EnvironmentNodeType,
-        node_id: String,
-    },
-    Setting {
-        #[ts(type = "'service'")]
-        node_type: EnvironmentNodeType,
-        node_id: String,
-        setting: String,
-    },
-}
-
-/// A reviewed saved revision and the operations to discard from it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct SavedDiscardCommand {
-    #[ts(type = "'discard'")]
-    pub kind: String,
-    pub basis: super::ReviewSavedBasis,
-    pub operations: Vec<SavedDiscardOperation>,
-}
-
-/// Decode a saved-state discard command with its explicit publication basis.
-///
-/// # Errors
-/// Returns ConfigError for an invalid revision, empty operations, unsupported setting ownership,
-/// or duplicate or malformed operation identities.
-pub fn parse_saved_discard(value: Value) -> Result<SavedDiscardCommand, ConfigError> {
-    let command: SavedDiscardCommand = serde_json::from_value(value)
-        .map_err(|_| ConfigError::at("command", "Invalid discard command"))?;
-    let super::ReviewSavedBasis::SavedRevision {
-        saved_state_snapshot_id,
-    } = &command.basis;
-    if command.kind != "discard"
-        || uuid::Uuid::parse_str(saved_state_snapshot_id).is_err()
-        || command.operations.is_empty()
-    {
-        return Err(ConfigError::at(
-            "command",
-            "Discard requires a publication basis and operations",
-        ));
-    }
-    let mut identities = BTreeSet::new();
-    for operation in &command.operations {
-        let (node_type, node_id, setting) = match operation {
-            SavedDiscardOperation::Node { node_type, node_id } => (node_type, node_id, "node"),
-            SavedDiscardOperation::Setting {
-                node_type,
-                node_id,
-                setting,
-            } if *node_type == EnvironmentNodeType::Service && !setting.is_empty() => {
-                (node_type, node_id, setting.as_str())
-            }
-            _ => return Err(ConfigError::at("operations", "Invalid setting owner")),
-        };
-        if uuid::Uuid::parse_str(node_id).is_err()
-            || !identities.insert((node_type.as_str(), node_id, setting))
-        {
-            return Err(ConfigError::at(
-                "operations",
-                "Discard operations must have valid unique identities",
-            ));
-        }
-    }
-    Ok(command)
 }
 
 /// Decode an explicit no-publication or saved-revision basis.

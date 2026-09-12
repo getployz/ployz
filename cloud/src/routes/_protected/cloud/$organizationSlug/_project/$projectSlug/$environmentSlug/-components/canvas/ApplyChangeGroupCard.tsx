@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
-import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardHeader } from "#/components/ui/card";
 import {
@@ -32,9 +31,7 @@ import {
   getSettingsLabel,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/apply-changes-display";
 
-type DisplayCanvasNodeDiffGroup = CanvasNodeDiffGroup & {
-  slice?: "unsaved" | "pending" | "drift";
-};
+type DisplayCanvasNodeDiffGroup = CanvasNodeDiffGroup;
 
 function getDerivedRowCount(group: DisplayCanvasNodeDiffGroup) {
   return group.rows.filter((row) => row.derivedFrom).length;
@@ -124,15 +121,6 @@ export function ApplyChangeGroupCard({
             )}
 
             <div className="flex items-center gap-4">
-              {group.slice ? (
-                <Badge variant={group.slice === "unsaved" ? "changed" : "secondary"}>
-                  {group.slice === "unsaved"
-                    ? "Unsaved"
-                    : group.slice === "pending"
-                      ? "Pending"
-                      : "Drift"}
-                </Badge>
-              ) : null}
               {hasSettings ? (
                 <div className="flex flex-col items-end text-sm">
                   {ownedRowCount > 0 ? (
