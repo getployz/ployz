@@ -13,7 +13,7 @@ No `next` branch. Features and fixes both land on `main`. Beta is a tag.
 
 ## Cut a release
 
-1. Set `[workspace.package] version` in `Cargo.toml` and `crates/ployz-sdk/package.json` to the version you will tag (`0.2.0` or `0.2.0-beta.1`). Update `cloud/package.json` SDK and native-binding pins to the same version and refresh `cloud/pnpm-lock.yaml` against the published packages; Fast CI checks their equality. `check-release-tag.sh` rejects a tag if either is missing or differs.
+1. From `core/`, set `[workspace.package] version` in `Cargo.toml` and `crates/ployz-sdk/package.json` to the version you will tag (`0.2.0` or `0.2.0-beta.1`). Update native-binding pins in `../dashboard/package.json` to the same version and refresh `../dashboard/pnpm-lock.yaml` against the published packages; retain the local `@ployz/sdk` link. Fast CI checks binding versions. `check-release-tag.sh` rejects a tag if the Cargo or SDK package version is missing or differs.
 2. Merge that commit to `main`.
 3. Tag and push:
 
@@ -67,7 +67,7 @@ Artifacts stay on GitHub Releases. `ployz.sh` is the pointer plus CLI installer.
 
 ## Cloudflare
 
-`.github/workflows/ployz-sh.yml` Direct-Uploads the staged site to the existing `ployz-sh` Pages project. Installer changes on `main` deploy immediately. Pointer updates deploy because Publish dispatches this workflow (`channels` has no workflow file, so a push there cannot). Production always uses `--branch=main`.
+The repository's `.github/workflows/ployz-sh.yml` Direct-Uploads the staged site to the existing `ployz-sh` Pages project. Installer changes on `main` deploy immediately. Pointer updates deploy because Publish dispatches this workflow (`channels` has no workflow file, so a push there cannot). Production always uses `--branch=main`.
 
 | URL | Body |
 | --- | --- |

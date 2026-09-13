@@ -27,8 +27,8 @@ importers:
         specifier: ^5.2.8
         version: 5.2.8
       '@ployz/sdk':
-        specifier: link:../crates/ployz-sdk
-        version: link:../crates/ployz-sdk
+        specifier: link:../core/crates/ployz-sdk
+        version: link:../core/crates/ployz-sdk
       '@polar-sh/better-auth':
         specifier: ^1.8.4
         version: 1.8.4(99b2e7f0411d51510a6643c2380a4f96)

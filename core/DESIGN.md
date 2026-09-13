@@ -17,7 +17,7 @@ meanings defined in [CONTEXT.md](CONTEXT.md).
 
 Judge every new feature against the bets below before designing it. Each bet states
 the position, why Ployz holds it, and the red flags that signal a design fighting
-it. A change that fights a bet needs an ADR in `docs/adr/` justifying the
+it. A change that fights a bet needs an ADR in `../docs/adr/` justifying the
 exception — or a redesign. A red flag is not an automatic no; it is a demand for
 that justification. The Boundaries section at the end lists what Ployz
 deliberately does not provide; a feature that needs one of those is fighting the

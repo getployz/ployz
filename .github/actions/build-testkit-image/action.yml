@@ -14,6 +14,7 @@ runs:
         cache-key: testkit-release
     - name: Build host binaries
       shell: bash
+      working-directory: core
       run: |
         cargo build --locked --release --package ployz --package ployzd
         install -D target/release/ployz crates/ployz-testkit/prebuilt/ployz
@@ -26,8 +27,8 @@ runs:
         password: ${{ github.token }}
     - uses: docker/build-push-action@v6
       with:
-        context: ${{ github.workspace }}
-        file: crates/ployz-testkit/Dockerfile
+        context: ${{ github.workspace }}/core
+        file: core/crates/ployz-testkit/Dockerfile
         platforms: linux/${{ inputs.arch }}
         push: false
         load: true
@@ -39,6 +40,7 @@ runs:
       shell: bash
       env:
         IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-${{ inputs.arch }}
+      working-directory: core
       run: |
         bash scripts/prime-testkit-image.sh
         docker push "$IMAGE"

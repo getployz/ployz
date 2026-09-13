@@ -27,7 +27,7 @@ class CloudSdkVersionTest(unittest.TestCase):
             sdk = manifest.parent / "crates/ployz-sdk/package.json"
             sdk.parent.mkdir(parents=True)
             sdk.write_text(json.dumps({"version": "1.2.3"}))
-            cloud["dependencies"]["@ployz/sdk"] = "link:../crates/ployz-sdk"
+            cloud["dependencies"]["@ployz/sdk"] = "link:../core/crates/ployz-sdk"
             package.write_text(json.dumps(cloud))
             check(manifest, package)
             sdk.write_text(json.dumps({"version": "1.2.2"}))

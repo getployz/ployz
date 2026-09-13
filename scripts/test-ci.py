@@ -16,23 +16,23 @@ ci = runpy.run_path(str(SCRIPT))
 class CiTest(unittest.TestCase):
     def test_selects_checks_for_actual_consumers(self):
         cases = [
-            (["DESIGN.md"], {"contracts"}),
+            (["core/DESIGN.md"], {"contracts"}),
             (["evidence/product-paths.tsv"], {"contracts"}),
-            (["cloud/src/app.tsx"], {"contracts", "cloud"}),
-            (["crates/ployz/tests/connect/tailcat.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
-            (["crates/ployzd/src/main.rs"], {"contracts", "rust-lint", "rust-tests"}),
-            (["crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud", "sdk-types"}),
-            (["scripts/build-cloud-sdk.sh"], {"contracts", "cloud"}),
-            (["scripts/pack-release.sh"], {"contracts", "release-contracts"}),
+            (["dashboard/src/app.tsx"], {"contracts", "cloud"}),
+            (["core/crates/ployz/tests/connect/tailcat.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
+            (["core/crates/ployzd/src/main.rs"], {"contracts", "rust-lint", "rust-tests"}),
+            (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud", "sdk-types"}),
+            (["core/scripts/build-cloud-sdk.sh"], {"contracts", "cloud"}),
+            (["core/scripts/pack-release.sh"], {"contracts", "release-contracts"}),
         ]
         for paths, expected in cases:
             with self.subTest(paths=paths):
                 self.assertEqual(ci["select"](paths), expected)
-        for path in ["Cargo.lock", ".github/workflows/ci.yml", "crates/ployzd/Cargo.toml", "crates/new-config", "unknown.config"]:
+        for path in ["core/Cargo.lock", ".github/workflows/ci.yml", "core/crates/ployzd/Cargo.toml", "core/crates/new-config", "unknown.config"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
-        self.assertIn("compose", ci["select"](["crates/ployz/compose-helper/main.go"]))
-        self.assertIn("cloud", ci["select"](["crates/ployz-sdk/tests/config-contract.mjs"]))
+        self.assertIn("compose", ci["select"](["core/crates/ployz/compose-helper/main.go"]))
+        self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
 
     def test_renames_and_deletions_include_the_old_production_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -40,7 +40,7 @@ class CiTest(unittest.TestCase):
             def git(*args):
                 return subprocess.check_output(["git", "-c", "user.name=CI test", "-c", "user.email=ci@example.invalid", *args], cwd=root, stderr=subprocess.DEVNULL, text=True).strip()
             git("init", "--quiet")
-            source = root / "crates/ployz-core/src/rpc.rs"
+            source = root / "core/crates/ployz-core/src/rpc.rs"
             source.parent.mkdir(parents=True)
             source.write_text("production\n")
             git("add", ".")
@@ -80,7 +80,7 @@ class CiTest(unittest.TestCase):
                 ci["check_result"](needs)
 
     def test_cloud_stage_runs_alone_and_preserves_failure(self):
-        script = SCRIPT.parent.parent / "cloud/scripts/pr-check.sh"
+        script = SCRIPT.parent.parent / "dashboard/scripts/pr-check.sh"
         with tempfile.TemporaryDirectory() as directory:
             pnpm = Path(directory) / "pnpm"
             pnpm.write_text('#!/bin/sh\nprintf "%s\\n" "$*"\nexit "${CHECK_EXIT:-0}"\n')

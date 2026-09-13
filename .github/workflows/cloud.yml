@@ -23,7 +23,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: cloud
+    working-directory: dashboard
 
 # CI does not use debugger symbols or per-checkout incremental compilation.
 env:
@@ -67,11 +67,11 @@ jobs:
         id: sdk-cache
         with:
           path: |
-            crates/ployz-sdk/ployz-sdk.node
-            crates/ployz-sdk/ployz-tailcat
-            crates/ployz-sdk/generated/config-wasm.mjs
+            core/crates/ployz-sdk/ployz-sdk.node
+            core/crates/ployz-sdk/ployz-tailcat
+            core/crates/ployz-sdk/generated/config-wasm.mjs
           # No restore prefix: a binding from different source is not valid evidence.
-          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/tailcat/**', 'Cargo.toml', 'Cargo.lock', '.cargo/**', 'crates/**', '!crates/*/tests/**', '!crates/ployzd/**', '!crates/ployz-testkit/**', 'scripts/build-cloud-sdk.sh', 'scripts/build-config-browser.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
+          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/native/tailcat/**', 'core/Cargo.toml', 'core/Cargo.lock', 'core/.cargo/**', 'core/crates/**', '!core/crates/*/tests/**', '!core/crates/ployzd/**', '!core/crates/ployz-testkit/**', 'core/scripts/build-cloud-sdk.sh', 'core/scripts/build-config-browser.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
       - uses: ./.github/actions/setup-rust
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
@@ -83,28 +83,28 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
-          go-version-file: native/tailcat/go.mod
-          cache-dependency-path: native/tailcat/go.sum
+          go-version-file: core/native/tailcat/go.mod
+          cache-dependency-path: core/native/tailcat/go.sum
       - name: Build SDK when its inputs changed
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: bash scripts/pr-check.sh sdk
       - name: Verify native and browser config agree
-        run: node ../crates/ployz-sdk/tests/config-contract.mjs
+        run: node ../core/crates/ployz-sdk/tests/config-contract.mjs
       - uses: actions/cache/save@v4
         if: steps.sdk-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected
         with:
           path: |
-            crates/ployz-sdk/ployz-sdk.node
-            crates/ployz-sdk/ployz-tailcat
-            crates/ployz-sdk/generated/config-wasm.mjs
+            core/crates/ployz-sdk/ployz-sdk.node
+            core/crates/ployz-sdk/ployz-tailcat
+            core/crates/ployz-sdk/generated/config-wasm.mjs
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: cloud-sdk
           path: |
-            crates/ployz-sdk/ployz-sdk.node
-            crates/ployz-sdk/ployz-tailcat
-            crates/ployz-sdk/generated/config-wasm.mjs
+            core/crates/ployz-sdk/ployz-sdk.node
+            core/crates/ployz-sdk/ployz-tailcat
+            core/crates/ployz-sdk/generated/config-wasm.mjs
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -119,8 +119,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: cloud-sdk
-          path: crates/ployz-sdk
-      - run: chmod +x ../crates/ployz-sdk/ployz-tailcat
+          path: core/crates/ployz-sdk
+      - run: chmod +x ../core/crates/ployz-sdk/ployz-tailcat
       - name: Build and verify frontend package
         run: pnpm pr:check build
 
@@ -134,8 +134,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: cloud-sdk
-          path: crates/ployz-sdk
-      - run: chmod +x ../crates/ployz-sdk/ployz-tailcat
+          path: core/crates/ployz-sdk
+      - run: chmod +x ../core/crates/ployz-sdk/ployz-tailcat
       - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
@@ -144,6 +144,6 @@ jobs:
         if: always()
         with:
           name: cloud-test-results
-          path: cloud/test-results
+          path: dashboard/test-results
           retention-days: 7
           if-no-files-found: ignore

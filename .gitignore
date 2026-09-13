@@ -1,13 +1,10 @@
-/target/
 *.node
 node_modules/
 /docs/*
-!/docs/RELEASE.md
 !/docs/adr/
 !/docs/adr/**
+!/docs/agents/
+!/docs/agents/**
 /.claude/*
 !/.claude/skills/
 /.scratch/
-crates/ployz-testkit/prebuilt/
-
-/crates/ployz-sdk/ployz-tailcat

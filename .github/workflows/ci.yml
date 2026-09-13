@@ -53,23 +53,24 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate workflow YAML
         run: |
-          bash cloud/scripts/install-actionlint.sh "$RUNNER_TEMP/ployz-tools"
+          bash dashboard/scripts/install-actionlint.sh "$RUNNER_TEMP/ployz-tools"
           "$RUNNER_TEMP/ployz-tools/actionlint"
       - name: Check routing and the required result
         run: python3 scripts/test-ci.py
-      - run: bash scripts/check-layer3-runner.sh
+      - run: bash core/scripts/check-layer3-runner.sh
       - run: python3 scripts/test-cloud-sdk-version.py
       - run: python3 scripts/check-cloud-sdk-version.py
-      - run: bash scripts/test-cli-installer.sh
-      - run: bash scripts/test-release-packaging.sh
-      - run: bash scripts/test-daemon-lifecycle.sh
-      - run: bash scripts/test-qualify-release.sh
-      - run: bash scripts/test-qualify-clean-init.sh
+      - run: bash core/scripts/test-cli-installer.sh
+      - run: bash core/scripts/test-release-packaging.sh
+      - run: bash core/scripts/test-daemon-lifecycle.sh
+      - run: bash core/scripts/test-qualify-release.sh
+      - run: bash core/scripts/test-qualify-clean-init.sh
       - uses: dtolnay/rust-toolchain@1.97.1
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+        working-directory: core
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
 
   compose:
@@ -81,16 +82,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
+          go-version-file: core/crates/ployz/compose-helper/go.mod
+          cache-dependency-path: core/crates/ployz/compose-helper/go.sum
       - name: Check Compose helper
-        working-directory: crates/ployz/compose-helper
+        working-directory: core/crates/ployz/compose-helper
         run: |
           test -z "$(gofmt -l ./*.go)"
           go vet ./...
           go test ./...
 
   rust-lint:
+    defaults:
+      run:
+        working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
     runs-on: ubuntu-latest
@@ -113,6 +117,9 @@ jobs:
           fi
 
   rust-tests:
+    defaults:
+      run:
+        working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
     runs-on: ubuntu-latest
@@ -148,13 +155,13 @@ jobs:
           cargo test --doc --workspace --all-features --locked
       - name: Check the missing SSH prerequisite
         env:
-          PLOYZ_BIN: ${{ github.workspace }}/target/debug/ployz
+          PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: rust-build-timings
-          path: target/cargo-timings/*.html
+          path: core/target/cargo-timings/*.html
           retention-days: 7
           if-no-files-found: ignore
 
@@ -168,9 +175,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: bash scripts/check-sdk-types.sh
+      - run: bash core/scripts/check-sdk-types.sh
 
   macos-cli:
+    defaults:
+      run:
+        working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'macos-cli')
     runs-on: macos-latest

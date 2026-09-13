@@ -12,7 +12,7 @@ release_artifacts_needed() {
     local file
     for file in "$@"; do
         case $file in
-            .goreleaser.yaml | .github/workflows/release.yml | .github/workflows/release-contracts.yml | scripts/verify-release.sh | scripts/pack-release.sh | scripts/homebrew-formula.sh | scripts/release-artifacts-needed.sh)
+            core/.goreleaser.yaml | .github/workflows/release.yml | .github/workflows/release-contracts.yml | core/scripts/verify-release.sh | core/scripts/pack-release.sh | core/scripts/homebrew-formula.sh | core/scripts/release-artifacts-needed.sh)
                 echo true
                 return
                 ;;

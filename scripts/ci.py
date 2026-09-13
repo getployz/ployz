@@ -23,16 +23,16 @@ CONTRACT_SCRIPTS = {
 def select(paths):
     selected = {"contracts"}
     for path in paths:
-        if path.endswith(".md") or path == "evidence/product-paths.tsv" or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "site/")):
+        if path.endswith(".md") or path == "evidence/product-paths.tsv" or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
             continue
         if path.startswith(".github/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}:
             return JOBS.copy()
-        if path.startswith("cloud/"):
+        if path.startswith("dashboard/"):
             selected.add("cloud")
-        elif path.startswith("crates/"):
-            if path.count("/") < 2:
+        elif path.startswith("core/crates/"):
+            if path.count("/") < 3:
                 return JOBS.copy()
-            _, crate, relative = path.split("/", 2)
+            _, _, crate, relative = path.split("/", 3)
             selected |= RUST
             if crate == "ployzd":
                 continue
@@ -45,19 +45,19 @@ def select(paths):
                 selected |= {"cloud", "sdk-types"}
             if relative.startswith("compose-helper/"):
                 selected.add("compose")
-        elif path == "install.sh" or path.startswith("scripts/qualify-release/"):
+        elif path == "core/install.sh" or path.startswith("core/scripts/qualify-release/"):
             continue
-        elif path in {"scripts/build-cloud-sdk.sh", "scripts/build-config-browser.sh"}:
+        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-browser.sh"}:
             selected.add("cloud")
-        elif path == "scripts/check-sdk-types.sh":
+        elif path == "core/scripts/check-sdk-types.sh":
             selected.add("sdk-types")
-        elif path == "scripts/test-missing-ssh-client.sh":
+        elif path == "core/scripts/test-missing-ssh-client.sh":
             selected |= RUST
-        elif path.startswith("scripts/") and Path(path).name in CONTRACT_SCRIPTS:
+        elif path.startswith(("scripts/", "core/scripts/")) and Path(path).name in CONTRACT_SCRIPTS:
             continue
         else:
             artifacts = subprocess.check_output(
-                ["bash", str(ROOT / "scripts/release-artifacts-needed.sh"), "pull_request", path], text=True
+                ["bash", str(ROOT / "core/scripts/release-artifacts-needed.sh"), "pull_request", path], text=True
             ).strip()
             if artifacts != "true":
                 return JOBS.copy()

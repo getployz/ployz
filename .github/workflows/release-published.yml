@@ -8,6 +8,10 @@ permissions:
   contents: write
   actions: write
 
+defaults:
+  run:
+    working-directory: core
+
 jobs:
   promote:
     runs-on: ubuntu-latest

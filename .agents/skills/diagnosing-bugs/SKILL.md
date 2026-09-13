@@ -1,13 +1,13 @@
 ---
 name: diagnosing-bugs
-description: Diagnosis loop for hard bugs and performance regressions. Use when the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow.
+description: Diagnosis loop for explicit debugging requests, bugs with unclear causes, intermittent failures, and performance regressions.
 ---
 
 # Diagnosing Bugs
 
 A discipline for hard bugs. Skip phases only when explicitly justified.
 
-When exploring the codebase, read `CONTEXT.md` (if it exists) to get a clear mental model of the relevant modules, and check ADRs in the area you're touching.
+When diagnosis depends on domain behavior or ownership, use `CONTEXT-MAP.md` to find the relevant project's glossary and check ADRs in that area.
 
 ## Redact
 
@@ -52,7 +52,7 @@ The goal is not a clean repro but a **higher reproduction rate**. Loop the trigg
 
 ### When you genuinely cannot build a loop
 
-Stop and say so explicitly. List what you tried. Ask the user for: (a) access to whatever environment reproduces it, (b) a redacted captured artifact (HAR file, log dump, core dump, screen recording with timestamps), or (c) permission to add temporary production instrumentation. Do **not** proceed to hypothesise without a loop.
+State what you tried and continue read-only investigation with provisional hypotheses. Request missing access or a redacted artifact when needed; obtain authorization before adding production instrumentation. Distinguish a likely cause from a verified fix.
 
 ### Completion criterion — a tight loop that goes red
 
@@ -63,7 +63,7 @@ Phase 1 is done when the loop is **tight** and **red-capable**: you can name **o
 - [ ] **Fast** — seconds, not minutes.
 - [ ] **Agent-runnable** — you can run it unattended; a human in the loop only via `scripts/hitl-loop.template.sh`.
 
-If you catch yourself reading code to build a theory before this command exists, **stop — jumping straight to a hypothesis is the exact failure this skill prevents.** No red-capable command, no Phase 2.
+Code reading and provisional hypotheses can help construct the loop. Keep assumptions explicit and seek a runnable check before claiming the bug is fixed.
 
 ## Phase 2 — Reproduce + minimise
 
@@ -83,7 +83,7 @@ Why bother: a minimal repro shrinks the hypothesis space in Phase 3 (fewer movin
 
 Done when **every remaining element is load-bearing** — removing any one of them makes the loop go green.
 
-Do not proceed until you have reproduced **and** minimised.
+Minimise while it helps isolate the cause; continue evidence gathering when the reproduction environment is unavailable.
 
 ## Phase 3 — Hypothesise
 
@@ -131,7 +131,7 @@ If a correct seam exists:
 
 Required before declaring done:
 
-- [ ] Original repro no longer reproduces (re-run the Phase 1 loop)
+- [ ] Original repro no longer reproduces (re-run the Phase 1 loop), or verification remains explicitly incomplete until appropriate evidence is available
 - [ ] Regression test passes (or absence of seam is documented)
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
 - [ ] Throwaway prototypes deleted (or moved to a clearly-marked debug location)

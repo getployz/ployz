@@ -5,8 +5,8 @@ read both when working across their boundary.
 
 | Context | Glossary | Scope |
 | --- | --- | --- |
-| Engine (`crates/`) | [CONTEXT.md](CONTEXT.md) | Machines, Cluster observations, and bounded Deploy operations |
-| Cloud (`cloud/`) | [cloud/CONTEXT.md](cloud/CONTEXT.md) | Product authoring, Saved State, and Cloud Deployment Attempts |
+| Core (`core/`) | [core/CONTEXT.md](core/CONTEXT.md) | Machines, Cluster observations, and bounded Deploy operations |
+| Dashboard (`dashboard/`) | [dashboard/CONTEXT.md](dashboard/CONTEXT.md) | Product authoring, Saved State, and Cloud Deployment Attempts |
 
 Cloud observes the Engine and requests operations. The Engine owns runtime
 behavior; each Cluster observation remains relative to an Entry Machine. Cloud
@@ -20,6 +20,4 @@ At the boundary:
 - Shared runtime bootstrap terms follow the Engine glossary; the Cloud glossary
   supplies their product language.
 
-Architectural decisions live in [docs/adr/](docs/adr/). The
-[repository layout decision](docs/adr/0004-product-repo-layout.md) preserves these
-separate glossaries.
+Architectural decisions live in [docs/adr/](docs/adr/).

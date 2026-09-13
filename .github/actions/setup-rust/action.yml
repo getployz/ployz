@@ -12,8 +12,8 @@ runs:
   steps:
     - uses: actions/setup-go@v5
       with:
-        go-version-file: crates/ployz/compose-helper/go.mod
-        cache-dependency-path: crates/ployz/compose-helper/go.sum
+        go-version-file: core/crates/ployz/compose-helper/go.mod
+        cache-dependency-path: core/crates/ployz/compose-helper/go.sum
     - uses: dtolnay/rust-toolchain@1.97.1
       with:
         components: ${{ inputs.components }}

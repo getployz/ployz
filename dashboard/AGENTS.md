@@ -1,10 +1,9 @@
 <!-- intent-skills:start -->
 ## Skill Loading
 
-Before substantial work:
-- Skill check: run `pnpm dlx @tanstack/intent@latest list`, or use skills already listed in context.
-- Skill guidance: if one local skill clearly matches the task, run `pnpm dlx @tanstack/intent@latest load <package>#<skill>` and follow the returned `SKILL.md`.
-- Monorepos: when working across packages, run the skill check from the workspace root and prefer the local skill for the package being changed.
+When framework guidance is needed:
+- Use matching skills already listed in context first.
+- Discover missing guidance with `pnpm dlx @tanstack/intent@latest list` from the affected package root (`dashboard/` here), then load the matching `<package>#<skill>`.
 - Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
 <!-- intent-skills:end -->
 
@@ -19,19 +18,17 @@ Before substantial work:
 - Return noncritical readiness promises from loaders without awaiting them.
 - Reveal consuming regions with `Await` or `Suspense`.
 
-- **Before submitting or updating a PR, run `pnpm pr:check`.** This mirrors the PR CI checks (`pnpm typecheck`, `pnpm lint`, and `pnpm test`) so type errors, lint failures, and tests are caught locally before pushing or requesting review. If the CI workflow changes, update the `pr:check` script in `package.json` at the same time.
+- **For dashboard code, build, or dependency changes, run `pnpm pr:check` as the final local gate.** Reuse passing results until relevant files change; documentation-only or PR metadata updates do not require a rerun. Keep the script aligned with the applicable PR CI checks when those change.
 - **Inngest workflows that own durable rows must not leave ambiguous active state.** If an Inngest function creates or manages a row with statuses like `pending`/`running`, persist the Inngest `runId` on that row and handle `inngest/function.cancelled` so manual cancellation marks the row `cancelled` or another terminal status. Runtime cancellation may not undo remote side effects, but the cloud row must not remain active forever.
-- **When editing app UI or changing shadcn component usage, you must use the `shadcn` skill first and follow its rules.** Prefer stock component composition, variants, and sizes before adding custom classes. Especially don't use custom text sizes, custom padding overrides like pb-2, and any colours like bg-primary/20.
+- **When changing shadcn components or their composition, use the `shadcn` skill first and follow its rules.** Prefer stock component composition, variants, and sizes before adding custom classes. Especially don't use custom text sizes, custom padding overrides like pb-2, and any colours like bg-primary/20.
 - **`SidebarProvider` inside `WireframeSidebar` needs layout overrides.** The shadcn `SidebarProvider` renders a wrapper div with `flex min-h-svh w-full` which breaks Wireframe's fixed/absolute positioning system. Always override with `className="block h-full min-h-0"` (or similar) when nesting `SidebarProvider` inside a `WireframeSidebar` or `Wireframe`.
 
 
 
 
 - **When I ask to update intents, use `npx @tanstack/intent@latest list` to inspect the current skills, then update the `intent-skills` block in `AGENTS.md` unless I ask for a different target file.** `npx @tanstack/intent@latest install` is guidance output here, not an automatic updater.
-- **After updating intents in `AGENTS.md`, run `pnpm intents:sync`.** This runs `tessl skill review --optimize --yes` for each skill and then rewrites each `task`.
 - **Use `npx @tanstack/intent@latest list` to inspect available skills when needed.** Use `--json` only if machine-readable output helps.
 - **Use `npx @tanstack/intent@latest stale` only when I ask to check for outdated skill docs.**
-- **Intent blocks should store the exact optimized skill description text.** In `intent-skills`, each `task` must match `validation.skillDescription` after the Tessl optimize workflow, and each `load` must use the exact listed path.
 Adding an Environment Resource type starts in `environment-resource-types.ts`, then adds its strict snapshot/config parser, projection, and diff behavior to `environment-resource-node.ts`. Database constraints, collection projection, and canvas rendering still add their natural integration, but adapters must use the spine's type guard and config parser rather than re-enumerating resource types. Resource lifecycle diffs are resource-owned; anything that changes a service's container template (e.g. mounts) is a service-owned diff row so it is not double-counted.
 
 We use react compiler - no need for memo/callback etc.

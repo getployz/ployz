@@ -1,8 +1,8 @@
 # Domain docs
 
-This repository has Engine and Cloud domain contexts.
+This repository has Core (Engine) and Dashboard (Cloud) domain contexts.
 
-Before exploring or changing the system:
+When changing domain behavior, terminology, or ownership boundaries:
 
 - Read [CONTEXT-MAP.md](../../CONTEXT-MAP.md), then the relevant glossary. Read both
   glossaries for work crossing the Engine–Cloud boundary.

@@ -10,8 +10,8 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "bash ../scripts/build-cloud-sdk.sh && portless ployz-cloud vite dev",
-    "build": "bash ../scripts/build-cloud-sdk.sh && vite build && node scripts/package-sdk.mjs",
+    "dev": "bash ../core/scripts/build-cloud-sdk.sh && portless ployz-cloud vite dev",
+    "build": "bash ../core/scripts/build-cloud-sdk.sh && vite build && node scripts/package-sdk.mjs",
     "start": "node scripts/start-with-inngest-sync.mjs",
     "preview": "vite preview",
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
@@ -33,7 +33,7 @@
     "@effect/sql-pg": "4.0.0-rc.112",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
-    "@ployz/sdk": "link:../crates/ployz-sdk",
+    "@ployz/sdk": "link:../core/crates/ployz-sdk",
     "@polar-sh/better-auth": "^1.8.4",
     "@polar-sh/checkout": "^0.3.0",
     "@polar-sh/sdk": "^0.48.1",

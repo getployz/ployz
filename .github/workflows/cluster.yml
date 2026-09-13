@@ -73,12 +73,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Run informing suites with independent results
+        working-directory: core
         run: bash scripts/run-layer3-tests.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cluster-test-logs
-          path: target/layer3-logs
+          path: core/target/layer3-logs
           retention-days: 7
           if-no-files-found: ignore
 

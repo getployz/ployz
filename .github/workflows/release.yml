@@ -24,6 +24,10 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   RELEASE_SHA: ${{ inputs.sha || github.sha }}
 
+defaults:
+  run:
+    working-directory: core
+
 jobs:
   tag:
     runs-on: ubuntu-latest
@@ -61,7 +65,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-contracts
-          path: .
+          path: core
       - run: bash scripts/publish-github-release.sh "$RELEASE_TAG"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

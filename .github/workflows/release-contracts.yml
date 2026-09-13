@@ -44,6 +44,10 @@ env:
   CARGO_ZIGBUILD_VERSION: 0.19.7
   GORELEASER_VERSION: 2.6.0
 
+defaults:
+  run:
+    working-directory: core
+
 jobs:
   build-linux:
     strategy:
@@ -69,10 +73,10 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: native/tailcat/go.mod
+          go-version-file: core/native/tailcat/go.mod
           cache-dependency-path: |
-            crates/ployz/compose-helper/go.sum
-            native/tailcat/go.sum
+            core/crates/ployz/compose-helper/go.sum
+            core/native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -119,6 +123,7 @@ jobs:
           bash native/tailcat/build.sh "$PWD/target/tailcat/linux_${{ matrix.arch }}/ployz-tailcat"
       - uses: goreleaser/goreleaser-action@v6
         with:
+          workdir: core
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
           args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
@@ -126,8 +131,8 @@ jobs:
         with:
           name: release-linux-${{ matrix.binary }}-${{ matrix.arch }}
           path: |
-            **/dist/*.tar.gz
-            **/target/${{ matrix.rust_target }}/release/sqlite-probe
+            core/dist/*.tar.gz
+            core/target/${{ matrix.rust_target }}/release/sqlite-probe
           if-no-files-found: error
 
   build-macos:
@@ -150,10 +155,10 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: native/tailcat/go.mod
+          go-version-file: core/native/tailcat/go.mod
           cache-dependency-path: |
-            crates/ployz/compose-helper/go.sum
-            native/tailcat/go.sum
+            core/crates/ployz/compose-helper/go.sum
+            core/native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -194,13 +199,14 @@ jobs:
           bash native/tailcat/build.sh "$PWD/target/tailcat/darwin_${{ matrix.arch }}/ployz-tailcat"
       - uses: goreleaser/goreleaser-action@v6
         with:
+          workdir: core
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
           args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
       - uses: actions/upload-artifact@v4
         with:
           name: release-darwin-${{ matrix.arch }}
-          path: dist/*.tar.gz
+          path: core/dist/*.tar.gz
           if-no-files-found: error
 
   macos-smoke:
@@ -214,7 +220,7 @@ jobs:
         with:
           pattern: release-darwin-*
           merge-multiple: true
-          path: dist
+          path: core/dist
       - run: softwareupdate --install-rosetta --agree-to-license
       - run: scripts/verify-release.sh macos
 
@@ -233,12 +239,12 @@ jobs:
         with:
           pattern: release-linux-*
           merge-multiple: true
-          path: linux
+          path: core/linux
       - uses: actions/download-artifact@v4
         with:
           pattern: release-darwin-*
           merge-multiple: true
-          path: darwin
+          path: core/darwin
       - run: |
           mkdir -p dist
           cp linux/dist/*.tar.gz dist/
@@ -252,9 +258,9 @@ jobs:
         with:
           name: release-contracts
           path: |
-            dist
-            target/x86_64-unknown-linux-musl/release/sqlite-probe
-            target/aarch64-unknown-linux-musl/release/sqlite-probe
+            core/dist
+            core/target/x86_64-unknown-linux-musl/release/sqlite-probe
+            core/target/aarch64-unknown-linux-musl/release/sqlite-probe
 
   linux-smoke:
     needs: [build-linux]
@@ -267,6 +273,6 @@ jobs:
         with:
           pattern: release-linux-*
           merge-multiple: true
-          path: .
+          path: core
       - run: sudo apt-get update && sudo apt-get install -y file qemu-user
       - run: scripts/verify-release.sh linux

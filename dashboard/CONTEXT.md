@@ -1,6 +1,6 @@
 # Ployz Cloud
 
-Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../CONTEXT.md) and are mirrored here for Cloud product language. Enrollment follows the [protected connection candidate decision](../docs/adr/0005-tailcat-connection-candidates.md).
+Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../core/CONTEXT.md) and are mirrored here for Cloud product language. Enrollment follows the [protected connection candidate decision](../docs/adr/0005-tailcat-connection-candidates.md).
 
 ## Language
 

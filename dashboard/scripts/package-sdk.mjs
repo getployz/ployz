@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
-const source = new URL("../../crates/ployz-sdk/", import.meta.url);
+const source = new URL("../../core/crates/ployz-sdk/", import.meta.url);
 const destination = new URL("../.output/server/node_modules/@ployz/sdk/", import.meta.url);
 mkdirSync(destination, { recursive: true });
 const manifest = JSON.parse(readFileSync(new URL("package.json", source), "utf8"));
