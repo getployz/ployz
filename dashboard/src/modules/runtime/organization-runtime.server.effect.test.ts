@@ -196,6 +196,70 @@ it.effect("notification stream cancels remote sessions and fails closed when dis
 );
 
 
+it.effect("re-subscribes after the notification stream drops and resumes cancelling", () =>
+  Effect.gen(function* () {
+    const first = yield* Queue.make<string, Error>();
+    const second = yield* Queue.make<string, Error>();
+    const streams = [Stream.fromQueue(first), Stream.fromQueue(second)];
+    let subscriptions = 0;
+    const closedByDisconnect = yield* Deferred.make<void>();
+    const closedByRemoval = yield* Deferred.make<void>();
+    let count = 0;
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "current", connections,
+    }), Effect.sync(() => {
+      subscriptions += 1;
+      const stream = streams[subscriptions - 1];
+      if (stream === undefined) throw new Error("unexpected third subscription");
+      return stream;
+    })).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({ close: async () => {
+        count += 1;
+        Effect.runSync(Deferred.succeed(count === 1 ? closedByDisconnect : closedByRemoval, undefined));
+      } }),
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const service = yield* OrganizationRuntime;
+      yield* service.open("org-1");
+      yield* Queue.fail(first, new Error("connection lost"));
+      yield* Deferred.await(closedByDisconnect);
+      assert.strictEqual(count, 1);
+      const whileDown = yield* Effect.exit(service.open("org-2"));
+      assert.strictEqual(whileDown._tag, "Failure");
+      assert.strictEqual(subscriptions, 1);
+
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(subscriptions, 2);
+      assert.strictEqual((yield* service.open("org-3")).status, "connected");
+      yield* Queue.offer(second, JSON.stringify({ organizationId: "org-3", generation: "current" }));
+      yield* Deferred.await(closedByRemoval);
+      assert.strictEqual(count, 2);
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("a malformed notification does not stop the listener", () =>
+  Effect.gen(function* () {
+    const notifications = yield* Queue.make<string, Error>();
+    const closed = yield* Deferred.make<void>();
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "current", connections,
+    }), Effect.succeed(Stream.fromQueue(notifications))).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({ close: async () => {
+        Effect.runSync(Deferred.succeed(closed, undefined));
+      } }),
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const service = yield* OrganizationRuntime;
+      yield* service.open("org-1");
+      yield* Queue.offer(notifications, "not json");
+      yield* Queue.offer(notifications, JSON.stringify({ organizationId: "org-1", generation: "current" }));
+      yield* Deferred.await(closed);
+      assert.strictEqual((yield* service.open("org-1")).status, "connected");
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
 it.effect("a delayed removal during loading does not cancel a replacement pairing", () =>
   Effect.gen(function* () {
     const loading = yield* Deferred.make<void>();

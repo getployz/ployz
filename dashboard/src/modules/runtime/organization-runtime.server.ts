@@ -1,11 +1,15 @@
 import "@tanstack/react-start/server-only";
 import type { Connection, MachineId } from "@ployz/sdk";
 import {
+  Cause,
   Context,
   Deferred,
+  Duration,
   Effect,
   Exit,
   Layer,
+  Option,
+  Schedule,
   Scope,
   Schema,
   Stream,
@@ -22,6 +26,20 @@ import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export const PAIRING_REMOVAL_CHANNEL = "ployz_pairing_removed";
+
+/**
+ * Backoff for re-establishing the pairing removal listener after its
+ * connection drops: exponential from 250ms, jittered, then capped at 30s so
+ * the cap is the true maximum.
+ */
+export const PAIRING_REMOVAL_LISTENER_RETRY = Schedule.exponential("250 millis").pipe(
+  Schedule.jittered,
+  Schedule.modifyDelay(({ duration }) =>
+    Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+  ),
+);
+
+const LISTENER_UNAVAILABLE = "Pairing removal listener is unavailable";
 
 /**
  * Ceiling on establishing a shared organization session. The SDK's own
@@ -70,7 +88,6 @@ export function makeOrganizationRuntimeLayer(
     OrganizationRuntime,
     Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const removals = yield* subscribe;
       type Session = {
         scope: Scope.Closeable;
         generation?: string;
@@ -95,19 +112,41 @@ export function makeOrganizationRuntimeLayer(
         organizationId: Schema.String,
         generation: Schema.String,
       }));
-      yield* Stream.runForEach(removals, (payload) => Schema.decodeUnknownEffect(removalSchema)(payload).pipe(
-        Effect.flatMap(({ organizationId, generation }) => cancel(organizationId, generation)),
-      )).pipe(
-        Effect.ensuring(Effect.gen(function* () {
-          listenerFailure = new Error("Pairing removal listener is unavailable");
-          yield* Effect.forEach([...sessions.values()].flatMap((active) => [...active]), close, {
-            concurrency: "unbounded",
-            discard: true,
-          });
+      const closeAllSessions = Effect.suspend(() =>
+        Effect.forEach([...sessions.values()].flatMap((active) => [...active]), close, {
+          concurrency: "unbounded",
+          discard: true,
+        }),
+      );
+      // The first LISTEN must succeed before the service is usable, so a
+      // broken database fails the layer instead of a runtime that can never
+      // observe removals. Later drops re-subscribe with backoff; while the
+      // listener is down, `open` fails closed and live sessions are closed,
+      // since removals during the gap were not observed.
+      const ready = yield* Deferred.make<void, Error>();
+      const listenOnce = Effect.scoped(Effect.gen(function* () {
+        const removals = yield* subscribe;
+        listenerFailure = undefined;
+        yield* Deferred.succeed(ready, undefined);
+        yield* Stream.runForEach(removals, (payload) => Schema.decodeUnknownEffect(removalSchema)(payload).pipe(
+          Effect.flatMap(({ organizationId, generation }) => cancel(organizationId, generation)),
+          Effect.catch((error) => Effect.logWarning("Ignoring a malformed pairing removal notification.", error)),
+        ));
+        return yield* Effect.fail(new Error("Pairing removal listener ended"));
+      })).pipe(
+        Effect.onExit((exit) => Effect.gen(function* () {
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none();
+          listenerFailure = Option.isSome(failure) ? failure.value : new Error(LISTENER_UNAVAILABLE);
+          yield* Deferred.fail(ready, listenerFailure);
+          yield* closeAllSessions;
         })),
-        Effect.catch((error) => Effect.logError("Pairing removal listener failed", error)),
+      );
+      yield* listenOnce.pipe(
+        Effect.tapError((error) => Effect.logWarning("Pairing removal listener dropped; reconnecting.", error)),
+        Effect.retry(PAIRING_REMOVAL_LISTENER_RETRY),
         Effect.forkScoped,
       );
+      yield* Deferred.await(ready);
       return {
         cancel,
         open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, machineId?: MachineId) {
