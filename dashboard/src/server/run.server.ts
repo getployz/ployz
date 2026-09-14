@@ -22,18 +22,40 @@ const decodePublicFailure = Schema.decodeUnknownOption(
 );
 
 export function isNonRetriableInngestCause(cause: unknown): boolean {
-  if (Schema.isSchemaError(cause)) return true;
+  // A raw `Cause` (thrown for defects and interruptions) is classified by its
+  // squashed failure or defect value, matching what `Effect.runPromise` throws.
+  const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
+  if (failure instanceof NonRetriableError) return true;
+  if (Schema.isSchemaError(failure)) return true;
   const evidence = parseErrorEvidence(
-    cause instanceof Error ? cause : asRecord(cause),
+    failure instanceof Error ? failure : asRecord(failure),
   );
   if (evidence.retriable === false) return true;
-  const failure = decodePublicFailure(cause);
+  const decoded = decodePublicFailure(failure);
   return (
-    Option.isSome(failure) &&
-    NON_RETRIABLE_PUBLIC_ERROR_CATEGORIES.has(failure.value.publicErrorCategory)
+    Option.isSome(decoded) &&
+    NON_RETRIABLE_PUBLIC_ERROR_CATEGORIES.has(decoded.value.publicErrorCategory)
   );
 }
 
+function describeCause(cause: Cause.Cause<unknown>) {
+  const squashed = Cause.squash(cause);
+  return squashed instanceof Error && squashed.message.length > 0
+    ? squashed.message
+    : Cause.pretty(cause);
+}
+
+/**
+ * Runs an Effect on a managed runtime and rethrows its failure for
+ * Promise-based callers.
+ *
+ * A typed failure is thrown as-is, even when the cause also carries a defect
+ * or interruption (for example a finalizer that died while unwinding): the
+ * typed failure is the primary signal and keeps public-error categories and
+ * Inngest retry classification intact. The shadowed defect is logged so it is
+ * not lost. A cause with no typed failure is thrown as the raw `Cause` so
+ * boundaries can report defects and interruptions distinctly.
+ */
 export function makeEffectRunner<R, ER>(runtime: Runtime<R, ER>) {
   return async <A, E>(
     program: Effect.Effect<A, E, R>,
@@ -42,9 +64,14 @@ export function makeEffectRunner<R, ER>(runtime: Runtime<R, ER>) {
     const exit = await runtime.runPromiseExit(program, options);
     if (Exit.isSuccess(exit)) return exit.value;
 
-    if (!Cause.hasDies(exit.cause) && !Cause.hasInterrupts(exit.cause)) {
-      const failure = Cause.findErrorOption(exit.cause);
-      if (Option.isSome(failure)) throw failure.value;
+    const failure = Cause.findErrorOption(exit.cause);
+    if (Option.isSome(failure)) {
+      if (Cause.hasDies(exit.cause)) {
+        Effect.runFork(
+          Effect.logError("Defect shadowed by a typed failure.", exit.cause),
+        );
+      }
+      throw failure.value;
     }
     throw exit.cause;
   };
@@ -62,15 +89,18 @@ export function makeInngestEffectRunner<R>(runEffect: EffectRunner<R>) {
     try {
       return await runEffect(program);
     } catch (cause) {
-      if (cause instanceof NonRetriableError) throw cause;
+      const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
+      if (failure instanceof NonRetriableError) throw failure;
+      const message = Cause.isCause(cause)
+        ? describeCause(cause)
+        : cause instanceof Error
+          ? cause.message
+          : "Effect activity failed.";
       if (isNonRetriableInngestCause(cause)) {
-        throw new NonRetriableError(
-          cause instanceof Error ? cause.message : "Effect activity failed.",
-          { cause: cause instanceof Error ? cause : undefined },
-        );
+        throw new NonRetriableError(message, { cause });
       }
       if (cause instanceof Error) throw cause;
-      throw new Error("Effect activity failed.", { cause });
+      throw new Error(message, { cause });
     }
   };
 }

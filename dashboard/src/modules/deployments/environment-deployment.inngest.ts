@@ -85,6 +85,8 @@ function deployFailureEvidence(cause: unknown) {
 function isDeterministicDeployFailure(cause: unknown) {
   return (
     cause instanceof NonRetriableError ||
+    // A NonRetriableError thrown inside `step.run` reaches this catch as an
+    // Inngest `StepError`, which keeps only the serialized `name`.
     (cause instanceof Error && cause.name === "NonRetriableError") ||
     cause instanceof DeploymentExecutionError ||
     deployFailureEvidence(cause).failureCode !== undefined
@@ -96,7 +98,7 @@ function asNonRetriableDeployFailure(cause: unknown) {
   const evidence = deployFailureEvidence(cause);
   return new NonRetriableError(
     evidence.message ?? "Environment deploy failed.",
-    { cause: cause instanceof Error ? cause : undefined },
+    { cause },
   );
 }
 

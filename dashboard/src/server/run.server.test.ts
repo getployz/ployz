@@ -86,6 +86,80 @@ describe("Effect execution boundary", () => {
     await runtime.dispose();
   });
 
+  it("throws the typed failure when a defect is raised alongside it", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const run = makeEffectRunner(runtime);
+
+    const program = Effect.fail(new ExpectedFailure()).pipe(
+      Effect.ensuring(Effect.die("finalizer-defect")),
+    );
+    await expect(run(program)).rejects.toBeInstanceOf(ExpectedFailure);
+    await runtime.dispose();
+  });
+
+  it("keeps the defect message and full cause at the Inngest boundary", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+
+    await expect(
+      runInngest(Effect.die(new Error("Insert returned no row."))),
+    ).rejects.toSatisfy(
+      (cause: unknown) =>
+        cause instanceof Error &&
+        !(cause instanceof NonRetriableError) &&
+        cause.message === "Insert returned no row." &&
+        Cause.isCause(cause.cause) &&
+        Cause.hasDies(cause.cause),
+    );
+    await expect(
+      runInngest(Effect.die("string-defect")),
+    ).rejects.toSatisfy(
+      (cause: unknown) =>
+        cause instanceof Error &&
+        cause.message.includes("string-defect") &&
+        Cause.isCause(cause.cause),
+    );
+    await runtime.dispose();
+  });
+
+  it("classifies a typed failure as non-retriable even when a defect shadows it", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+
+    const program = Effect.fail(new Conflict({ message: "already in progress" })).pipe(
+      Effect.ensuring(Effect.die("finalizer-defect")),
+    );
+    await expect(runInngest(program)).rejects.toMatchObject({
+      name: "NonRetriableError",
+      message: "already in progress",
+      cause: expect.any(Conflict),
+    });
+    await runtime.dispose();
+  });
+
+  it("rethrows a NonRetriableError raised as a defect without wrapping it", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+    const terminal = new NonRetriableError("do not retry");
+
+    await expect(runInngest(Effect.die(terminal))).rejects.toBe(terminal);
+    expect(isNonRetriableInngestCause(Cause.die(terminal))).toBe(true);
+    await runtime.dispose();
+  });
+
+  it("forwards non-Error failures as the NonRetriableError cause", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+
+    await expect(
+      runInngest(Effect.fail({ retriable: false, failureCode: "plain_object" } as never)),
+    ).rejects.toMatchObject({
+      name: "NonRetriableError",
+      cause: { retriable: false, failureCode: "plain_object" },
+    });
+    await runtime.dispose();
+  });
+
   it("classifies schema, retriable, and public-category failures for Inngest", async () => {
     const runtime = ManagedRuntime.make(Layer.empty);
     const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
@@ -153,5 +227,18 @@ describe("isNonRetriableInngestCause", () => {
     expect(
       isNonRetriableInngestCause(new NotFound({ message: "missing" })),
     ).toBe(true);
+  });
+
+  it("classifies a raw Cause by its squashed failure", () => {
+    expect(
+      isNonRetriableInngestCause(Cause.fail(new Conflict({ message: "conflict" }))),
+    ).toBe(true);
+    expect(
+      isNonRetriableInngestCause(
+        Cause.die(new TerminalProviderFailure({ retriable: false, failureCode: "x" })),
+      ),
+    ).toBe(true);
+    expect(isNonRetriableInngestCause(Cause.die("boom"))).toBe(false);
+    expect(isNonRetriableInngestCause(Cause.fail(new ExpectedFailure()))).toBe(false);
   });
 });

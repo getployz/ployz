@@ -5,6 +5,8 @@ node_modules/
 !/docs/adr/**
 !/docs/agents/
 !/docs/agents/**
+!/docs/audits/
+!/docs/audits/**
 /.claude/*
 !/.claude/skills/
 /.scratch/

@@ -449,7 +449,7 @@ describe("teardown Inngest boundary", () => {
       ],
     });
 
-    await expect(execute(attempt)).rejects.toThrow("Effect activity failed.");
+    await expect(execute(attempt)).rejects.toThrow("second project connection ended");
 
     expect(activity.recordRuntimeEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
