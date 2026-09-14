@@ -32,7 +32,10 @@ function toHttpRuntimeWatch(watch: OpenedRuntimeWatch): RuntimeWatch {
 
 const openRuntimeWatchRequest = async (
   input: Parameters<typeof openRuntimeWatch>[0],
-) => toHttpRuntimeWatch(await runAppEffect(openRuntimeWatch(input)));
+) =>
+  toHttpRuntimeWatch(
+    await runAppEffect(openRuntimeWatch(input), { signal: input.request.signal }),
+  );
 
 export const Route = createFileRoute("/api/runtime/events")({
   validateSearch: runtimeEventsSearchSchema,

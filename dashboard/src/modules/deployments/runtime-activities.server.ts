@@ -218,6 +218,11 @@ export const executeEnvironmentDeployment = Effect.fn(
     }
   });
   let previous: DeploymentProgress | null = null;
+  // The SDK reports progress through a Promise callback. Run each persist with
+  // this fiber's services (database, tracer, span, log annotations) instead of
+  // a fresh default runtime.
+  const progressContext = yield* Effect.context<Database>();
+  const persistProgress = Effect.runPromiseWith(progressContext);
   const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
     const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
     const progress = { ...raw, rows: raw.rows.map((row) => {
@@ -230,7 +235,7 @@ export const executeEnvironmentDeployment = Effect.fn(
       return projected;
     }) };
     previous = progress;
-    await Effect.runPromise(persistDeploymentProgress(context.deployment.id, progress).pipe(Effect.provideService(Database, database)));
+    await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
   }, cancellation.signal).pipe(Effect.raceFirst(watchCancellation));
   yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, outcome: evidence });
   return outcome;

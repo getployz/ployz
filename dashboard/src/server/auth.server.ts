@@ -147,19 +147,12 @@ function hostedPolarPlugin(
 const makeAuth = Effect.gen(function* () {
   const config = yield* AppConfig;
   const database = yield* BetterAuthDatabase;
-  const applicationDatabase = yield* Database;
-  const polarService = yield* Polar;
-  const inngest = yield* InngestClient;
-  const runHook = <A, E>(
-    program: Effect.Effect<A, E, Database | Polar | InngestClient>,
-  ) =>
-    Effect.runPromise(
-      program.pipe(
-        Effect.provideService(Database, applicationDatabase),
-        Effect.provideService(Polar, polarService),
-        Effect.provideService(InngestClient, inngest),
-      ),
-    );
+  // better-auth hooks are Promise callbacks. Run them with this layer's
+  // services (and its tracer, logger, and annotations) rather than a fresh
+  // default runtime with services re-provided one by one.
+  const runHook = Effect.runPromiseWith(
+    yield* Effect.context<Database | Polar | InngestClient>(),
+  );
   const publishBillingEvents = (events: readonly InngestSendableEvent[]) =>
     events.length === 0
       ? Promise.resolve()

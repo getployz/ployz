@@ -33,3 +33,25 @@ export const AppLive = AuthLive.pipe(
 export type AppServices = Layer.Success<typeof AppLive>;
 
 export const AppRuntime = ManagedRuntime.make(AppLive);
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+// The production server has no graceful-shutdown hook of its own, so release
+// the runtime's resources (database pool, open machine sessions) on SIGTERM
+// before exiting. Development runs under Vite, which owns process signals.
+if (import.meta.env.PROD) {
+  process.once("SIGTERM", () => {
+    const timeout = setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS);
+    void AppRuntime.dispose().then(
+      () => {
+        clearTimeout(timeout);
+        process.exit(0);
+      },
+      (cause: unknown) => {
+        clearTimeout(timeout);
+        console.error("Runtime shutdown failed.", cause);
+        process.exit(1);
+      },
+    );
+  });
+}
