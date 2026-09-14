@@ -8,6 +8,9 @@ import {
   githubIdSchema,
   githubRepositoryPathSchema,
   githubSafeBranchRefSchema,
+  isValidGithubBranchRef,
+  isValidGithubExactSha,
+  isValidGithubId,
 } from "#/modules/github/github-ingestion.contracts";
 
 describe("GitHub ingestion canonical contracts", () => {
@@ -83,5 +86,16 @@ describe("GitHub ingestion canonical contracts", () => {
         Schema.decodeUnknownOption(githubCheckSuiteConclusionSchema)("maybe"),
       ),
     ).toBe(true);
+  });
+
+  it("guards accept every encoded form the schema accepts", () => {
+    const upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF01";
+    expect(isValidGithubExactSha(upper)).toBe(true);
+    expect(isValidGithubExactSha(upper.toLowerCase())).toBe(true);
+    expect(isValidGithubExactSha(upper.slice(1))).toBe(false);
+    expect(isValidGithubId(42)).toBe(true);
+    expect(isValidGithubId(0)).toBe(false);
+    expect(isValidGithubBranchRef("refs/heads/release/v1")).toBe(true);
+    expect(isValidGithubBranchRef("refs/heads/../x")).toBe(false);
   });
 });

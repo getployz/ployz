@@ -344,8 +344,14 @@ export const isValidGithubId: <Input>(input: Input) => input is Input & number =
 export const isValidGithubBranchRef: <Input>(input: Input) => input is Input & string =
   Schema.is(githubSafeBranchRefSchema);
 
-export const isValidGithubExactSha: <Input>(input: Input) => input is Input & string =
-  Schema.is(githubExactShaSchema);
+// `githubExactShaSchema` is a transform: the encoded side accepts uppercase
+// hex and decoding lowercases it. `Schema.is` checks the decoded side only, so
+// this guard decodes to keep accepting an uppercase SHA.
+export function isValidGithubExactSha<Input>(
+  input: Input,
+): input is Input & string {
+  return Option.isSome(Schema.decodeUnknownOption(githubExactShaSchema)(input));
+}
 
 // The struct guards below reject excess properties, which `Schema.is` cannot
 // express (it takes no parse options), so they stay on decodeUnknownOption.
