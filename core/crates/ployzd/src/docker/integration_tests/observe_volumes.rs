@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
@@ -44,7 +40,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
         })
         .unwrap()
         .id;
-    let local = Arc::new(Mutex::new(local));
+    let local = crate::machine::RecordOwner::spawn(local).unwrap();
     let runtime = ContainerRuntime::new(docker, specs);
     let foreign_machine_id = MachineId::random();
 
@@ -82,7 +78,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     replicated.publish_volume(&stale_foreign).await.unwrap();
 
     let runtime = runtime
-        .replicating(replicated.clone(), Arc::clone(&local))
+        .replicating(replicated.clone(), local.clone())
         .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({

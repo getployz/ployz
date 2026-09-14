@@ -1,15 +1,9 @@
-use std::{
-    collections::BTreeMap,
-    io,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::BTreeMap, io, time::Duration};
 
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, ReplicatedStore};
-use crate::machine::{LocalMachineBody, LocalMachineStore};
+use crate::machine::{LocalMachineBody, RecordOwner};
 
 /// Waits for replication through the target, retrying store failures.
 ///
@@ -40,25 +34,19 @@ pub async fn wait_for_catch_up(
 
 pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
-    local: Arc<Mutex<LocalMachineStore>>,
-    participating: watch::Sender<bool>,
+    local: RecordOwner,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     if let Some(replicated) = &replicated {
-        let (joining, target) = {
-            let local = local
-                .lock()
-                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-            match local.record().body() {
-                LocalMachineBody::Joining {
-                    min_store_version, ..
-                } => (true, min_store_version.clone()),
-                LocalMachineBody::Uninitialized { .. }
-                | LocalMachineBody::Participating { .. }
-                | LocalMachineBody::Resetting { .. } => (false, BTreeMap::new()),
-            }
+        let target = match local.record().body() {
+            LocalMachineBody::Joining {
+                min_store_version, ..
+            } => Some(min_store_version.clone()),
+            LocalMachineBody::Uninitialized { .. }
+            | LocalMachineBody::Participating { .. }
+            | LocalMachineBody::Resetting { .. } => None,
         };
-        if joining {
+        if let Some(target) = target {
             tokio::select! {
                 result = wait_for_catch_up(replicated, &target) => {
                     result.map_err(io::Error::other)?;
@@ -68,21 +56,13 @@ pub async fn run_machine_publisher(
                 }
             }
             let publication = replicated.machine_publication().await;
-            let completed = {
-                let mut local = local
-                    .lock()
-                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                let completed = publication
-                    .complete_catch_up(&mut local)
-                    .map_err(io::Error::other)?;
-                if completed {
-                    participating.send_replace(true);
-                }
-                completed
-            };
+            let completed = publication
+                .complete_catch_up(&local)
+                .await
+                .map_err(io::Error::other)?;
             if completed {
-                // Join already restarted into Joining. Flip Participating
-                // in-process so DNS/ingress start; another process restart
+                // Join already restarted into Joining. The published Participating
+                // record starts DNS/ingress in-process; another process restart
                 // kills an in-flight Ingress Proxy Deploy against this Machine.
                 tracing::info!("catch-up complete");
             }
@@ -90,25 +70,14 @@ pub async fn run_machine_publisher(
     }
     loop {
         if let Some(replicated) = &replicated {
-            let cluster_network = {
-                let local = local
-                    .lock()
-                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                let record = local.record();
-                record.cluster_network()
-            };
-            if let Some(network) = cluster_network
+            let record = local.record();
+            if let Some(network) = record.cluster_network()
                 && let Err(error) = replicated.publish_cluster_network(network).await
             {
                 eprintln!("failed to publish Cluster network: {error}");
             }
             let publication = replicated.machine_publication().await;
-            let machine = {
-                let local = local
-                    .lock()
-                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                publication.publishable_machine(local.record())
-            };
+            let machine = publication.publishable_machine(&local.record());
             if let Some(machine) = machine
                 && let Err(error) = publication.publish(&machine).await
             {

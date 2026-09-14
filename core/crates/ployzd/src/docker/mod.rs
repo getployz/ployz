@@ -698,8 +698,6 @@ pub enum Error {
     SizeOverflow,
     #[error("Docker event stream closed")]
     EventStreamClosed,
-    #[error("local Machine record lock poisoned")]
-    LocalStorePoisoned,
     #[error("system clock cannot be represented for Docker event replay: {0}")]
     Clock(String),
     #[error("peer image pull failed: {0}")]
@@ -757,7 +755,6 @@ impl Error {
             | Self::Network(_)
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
-            | Self::LocalStorePoisoned
             | Self::Clock(_)
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }

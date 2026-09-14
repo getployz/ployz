@@ -4,7 +4,6 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -14,11 +13,13 @@ use ployz::{
     context::{Connection, SshDestination},
 };
 use ployz_core::{DescribeContractRequest, MachineRpcClient, op};
-use ployzd::{machine::LocalMachineStore, machine_api::MachineApi};
+use ployzd::{
+    machine::{LocalMachineStore, RecordOwner},
+    machine_api::MachineApi,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener as TokioTcpListener, UnixListener},
-    sync::watch,
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tonic::transport::Server;
@@ -30,12 +31,9 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let socket = root.join("ployz.sock");
-    let store = Arc::new(Mutex::new(
-        LocalMachineStore::open(root.join("data")).unwrap(),
-    ));
-    let machine_id = store.lock().unwrap().record().id();
-    let (reset, _) = watch::channel(false);
-    let api = MachineApi::builder(store, reset).build().unwrap();
+    let store = RecordOwner::spawn(LocalMachineStore::open(root.join("data")).unwrap()).unwrap();
+    let machine_id = store.record().id();
+    let api = MachineApi::builder(store).build();
     let tcp = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
     let tcp_address = tcp.local_addr().unwrap();
     let listener = UnixListener::bind(&socket).unwrap();

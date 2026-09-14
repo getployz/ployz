@@ -1,8 +1,4 @@
-use std::{
-    io,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::{io, path::PathBuf};
 
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineName, MachineRpc,
@@ -10,10 +6,9 @@ use ployz_core::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::watch;
 use tonic::Request;
 
-use super::super::{LocalMachine, LocalMachineStore};
+use super::super::{LocalMachine, LocalMachineStore, RecordOwner};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore, fake_cluster},
     machine_api::MachineService,
@@ -29,16 +24,14 @@ pub(super) async fn participating() -> (
     let (replicated, server) = fake_cluster::store().await;
     let (data_dir, store, founder) = open_store("ployzd-register");
     replicated.publish_local_machine(&founder).await.unwrap();
-    let local = LocalMachine::new(store, watch::channel(false).0).with_cluster(Some((
+    let local = LocalMachine::new(store).with_cluster(Some((
         replicated.clone(),
         AdminClient::new("/no/such/ployz-admin.sock"),
     )));
     (local, replicated, founder, data_dir, server)
 }
 
-pub(super) fn open_store(
-    prefix: &str,
-) -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>>, Machine) {
+pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Machine) {
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
     let founder = store
@@ -52,17 +45,16 @@ pub(super) fn open_store(
             cloud_pairing: None,
         })
         .unwrap();
-    (data_dir, Arc::new(Mutex::new(store)), founder)
+    (data_dir, RecordOwner::spawn(store).unwrap(), founder)
 }
 
 pub(super) fn machine_service(
-    store: Arc<Mutex<LocalMachineStore>>,
+    store: RecordOwner,
     replicated: ReplicatedStore,
     port: Option<u16>,
 ) -> MachineService {
     let service = MachineService::with_cluster(
         store,
-        watch::channel(false).0,
         Some((replicated, AdminClient::new("/no/such/ployz-admin.sock"))),
     );
     match port {

@@ -6,7 +6,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -34,7 +34,10 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
     ingress,
-    machine::{LocalMachineBody, LocalMachineStore, StoreError},
+    machine::{
+        LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
+        StoreError,
+    },
     machine_api::MachineApi,
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
 };
@@ -62,10 +65,10 @@ pub struct DaemonConfig {
 pub struct Daemon {
     stop: CancellationToken,
     shutdown: CancellationToken,
-    store: Arc<Mutex<LocalMachineStore>>,
+    local: RecordOwner,
     corrosion: Option<RunningCorrosion>,
     ingest: Arc<ImageIngest>,
-    reset_rx: watch::Receiver<bool>,
+    restart_requested: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
     _socket_lock: File,
 }
@@ -85,8 +88,8 @@ pub enum Error {
     Corrosion(#[from] CorrosionError),
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
-    #[error("local Machine record lock poisoned")]
-    StorePoisoned,
+    #[error(transparent)]
+    RecordOwner(#[from] RecordOwnerStopped),
 }
 
 impl Daemon {
@@ -117,10 +120,10 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
-        let store = Arc::new(Mutex::new(LocalMachineStore::open_with_admission(
+        let local = RecordOwner::spawn(LocalMachineStore::open_with_admission(
             &config.data_dir,
             run_dir,
-        )?));
+        )?)?;
         let socket_lock = claim_socket(&config.socket)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();
@@ -131,11 +134,7 @@ impl Daemon {
         if let Err(error) = cleanup {
             eprintln!("WARNING: abandoned Build cleanup: {error}");
         }
-        let local_record = store
-            .lock()
-            .map_err(|_| Error::StorePoisoned)?
-            .record()
-            .clone();
+        let local_record = local.record();
         let local_id = local_record.id();
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
@@ -170,12 +169,12 @@ impl Daemon {
                 }
             }
         };
-        let corrosion = start_corrosion(&config, &store).await?;
+        let corrosion = start_corrosion(&config, &local).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let containers = match (containers, replicated_store.clone()) {
             (Some(runtime), Some(replicated)) => {
-                Some(runtime.replicating(replicated, Arc::clone(&store)))
+                Some(runtime.replicating(replicated, local.clone()))
             }
             (runtime, _) => runtime,
         };
@@ -184,9 +183,8 @@ impl Daemon {
             config.containerd_socket.clone(),
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
-        let (participating, participating_rx) =
-            watch::channel(local_phase == LocalMachinePhase::Participating);
-        let (reset, reset_rx) = watch::channel(false);
+        let records = local.watch();
+        let restart_requested = local.restart_requested();
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
         let ingress_data_dir = config.data_dir.clone();
@@ -195,12 +193,11 @@ impl Daemon {
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
-        let machine_api = MachineApi::builder(Arc::clone(&store), reset.clone())
+        let machine_api = MachineApi::builder(local.clone())
             .with_builds(
                 crate::build::Runner::new(build_policy, shutdown.clone())
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
             )
-            .with_participation(participating.clone())
             .with_cluster(
                 corrosion
                     .as_ref()
@@ -209,8 +206,7 @@ impl Daemon {
             .with_optional_containers(containers.clone())
             .with_ingress_data_dir(config.data_dir.clone())
             .with_image_ingest(Arc::clone(&ingest))
-            .build()
-            .map_err(|_| Error::StorePoisoned)?;
+            .build();
 
         let rpc_listener = listen_socket(&config.socket)?;
         let rpc = Server::builder().serve_with_incoming_shutdown(
@@ -218,21 +214,17 @@ impl Daemon {
             UnixListenerStream::new(rpc_listener),
             shutdown.clone().cancelled_owned(),
         );
-        let publisher = run_machine_publisher(
-            replicated_store.clone(),
-            Arc::clone(&store),
-            participating,
-            shutdown.clone(),
-        );
+        let publisher =
+            run_machine_publisher(replicated_store.clone(), local.clone(), shutdown.clone());
         let (management_listener, gateway_listener) = machine_api_listeners
             .map_or((None, None), |(management, gateway)| {
                 (Some(management), Some(gateway))
             });
         let socket = config.socket.clone();
-        let store_for_servers = Arc::clone(&store);
+        let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
-            let store = store_for_servers;
+            let local = local_for_servers;
             let shutdown = shutdown_for_servers;
             let network_rpc = async {
                 tokio::try_join!(
@@ -249,11 +241,7 @@ impl Daemon {
             let network_runner = async {
                 if let Some(network) = &mut network {
                     network
-                        .run(
-                            replicated_store.clone(),
-                            Arc::clone(&store),
-                            shutdown.clone(),
-                        )
+                        .run(replicated_store.clone(), local.clone(), shutdown.clone())
                         .await
                 } else {
                     shutdown.cancelled().await;
@@ -273,7 +261,7 @@ impl Daemon {
                 }
             };
             let dns = async {
-                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
                 match (local_machine.clone(), replicated_store.clone(), admin) {
@@ -287,7 +275,7 @@ impl Daemon {
                 }
             };
             let ingress = async {
-                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
                 match (local_machine.clone(), replicated_store.clone()) {
@@ -308,7 +296,7 @@ impl Daemon {
                 }
             };
             let certificates = async {
-                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
                 match replicated_store.clone() {
@@ -355,10 +343,10 @@ impl Daemon {
         Ok(Self {
             stop: CancellationToken::new(),
             shutdown,
-            store,
+            local,
             corrosion,
             ingest,
-            reset_rx,
+            restart_requested,
             servers,
             _socket_lock: socket_lock,
         })
@@ -385,6 +373,10 @@ impl Daemon {
         let mut servers = self.servers;
         let mut completed_servers = None;
         let mut errors = Vec::new();
+        let mut records = self.local.watch();
+        // The record watch closes only when the owner thread stopped, which before
+        // shutdown means a mutation panicked: crash out and let systemd restart us.
+        let owner_stopped = async move { while records.changed().await.is_ok() {} };
         let stop = tokio::select! {
             result = &mut servers => {
                 completed_servers = Some(join_servers(result));
@@ -393,7 +385,8 @@ impl Daemon {
             _ = interrupt.recv() => StopKind::Signal("SIGINT"),
             _ = terminate.recv() => StopKind::Signal("SIGTERM"),
             () = self.stop.cancelled() => StopKind::Stop,
-            changed = self.reset_rx.changed() => match changed {
+            () = owner_stopped => StopKind::RecordOwner,
+            changed = self.restart_requested.changed() => match changed {
                 Ok(()) => StopKind::Restart,
                 Err(error) => {
                     errors.push(error.to_string());
@@ -402,19 +395,14 @@ impl Daemon {
             },
         };
         notify(NotifyState::Stopping);
-        let resetting = match self.store.lock() {
-            Ok(store) => store.record().phase() == LocalMachinePhase::Resetting,
-            Err(_) => {
-                errors.push("local Machine record lock poisoned".into());
-                false
-            }
-        };
+        let resetting = self.local.record().phase() == LocalMachinePhase::Resetting;
         let reason = match stop {
             StopKind::Plane => "a plane exited".to_owned(),
             StopKind::Signal(signal) => format!("received {signal}"),
             StopKind::Stop => "stop requested".to_owned(),
             StopKind::Restart if resetting => "local Machine reset".to_owned(),
             StopKind::Restart => "restart requested".to_owned(),
+            StopKind::RecordOwner => "local Machine record owner stopped".to_owned(),
             StopKind::WatchFailed(what) => format!("{what} wait failed"),
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
@@ -445,14 +433,25 @@ impl Daemon {
             errors.push(error.to_string());
         }
         if resetting {
-            match self.store.lock() {
-                Ok(store) => {
-                    if let Err(error) = store.complete_reset() {
-                        errors.push(error.to_string());
-                    }
-                }
-                Err(_) => errors.push("local Machine record lock poisoned".into()),
+            match self.local.mutate(|store| store.complete_reset()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => errors.push(error.to_string()),
+                Err(error) => errors.push(error.to_string()),
             }
+        }
+        // Admitted work is detached from its RPC and outlives the server drain. Give
+        // it the same grace, then release the data directory so the next daemon on
+        // it can claim it; work still running keeps the record until process exit
+        // rather than failing halfway through.
+        match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().lock_owned()).await {
+            Ok(_admission) => {
+                if let Err(error) = self.local.close().await {
+                    errors.push(error.to_string());
+                }
+            }
+            Err(_) => tracing::warn!(
+                "admitted Machine work is still running; the record stays claimed until exit"
+            ),
         }
         if errors.is_empty() {
             Ok(())
@@ -553,13 +552,9 @@ async fn serve_machine_api(
 
 async fn start_corrosion(
     config: &DaemonConfig,
-    store: &Arc<Mutex<LocalMachineStore>>,
+    local: &RecordOwner,
 ) -> Result<Option<RunningCorrosion>, Error> {
-    let record = store
-        .lock()
-        .map_err(|_| Error::StorePoisoned)?
-        .record()
-        .clone();
+    let record = local.record();
     let machine = match record.body() {
         LocalMachineBody::Joining { machine, .. }
         | LocalMachineBody::Participating { machine, .. } => machine,
@@ -597,19 +592,19 @@ async fn start_corrosion(
     ))
 }
 
+/// Wait until the published record is participating.
+///
+/// `Ok(false)` when shutdown wins or the record owner stopped; the daemon shuts
+/// down on the latter, so the gated plane simply never starts.
 async fn wait_for_participation(
-    mut participating: watch::Receiver<bool>,
+    mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     shutdown: CancellationToken,
 ) -> io::Result<bool> {
     tokio::select! {
         biased;
         () = shutdown.cancelled() => Ok(false),
-        changed = participating.wait_for(|participating| *participating) => {
-            match changed {
-                Ok(_) => Ok(!shutdown.is_cancelled()),
-                Err(_) if shutdown.is_cancelled() => Ok(false),
-                Err(error) => Err(io::Error::other(error)),
-            }
+        changed = records.wait_for(|record| record.phase() == LocalMachinePhase::Participating) => {
+            Ok(changed.is_ok() && !shutdown.is_cancelled())
         }
     }
 }
@@ -619,6 +614,7 @@ enum StopKind {
     Signal(&'static str),
     Stop,
     Restart,
+    RecordOwner,
     WatchFailed(&'static str),
 }
 
@@ -906,6 +902,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_panicking_record_mutation_shuts_the_daemon_down() {
+        let root = TestDir::new("ployzd-daemon-owner-panic");
+        let (config, _socket) = test_config(&root.0, ContainerMode::Absent);
+        let daemon = Daemon::start(config).await.unwrap();
+        let owner = daemon.local.clone();
+        let waiting = tokio::spawn(daemon.wait());
+
+        assert!(
+            owner
+                .mutate(|_| -> () { panic!("store invariant violated") })
+                .await
+                .is_err()
+        );
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("the daemon exits after its record owner stops")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("record owner stopped"),
+            "unexpected shutdown error: {error}"
+        );
+    }
+
+    #[tokio::test]
     async fn reset_completes_while_a_client_holds_the_socket() {
         let root = TestDir::new("ployzd-daemon-reset-held");
         let (config, socket) = test_config(&root.0, ContainerMode::Absent);
@@ -922,27 +944,43 @@ mod tests {
 
     #[tokio::test]
     async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
-        let (participating, participating_rx) = tokio::sync::watch::channel(false);
+        let root = TestDir::new("ployzd-participation-gate");
+        let owner = crate::machine::RecordOwner::spawn(
+            crate::machine::LocalMachineStore::open(root.0.join("data")).unwrap(),
+        )
+        .unwrap();
         let shutdown = CancellationToken::new();
-        let waiting = wait_for_participation(participating_rx, shutdown);
+        let waiting = wait_for_participation(owner.watch(), shutdown);
         tokio::pin!(waiting);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
                 .await
                 .is_err()
         );
-        participating.send_replace(true);
+        owner
+            .mutate(|store| {
+                store.initialize(ployz_core::InitializeRequest {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("gate").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                    wireguard_mtu: None,
+                    cloud_pairing: None,
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap();
         assert!(waiting.await.unwrap());
 
-        let (participating, participating_rx) = tokio::sync::watch::channel(true);
+        let records = owner.watch();
         let shutdown = CancellationToken::new();
         shutdown.cancel();
-        drop(participating);
-        assert!(
-            !wait_for_participation(participating_rx, shutdown)
-                .await
-                .unwrap()
-        );
+        drop(owner);
+        assert!(!wait_for_participation(records, shutdown).await.unwrap());
     }
 
     #[tokio::test]

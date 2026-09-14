@@ -15,7 +15,7 @@ use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
-    ParticipationOrigin,
+    ParticipationOrigin, RecordOwner,
 };
 use crate::runtime_watch::RuntimeWatchSnapshot;
 
@@ -43,22 +43,26 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     local
         .join(machine.clone(), vec![machine], BTreeMap::new(), None, None)
         .unwrap();
-    let local = Arc::new(Mutex::new(local));
+    let local = RecordOwner::spawn(local).unwrap();
 
     let first = store.machine_publication().await;
     let clone = store.clone();
-    let task_local = Arc::clone(&local);
+    let task_local = local.clone();
     let (started, waiting) = tokio::sync::oneshot::channel();
     let second = tokio::spawn(async move {
         started.send(()).unwrap();
         let publication = clone.machine_publication().await;
-        publication.complete_catch_up(&mut task_local.lock().unwrap())
+        publication.complete_catch_up(&task_local).await
     });
     waiting.await.unwrap();
     tokio::task::yield_now().await;
     assert!(!second.is_finished());
 
-    local.lock().unwrap().begin_reset().unwrap();
+    local
+        .mutate(LocalMachineStore::begin_reset)
+        .await
+        .unwrap()
+        .unwrap();
     drop(first);
     let completed = tokio::time::timeout(std::time::Duration::from_secs(1), second)
         .await
@@ -166,10 +170,8 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
         "ployzd-runtime-watch-unreachable-{}",
         ployz_core::MachineId::random()
     ));
-    let local = LocalMachine::new(
-        Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap())),
-        tokio::sync::watch::channel(false).0,
-    );
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap());
     assert!(
         crate::runtime_watch::serve_replicated_runtime_watch(store, local, MachineId::random())
             .await

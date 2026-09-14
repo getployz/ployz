@@ -26,8 +26,10 @@ use record_wire::LocalMachineRecordWire;
 
 mod ingress;
 mod local_machine;
+mod record_owner;
 mod store;
 
+pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
 use store::PENDING_RESET_FILE_NAME;
 pub use store::{LocalMachineStore, StoreError};

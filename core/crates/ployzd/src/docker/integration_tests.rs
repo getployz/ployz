@@ -5,7 +5,6 @@ use std::{
     net::{Ipv6Addr, TcpListener},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -851,7 +850,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         })
         .unwrap()
         .id;
-    let local = Arc::new(Mutex::new(local));
+    let local = crate::machine::RecordOwner::spawn(local).unwrap();
     let foreign_machine_id = MachineId::random();
     let service_id = ServiceId::parse("a".repeat(32)).unwrap();
     let service_name = ServiceName::parse("api").unwrap();
@@ -900,7 +899,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     }
 
     let runtime = ContainerRuntime::new(docker.clone(), specs.clone())
-        .replicating(replicated.clone(), Arc::clone(&local))
+        .replicating(replicated.clone(), local.clone())
         .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({
@@ -1043,8 +1042,8 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let invalid_socket = root.0.join("not-docker.sock");
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
-    let failed_runtime = ContainerRuntime::new(failed_docker, specs)
-        .replicating(replicated.clone(), Arc::clone(&local));
+    let failed_runtime =
+        ContainerRuntime::new(failed_docker, specs).replicating(replicated.clone(), local.clone());
     let fail_shutdown = CancellationToken::new();
     let fail_task = tokio::spawn({
         let shutdown = fail_shutdown.clone();

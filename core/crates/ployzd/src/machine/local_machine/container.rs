@@ -29,7 +29,7 @@ impl LocalMachine {
         let local = self.clone();
         self.finish_mutation(async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            let record = local.record()?;
+            let record = local.record();
             if !matches!(
                 record.phase(),
                 LocalMachinePhase::Joining | LocalMachinePhase::Participating
@@ -184,7 +184,7 @@ impl LocalMachine {
     ) -> Result<CreateVolumeReport, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
-            let machine_id = local.record()?.id();
+            let machine_id = local.record().id();
             Ok(local
                 .containers
                 .as_ref()
@@ -231,7 +231,7 @@ impl LocalMachine {
     ) -> Result<ImageIngestOpened, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
-            let record = local.record()?;
+            let record = local.record();
             let address = record
                 .machine()
                 .filter(|_| record.phase() == LocalMachinePhase::Participating)
@@ -277,7 +277,7 @@ impl LocalMachine {
         creation_key: Option<String>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        let record = self.record()?;
+        let record = self.record();
         if !matches!(
             record.phase(),
             LocalMachinePhase::Joining | LocalMachinePhase::Participating
@@ -303,12 +303,12 @@ impl LocalMachine {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use ployz_core::{MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceMode};
     use serde_json::json;
 
-    use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore};
+    use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
 
     #[tokio::test]
     async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
@@ -328,14 +328,13 @@ mod tests {
                 cloud_pairing: None,
             })
             .unwrap();
-        let store = Arc::new(Mutex::new(store));
+        let owner = RecordOwner::spawn(store).unwrap();
         let (runtime, fake) = fake_runtime_with(FakeDocker {
             create_barrier: Some(Arc::new(tokio::sync::Barrier::new(1))),
             ..Default::default()
         })
         .await;
-        let local = LocalMachine::new(store.clone(), tokio::sync::watch::channel(false).0)
-            .with_containers(Some(runtime.clone()));
+        let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
         let spec: ResolvedServiceSpec = serde_json::from_value(json!({
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
             "container": {"image":"example.test/api", "pull_policy":"missing"}
@@ -345,16 +344,14 @@ mod tests {
             .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
             .await
             .unwrap();
-        store
-            .lock()
+        let update = serde_json::from_value(json!({
+            "accepts_services": false, "accepts_ingress": true, "accepts_builds": true
+        }))
+        .unwrap();
+        owner
+            .mutate(move |store| store.update(update, &[]))
+            .await
             .unwrap()
-            .update(
-                serde_json::from_value(json!({
-                    "accepts_services": false, "accepts_ingress": true, "accepts_builds": true
-                }))
-                .unwrap(),
-                &[],
-            )
             .unwrap();
         for kind in [
             ContainerKind::ServiceContainer,
@@ -442,15 +439,9 @@ mod tests {
                 ..Default::default()
             })
             .await;
-            let (restart, _) = tokio::sync::watch::channel(false);
-            let (participating, participation) = tokio::sync::watch::channel(true);
-            let store = Arc::new(Mutex::new(store));
-            let local = LocalMachine::new(store.clone(), restart.clone())
-                .with_containers(Some(runtime.clone()))
-                .with_participation(participating.clone());
-            let resetting = LocalMachine::new(store, restart)
-                .with_containers(Some(runtime))
-                .with_participation(participating);
+            let owner = RecordOwner::spawn(store).unwrap();
+            let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
+            let resetting = LocalMachine::new(owner).with_containers(Some(runtime));
             let spec: ResolvedServiceSpec = serde_json::from_value(json!({
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Replicated { replicas: 1.try_into().unwrap() }).unwrap(),
             "container":{"image":"example.test/api", "pull_policy":"missing"}
@@ -483,12 +474,8 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert!(!*participation.borrow());
             assert!(fake.existing_container.lock().unwrap().is_none());
-            assert_eq!(
-                local.record().unwrap().phase(),
-                LocalMachinePhase::Resetting
-            );
+            assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
             assert!(matches!(
                 local
                     .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
@@ -505,15 +492,14 @@ mod tests {
         use ployz_core::{AdvertisedEndpoint, ContainerKind, Machine, MachineName};
         let data_dir =
             std::env::temp_dir().join(format!("ployzd-joining-admission-{}", MachineId::random()));
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+        let owner = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
         let (runtime, _) = fake_runtime_with(FakeDocker {
             create_barrier: Some(barrier.clone()),
             ..Default::default()
         })
         .await;
-        let local = LocalMachine::new(store.clone(), tokio::sync::watch::channel(false).0)
-            .with_containers(Some(runtime));
+        let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime));
         let spec: ResolvedServiceSpec = serde_json::from_value(json!({
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
             "container": {"image":"example.test/api", "pull_policy":"missing"}
@@ -525,27 +511,27 @@ mod tests {
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));
-        {
-            let mut store = store.lock().unwrap();
-            let machine = Machine {
-                labels: Default::default(),
-                accepts_builds: true,
-                accepts_services: true,
-                accepts_ingress: true,
-                id: store.record().id(),
-                name: MachineName::parse("joining").unwrap(),
-                subnet: "10.210.0.0/24".parse().unwrap(),
-                public_key: store.record().private_key().public_key(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-                runtime: Default::default(),
-            };
-            let mut peer = machine.clone();
-            peer.id = MachineId::random();
-            store
-                .join(machine, vec![peer], Default::default(), None, None)
-                .unwrap();
-        }
+        let record = owner.record();
+        let machine = Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            id: record.id(),
+            name: MachineName::parse("joining").unwrap(),
+            subnet: "10.210.0.0/24".parse().unwrap(),
+            public_key: record.private_key().public_key(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            runtime: Default::default(),
+        };
+        let mut peer = machine.clone();
+        peer.id = MachineId::random();
+        owner
+            .mutate(move |store| store.join(machine, vec![peer], Default::default(), None, None))
+            .await
+            .unwrap()
+            .unwrap();
         let release = tokio::spawn(async move {
             barrier.wait().await;
             barrier.wait().await;
@@ -565,7 +551,8 @@ mod tests {
             docker::test_support::{FakeDocker, fake_runtime_with},
         };
         use ployz_core::{
-            AdvertisedEndpoint, ContainerKind, MachineName, RemoveLocalMachineRequest,
+            AdvertisedEndpoint, ContainerKind, LocalMachinePhase, MachineName,
+            RemoveLocalMachineRequest,
         };
         let data_dir =
             std::env::temp_dir().join(format!("ployzd-removal-admission-{}", MachineId::random()));
@@ -585,11 +572,10 @@ mod tests {
         server.abort();
         let _ = server.await;
         let (runtime, _) = fake_runtime_with(FakeDocker::default()).await;
-        let (restart, restarting) = tokio::sync::watch::channel(false);
-        let (participating, participation) = tokio::sync::watch::channel(true);
-        let local = LocalMachine::new(Arc::new(Mutex::new(store)), restart)
+        let owner = RecordOwner::spawn(store).unwrap();
+        let restarting = owner.restart_requested();
+        let local = LocalMachine::new(owner)
             .with_containers(Some(runtime))
-            .with_participation(participating)
             .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))));
         let removed = local
             .remove_local(RemoveLocalMachineRequest {
@@ -599,9 +585,9 @@ mod tests {
             .unwrap();
         assert!(removed.reset_warning.is_some());
         assert!(!*restarting.borrow());
-        assert!(!*participation.borrow());
+        assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
         assert!(
-            local.record().unwrap().machine().is_some(),
+            local.record().machine().is_some(),
             "historical Machine remains available for recovery"
         );
         let spec: ResolvedServiceSpec = serde_json::from_value(json!({

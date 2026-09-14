@@ -15,28 +15,22 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::Upgrade`] for a conflicting retry identity, active mutation, release
-    /// failure, receipt failure, or worker launch uncertainty. Returns [`Error::LockPoisoned`]
-    /// when the Local Machine store cannot be read.
+    /// failure, receipt failure, or worker launch uncertainty.
     pub(crate) async fn request_upgrade(
         &self,
         request: RequestMachineUpgradeRequest,
     ) -> Result<MachineUpgradeAttempt, Error> {
-        let (data_dir, run_dir, local, gate) = {
-            let store = self.lock_store()?;
-            (
-                store.data_dir.clone(),
-                store.run_dir.clone(),
-                store.admission_lock.clone(),
-                store.mutation_gate.clone(),
-            )
-        };
+        let data_dir = self.owner.data_dir().to_owned();
+        let run_dir = self.owner.run_dir().to_owned();
         if let Some(attempt) = crate::installer::upgrade::existing_request(&request, &data_dir)? {
             return Ok(attempt);
         }
-        let _local = local
+        let _local = self
+            .owner
+            .admission_lock()
             .try_lock_owned()
             .map_err(|_| crate::mutation::Error::Busy)?;
-        let installation = gate.try_installation()?;
+        let installation = self.owner.mutation_gate().try_installation()?;
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;
         crate::installer::upgrade::request(request, data_dir, run_dir, installation)
@@ -49,18 +43,17 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::Upgrade`] when no matching receipt exists or worker and ownership
-    /// evidence cannot be read. Returns [`Error::LockPoisoned`] when the Local Machine store
-    /// cannot be read.
+    /// evidence cannot be read.
     pub(crate) async fn inspect_upgrade(
         &self,
         request: InspectMachineUpgradeRequest,
     ) -> Result<MachineUpgradeAttempt, Error> {
-        let (data_dir, run_dir) = {
-            let store = self.lock_store()?;
-            (store.data_dir.clone(), store.run_dir.clone())
-        };
-        crate::installer::upgrade::inspect(request.attempt_id, &data_dir, &run_dir)
-            .await
-            .map_err(Into::into)
+        crate::installer::upgrade::inspect(
+            request.attempt_id,
+            self.owner.data_dir(),
+            self.owner.run_dir(),
+        )
+        .await
+        .map_err(Into::into)
     }
 }

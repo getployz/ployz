@@ -5,7 +5,7 @@ mod admission;
 
 use super::*;
 use crate::{
-    machine::LocalMachineStore,
+    machine::{LocalMachineStore, RecordOwner},
     machine_api::{MachineApi, MachineService},
 };
 use ployz_core::MachineRpcClient;
@@ -13,7 +13,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -56,14 +56,12 @@ impl Fixture {
                 cloud_pairing: None,
             })
             .unwrap();
-        let (restart, _) = tokio::sync::watch::channel(false);
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
-        let store = Arc::new(Mutex::new(store));
+        let store = RecordOwner::spawn(store).unwrap();
         let mut service = MachineService::with_cluster(
             store,
-            restart,
             Some((replicated, crate::corrosion::AdminClient::new("/no/admin"))),
         )
         .with_optional_containers(Some(runtime));

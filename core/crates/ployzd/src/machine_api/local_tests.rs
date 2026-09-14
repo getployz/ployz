@@ -2,7 +2,7 @@
 
 use super::{MachineService, hosted_dns_error, ingress_config_missing, store_error};
 use crate::corrosion::{AdminClient, fake_cluster};
-use crate::machine::{LocalMachineStore, StoreError};
+use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
@@ -15,7 +15,6 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-use tokio::sync::watch;
 use tonic::{Code, Request};
 
 #[test]
@@ -93,8 +92,8 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
         "ployzd-upgrade-rpc-admission-{}",
         MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-    let service = MachineService::with_cluster(store, watch::channel(false).0, None);
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let service = MachineService::with_cluster(store, None);
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let mutation = tokio::spawn({
@@ -149,8 +148,8 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
 async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
     let data_dir =
         std::env::temp_dir().join(format!("ployzd-upgrade-rpc-paths-{}", MachineId::random()));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-    let service = MachineService::with_cluster(store, watch::channel(false).0, None);
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let service = MachineService::with_cluster(store, None);
 
     let response = service
         .request_machine_upgrade(Request::new(
@@ -186,27 +185,25 @@ async fn replicated_container_observations_are_advertised_only_with_a_cluster_st
         "ployzd-container-observation-capability-{}",
         MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-    let without_cluster =
-        MachineService::with_cluster(Arc::clone(&store), watch::channel(false).0, None)
-            .describe_contract(Request::new(
-                op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
-                    .encode()
-                    .unwrap(),
-            ))
-            .await
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap()
-            .decode::<op::DescribeContract>()
-            .unwrap();
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let without_cluster = MachineService::with_cluster(store.clone(), None)
+        .describe_contract(Request::new(
+            op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+                .encode()
+                .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::DescribeContract>()
+        .unwrap();
     assert!(!without_cluster.supports(GET_CONTAINER_OBSERVATIONS_CAPABILITY));
 
     let (replicated, server) = fake_cluster::store().await;
     let with_cluster = MachineService::with_cluster(
         store,
-        watch::channel(false).0,
         Some((replicated, AdminClient::new("/no/such/admin.sock"))),
     )
     .describe_contract(Request::new(
@@ -233,10 +230,9 @@ async fn replicated_container_observation_wait_rejects_a_long_hold() {
         "ployzd-container-observation-bound-{}",
         MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(
         store,
-        watch::channel(false).0,
         Some((replicated, AdminClient::new("/no/such/admin.sock"))),
     );
     let response = tokio::time::timeout(
@@ -274,10 +270,9 @@ async fn replicated_container_observations_are_complete_and_do_not_use_docker() 
         "ployzd-container-observations-{}",
         MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(
         store,
-        watch::channel(false).0,
         Some((replicated, AdminClient::new("/no/such/admin.sock"))),
     );
 
@@ -313,10 +308,9 @@ async fn replicated_container_observation_store_failure_is_not_absent() {
         "ployzd-container-observation-store-error-{}",
         MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(
         store,
-        watch::channel(false).0,
         Some((replicated, AdminClient::new("/no/such/admin.sock"))),
     );
     server.abort();
@@ -353,10 +347,9 @@ async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
         "ployzd-container-observation-wait-{}",
         MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(
         store,
-        watch::channel(false).0,
         Some((replicated.clone(), AdminClient::new("/no/such/admin.sock"))),
     );
 
@@ -465,9 +458,8 @@ async fn runtime_watch_without_a_cluster_store_is_unavailable() {
         "ployzd-runtime-watch-{}",
         ployz_core::MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-    let (restart, _) = watch::channel(false);
-    let service = MachineService::with_cluster(store, restart, None);
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let service = MachineService::with_cluster(store, None);
     let error = service
         .runtime_watch(Request::new(
             op::RuntimeWatch::into_request(RuntimeWatchRequest {})
@@ -501,15 +493,15 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
             cloud_pairing: None,
         })
         .unwrap();
-    let store = Arc::new(Mutex::new(store));
+    let store = RecordOwner::spawn(store).unwrap();
     let containers = Arc::new(Mutex::new(BTreeMap::new()));
     let (runtime, fake) = fake_runtime_with(FakeDocker {
         named_containers: Some(containers.clone()),
         ..Default::default()
     })
     .await;
-    let service = MachineService::with_cluster(store.clone(), watch::channel(false).0, None)
-        .with_optional_containers(Some(runtime));
+    let service =
+        MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
     let request = CreateContainerRequest {
         creation_key: Some("retry/1".into()),
         kind: ContainerKind::ServiceContainer,
@@ -599,12 +591,14 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     assert_eq!(loser.code, RpcErrorCode::Conflict);
     assert_eq!(winner, create(&service, retry).await.unwrap());
     store
-        .lock()
+        .mutate(|store| {
+            store.update(
+                serde_json::from_value(json!({"accepts_services":false})).unwrap(),
+                &[],
+            )
+        })
+        .await
         .unwrap()
-        .update(
-            serde_json::from_value(json!({"accepts_services":false})).unwrap(),
-            &[],
-        )
         .unwrap();
     assert_eq!(first, create(&service, request.clone()).await.unwrap());
     let mut new_request = request.clone();
@@ -635,12 +629,14 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
         RpcErrorCode::Conflict
     );
     store
-        .lock()
+        .mutate(|store| {
+            store.update(
+                serde_json::from_value(json!({"accepts_services":true})).unwrap(),
+                &[],
+            )
+        })
+        .await
         .unwrap()
-        .update(
-            serde_json::from_value(json!({"accepts_services":true})).unwrap(),
-            &[],
-        )
         .unwrap();
     assert_ne!(
         first.container_id,

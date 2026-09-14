@@ -3,15 +3,9 @@
 mod local;
 mod routing;
 
-use std::{
-    convert::Infallible,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    task::Context,
-};
+use std::{convert::Infallible, path::PathBuf, sync::Arc, task::Context};
 
 use ployz_core::{MachineId, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT};
-use tokio::sync::watch;
 use tonic::{
     body::Body,
     codec::CompressionEncoding,
@@ -22,7 +16,7 @@ use tonic::{
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
-    machine::{LocalMachineError, LocalMachineStore},
+    machine::RecordOwner,
 };
 
 pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route};
@@ -45,12 +39,9 @@ pub struct MachineApiBuilder {
 impl MachineApi {
     /// Start configuring this Machine's Machine API.
     #[must_use]
-    pub fn builder(
-        store: Arc<Mutex<LocalMachineStore>>,
-        restart: watch::Sender<bool>,
-    ) -> MachineApiBuilder {
+    pub fn builder(owner: RecordOwner) -> MachineApiBuilder {
         MachineApiBuilder {
-            service: local::MachineService::with_cluster(store, restart, None),
+            service: local::MachineService::with_cluster(owner, None),
         }
     }
 
@@ -63,19 +54,13 @@ impl MachineApi {
     #[cfg(test)]
     #[must_use]
     pub(crate) fn from_local(service: MachineService) -> Self {
-        wrap(service).expect("test Machine record is readable")
+        wrap(service)
     }
 }
 
 impl MachineApiBuilder {
     pub(crate) fn with_builds(mut self, builds: Arc<crate::build::Runner>) -> Self {
         self.service.builds = builds;
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
-        self.service = self.service.with_participation(participating);
         self
     }
 
@@ -104,25 +89,17 @@ impl MachineApiBuilder {
     }
 
     /// Apply routing and return a servable Machine API.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalMachineError::LockPoisoned`] when the local record lock is
-    /// poisoned.
-    pub fn build(self) -> Result<MachineApi, LocalMachineError> {
+    #[must_use]
+    pub fn build(self) -> MachineApi {
         wrap(self.service)
     }
 }
 
-fn wrap(service: local::MachineService) -> Result<MachineApi, LocalMachineError> {
+fn wrap(service: local::MachineService) -> MachineApi {
     let local = service.local();
-    let machine_id = local.record()?.id();
+    let machine_id = local.record().id();
     let port = service.machine_api_port();
-    let replicated = match local.replicated() {
-        Ok(store) => Some(store.clone()),
-        Err(LocalMachineError::ClusterStoreUnavailable) => None,
-        Err(error) => return Err(error),
-    };
+    let replicated = local.replicated().ok().cloned();
     let proxy = MachineProxy::new(
         Routes::new(
             MachineRpcServer::new(service)
@@ -133,7 +110,7 @@ fn wrap(service: local::MachineService) -> Result<MachineApi, LocalMachineError>
         port,
         replicated,
     );
-    Ok(MachineApi { proxy, machine_id })
+    MachineApi { proxy, machine_id }
 }
 
 impl Service<http::Request<Body>> for MachineApi {
@@ -150,31 +127,5 @@ impl Service<http::Request<Body>> for MachineApi {
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
         self.proxy.call(request)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::machine::LocalMachineStore;
-    use ployz_core::MachineId;
-    use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn build_fails_when_the_local_record_lock_is_poisoned() {
-        let data_dir =
-            std::env::temp_dir().join(format!("ployzd-machine-api-poison-{}", MachineId::random()));
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-        let poisoned = Arc::clone(&store);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = poisoned.lock().unwrap();
-            panic!("poison the local Machine record lock");
-        }));
-        let (reset, _) = watch::channel(false);
-        match MachineApi::builder(store, reset).build() {
-            Err(error) => assert!(matches!(error, LocalMachineError::LockPoisoned)),
-            Ok(_) => panic!("a poisoned lock must fail build"),
-        }
-        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

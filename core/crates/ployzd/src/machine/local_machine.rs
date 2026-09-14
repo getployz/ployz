@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
 };
 
 use ployz_core::{
@@ -17,9 +17,12 @@ use ployz_core::{
     associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
-use tokio::sync::{OwnedMutexGuard, watch};
+use tokio::sync::OwnedMutexGuard;
 
-use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
+use super::{
+    LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
+    local_runtime,
+};
 
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
@@ -31,11 +34,9 @@ use crate::{
 /// Live Observation and membership operations for this Machine.
 #[derive(Clone)]
 pub struct LocalMachine {
-    store: Arc<Mutex<LocalMachineStore>>,
-    restart: watch::Sender<bool>,
+    owner: RecordOwner,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
-    participating: Option<watch::Sender<bool>>,
 }
 
 mod container;
@@ -99,8 +100,8 @@ pub enum Error {
     DockerUnavailable,
     #[error("at least one Machine update is required")]
     EmptyUpdate,
-    #[error("local Machine record lock poisoned")]
-    LockPoisoned,
+    #[error(transparent)]
+    RecordOwner(#[from] RecordOwnerStopped),
     #[error(transparent)]
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
@@ -140,15 +141,13 @@ impl MutationAdmission {
 }
 
 impl LocalMachine {
-    /// An uninitialized Local Machine with no Cluster or Docker collaborators.
+    /// A Local Machine over its record owner, with no Cluster or Docker collaborators.
     #[must_use]
-    pub fn new(store: Arc<Mutex<LocalMachineStore>>, restart: watch::Sender<bool>) -> Self {
+    pub fn new(owner: RecordOwner) -> Self {
         Self {
-            store,
-            restart,
+            owner,
             cluster: None,
             containers: None,
-            participating: None,
         }
     }
 
@@ -164,18 +163,6 @@ impl LocalMachine {
         self
     }
 
-    #[must_use]
-    pub(crate) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
-        self.participating = Some(participating);
-        self
-    }
-
-    fn stop_participation(&self) {
-        if let Some(participating) = &self.participating {
-            participating.send_replace(false);
-        }
-    }
-
     pub(crate) fn has_cluster(&self) -> bool {
         self.cluster.is_some()
     }
@@ -184,26 +171,21 @@ impl LocalMachine {
         self.containers.as_ref()
     }
 
-    /// The persisted Local Machine record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned.
-    pub fn record(&self) -> Result<LocalMachineRecord, Error> {
-        Ok(self.lock_store()?.record().clone())
+    /// The persisted Local Machine record as last published by its owner.
+    #[must_use]
+    pub fn record(&self) -> Arc<LocalMachineRecord> {
+        self.owner.record()
     }
 
-    pub(super) fn lock_store(&self) -> Result<MutexGuard<'_, LocalMachineStore>, Error> {
-        self.store.lock().map_err(|_| Error::LockPoisoned)
+    /// The owner of this Machine's durable record.
+    #[must_use]
+    pub fn owner(&self) -> &RecordOwner {
+        &self.owner
     }
 
     pub(crate) async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
-        let (local, installation) = {
-            let store = self.lock_store()?;
-            (store.admission_lock.clone(), store.mutation_gate.clone())
-        };
-        let local = local.lock_owned().await;
-        let installation = installation.try_mutation()?;
+        let local = self.owner.admission_lock().lock_owned().await;
+        let installation = self.owner.mutation_gate().try_mutation()?;
         Ok(MutationAdmission {
             _local: local,
             _installation: installation,
@@ -253,14 +235,12 @@ impl LocalMachine {
         let Some(cluster) = &self.cluster else {
             return None;
         };
-        let Ok(local) = self.record() else {
-            return None;
-        };
+        let local = self.record();
         let (states, rtts) = read_admin(&cluster.admin).await?;
         Some(RuntimeWatchTelemetry {
             states: membership_states_by_address(states),
             rtts,
-            selected_endpoints: local.selected_endpoints,
+            selected_endpoints: local.selected_endpoints.clone(),
         })
     }
 
@@ -269,14 +249,13 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned,
-    /// [`Error::Network`] when endpoint discovery fails, [`Error::Cluster`]
+    /// Returns [`Error::Network`] when endpoint discovery fails, [`Error::Cluster`]
     /// when store version or RTT lookup fails, and [`Error::ClusterUnavailable`]
     /// when RTTs are requested without a Cluster. Returns
     /// [`Error::DockerUnavailable`] when requested telemetry cannot reach Docker,
     /// or a Docker error when a requested telemetry probe fails.
     pub async fn inspect(&self, request: InspectRequest) -> Result<MachineDetails, Error> {
-        let record = self.record()?;
+        let record = self.record();
         let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
             request.advertised_endpoints
         } else if let Some(machine) = record.machine() {
@@ -339,17 +318,14 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
-    /// and [`Error::Network`] when endpoint discovery fails.
+    /// Returns [`Error::Network`] when endpoint discovery fails.
     pub async fn machine_token(&self, request: MachineTokenRequest) -> Result<MachineToken, Error> {
-        let record = self.record()?;
-        let id = record.id();
-        let private_key = record.wireguard_private_key;
+        let record = self.record();
         let discovered = discover_network(request.wireguard_port, request.public_ip).await?;
         let capacity = host_capacity::observe();
         Ok(MachineToken {
-            id,
-            public_key: private_key.public_key(),
+            id: record.id(),
+            public_key: record.wireguard_private_key.public_key(),
             public_ip: discovered.public_ip,
             advertised_endpoints: if request.advertised_endpoints.is_empty() {
                 discovered.endpoints
@@ -404,16 +380,19 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
-    /// and [`Error::Store`] when initialize is not legal in the current phase.
-    fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        let machine = self.lock_store()?.initialize(request)?;
+    /// Returns [`Error::RecordOwner`] when the record owner has stopped and
+    /// [`Error::Store`] when initialize is not legal in the current phase.
+    async fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
+        let machine = self
+            .owner
+            .mutate(move |store| store.initialize(request))
+            .await??;
         tracing::info!(
             name = machine.name.as_str(),
             id = machine.id.as_str(),
             "initialize accepted"
         );
-        self.restart.send_replace(true);
+        self.owner.request_restart();
         Ok(Initialized { machine })
     }
 
@@ -425,7 +404,7 @@ impl LocalMachine {
     /// legal in the current persisted phase.
     pub async fn initialize(&self, request: InitializeRequest) -> Result<Initialized, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.initialize_admitted(request) })
+        self.finish_mutation(async move { local.initialize_admitted(request).await })
             .await
     }
 
@@ -436,7 +415,7 @@ impl LocalMachine {
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
-            if local.record()?.phase() != LocalMachinePhase::Participating {
+            if local.record().phase() != LocalMachinePhase::Participating {
                 return Err(Error::NotParticipating);
             }
             if request.assigned_subnet.is_none() {
@@ -479,12 +458,11 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned,
-    /// [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
+    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
     /// and [`Error::Cluster`] when the machines replica cannot be read.
     /// Unreadable Membership Observation does not lock.
     pub(crate) async fn isolation_locked(&self) -> Result<bool, Error> {
-        let me = self.record()?.id();
+        let me = self.record().id();
         let Some(cluster) = &self.cluster else {
             return Err(Error::ClusterStoreUnavailable);
         };
@@ -503,19 +481,23 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
+    /// Returns [`Error::RecordOwner`] when the record owner has stopped
     /// and [`Error::Store`] when join is not legal in the current phase.
-    fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
-        let mut store = self.lock_store()?;
-        let already_accepted = store.join(
-            request.registration.assigned_machine,
-            request.registration.visible_peers,
-            request.registration.target_versions,
-            request.wireguard_mtu,
-            request.cloud_pairing,
-        )?;
-        let machine = store
-            .record()
+    async fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
+        let already_accepted = self
+            .owner
+            .mutate(move |store| {
+                store.join(
+                    request.registration.assigned_machine,
+                    request.registration.visible_peers,
+                    request.registration.target_versions,
+                    request.wireguard_mtu,
+                    request.cloud_pairing,
+                )
+            })
+            .await??;
+        let record = self.record();
+        let machine = record
             .machine()
             .expect("join persisted the assigned Machine");
         tracing::info!(
@@ -523,9 +505,8 @@ impl LocalMachine {
             id = machine.id.as_str(),
             "join accepted"
         );
-        drop(store);
         if !already_accepted {
-            self.restart.send_replace(true);
+            self.owner.request_restart();
         }
         Ok(JoinAccepted { already_accepted })
     }
@@ -538,7 +519,7 @@ impl LocalMachine {
     /// the current persisted phase.
     pub async fn join(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.join_admitted(request) })
+        self.finish_mutation(async move { local.join_admitted(request).await })
             .await
     }
 
@@ -547,15 +528,18 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::NotParticipating`] when this Machine is not
-    /// participating, [`Error::LockPoisoned`] when the local record lock is
-    /// poisoned, and [`Error::Store`] when the record cannot be written.
-    fn set_cloud_pairing_admitted(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
-        let mut store = self.lock_store()?;
-        if store.record().phase() != LocalMachinePhase::Participating {
-            return Err(Error::NotParticipating);
-        }
-        store.persist_cloud_pairing(pairing)?;
-        Ok(())
+    /// participating, [`Error::RecordOwner`] when the record owner has
+    /// stopped, and [`Error::Store`] when the record cannot be written.
+    async fn set_cloud_pairing_admitted(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
+        self.owner
+            .mutate(move |store| {
+                if store.record().phase() != LocalMachinePhase::Participating {
+                    return Err(Error::NotParticipating);
+                }
+                store.persist_cloud_pairing(pairing)?;
+                Ok(())
+            })
+            .await?
     }
 
     /// Membership Observation of Machines visible from this participating Machine.
@@ -564,10 +548,9 @@ impl LocalMachine {
     ///
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster
-    /// store is missing, [`Error::LockPoisoned`] when the local record lock is
-    /// poisoned, and [`Error::Cluster`] when replicated I/O fails.
+    /// store is missing, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
-        let local = self.record()?;
+        let local = self.record();
         if local.phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);
         }
@@ -587,7 +570,7 @@ impl LocalMachine {
             }),
             machines: RuntimeWatchTelemetry {
                 states,
-                selected_endpoints: local.selected_endpoints,
+                selected_endpoints: local.selected_endpoints.clone(),
                 rtts: Vec::new(),
             }
             .overlay(machines, &entry_id),
@@ -600,7 +583,7 @@ impl LocalMachine {
     ///
     /// Returns [`Error::EmptyUpdate`] when no field is set,
     /// [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when the update is not legal, and [`Error::Cluster`]
     /// when listing visible Machines fails.
     pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
@@ -611,7 +594,7 @@ impl LocalMachine {
             && request.update.public_ip == ployz_core::PublicIpUpdate::Keep
             && request.update.advertised_endpoints.is_none()
         {
-            let installation = self.lock_store()?.mutation_gate.try_mutation()?;
+            let installation = self.owner.mutation_gate().try_mutation()?;
             return tokio::spawn(async move {
                 let _installation = installation;
                 local.update_admitted(request).await
@@ -632,7 +615,11 @@ impl LocalMachine {
         let replicated = self.replicated()?;
         let visible = replicated.machines().await?.observations;
         let publication = replicated.machine_publication().await;
-        let machine = self.lock_store()?.update(request.update, &visible)?;
+        let update = request.update;
+        let machine = self
+            .owner
+            .mutate(move |store| store.update(update, &visible))
+            .await??;
         if let Err(error) = publication.publish(&machine).await {
             eprintln!("failed to publish updated local Machine: {error}");
         }
@@ -645,8 +632,7 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
-    /// missing, [`Error::Cluster`] when the replicated delete fails, and
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned.
+    /// missing and [`Error::Cluster`] when the replicated delete fails.
     pub async fn remove_peer(
         &self,
         request: RemoveMachineRequest,
@@ -663,9 +649,9 @@ impl LocalMachine {
         self.replicated()?
             .remove_machine(&request.machine_id)
             .await?;
-        let local = self.record()?;
+        let local = self.record();
         if local.id() == request.machine_id && local.phase() == LocalMachinePhase::Resetting {
-            self.restart.send_replace(true);
+            self.owner.request_restart();
         }
         Ok(MachineRemoved {})
     }
@@ -679,7 +665,7 @@ impl LocalMachine {
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
     /// missing, [`Error::DockerUnavailable`] when Docker is missing,
     /// [`Error::Cleanup`] when managed container removal fails,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when reset cannot be prepared or committed, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn remove_local(
@@ -695,33 +681,35 @@ impl LocalMachine {
         &self,
         request: RemoveLocalMachineRequest,
     ) -> Result<LocalMachineRemoved, Error> {
-        let machine_id = self.record()?.id();
+        let machine_id = self.record().id();
         let replicated = self.replicated()?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let publication = replicated.machine_publication().await;
-        let prepared_reset = {
-            let store = self.lock_store()?;
-            if store.record().phase() == LocalMachinePhase::Resetting {
-                None
-            } else {
-                Some(store.prepare_reset()?)
-            }
-        };
+        let prepared_reset = self
+            .owner
+            .mutate(|store| {
+                if store.record().phase() == LocalMachinePhase::Resetting {
+                    Ok(None)
+                } else {
+                    store.prepare_reset().map(Some)
+                }
+            })
+            .await??;
         if let Err(error) = containers.remove_all_managed().await {
             return Err(Error::Cleanup(error.to_string()));
         }
         if let Some(prepared_reset) = prepared_reset {
-            let mut store = self.lock_store()?;
-            prepared_reset.commit(&mut store)?;
+            self.owner
+                .mutate(move |store| prepared_reset.commit(store))
+                .await??;
         }
-        self.stop_participation();
         let reset_warning = publication
             .remove(&machine_id)
             .await
             .err()
             .map(|error| error.to_string());
         Ok(local_removal_response(
-            &self.restart,
+            &self.owner,
             reset_warning,
             request.restart_on_cleanup_failure,
         ))
@@ -733,7 +721,7 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::Docker`] when managed container cleanup fails,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when reset is not legal in the current phase, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn reset(&self) -> Result<ResetAccepted, Error> {
@@ -746,12 +734,8 @@ impl LocalMachine {
         if let Some(containers) = &self.containers {
             containers.remove_all_managed().await?;
         }
-        {
-            let mut store = self.lock_store()?;
-            store.begin_reset()?;
-            self.stop_participation();
-        }
-        self.restart.send_replace(true);
+        self.owner.mutate(LocalMachineStore::begin_reset).await??;
+        self.owner.request_restart();
         Ok(ResetAccepted {})
     }
 }
@@ -855,12 +839,12 @@ fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTree
 }
 
 fn local_removal_response(
-    restart: &watch::Sender<bool>,
+    owner: &RecordOwner,
     reset_warning: Option<String>,
     restart_on_warning: bool,
 ) -> LocalMachineRemoved {
     if reset_warning.is_none() || restart_on_warning {
-        restart.send_replace(true);
+        owner.request_restart();
     }
     LocalMachineRemoved { reset_warning }
 }
@@ -882,11 +866,21 @@ mod tests {
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
 
+    fn owner() -> (tempfile::TempDir, crate::machine::RecordOwner) {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = crate::machine::RecordOwner::spawn(
+            crate::machine::LocalMachineStore::open(dir.path()).unwrap(),
+        )
+        .unwrap();
+        (dir, owner)
+    }
+
     #[test]
     fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
-        let (restart, restart_rx) = tokio::sync::watch::channel(false);
+        let (_dir, owner) = owner();
+        let restart_rx = owner.restart_requested();
         let removed =
-            local_removal_response(&restart, Some("replicated delete failed".into()), false);
+            local_removal_response(&owner, Some("replicated delete failed".into()), false);
 
         assert_eq!(
             removed.reset_warning.as_deref(),
@@ -897,8 +891,9 @@ mod tests {
 
     #[test]
     fn failed_remote_removal_restarts_after_delegating_entry_fallback() {
-        let (restart, restart_rx) = tokio::sync::watch::channel(false);
-        local_removal_response(&restart, Some("replicated delete failed".into()), true);
+        let (_dir, owner) = owner();
+        let restart_rx = owner.restart_requested();
+        local_removal_response(&owner, Some("replicated delete failed".into()), true);
 
         assert!(*restart_rx.borrow());
     }

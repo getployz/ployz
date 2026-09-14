@@ -18,9 +18,9 @@ impl LocalMachine {
         self.finish_mutation(async move {
             match request {
                 SetCloudPairingRequest::Set { pairing } => {
-                    local.set_cloud_pairing_admitted(Some(pairing))
+                    local.set_cloud_pairing_admitted(Some(pairing)).await
                 }
-                SetCloudPairingRequest::Clear {} => local.set_cloud_pairing_admitted(None),
+                SetCloudPairingRequest::Clear {} => local.set_cloud_pairing_admitted(None).await,
                 SetCloudPairingRequest::Remove { removal } => {
                     tokio::task::spawn_blocking(move || {
                         complete_removal(
@@ -45,7 +45,7 @@ fn complete_removal(
     systemctl: &str,
 ) -> Result<(), Error> {
     if local
-        .record()?
+        .record()
         .cloud_pairing
         .as_ref()
         .is_some_and(|pairing| pairing.secret() != &removal.expected_pairing)
@@ -54,7 +54,9 @@ fn complete_removal(
     }
     // Validate before clearing pairing; rotate rechecks under the startup lock.
     endpoint_command(helper, "validate-rotation", removal)?;
-    local.lock_store()?.persist_cloud_pairing(None)?;
+    local
+        .owner
+        .mutate_blocking(|store| store.persist_cloud_pairing(None))??;
     endpoint_command(helper, "rotate", removal)?;
     // Always restart, including when disk already held successor. Disk equality
     // does not establish which PSK the running helper currently accepts.
@@ -104,25 +106,23 @@ fn endpoint_command(helper: &str, operation: &str, removal: &TailcatRemoval) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machine::LocalMachineStore;
+    use crate::machine::{LocalMachineStore, RecordOwner};
     use ployz_core::{CloudPairing, TailcatCapability};
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        sync::{Arc, Mutex},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     #[test]
     fn removal_persists_before_restart_and_retries_restart() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalMachineStore::open(dir.path()).unwrap();
-        let (restart, _) = tokio::sync::watch::channel(false);
-        let local = LocalMachine::new(Arc::new(Mutex::new(store)), restart);
+        let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
         let pairing = CloudPairing::new(ployz_core::PairingCredential::parse("pairing").unwrap());
         local
-            .lock_store()
+            .owner
+            .mutate_blocking({
+                let pairing = pairing.clone();
+                move |store| store.persist_cloud_pairing(Some(pairing))
+            })
             .unwrap()
-            .persist_cloud_pairing(Some(pairing.clone()))
             .unwrap();
         let removal = TailcatRemoval {
             expected: TailcatCapability::parse("old-secret").unwrap(),
@@ -155,13 +155,16 @@ fi
             )
             .unwrap();
         }
-        assert!(local.record().unwrap().cloud_pairing.is_none());
+        assert!(local.record().cloud_pairing.is_none());
         let new_pairing =
             CloudPairing::new(ployz_core::PairingCredential::parse("new-pairing").unwrap());
         local
-            .lock_store()
+            .owner
+            .mutate_blocking({
+                let new_pairing = new_pairing.clone();
+                move |store| store.persist_cloud_pairing(Some(new_pairing))
+            })
             .unwrap()
-            .persist_cloud_pairing(Some(new_pairing.clone()))
             .unwrap();
         assert!(
             complete_removal(
@@ -172,7 +175,7 @@ fi
             )
             .is_err()
         );
-        assert_eq!(local.record().unwrap().cloud_pairing, Some(new_pairing));
+        assert_eq!(local.record().cloud_pairing, Some(new_pairing));
         assert_eq!(
             fs::read_to_string(dir.path().join("trace")).unwrap(),
             "validate-rotation paired\nrotate cleared\nrestart cleared\nvalidate-rotation cleared\nrotate cleared\nrestart cleared\n"
@@ -182,8 +185,7 @@ fi
     async fn removal_rejects_repairing_and_stale_pairing_before_clearing() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalMachineStore::open(dir.path()).unwrap();
-        let (reset, _) = tokio::sync::watch::channel(false);
-        let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+        let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
         let pairing = CloudPairing::new(ployz_core::PairingCredential::parse("pairing").unwrap());
         local
             .initialize(ployz_core::InitializeRequest {
@@ -210,19 +212,19 @@ fi
             }))
             .is_err()
         );
-        assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing.clone()));
+        assert_eq!(local.record().cloud_pairing, Some(pairing.clone()));
         let error = local
             .set_cloud_pairing(SetCloudPairingRequest::Remove { removal })
             .await
             .unwrap_err();
         assert!(error.to_string().contains("stale Cloud Pairing"));
-        assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing.clone()));
+        assert_eq!(local.record().cloud_pairing, Some(pairing.clone()));
         let error = serde_json::from_value::<SetCloudPairingRequest>(serde_json::json!({
             "kind": "remove", "removal": {
                 "expected_pairing": pairing.secret(), "expected": "private-old\nextra-command", "successor": "private-next",
             },
         })).unwrap_err();
         assert!(!error.to_string().contains("private-old"));
-        assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing));
+        assert_eq!(local.record().cloud_pairing, Some(pairing));
     }
 }

@@ -45,7 +45,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
         Some(assigned)
     );
     let expected = assigned.clone();
-    let joiner = LocalMachine::new(Arc::new(Mutex::new(joiner_store)), watch::channel(false).0);
+    let joiner = LocalMachine::new(RecordOwner::spawn(joiner_store).unwrap());
     joiner
         .join(JoinRequest {
             registration,

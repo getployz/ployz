@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -14,14 +14,14 @@ use ployz_core::{
     RpcErrorCode, RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
-use tokio::{sync::watch, time::Instant};
+use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
-    machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
+    machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
     network::MACHINE_API_PORT,
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
@@ -42,12 +42,11 @@ pub struct MachineService {
 impl MachineService {
     #[must_use]
     pub fn with_cluster(
-        store: Arc<Mutex<LocalMachineStore>>,
-        restart: watch::Sender<bool>,
+        owner: RecordOwner,
         cluster: Option<(ReplicatedStore, AdminClient)>,
     ) -> Self {
         Self {
-            local: LocalMachine::new(store, restart).with_cluster(cluster),
+            local: LocalMachine::new(owner).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             ingress_data_dir: None,
             ingest: ImageIngest::new(None, None),
@@ -56,12 +55,6 @@ impl MachineService {
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
         }
-    }
-
-    #[must_use]
-    pub(super) fn with_participation(mut self, participating: watch::Sender<bool>) -> Self {
-        self.local = self.local.with_participation(participating);
-        self
     }
 
     #[must_use]
@@ -110,11 +103,8 @@ impl MachineService {
         self.machine_api_port
     }
 
-    #[allow(clippy::result_large_err)]
-    fn local_record(&self) -> Result<crate::machine::LocalMachineRecord, Status> {
-        self.local
-            .record()
-            .map_err(|_| Status::internal("local Machine record lock poisoned"))
+    fn local_record(&self) -> Arc<LocalMachineRecord> {
+        self.local.record()
     }
 
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
@@ -124,12 +114,7 @@ impl MachineService {
     }
 
     fn ready_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
-        let participating = self
-            .local_record()
-            .map_err(|error| unavailable(error.message()))?
-            .phase()
-            == LocalMachinePhase::Participating;
-        if !participating {
+        if self.local_record().phase() != LocalMachinePhase::Participating {
             return Err(unavailable("Machine is not participating"));
         }
         self.replicated()
@@ -155,7 +140,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::DescribeContract>(request)?;
-        let machine_id = self.local_record()?.id();
+        let machine_id = self.local_record().id();
         let mut capabilities: BTreeSet<_> =
             CapabilityAdvertisement::Always.capabilities().collect();
         if self.local.containers().is_some() {
@@ -246,7 +231,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        let machine_id = self.local_record()?.id();
+        let machine_id = self.local_record().id();
         match containers.list_managed(&machine_id).await {
             Ok(observations) => respond(ContainerList {
                 containers: observations,
@@ -264,7 +249,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        let machine_id = self.local_record()?.id();
+        let machine_id = self.local_record().id();
         match containers
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
@@ -383,7 +368,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::ListVolumes>(request)?;
-        let machine_id = self.local_record()?.id();
+        let machine_id = self.local_record().id();
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -399,7 +384,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::InspectVolume>(request)?;
-        let machine_id = self.local_record()?.id();
+        let machine_id = self.local_record().id();
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -453,7 +438,7 @@ impl MachineRpc for MachineService {
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
-        let record = self.local_record()?;
+        let record = self.local_record();
         let machine = record
             .machine()
             .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
@@ -469,7 +454,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
         let request =
             op::MachineLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
-        let record = self.local_record()?;
+        let record = self.local_record();
         let machine = record
             .machine()
             .cloned()
@@ -506,7 +491,7 @@ impl MachineRpc for MachineService {
             .ready_replicated()
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
-        let entry_id = self.local_record()?.id();
+        let entry_id = self.local_record().id();
         let stream = self
             .runtime_watch
             .subscribe(store, self.local.clone(), entry_id)
@@ -793,9 +778,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message: "at least one Machine update is required".into(),
             details: Value::Null,
         }),
-        LocalMachineError::LockPoisoned => {
-            Err(Status::internal("local Machine record lock poisoned"))
-        }
+        LocalMachineError::RecordOwner(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::OperationTask(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::IngressProxyServiceSpec(error) => respond(RpcError {

@@ -1,11 +1,8 @@
-use std::sync::{Arc, Mutex};
-
 use ployz_core::{
     JoinRequest, LocalMachinePhase, MachineId, RegisterRequest, RpcErrorCode, WireGuardPublicKey,
 };
-use tokio::sync::watch;
 
-use super::{LocalMachine, LocalMachineError, LocalMachineStore};
+use super::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
 use crate::corrosion::{AdminClient, fake_cluster};
 
 mod harness;
@@ -18,10 +15,8 @@ async fn register_rejects_an_uninitialized_machine() {
         "ployzd-register-errors-{}",
         ployz_core::MachineId::random()
     ));
-    let local = LocalMachine::new(
-        Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap())),
-        watch::channel(false).0,
-    );
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap());
     let empty = local
         .register(RegisterRequest {
             machine_id: MachineId::random(),
@@ -52,15 +47,10 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
         "ployzd-register-replay-target-{}",
         MachineId::random()
     ));
-    let target_store = Arc::new(Mutex::new(LocalMachineStore::open(&target_dir).unwrap()));
-    let public_key = target_store
-        .lock()
-        .unwrap()
-        .record()
-        .wireguard_private_key
-        .public_key();
+    let target_store = RecordOwner::spawn(LocalMachineStore::open(&target_dir).unwrap()).unwrap();
+    let public_key = target_store.record().wireguard_private_key.public_key();
     let mut identity = request("joiner", public_key);
-    identity.machine_id = target_store.lock().unwrap().record().id();
+    identity.machine_id = target_store.record().id();
 
     let first = rpc_register(&service, identity.clone()).await.unwrap();
     let replay = rpc_register(&service, identity).await.unwrap();
@@ -72,7 +62,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     );
     assert_eq!(replicated.machines().await.unwrap().observations.len(), 2);
 
-    let target = LocalMachine::new(target_store, watch::channel(false).0);
+    let target = LocalMachine::new(target_store);
     target
         .join(JoinRequest {
             registration: replay,
@@ -81,7 +71,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
         })
         .await
         .unwrap();
-    assert_eq!(target.record().unwrap().phase(), LocalMachinePhase::Joining);
+    assert_eq!(target.record().phase(), LocalMachinePhase::Joining);
 
     let conflict = rpc_register(&service, request("other", public_key))
         .await
@@ -100,17 +90,12 @@ async fn register_does_not_reconstruct_membership_while_joining() {
     let (entry, replicated, _founder, data_dir, server) = participating().await;
     let joiner_dir =
         std::env::temp_dir().join(format!("ployzd-register-joining-{}", MachineId::random()));
-    let joiner_store = Arc::new(Mutex::new(LocalMachineStore::open(&joiner_dir).unwrap()));
-    let public_key = joiner_store
-        .lock()
-        .unwrap()
-        .record()
-        .wireguard_private_key
-        .public_key();
+    let joiner_store = RecordOwner::spawn(LocalMachineStore::open(&joiner_dir).unwrap()).unwrap();
+    let public_key = joiner_store.record().wireguard_private_key.public_key();
     let mut identity = request("peer", public_key);
-    identity.machine_id = joiner_store.lock().unwrap().record().id();
+    identity.machine_id = joiner_store.record().id();
     let registered = entry.register(identity).await.unwrap();
-    let joiner = LocalMachine::new(joiner_store, watch::channel(false).0).with_cluster(Some((
+    let joiner = LocalMachine::new(joiner_store).with_cluster(Some((
         replicated.clone(),
         AdminClient::new("/no/such/ployz-admin.sock"),
     )));
@@ -122,7 +107,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
         })
         .await
         .unwrap();
-    assert_eq!(joiner.record().unwrap().phase(), LocalMachinePhase::Joining);
+    assert_eq!(joiner.record().phase(), LocalMachinePhase::Joining);
 
     let error = joiner
         .register(request("peer", public_key))
@@ -144,8 +129,8 @@ async fn isolation_lock_refuses_admit_when_replica_exceeds_three_and_others_are_
     replicated.publish_local_machine(&founder).await.unwrap();
     publish_peers(&replicated, 3).await;
     let (admin_server, admin, admin_root) = serve_membership(&[]).await;
-    let local = LocalMachine::new(store, watch::channel(false).0)
-        .with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
+    let local =
+        LocalMachine::new(store).with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
     let error = local
         .register(request("joiner", WireGuardPublicKey([1; 32])))
         .await
@@ -168,8 +153,8 @@ async fn isolation_lock_does_not_fire_when_a_peer_is_still_up() {
     let peers = publish_peers(&replicated, 3).await;
     let visible = peers.first().expect("three peers");
     let (admin_server, admin, admin_root) = serve_membership(&[(visible, "Alive")]).await;
-    let local = LocalMachine::new(store, watch::channel(false).0)
-        .with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
+    let local =
+        LocalMachine::new(store).with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
 
     let registered = local
         .register(request("joiner", WireGuardPublicKey([1; 32])))

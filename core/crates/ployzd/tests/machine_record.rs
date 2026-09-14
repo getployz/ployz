@@ -1,12 +1,6 @@
 mod test_dir;
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    net::SocketAddr,
-    os::unix::fs::PermissionsExt,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudPairing, InspectRequest, JoinRequest, LocalMachinePhase, Machine,
@@ -15,7 +9,7 @@ use ployz_core::{
 };
 use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
-    LocalMachineStore, ParticipationOrigin, StoreError,
+    LocalMachineStore, ParticipationOrigin, RecordOwner, StoreError,
 };
 use ployzd::network::WireGuardPrivateKey;
 
@@ -51,10 +45,8 @@ fn machine_record_is_created_once_and_reopened_with_private_permissions() {
 #[tokio::test]
 async fn initialize_commits_policy_in_the_first_participating_record() {
     let dir = TestDir::new("ployzd-initialize-policy");
-    let local = LocalMachine::new(
-        Arc::new(Mutex::new(LocalMachineStore::open(&dir.0).unwrap())),
-        tokio::sync::watch::channel(false).0,
-    );
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap());
     let request = serde_json::from_value(serde_json::json!({
         "name": "builder",
         "cluster_network": "10.210.0.0/16",
@@ -166,8 +158,7 @@ fn sample_cloud_pairing() -> CloudPairing {
 async fn initialize_with_cloud_pairing_stores_pairing_credential() {
     let dir = TestDir::new("ployzd-initialize-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     let pairing = sample_cloud_pairing();
 
     local
@@ -183,10 +174,7 @@ async fn initialize_with_cloud_pairing_stores_pairing_credential() {
         .await
         .unwrap();
 
-    assert_eq!(
-        local.record().unwrap().cloud_pairing.as_ref(),
-        Some(&pairing)
-    );
+    assert_eq!(local.record().cloud_pairing.as_ref(), Some(&pairing));
     drop(local);
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
@@ -208,8 +196,7 @@ async fn initialize_with_cloud_pairing_stores_pairing_credential() {
 async fn set_cloud_pairing_after_initialize_persists() {
     let dir = TestDir::new("ployzd-set-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     let pairing = sample_cloud_pairing();
 
     local
@@ -224,7 +211,7 @@ async fn set_cloud_pairing_after_initialize_persists() {
         })
         .await
         .unwrap();
-    assert_eq!(local.record().unwrap().cloud_pairing, None);
+    assert_eq!(local.record().cloud_pairing, None);
 
     local
         .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
@@ -232,10 +219,7 @@ async fn set_cloud_pairing_after_initialize_persists() {
         })
         .await
         .unwrap();
-    assert_eq!(
-        local.record().unwrap().cloud_pairing.as_ref(),
-        Some(&pairing)
-    );
+    assert_eq!(local.record().cloud_pairing.as_ref(), Some(&pairing));
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().cloud_pairing.as_ref(), Some(&pairing));
@@ -245,8 +229,7 @@ async fn set_cloud_pairing_after_initialize_persists() {
 async fn set_cloud_pairing_none_clears_persisted_pairing() {
     let dir = TestDir::new("ployzd-clear-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     local
         .initialize(ployz_core::InitializeRequest {
             initial_policy: Default::default(),
@@ -263,7 +246,7 @@ async fn set_cloud_pairing_none_clears_persisted_pairing() {
         .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {})
         .await
         .unwrap();
-    assert_eq!(local.record().unwrap().cloud_pairing, None);
+    assert_eq!(local.record().cloud_pairing, None);
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().cloud_pairing, None);
@@ -273,8 +256,7 @@ async fn set_cloud_pairing_none_clears_persisted_pairing() {
 async fn set_cloud_pairing_before_initialize_is_not_participating() {
     let dir = TestDir::new("ployzd-set-cloud-pairing-uninitialized");
     let store = LocalMachineStore::open(&dir.0).unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     let error = local
         .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
             pairing: sample_cloud_pairing(),
@@ -317,8 +299,7 @@ async fn join_with_cloud_pairing_stores_the_pairing_credential() {
         runtime: Default::default(),
     };
     let pairing = sample_cloud_pairing();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     local
         .join(JoinRequest {
             registration: Registered {
@@ -332,10 +313,7 @@ async fn join_with_cloud_pairing_stores_the_pairing_credential() {
         .await
         .unwrap();
 
-    assert_eq!(
-        local.record().unwrap().cloud_pairing.as_ref(),
-        Some(&pairing)
-    );
+    assert_eq!(local.record().cloud_pairing.as_ref(), Some(&pairing));
     drop(local);
 
     let reopened = LocalMachineStore::open(&second_dir.0).unwrap();
@@ -473,8 +451,7 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let public_key = store.record().private_key().public_key();
     let endpoint = AdvertisedEndpoint("192.0.2.8:51820".parse().unwrap());
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
 
     let details = local
         .inspect(InspectRequest {
@@ -494,8 +471,7 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
 async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
     let dir = TestDir::new("ployzd-inspect-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     local
         .initialize(ployz_core::InitializeRequest {
             initial_policy: Default::default(),
@@ -522,8 +498,7 @@ async fn repeated_reset_returns_a_typed_conflict() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     store.begin_reset().unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
 
     let error = local.reset().await.unwrap_err();
 
@@ -961,8 +936,8 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
         wireguard_mtu: Some(1380),
         cloud_pairing: Some(sample_cloud_pairing()),
     };
-    let (restart, mut restart_observation) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), restart);
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
+    let mut restart_observation = local.owner().restart_requested();
     for wrong_id in [true, false] {
         let mut invalid = request.clone();
         if wrong_id {
@@ -972,11 +947,8 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
                 WireGuardPrivateKey::generate().public_key();
         }
         assert!(local.join(invalid).await.is_err());
-        assert_eq!(
-            local.record().unwrap().phase(),
-            LocalMachinePhase::Uninitialized
-        );
-        assert_eq!(local.record().unwrap().id(), id);
+        assert_eq!(local.record().phase(), LocalMachinePhase::Uninitialized);
+        assert_eq!(local.record().id(), id);
     }
     assert!(!local.join(request.clone()).await.unwrap().already_accepted);
     assert!(*restart_observation.borrow_and_update());
@@ -985,13 +957,10 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
     drop(local);
     let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
     reopened.complete_catch_up().unwrap();
-    let local = LocalMachine::new(
-        Arc::new(Mutex::new(reopened)),
-        tokio::sync::watch::channel(false).0,
-    );
+    let local = LocalMachine::new(RecordOwner::spawn(reopened).unwrap());
     assert!(local.join(request.clone()).await.unwrap().already_accepted);
     let mut conflict = request;
     conflict.wireguard_mtu = None;
     assert!(local.join(conflict).await.is_err());
-    assert_eq!(local.record().unwrap().id(), id);
+    assert_eq!(local.record().id(), id);
 }

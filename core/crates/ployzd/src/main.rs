@@ -275,7 +275,7 @@ mod tests {
             ExitCode::from(DOCKER_NETWORK_CONFLICT_EXIT_STATUS)
         );
         assert_eq!(
-            daemon_error_exit_code(&Error::StorePoisoned),
+            daemon_error_exit_code(&Error::RecordOwner(ployzd::machine::RecordOwnerStopped)),
             ExitCode::FAILURE
         );
     }

@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use ployz_core::{
@@ -58,11 +55,9 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
         .await
         .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
-    let (restart, _) = tokio::sync::watch::channel(false);
-    let api = MachineApi::builder(Arc::new(Mutex::new(machine_store)), restart)
+    let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
         .with_optional_containers(Some(runtime))
-        .build()
-        .unwrap();
+        .build();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server =
@@ -148,7 +143,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
             cloud_pairing: None,
         })
         .unwrap();
-    let machine_store = Arc::new(Mutex::new(machine_store));
+    let machine_store = crate::machine::RecordOwner::spawn(machine_store).unwrap();
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await
         .unwrap();
@@ -175,11 +170,9 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         .unwrap();
     runtime.start(&created.container_id).await.unwrap();
 
-    let (restart, _) = tokio::sync::watch::channel(false);
-    let api = MachineApi::builder(machine_store, restart)
+    let api = MachineApi::builder(machine_store)
         .with_optional_containers(Some(runtime.clone()))
-        .build()
-        .unwrap();
+        .build();
     let server =
         tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
     let mut client = MachineRpcClient::connect(format!("http://{address}"))

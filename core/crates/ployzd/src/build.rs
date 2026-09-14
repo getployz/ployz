@@ -93,7 +93,7 @@ enum BuildAdmissionError {
 fn require_build_acceptance(
     local: &crate::machine::LocalMachine,
 ) -> Result<MachineId, BuildAdmissionError> {
-    let record = local.record()?;
+    let record = local.record();
     let machine = record
         .machine()
         .ok_or(BuildAdmissionError::NotParticipating)?;

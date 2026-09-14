@@ -30,7 +30,8 @@ pub struct LocalMachineStore {
     pub(super) run_dir: PathBuf,
     record: LocalMachineRecord,
     _lock: File,
-    // Lock order: admission, then publication/ingress/Docker, then short store locks.
+    // Lock order: admission, then publication/ingress/Docker. Record mutations queue
+    // on the record owner and take no lock of their own.
     // Reset waits for admitted operations, including Docker streams with no total deadline.
     // ponytail: serialize local creates; use shared admission reads if throughput requires it.
     pub(super) admission_lock: Arc<tokio::sync::Mutex<()>>,

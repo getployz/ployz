@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
     hosted_dns::Reservation,
-    machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore, StoreError},
+    machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner},
 };
 
 #[derive(Clone)]
@@ -40,15 +40,27 @@ pub(crate) struct MachinePublicationGuard<'a> {
 }
 
 impl MachinePublicationGuard<'_> {
-    pub(crate) fn complete_catch_up(
+    /// Persist catch-up completion while this publication guard is held.
+    ///
+    /// Returns `false` when the record was not joining, so nothing changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalMachineError::RecordOwner`] when the record owner has stopped
+    /// and [`LocalMachineError::Store`] when the record cannot be written.
+    pub(crate) async fn complete_catch_up(
         &self,
-        local: &mut LocalMachineStore,
-    ) -> Result<bool, StoreError> {
-        if !matches!(local.record().body(), LocalMachineBody::Joining { .. }) {
-            return Ok(false);
-        }
-        local.complete_catch_up()?;
-        Ok(true)
+        local: &RecordOwner,
+    ) -> Result<bool, LocalMachineError> {
+        let completed = local
+            .mutate(|store| {
+                if !matches!(store.record().body(), LocalMachineBody::Joining { .. }) {
+                    return Ok(false);
+                }
+                store.complete_catch_up().map(|()| true)
+            })
+            .await??;
+        Ok(completed)
     }
 
     pub(crate) fn publishable_machine(&self, local: &LocalMachineRecord) -> Option<Machine> {

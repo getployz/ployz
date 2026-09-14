@@ -3,7 +3,6 @@ use std::{
     fs,
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -19,7 +18,7 @@ use super::{
     ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
     run_machine_publisher, wait_for_catch_up,
 };
-use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner};
 use crate::network::WireGuardPrivateKey;
 
 #[tokio::test]
@@ -167,14 +166,12 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         )
         .unwrap(),
     );
-    let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
-    let published = local.lock().unwrap().record().machine().cloned().unwrap();
+    let local = RecordOwner::spawn(LocalMachineStore::open(&local_dir).unwrap()).unwrap();
+    let published = local.record().machine().cloned().unwrap();
     let shutdown = CancellationToken::new();
-    let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
         Some(store.clone()),
-        Arc::clone(&local),
-        participating,
+        local.clone(),
         shutdown.clone(),
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -193,7 +190,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         serde_json::from_slice(&fs::read(local_dir.join("machine.json")).unwrap()).unwrap();
     assert_eq!(persisted.phase(), LocalMachinePhase::Participating);
     assert!(persisted.min_store_version().is_empty());
-    assert!(*participating_rx.borrow());
+    assert_eq!(local.record().phase(), LocalMachinePhase::Participating);
 
     let interrupted_dir = root.0.join("interrupted-machine");
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);
@@ -209,17 +206,14 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         )
         .unwrap(),
     );
-    let interrupted = Arc::new(Mutex::new(
-        LocalMachineStore::open(&interrupted_dir).unwrap(),
-    ));
+    let interrupted =
+        RecordOwner::spawn(LocalMachineStore::open(&interrupted_dir).unwrap()).unwrap();
     let unavailable =
         ReplicatedStore::new(ApiClient::new(unused_address(), &"a".repeat(64)).unwrap());
     let shutdown = CancellationToken::new();
-    let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
         Some(unavailable),
-        interrupted,
-        participating,
+        interrupted.clone(),
         shutdown.clone(),
     ));
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -230,7 +224,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         serde_json::from_slice(&fs::read(interrupted_dir.join("machine.json")).unwrap()).unwrap();
     assert_eq!(persisted.phase(), LocalMachinePhase::Joining);
     assert_eq!(persisted.min_store_version(), &target);
-    assert!(!*participating_rx.borrow());
+    assert_eq!(interrupted.record().phase(), LocalMachinePhase::Joining);
 
     running.cleanup().await.unwrap();
 }

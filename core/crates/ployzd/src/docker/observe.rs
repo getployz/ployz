@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
@@ -14,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_PROJECT_NAME};
 use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot, ReplicatedStore};
-use crate::machine::LocalMachineStore;
+use crate::machine::RecordOwner;
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
@@ -22,17 +21,13 @@ const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
 #[derive(Clone)]
 pub(super) struct ObservationSink {
     replicated: ReplicatedStore,
-    local: Arc<Mutex<LocalMachineStore>>,
+    local: RecordOwner,
     rescan_interval: Duration,
 }
 
 impl ContainerRuntime {
     #[must_use]
-    pub fn replicating(
-        mut self,
-        replicated: ReplicatedStore,
-        local: Arc<Mutex<LocalMachineStore>>,
-    ) -> Self {
+    pub fn replicating(mut self, replicated: ReplicatedStore, local: RecordOwner) -> Self {
         self.sink = Some(ObservationSink {
             replicated,
             local,
@@ -198,12 +193,7 @@ impl ContainerRuntime {
 
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         // TODO: preserve stale rows when Docker cannot provide a complete inventory.
-        let machine_id = sink
-            .local
-            .lock()
-            .map_err(|_| Error::LocalStorePoisoned)?
-            .record()
-            .id();
+        let machine_id = sink.local.record().id();
         let inventory = self.docker.managed_container_ids().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
@@ -218,12 +208,7 @@ impl ContainerRuntime {
             }
         }
         let publication = sink.replicated.machine_publication().await;
-        let local = sink
-            .local
-            .lock()
-            .map_err(|_| Error::LocalStorePoisoned)?
-            .record()
-            .clone();
+        let local = sink.local.record();
         if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
             return Ok(());
         }
@@ -236,12 +221,7 @@ impl ContainerRuntime {
     }
 
     async fn sync_volume_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
-        let machine_id = sink
-            .local
-            .lock()
-            .map_err(|_| Error::LocalStorePoisoned)?
-            .record()
-            .id();
+        let machine_id = sink.local.record().id();
         let VolumeInventory { volumes, failures } = self.list_volumes(&machine_id).await?;
         let mut live = LocalVolumeSnapshot::from_inventory(
             failures.into_iter().map(|failure| failure.id.name),
@@ -250,12 +230,7 @@ impl ContainerRuntime {
             live.observed(volume);
         }
         let publication = sink.replicated.machine_publication().await;
-        let local = sink
-            .local
-            .lock()
-            .map_err(|_| Error::LocalStorePoisoned)?
-            .record()
-            .clone();
+        let local = sink.local.record();
         if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
             return Ok(());
         }

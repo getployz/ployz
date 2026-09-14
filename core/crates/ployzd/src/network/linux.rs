@@ -3,7 +3,6 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     process::Command,
-    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
@@ -31,7 +30,7 @@ use super::{
 };
 use crate::{
     corrosion::{ReplicatedObservations, ReplicatedStore},
-    machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore},
+    machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
 const NETWORK_MTU: u32 = 1420;
@@ -145,7 +144,7 @@ impl NetworkPlane {
     pub async fn run(
         &mut self,
         replicated: Option<ReplicatedStore>,
-        local: Arc<Mutex<LocalMachineStore>>,
+        local: RecordOwner,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
         let Some(replicated) = replicated else {
@@ -160,7 +159,7 @@ impl NetworkPlane {
                     match replicated.machines().await {
                         Ok(snapshot) => {
                             if previous.as_ref() != Some(&snapshot) {
-                                if let Err(error) = self.rebuild(&snapshot, &local) {
+                                if let Err(error) = self.rebuild(&snapshot, &local).await {
                                     return Err(io::Error::other(error));
                                 }
                                 previous = Some(snapshot);
@@ -168,15 +167,10 @@ impl NetworkPlane {
                         }
                         Err(error) => eprintln!("failed to read Machine table for network plane: {error}"),
                     }
-                    self.poll_endpoints(&local);
+                    self.poll_endpoints(&local).await;
                 }
                 () = shutdown.cancelled() => {
-                    let resetting = local
-                        .lock()
-                        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-                        .record()
-                        .phase()
-                        == LocalMachinePhase::Resetting;
+                    let resetting = local.record().phase() == LocalMachinePhase::Resetting;
                     if resetting {
                         self.cleanup().await.map_err(io::Error::other)?;
                     }
@@ -225,20 +219,14 @@ impl NetworkPlane {
         ])
     }
 
-    fn rebuild(
+    async fn rebuild(
         &mut self,
         snapshot: &ReplicatedObservations<Machine, MachineId>,
-        local: &Arc<Mutex<LocalMachineStore>>,
+        local: &RecordOwner,
     ) -> Result<(), NetworkError> {
-        let (selected, joining) = {
-            let local = local
-                .lock()
-                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-            (
-                local.record().selected_endpoints.clone(),
-                local.record().phase() == LocalMachinePhase::Joining,
-            )
-        };
+        let record = local.record();
+        let selected = &record.selected_endpoints;
+        let joining = record.phase() == LocalMachinePhase::Joining;
         let now = SystemTime::now();
         let mut planned = peers_for(&self.machine.id, &snapshot.observations);
         if joining {
@@ -254,12 +242,13 @@ impl NetworkPlane {
             );
         }
         let previous = std::mem::take(&mut self.peers);
-        let (planned, newly_selected) = attach_peer_selections(planned, previous, &selected, now);
-        for (machine_id, endpoint) in newly_selected {
-            persist_selection(local, machine_id, endpoint);
-        }
+        let (planned, newly_selected) = attach_peer_selections(planned, previous, selected, now);
         self.apply_peers(&planned)?;
         self.peers = planned;
+        // Only an installed selection is worth remembering across a restart.
+        for (machine_id, endpoint) in newly_selected {
+            persist_selection(local, machine_id, endpoint).await;
+        }
         Ok(())
     }
 
@@ -297,7 +286,7 @@ impl NetworkPlane {
         Ok(())
     }
 
-    fn poll_endpoints(&mut self, local: &Arc<Mutex<LocalMachineStore>>) {
+    async fn poll_endpoints(&mut self, local: &RecordOwner) {
         let host = match self.wireguard.read_interface_data() {
             Ok(host) => host,
             Err(error) => {
@@ -323,7 +312,7 @@ impl NetworkPlane {
                 eprintln!("failed to update WireGuard peer endpoint: {error}");
                 continue;
             }
-            persist_selection(local, peer.machine_id, endpoint);
+            persist_selection(local, peer.machine_id, endpoint).await;
         }
     }
 
@@ -566,19 +555,12 @@ fn wireguard_peer(config: &MeshPeer, endpoint: Option<SelectedEndpoint>) -> Peer
     peer
 }
 
-fn persist_selection(
-    local: &Arc<Mutex<LocalMachineStore>>,
-    machine_id: MachineId,
-    endpoint: SelectedEndpoint,
-) {
+async fn persist_selection(local: &RecordOwner, machine_id: MachineId, endpoint: SelectedEndpoint) {
     let result = local
-        .lock()
-        .map_err(|_| io::Error::other("local Machine record lock poisoned"))
-        .and_then(|mut store| {
-            store
-                .persist_selected_endpoint(machine_id, endpoint)
-                .map_err(io::Error::other)
-        });
+        .mutate(move |store| store.persist_selected_endpoint(machine_id, endpoint))
+        .await
+        .map_err(io::Error::other)
+        .and_then(|persisted| persisted.map_err(io::Error::other));
     if let Err(error) = result {
         eprintln!("failed to persist observer-local Selected Endpoint: {error}");
     }
