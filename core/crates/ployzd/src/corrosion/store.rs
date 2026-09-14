@@ -413,6 +413,17 @@ impl ReplicatedStore {
         })
     }
 
+    /// Wake when any Machine row changes. The payload is discarded; callers re-read.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the subscription cannot be opened.
+    pub(crate) async fn subscribe_machine_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new("SELECT id, info FROM machines", []))
+            .await
+    }
+
     pub(crate) async fn subscribe_container_changes(&self) -> Result<Subscription, Error> {
         self.api
             .subscribe(Statement::new(
@@ -710,10 +721,7 @@ impl ReplicatedStore {
         &self,
     ) -> Result<impl Stream<Item = Result<(), Error>> + Send + use<>, Error> {
         let changes = RuntimeWatchChanges {
-            machines: self
-                .api
-                .subscribe(Statement::new("SELECT id, info FROM machines", []))
-                .await?,
+            machines: self.subscribe_machine_changes().await?,
             containers: self.subscribe_container_changes().await?,
             volumes: self
                 .api

@@ -24,7 +24,8 @@ struct ClusterKv {
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     container_changes: broadcast::Sender<()>,
-    container_subscriptions: bool,
+    machine_changes: broadcast::Sender<()>,
+    subscriptions: bool,
 }
 
 #[derive(Deserialize)]
@@ -37,21 +38,23 @@ pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     bind(false).await
 }
 
-pub(crate) async fn store_with_container_changes() -> (ReplicatedStore, tokio::task::JoinHandle<()>)
-{
+/// A store whose Machine and Container subscriptions fire on every publish.
+pub(crate) async fn store_with_subscriptions() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     bind(true).await
 }
 
-async fn bind(container_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+async fn bind(with_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (container_changes, _) = broadcast::channel(16);
+    let (machine_changes, _) = broadcast::channel(16);
     let kv = Arc::new(Mutex::new(ClusterKv {
         network: "10.210.0.0/16".into(),
         machines: BTreeMap::new(),
         containers: BTreeMap::new(),
         container_changes,
-        container_subscriptions,
+        machine_changes,
+        subscriptions: with_subscriptions,
     }));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -84,21 +87,24 @@ async fn subscriptions(
     body: Bytes,
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        statement.query,
-        "SELECT id, machine_id, container FROM containers"
-    );
     let kv = kv.lock().unwrap();
-    if !kv.container_subscriptions {
+    if !kv.subscriptions {
         return Err(StatusCode::NOT_FOUND);
     }
-    let receiver = kv.container_changes.subscribe();
+    let (receiver, columns) = match statement.query.as_str() {
+        "SELECT id, machine_id, container FROM containers" => (
+            kv.container_changes.subscribe(),
+            "{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+        ),
+        "SELECT id, info FROM machines" => (
+            kv.machine_changes.subscribe(),
+            "{\"columns\":[\"id\",\"info\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+        ),
+        query => panic!("unexpected subscription {query}"),
+    };
     drop(kv);
-    let snapshot = stream::once(async {
-        Ok::<_, Infallible>(Bytes::from_static(
-            b"{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
-        ))
-    });
+    let snapshot =
+        stream::once(async move { Ok::<_, Infallible>(Bytes::from_static(columns.as_bytes())) });
     let changes = stream::unfold(receiver, |mut receiver| async move {
         loop {
             match receiver.recv().await {
@@ -166,6 +172,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
                 );
+                let _ = kv.machine_changes.send(());
             }
             query if query.starts_with("INSERT INTO containers (id, container,") => {
                 kv.containers.insert(

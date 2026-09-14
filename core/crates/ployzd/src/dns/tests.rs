@@ -12,7 +12,7 @@ use serde_json::json;
 use tokio::net::UnixListener;
 
 use super::*;
-use crate::corrosion::fake_cluster;
+use crate::corrosion::{ReplicatedObservations, fake_cluster};
 
 const SUBNET: &str = "10.210.1.0/24";
 
@@ -36,6 +36,7 @@ async fn run_reports_subscription_failure() {
     let error = run(
         machine,
         replicated,
+        MachineView::fixed(None),
         AdminClient::new("/no/such/admin.sock"),
         None,
         CancellationToken::new(),
@@ -57,15 +58,17 @@ async fn membership_sample_times_out() {
         let (_stream, _) = listener.accept().await.unwrap();
         std::future::pending::<()>().await;
     });
-    let (replicated, replicated_server) = fake_cluster::store().await;
+    let machines = MachineView::fixed(Some(Arc::new(ReplicatedObservations {
+        observations: Vec::new(),
+        incomplete_ids: Vec::new(),
+    })));
 
-    let error = load_down_machines(&replicated, &AdminClient::new(path), &MachineId::random())
+    let error = load_down_machines(&machines, &AdminClient::new(path), &MachineId::random())
         .await
         .unwrap_err();
 
     assert!(matches!(error, CorrosionError::Io(error) if error.kind() == io::ErrorKind::TimedOut));
     admin_server.abort();
-    replicated_server.abort();
     std::fs::remove_dir_all(root).unwrap();
 }
 

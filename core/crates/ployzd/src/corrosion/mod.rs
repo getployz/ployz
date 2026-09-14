@@ -3,6 +3,7 @@
 mod admin;
 mod api;
 mod certificate;
+mod machine_view;
 mod publisher;
 mod service;
 mod store;
@@ -22,6 +23,7 @@ pub use certificate::{
     CertificateChallenge, CertificateChallengeError, CertificateMaterial, CertificateMaterialError,
     CertificateRow,
 };
+pub use machine_view::{MachineView, MachinesSnapshot};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};
 pub use service::{CorrosionConfig, DEFAULT_CONTAINER_NAME, RunningCorrosion};
 pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};

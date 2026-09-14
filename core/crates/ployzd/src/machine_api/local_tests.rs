@@ -340,7 +340,7 @@ async fn replicated_container_observation_store_failure_is_not_absent() {
 
 #[tokio::test]
 async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
-    let (replicated, server) = fake_cluster::store_with_container_changes().await;
+    let (replicated, server) = fake_cluster::store_with_subscriptions().await;
     let initial = container_observation('a');
     replicated.publish_container(&initial).await.unwrap();
     let data_dir = std::env::temp_dir().join(format!(

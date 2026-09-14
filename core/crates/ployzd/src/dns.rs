@@ -37,7 +37,7 @@ use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::corrosion::{
-    AdminClient, Error as CorrosionError, ReplicatedStore, Subscription,
+    AdminClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
     membership_states_by_address,
 };
 
@@ -396,6 +396,7 @@ impl Handler {
 pub async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
+    machines: MachineView,
     admin: AdminClient,
     upstreams: Option<Vec<SocketAddr>>,
     shutdown: CancellationToken,
@@ -435,6 +436,7 @@ pub async fn run(
     let server = run_server(server, shutdown.clone());
     let projection = watch_projection(
         replicated,
+        machines,
         admin,
         projection,
         inputs,
@@ -455,6 +457,7 @@ async fn run_server(mut server: Server<Handler>, shutdown: CancellationToken) ->
 
 async fn watch_projection(
     replicated: ReplicatedStore,
+    machines: MachineView,
     admin: AdminClient,
     projection: Arc<RwLock<Projection>>,
     mut inputs: ProjectionInputs,
@@ -468,7 +471,7 @@ async fn watch_projection(
     // `Then` retains an in-flight membership read when another select branch wins, so slow
     // membership I/O never delays Container-change withdrawal.
     let membership =
-        IntervalStream::new(interval).then(|_| load_down_machines(&replicated, &admin, &local_id));
+        IntervalStream::new(interval).then(|_| load_down_machines(&machines, &admin, &local_id));
     tokio::pin!(membership);
     loop {
         let rebuild = tokio::select! {
@@ -497,23 +500,27 @@ async fn watch_projection(
 }
 
 async fn load_down_machines(
-    replicated: &ReplicatedStore,
+    machines: &MachineView,
     admin: &AdminClient,
     local_id: &MachineId,
 ) -> Result<HashSet<MachineId>, CorrosionError> {
-    let (machines, states) = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, async {
-        tokio::try_join!(replicated.machines(), admin.membership_states())
-    })
-    .await
-    .map_err(|_| {
+    let machines = machines.current().ok_or_else(|| {
         CorrosionError::Io(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Internal DNS membership sample timed out",
+            io::ErrorKind::NotConnected,
+            "the Machine view has not observed the store yet",
         ))
-    })??;
+    })?;
+    let states = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states())
+        .await
+        .map_err(|_| {
+            CorrosionError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Internal DNS membership sample timed out",
+            ))
+        })??;
     let states = membership_states_by_address(states);
     Ok(
-        synthesize_membership(machines.observations, local_id, &states)
+        synthesize_membership(machines.observations.clone(), local_id, &states)
             .into_iter()
             .filter_map(|observation| {
                 (observation.membership == MembershipObservation::Down)

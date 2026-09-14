@@ -29,7 +29,7 @@ use super::{
     checked_command, firewall::remove_firewall_rules, peers_for,
 };
 use crate::{
-    corrosion::{ReplicatedObservations, ReplicatedStore},
+    corrosion::{MachineView, ReplicatedObservations},
     machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
@@ -141,43 +141,51 @@ impl NetworkPlane {
         Ok(Some(plane))
     }
 
+    /// Keep the mesh matching the Machine view and the WireGuard device.
+    ///
+    /// Peers are rebuilt when the view publishes a different snapshot. The device
+    /// is polled every second: handshakes and endpoint roaming have no event.
     pub async fn run(
         &mut self,
-        replicated: Option<ReplicatedStore>,
+        machines: Option<MachineView>,
         local: RecordOwner,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        let Some(replicated) = replicated else {
+        let Some(machines) = machines else {
             shutdown.cancelled().await;
             return Ok(());
         };
+        let mut machines = machines.watch();
+        machines.mark_changed();
         let mut previous = None;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
-                _ = ticker.tick() => {
-                    match replicated.machines().await {
-                        Ok(snapshot) => {
-                            if previous.as_ref() != Some(&snapshot) {
-                                if let Err(error) = self.rebuild(&snapshot, &local).await {
-                                    return Err(io::Error::other(error));
-                                }
-                                previous = Some(snapshot);
-                            }
+                biased;
+                () = shutdown.cancelled() => break,
+                changed = machines.changed() => {
+                    if changed.is_err() {
+                        // The view stops only with the daemon; wait for shutdown.
+                        shutdown.cancelled().await;
+                        break;
+                    }
+                    let snapshot = machines.borrow_and_update().clone();
+                    if let Some(snapshot) = snapshot
+                        && previous.as_ref() != Some(&snapshot)
+                    {
+                        if let Err(error) = self.rebuild(&snapshot, &local).await {
+                            return Err(io::Error::other(error));
                         }
-                        Err(error) => eprintln!("failed to read Machine table for network plane: {error}"),
+                        previous = Some(snapshot);
                     }
-                    self.poll_endpoints(&local).await;
                 }
-                () = shutdown.cancelled() => {
-                    let resetting = local.record().phase() == LocalMachinePhase::Resetting;
-                    if resetting {
-                        self.cleanup().await.map_err(io::Error::other)?;
-                    }
-                    return Ok(());
-                }
+                _ = ticker.tick() => self.poll_endpoints(&local).await,
             }
         }
+        if local.record().phase() == LocalMachinePhase::Resetting {
+            self.cleanup().await.map_err(io::Error::other)?;
+        }
+        Ok(())
     }
 
     pub async fn cleanup(&mut self) -> Result<(), NetworkError> {

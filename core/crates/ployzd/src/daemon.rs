@@ -27,8 +27,8 @@ use tonic::transport::Server;
 use crate::{
     certificates,
     corrosion::{
-        CorrosionConfig, DEFAULT_CONTAINER_NAME, Error as CorrosionError, RunningCorrosion,
-        run_machine_publisher,
+        CorrosionConfig, DEFAULT_CONTAINER_NAME, Error as CorrosionError, MachineView,
+        RunningCorrosion, run_machine_publisher,
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
@@ -179,6 +179,9 @@ impl Daemon {
             (runtime, _) => runtime,
         };
         let shutdown = CancellationToken::new();
+        let machine_view = replicated_store
+            .clone()
+            .map(|replicated| MachineView::start(replicated, shutdown.clone()));
         let ingest = ImageIngest::new(
             config.containerd_socket.clone(),
             containers.as_ref().map(ContainerRuntime::local_docker),
@@ -241,7 +244,7 @@ impl Daemon {
             let network_runner = async {
                 if let Some(network) = &mut network {
                     network
-                        .run(replicated_store.clone(), local.clone(), shutdown.clone())
+                        .run(machine_view.clone(), local.clone(), shutdown.clone())
                         .await
                 } else {
                     shutdown.cancelled().await;
@@ -264,9 +267,22 @@ impl Daemon {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (local_machine.clone(), replicated_store.clone(), admin) {
-                    (Some(machine), Some(replicated), Some(admin)) => {
-                        dns::run(machine, replicated, admin, dns_upstreams, shutdown.clone()).await
+                match (
+                    local_machine.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    admin,
+                ) {
+                    (Some(machine), Some(replicated), Some(machines), Some(admin)) => {
+                        dns::run(
+                            machine,
+                            replicated,
+                            machines,
+                            admin,
+                            dns_upstreams,
+                            shutdown.clone(),
+                        )
+                        .await
                     }
                     _ => {
                         shutdown.cancelled().await;
