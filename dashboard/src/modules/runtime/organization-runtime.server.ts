@@ -12,7 +12,7 @@ import {
 } from "effect";
 import {
   Ployz,
-  type PloyzProviderError,
+  PloyzProviderError,
   type PloyzSession,
 } from "#/modules/runtime/ployz.server";
 import {
@@ -22,6 +22,14 @@ import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export const PAIRING_REMOVAL_CHANNEL = "ployz_pairing_removed";
+
+/**
+ * Ceiling on establishing a shared organization session. The SDK's own
+ * `timeoutMs` bounds the whole session lifetime, which would cut long deploys,
+ * so only the connect phase is bounded here. Interruption propagates to the
+ * SDK through its AbortSignal.
+ */
+export const ORGANIZATION_CONNECT_TIMEOUT = "30 seconds";
 
 export type ConnectedRuntimeClient = PloyzSession;
 
@@ -136,6 +144,13 @@ export function makeOrganizationRuntimeLayer(
               return { status: "unreachable" as const, error: null };
             }
             return yield* ployz.connect({ connections }).pipe(
+              Effect.timeoutOrElse({
+                duration: ORGANIZATION_CONNECT_TIMEOUT,
+                orElse: () => Effect.fail(new PloyzProviderError({
+                  operation: "connect",
+                  cause: new Error("Connecting to the organization's machines timed out"),
+                })),
+              }),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
                 connected,

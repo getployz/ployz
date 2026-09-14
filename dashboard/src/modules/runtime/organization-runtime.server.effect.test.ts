@@ -1,9 +1,11 @@
 import type { Client, Connection, MachineId } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect";
+import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import {
   makeOrganizationRuntimeLayer,
+  ORGANIZATION_CONNECT_TIMEOUT,
   OrganizationRuntime,
 } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -281,6 +283,37 @@ it.effect("dials only the requested saved Machine and refuses an unknown Machine
       assert.strictEqual((yield* service.open("org-1", intended)).status, "connected");
       assert.deepStrictEqual(yield* service.open("org-1", unknown), { status: "no_connection" });
       assert.deepStrictEqual(dialed, [[candidate]]);
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("bounds the connect phase and reports a hung handshake as unreachable", () =>
+  Effect.gen(function* () {
+    const dialing = yield* Deferred.make<void>();
+    let aborted = false;
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "current", connections,
+    })).pipe(Layer.provide(makePloyzLayer({
+      connect: (options) => new Promise<Client>((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("aborted"));
+        }, { once: true });
+        Effect.runSync(Deferred.succeed(dialing, undefined));
+      }),
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const service = yield* OrganizationRuntime;
+      const opening = yield* service.open("org-1").pipe(Effect.forkChild);
+      yield* Deferred.await(dialing);
+      yield* TestClock.adjust(ORGANIZATION_CONNECT_TIMEOUT);
+      const result = yield* Fiber.join(opening);
+      assert.strictEqual(result.status, "unreachable");
+      if (result.status === "unreachable") {
+        assert.instanceOf(result.error, PloyzProviderError);
+        assert.strictEqual(result.error?.operation, "connect");
+      }
+      assert.isTrue(aborted);
     })).pipe(Effect.provide(runtime));
   }),
 );
