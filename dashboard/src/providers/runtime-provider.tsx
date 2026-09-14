@@ -1,4 +1,4 @@
-import { createContext, use, useEffect, useRef } from "react";
+import { createContext, use, useEffect } from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Option, Schema } from "effect";
 import {
@@ -12,7 +12,6 @@ import {
   unreachableRuntimeSnapshot,
   EMPTY_RUNTIME_INCOMPLETE_IDS,
   type RuntimeCollections,
-  type RuntimeSnapshot,
 } from "#/modules/runtime/runtime.collection";
 import {
   runtimeConnectionStatusEventSchema,
@@ -33,18 +32,18 @@ export function RuntimeProvider({
   children: React.ReactNode;
 }) {
   const collections = getRuntimeCollections({ organizationSlug });
-  const lastSnapshotRef = useRef<RuntimeSnapshot | null>(null);
 
   useEffect(() => {
-    lastSnapshotRef.current = getCachedRuntimeSnapshot({ organizationSlug });
     const eventSource = new EventSource(buildRuntimeEventsUrl(organizationSlug));
     let expectIntentionalClose = false;
 
     // Keep the last direct observation visible after an EventSource failure.
     // A later Runtime Watch event replaces it atomically.
     const applyUnavailable = (error: string) => {
-      const snapshot = unavailableRuntimeSnapshot(lastSnapshotRef.current, error);
-      lastSnapshotRef.current = snapshot;
+      const snapshot = unavailableRuntimeSnapshot(
+        getCachedRuntimeSnapshot({ organizationSlug }),
+        error,
+      );
       applyRuntimeSnapshot({ organizationSlug, snapshot });
     };
 
@@ -62,7 +61,6 @@ export function RuntimeProvider({
         return;
       }
       const snapshot = runtimeSnapshotFromWatchFrame(parsed.value);
-      lastSnapshotRef.current = snapshot;
       expectIntentionalClose = false;
       applyRuntimeSnapshot({ organizationSlug, snapshot });
     };
@@ -89,7 +87,6 @@ export function RuntimeProvider({
           : unreachableRuntimeSnapshot(
               parsed.value.error ?? CLUSTER_UNREACHABLE_ERROR,
             );
-      lastSnapshotRef.current = snapshot;
       expectIntentionalClose = true;
       applyRuntimeSnapshot({ organizationSlug, snapshot });
     };
@@ -134,7 +131,7 @@ export function useRuntimeStatus() {
   const { data: rows = [] } = useLiveQuery({
     query: (q) =>
       q.from({ status: collections.status }).select(({ status }) => status),
-  });
+  }, [collections]);
   const row = rows[0];
   const lensStatus = row?.status ?? "connecting";
 
@@ -158,7 +155,7 @@ export function useRuntimeService(identity: string) {
         .from({ service: collections.services })
         .where(({ service }) => eq(service.identity, identity))
         .select(({ service }) => service),
-  });
+  }, [collections, identity]);
 
   return {
     runtime: rows[0] ? projectRuntimeServiceRecord(rows[0]) : null,

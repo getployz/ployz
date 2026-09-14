@@ -9,12 +9,12 @@ export function useRuntimeLens(organizationSlug: string) {
   const collections = getRuntimeCollections({ organizationSlug });
   const { data: machines = [], isLoading: machinesLoading } = useLiveQuery({
     query: (q) =>
-      q.from({ machine: collections.machines }).select(({ machine }) => machine)
-  });
+      q.from({ machine: collections.machines }).select(({ machine }) => machine),
+  }, [collections]);
   const { data: statusRows = [], isLoading: statusLoading } = useLiveQuery({
     query: (q) =>
-      q.from({ status: collections.status }).select(({ status }) => status)
-  });
+      q.from({ status: collections.status }).select(({ status }) => status),
+  }, [collections]);
   const status = statusRows[0]?.status ?? "connecting";
   const error = statusRows[0]?.error ?? null;
   const incompleteIds =
