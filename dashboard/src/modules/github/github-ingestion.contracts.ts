@@ -338,24 +338,17 @@ export const githubEnvironmentTriggerInputSchema = Schema.Struct({
   selection: githubEnvironmentTriggerSelectionSchema,
 });
 
-export function isValidGithubId<Input>(input: Input): input is Input & number {
-  return Option.isSome(Schema.decodeUnknownOption(githubIdSchema)(input));
-}
+export const isValidGithubId: <Input>(input: Input) => input is Input & number =
+  Schema.is(githubIdSchema);
 
-export function isValidGithubBranchRef<Input>(
-  input: Input,
-): input is Input & string {
-  return Option.isSome(
-    Schema.decodeUnknownOption(githubSafeBranchRefSchema)(input),
-  );
-}
+export const isValidGithubBranchRef: <Input>(input: Input) => input is Input & string =
+  Schema.is(githubSafeBranchRefSchema);
 
-export function isValidGithubExactSha<Input>(
-  input: Input,
-): input is Input & string {
-  return Option.isSome(Schema.decodeUnknownOption(githubExactShaSchema)(input));
-}
+export const isValidGithubExactSha: <Input>(input: Input) => input is Input & string =
+  Schema.is(githubExactShaSchema);
 
+// The struct guards below reject excess properties, which `Schema.is` cannot
+// express (it takes no parse options), so they stay on decodeUnknownOption.
 export function isValidGithubServiceCandidate<Input>(
   input: Input,
 ): input is Input & typeof githubServiceCandidateSchema.Type {

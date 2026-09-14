@@ -5,7 +5,6 @@ import {
   getEnvironmentResourceNodeConfigDiffRows,
   getEnvironmentResourceNodeSnapshotResourceName,
   isEnvironmentResourceNodeType,
-  parseEnvironmentResourceNodeConfig,
 } from "#/modules/environment-design/environment-resource-node";
 import { namedVolumeConfig } from "#/modules/environment-design/volume-config";
 
@@ -26,22 +25,17 @@ describe("Environment Resource node spine", () => {
 
   it("strictly parses Variable Groups and normalizes historical Volume configs", () => {
     expect(
-      parseEnvironmentResourceNodeConfig("volume", {
-        version: 1,
-        name: "shared-data",
-      }),
+      Effect.runSync(
+        decodeEnvironmentResourceNodeConfig("variable_group", {
+          version: 1,
+          name: "Shared",
+          variables: [],
+        }),
+      ),
     ).toEqual({
-      version: 2,
-      name: "shared-data",
+      nodeType: "variable_group",
+      config: { version: 1, name: "Shared", variables: [] },
     });
-
-    expect(
-      parseEnvironmentResourceNodeConfig("variable_group", {
-        version: 1,
-        name: "Shared",
-        variables: [],
-      }),
-    ).toEqual({ version: 1, name: "Shared", variables: [] });
 
     expect(
       Effect.runSync(
@@ -57,15 +51,6 @@ describe("Environment Resource node spine", () => {
   });
 
   it("rejects extra config fields", () => {
-    expect(() =>
-      parseEnvironmentResourceNodeConfig("variable_group", {
-        version: 1,
-        name: "Shared",
-        variables: [],
-        extra: true,
-      }),
-    ).toThrow();
-
     const failure = Effect.runSync(
       Effect.flip(
         decodeEnvironmentResourceNodeConfig("variable_group", {

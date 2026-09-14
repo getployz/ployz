@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import { Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
+import { Cache, Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
 import {
   GITHUB_CHECK_SUITE_CONCLUSIONS,
   GITHUB_CHECK_SUITE_STATUSES,
@@ -387,26 +387,15 @@ export function createGithubAppJwt(input: {
   return `${header}.${payload}.${signature}`;
 }
 
+const INSTALLATION_TOKEN_TTL = "50 minutes";
+
 export const GithubApiLive = Layer.effect(
   GithubApi,
   Effect.gen(function* () {
     const config = yield* AppConfig;
-    const tokenCache = new Map<number, { token: string; expiresAt: Date }>();
 
-    const installationToken = Effect.fn("GithubApi.installationToken")(
+    const fetchInstallationToken = Effect.fn("GithubApi.fetchInstallationToken")(
       function* (installationId: number) {
-        if (!isValidGithubId(installationId)) {
-          return yield* githubObservationError({
-            code: "invalid_input",
-            operation: "installation_token",
-            retriable: false,
-          });
-        }
-        const cached = tokenCache.get(installationId);
-        if (cached && cached.expiresAt > new Date(Date.now() + 60_000)) {
-          return cached.token;
-        }
-
         const appId = config.github.appId;
         const appPrivateKey = config.github.appPrivateKey;
         if (appId === undefined || appPrivateKey === undefined) {
@@ -486,11 +475,30 @@ export const GithubApiLive = Layer.effect(
             }),
           ),
         );
-        tokenCache.set(installationId, {
-          token: decoded.token,
-          expiresAt: new Date(decoded.expires_at),
-        });
         return decoded.token;
+      },
+    );
+
+    // Installation tokens live for one hour. Concurrent misses for the same
+    // installation share one exchange; a failed exchange is evicted so the
+    // next caller retries instead of reading a cached failure.
+    const tokens = yield* Cache.make({
+      capacity: 256,
+      timeToLive: INSTALLATION_TOKEN_TTL,
+      lookup: fetchInstallationToken,
+    });
+    const installationToken = Effect.fn("GithubApi.installationToken")(
+      function* (installationId: number) {
+        if (!isValidGithubId(installationId)) {
+          return yield* githubObservationError({
+            code: "invalid_input",
+            operation: "installation_token",
+            retriable: false,
+          });
+        }
+        return yield* Cache.get(tokens, installationId).pipe(
+          Effect.tapError(() => Cache.invalidate(tokens, installationId)),
+        );
       },
     );
 

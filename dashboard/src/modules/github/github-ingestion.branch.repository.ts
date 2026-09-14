@@ -546,11 +546,17 @@ export const applyGithubBranchEvaluation = Effect.fn(
     for (const result of dispatched) {
       if (Exit.isSuccess(result)) continue;
       const failure = Cause.findErrorOption(result.cause);
-      if (Option.isNone(failure)) continue;
+      if (Option.isNone(failure)) {
+        yield* Effect.logError("Environment deploy dispatch died.", result.cause);
+        continue;
+      }
       const sqlError = sqlErrorFrom(failure.value);
       if (sqlError !== undefined) {
         return yield* Effect.fail(sqlError);
       }
+      // Non-SQL dispatch failures (for example an admission conflict) do not
+      // fail ingestion; the branch state is durable and a later push retries.
+      yield* Effect.logError("Environment deploy dispatch failed.", failure.value);
     }
     return applied;
 });

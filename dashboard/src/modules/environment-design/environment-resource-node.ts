@@ -74,25 +74,6 @@ export function decodeEnvironmentResourceNodeConfig<Input>(
   }
 }
 
-export function parseEnvironmentResourceNodeConfig<Input>(
-  nodeType: "variable_group",
-  input: Input,
-): VariableGroupConfig;
-export function parseEnvironmentResourceNodeConfig<Input>(
-  nodeType: "volume",
-  input: Input,
-): VolumeConfig;
-export function parseEnvironmentResourceNodeConfig<Input>(
-  nodeType: EnvironmentResourceNodeType,
-  input: Input,
-): VariableGroupConfig | VolumeConfig;
-export function parseEnvironmentResourceNodeConfig<Input>(
-  nodeType: EnvironmentResourceNodeType,
-  input: Input,
-): VariableGroupConfig | VolumeConfig {
-  return Effect.runSync(decodeEnvironmentResourceNodeConfig(nodeType, input))
-    .config;
-}
 
 export function getEnvironmentResourceNodeConfigDiffRows(input: {
   nodeType: "variable_group";

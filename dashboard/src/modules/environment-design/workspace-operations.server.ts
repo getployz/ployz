@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { Effect } from "effect";
-import { sqlErrorFrom } from "#/server/database.server";
+import { isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
@@ -31,11 +31,6 @@ import {
   upsertUserProjectPreference,
 } from "./workspace-repository.server";
 import { requireOrganizationForActor } from "./authoring-repository.server";
-
-function isUniqueViolation(cause: unknown) {
-  const sqlError = sqlErrorFrom(cause);
-  return sqlError !== undefined && sqlError.reason._tag === "UniqueViolation";
-}
 
 function generateEmptyProjectName() {
   return uniqueNamesGenerator({
