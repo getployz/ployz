@@ -35,11 +35,11 @@ export function ApplyChangesToolbar({
   return (
     <div
       className={cn(
-        "pointer-events-auto flex items-center gap-2 rounded-xl border bg-background/95 p-2 shadow-md backdrop-blur",
+        "flex flex-wrap items-center gap-2",
         className,
       )}
     >
-      <span className="px-2 text-sm font-medium whitespace-nowrap">
+      <span className="px-2 text-sm font-medium whitespace-nowrap tabular-nums">
         Apply {totalChanges} {totalChanges === 1 ? "change" : "changes"}
       </span>
       <Button variant="outline" onClick={onOpenDetails}>

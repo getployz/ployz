@@ -1,3 +1,4 @@
+import { prefersReducedMotion } from "#/lib/motion";
 import { Suspense, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
 import {
@@ -46,12 +47,12 @@ export function CanvasInspectorOverlay({
             to: ENVIRONMENT_INDEX_ROUTE_TO,
             params,
             search: (prev) => prev,
-            viewTransition: { types: ["canvas-inspector-close"] },
+            viewTransition: prefersReducedMotion() ? false : { types: ["canvas-inspector-close"] },
           });
         }}
       >
         <DrawerContent
-          className="h-[calc(100dvh-6rem)] [view-transition-name:canvas-drawer] motion-safe:starting:transform-(--closed-transform)"
+          className="h-[calc(100dvh-6rem)] [view-transition-name:canvas-drawer]"
           finalFocus={finalFocus}
         >
           <DrawerTitle className="sr-only">Canvas inspector</DrawerTitle>

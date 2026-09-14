@@ -260,9 +260,7 @@ export function useCanvasFlowState({
   const serviceNameById = new Map(
     servicesWithBoundEnv.map(({ service }) => [service.id, service.name]),
   );
-  const deployBarPositionClass = selectedNodeId
-    ? "inset-x-4 bottom-4 z-20 lg:inset-x-auto lg:left-4"
-    : "inset-x-4 bottom-4 z-20 sm:inset-x-auto sm:top-4 sm:bottom-auto sm:left-1/2 sm:-translate-x-1/2";
+
 
   return {
     canvasChangeState,
@@ -280,6 +278,5 @@ export function useCanvasFlowState({
       (serviceId) => serviceNameById.get(serviceId) ?? serviceId,
     ),
     deletedDeployedVolumeIds: destructiveSave.volumeIds,
-    deployBarPositionClass,
   };
 }

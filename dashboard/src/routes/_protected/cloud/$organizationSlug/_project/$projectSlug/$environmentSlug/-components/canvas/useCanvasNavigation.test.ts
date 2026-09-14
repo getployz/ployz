@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { renderHook, cleanup } from "@testing-library/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import {
-  getCanvasInspectorOffsetX,
+  getNodePanDelta,
   shouldCenterSelectedNode,
   useCanvasNavigation,
 } from "./useCanvasNavigation";
@@ -83,24 +83,11 @@ describe("shouldCenterSelectedNode", () => {
   });
 });
 
-describe("getCanvasInspectorOffsetX", () => {
-  it("uses the measured inspector pane width for the selected-node offset", () => {
-    expect(
-      getCanvasInspectorOffsetX({
-        flowWidth: 1200,
-        paneWidth: 600,
-        zoom: 1.5,
-      }),
-    ).toBe(200);
-  });
-
-  it("does not offset when the service pane covers the flow", () => {
-    expect(
-      getCanvasInspectorOffsetX({
-        flowWidth: 1000,
-        paneWidth: 950,
-        zoom: 1.5,
-      }),
-    ).toBeNull();
+describe("getNodePanDelta", () => {
+  it("keeps visible nodes still and moves obscured nodes only to the visible edge", () => {
+    expect(getNodePanDelta(50, 200, 500)).toBe(0);
+    expect(getNodePanDelta(-10, 200, 500)).toBe(34);
+    expect(getNodePanDelta(400, 200, 500)).toBe(-124);
+    expect(getNodePanDelta(100, 300, 250)).toBe(-125);
   });
 });

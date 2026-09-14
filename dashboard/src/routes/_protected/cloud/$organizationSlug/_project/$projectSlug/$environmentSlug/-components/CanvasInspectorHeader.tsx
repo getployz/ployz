@@ -1,3 +1,4 @@
+import { useReducedMotion } from "#/lib/motion";
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
@@ -28,6 +29,7 @@ export function CanvasInspectorHeader({
   children: ReactNode;
 }) {
   const isMobile = useIsMobile();
+  const reducedMotion = useReducedMotion();
 
   return (
     <div className="flex items-center justify-between gap-4 border-b px-6 py-4">
@@ -45,7 +47,7 @@ export function CanvasInspectorHeader({
             environmentSlug: params.environmentSlug,
           }}
           search={(prev) => prev}
-          viewTransition={{ types: ["canvas-inspector-close"] }}
+          viewTransition={reducedMotion ? false : { types: ["canvas-inspector-close"] }}
           className={buttonVariants({ variant: "ghost", size: "icon" })}
         >
           {closeContent}

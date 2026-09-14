@@ -97,7 +97,6 @@ export function CanvasFlow({
     destructiveServiceIds,
     destructiveServiceNames,
     deletedDeployedVolumeIds,
-    deployBarPositionClass,
   } = useCanvasFlowState({
     environmentNamespace: params.environmentSlug,
     servicesWithBoundEnv,
@@ -216,9 +215,9 @@ export function CanvasFlow({
         hasChanges={totalChanges > 0}
       />
 
-      <div className={`pointer-events-none absolute ${deployBarPositionClass}`}>
+      <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 sm:inset-x-auto sm:left-4">
         <ApplyChangesBar
-          className={selectedNodeId ? "w-full lg:w-auto" : "w-full sm:w-auto"}
+          className="w-full sm:w-auto"
           groups={diffGroups}
           totalChanges={totalChanges}
           canDeploy={canDeploy}

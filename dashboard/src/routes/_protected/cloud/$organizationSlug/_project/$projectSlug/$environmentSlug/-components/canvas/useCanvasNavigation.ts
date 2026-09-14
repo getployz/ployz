@@ -5,11 +5,12 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
-  SELECTED_SERVICE_ZOOM,
   SERVICE_NODE_WIDTH,
   SERVICE_NODE_HEIGHT,
 } from "./constants";
 import type { CanvasResourceNode, FlowPosition } from "./types";
+
+import { prefersReducedMotion } from "#/lib/motion";
 
 const UNSET = Symbol("canvas-nav-unset");
 const CANVAS_INSPECTOR_PANE_SELECTOR = "[data-canvas-inspector-pane]";
@@ -17,22 +18,6 @@ const CANVAS_INSPECTOR_FULL_WIDTH_RATIO = 0.9;
 
 function getNodePositionKey(node: CanvasResourceNode) {
   return `${node.position.x}:${node.position.y}`;
-}
-
-export function getCanvasInspectorOffsetX(params: {
-  flowWidth: number;
-  paneWidth: number;
-  zoom: number;
-}) {
-  if (params.flowWidth <= 0 || params.paneWidth <= 0) {
-    return null;
-  }
-
-  if (params.paneWidth / params.flowWidth >= CANVAS_INSPECTOR_FULL_WIDTH_RATIO) {
-    return null;
-  }
-
-  return params.paneWidth / 2 / params.zoom;
 }
 
 function getCanvasInspectorGeometryKey() {
@@ -111,22 +96,6 @@ function useCanvasInspectorGeometryVersion(enabled: boolean) {
   return version;
 }
 
-function getOverlayOffsetX() {
-  const wrapper = document.querySelector<HTMLElement>(".react-flow");
-  const inspectorPane = document.querySelector<HTMLElement>(
-    CANVAS_INSPECTOR_PANE_SELECTOR,
-  );
-  const flowWidth =
-    wrapper?.getBoundingClientRect().width ?? window.innerWidth;
-  const paneWidth = inspectorPane?.getBoundingClientRect().width ?? 0;
-
-  return getCanvasInspectorOffsetX({
-    flowWidth,
-    paneWidth,
-    zoom: SELECTED_SERVICE_ZOOM,
-  });
-}
-
 export function shouldCenterSelectedNode(params: {
   selectedNode: CanvasResourceNode;
   selectedNodeId: string;
@@ -147,79 +116,42 @@ export function shouldCenterSelectedNode(params: {
   );
 }
 
+export function getNodePanDelta(start: number, size: number, available: number) {
+  const margin = 24;
+  if (size > available - margin * 2) {
+    return (available - size) / 2 - start;
+  }
+  return Math.max(margin - start, Math.min(0, available - margin - start - size));
+}
+
 function centerOnNode(
   flow: ReactFlowInstance<CanvasResourceNode>,
   node: CanvasResourceNode,
 ) {
-  const offsetX = getOverlayOffsetX();
-  if (offsetX == null) {
+  const wrapper = document.querySelector<HTMLElement>(".react-flow");
+  const pane = document.querySelector<HTMLElement>(CANVAS_INSPECTOR_PANE_SELECTOR);
+  if (!wrapper || !pane) return false;
+  const width = wrapper.clientWidth - pane.offsetWidth;
+  if (pane.offsetWidth / wrapper.clientWidth >= CANVAS_INSPECTOR_FULL_WIDTH_RATIO) {
     return false;
   }
-
-  const center = {
-    x: node.position.x + SERVICE_NODE_WIDTH / 2 + offsetX,
-    y: node.position.y + SERVICE_NODE_HEIGHT / 2,
-  };
-
-  void flow.setCenter(
-    center.x,
-    center.y,
-    {
-      duration: 350,
-      zoom: SELECTED_SERVICE_ZOOM,
-    },
+  const viewport = flow.getViewport();
+  const dx = getNodePanDelta(
+    node.position.x * viewport.zoom + viewport.x,
+    (node.measured?.width ?? SERVICE_NODE_WIDTH) * viewport.zoom,
+    width,
   );
-
-  return true;
-}
-
-function getCanvasNodesBounds(nodes: CanvasResourceNode[]) {
-  const visibleNodes = nodes.filter((node) => !node.hidden);
-  if (visibleNodes.length === 0) {
-    return null;
+  const dy = getNodePanDelta(
+    node.position.y * viewport.zoom + viewport.y,
+    (node.measured?.height ?? SERVICE_NODE_HEIGHT) * viewport.zoom,
+    wrapper.clientHeight - 72,
+  );
+  if (dx !== 0 || dy !== 0) {
+    void flow.setViewport(
+      { ...viewport, x: viewport.x + dx, y: viewport.y + dy },
+      { duration: prefersReducedMotion() ? 0 : 360 },
+    );
   }
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  for (const node of visibleNodes) {
-    const width = node.width ?? node.measured?.width ?? SERVICE_NODE_WIDTH;
-    const height = node.height ?? node.measured?.height ?? SERVICE_NODE_HEIGHT;
-
-    minX = Math.min(minX, node.position.x);
-    minY = Math.min(minY, node.position.y);
-    maxX = Math.max(maxX, node.position.x + width);
-    maxY = Math.max(maxY, node.position.y + height);
-  }
-
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
-  };
-}
-
-function fitCanvasToKnownNodeBounds(flow: ReactFlowInstance<CanvasResourceNode>) {
-  const bounds = getCanvasNodesBounds(flow.getNodes());
-  if (!bounds) {
-    return false;
-  }
-
-  if ("fitBounds" in flow && flow.fitBounds instanceof Function) {
-    void flow.fitBounds(bounds, {
-      duration: 350,
-      padding: 0.24,
-    });
-    return true;
-  }
-
-  void flow.fitView({
-    duration: 350,
-    padding: 0.24,
-  });
   return true;
 }
 
@@ -249,6 +181,14 @@ export function useCanvasNavigation(
   useEffect(() => {
     if (!flowReady) {
       return;
+    }
+
+    if (selectedNodeId === null) {
+      if (previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
+        void flow.setViewport(flow.getViewport(), { duration: 0 });
+      }
+      previousSelectedNodeId.current = null;
+      previousSelectedNodePositionKey.current = null;
     }
 
     flow.setNodes((nodes) =>
@@ -335,47 +275,6 @@ export function useCanvasNavigation(
     flowReady,
     nodesInitialized,
     selectedNodePositionKey,
-    selectedNodeId,
-  ]);
-
-  useEffect(() => {
-    if (!flowReady || selectedNodeId !== null) {
-      return;
-    }
-
-    if (
-      previousSelectedNodeId.current === UNSET ||
-      previousSelectedNodeId.current === null
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    let frameId: number | null = window.requestAnimationFrame(() => {
-      frameId = null;
-      if (cancelled) {
-        return;
-      }
-
-      if (fitCanvasToKnownNodeBounds(flow)) {
-        previousSelectedNodeId.current = null;
-        previousSelectedNodePositionKey.current = null;
-        previousCanvasInspectorGeometryVersion.current =
-          canvasInspectorGeometryVersion;
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      if (frameId != null) {
-        window.cancelAnimationFrame(frameId);
-      }
-    };
-  }, [
-    canvasInspectorGeometryVersion,
-    flow,
-    flowReady,
-    nodesInitialized,
     selectedNodeId,
   ]);
 

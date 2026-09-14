@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { CopyIcon, EyeIcon, EyeOffIcon, InfoIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, InfoIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "#/components/ui/tooltip";
-import { toast } from "sonner";
+import { CopyButton } from "#/components/copy-button";
 
 export function SecretValueDisplay({
   value = "********",
@@ -20,17 +20,6 @@ export function SecretValueDisplay({
   info?: string;
 }) {
   const [revealed, setRevealed] = useState(false);
-
-  async function handleCopy() {
-    const clipboard = globalThis.navigator?.clipboard;
-    if (!clipboard) {
-      toast.error("Failed to copy to clipboard")
-      return;
-    }
-
-    await clipboard.writeText(value);
-    toast.info('Copied to clipboard')
-  }
 
   return (
     <div className="inline-flex items-center gap-1.5">
@@ -50,17 +39,7 @@ export function SecretValueDisplay({
         </span>
       </Button>
 
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        onClick={() => {
-          void handleCopy();
-        }}
-      >
-        <CopyIcon />
-        <span className="sr-only">Copy secret value</span>
-      </Button>
+      <CopyButton value={value} label="Copy secret value" />
 
       <Tooltip>
         <TooltipTrigger

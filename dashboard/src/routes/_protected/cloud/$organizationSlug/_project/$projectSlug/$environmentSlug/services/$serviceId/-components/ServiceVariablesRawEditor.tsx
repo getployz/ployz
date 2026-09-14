@@ -39,7 +39,6 @@ type RawEditorState = {
   jsonText: string;
   parseError: string | null;
   submitError: string | null;
-  copied: boolean;
   isSubmitting: boolean;
 };
 
@@ -53,7 +52,6 @@ const initialRawEditorState: RawEditorState = {
   jsonText: "",
   parseError: null,
   submitError: null,
-  copied: false,
   isSubmitting: false,
 };
 
@@ -239,25 +237,11 @@ export function ServiceVariablesRawEditor({
     }
   }
 
-  async function handleCopyEnv() {
-    const clipboard = globalThis.navigator?.clipboard;
-    if (!clipboard) {
-      toast.error("Couldn’t access the clipboard");
-      return;
-    }
-    await clipboard.writeText(editor.envText);
-    dispatchEditor({ type: "patch", patch: { copied: true } });
-    setTimeout(
-      () => dispatchEditor({ type: "patch", patch: { copied: false } }),
-      1500,
-    );
-  }
-
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
       dispatchEditor({
         type: "patch",
-        patch: { parseError: null, submitError: null, copied: false },
+        patch: { parseError: null, submitError: null },
       });
     }
     onOpenChange(nextOpen);
@@ -314,9 +298,8 @@ export function ServiceVariablesRawEditor({
         />
 
         <ServiceVariablesRawEditorFooter
-          copied={editor.copied}
+          envText={editor.envText}
           isSubmitting={editor.isSubmitting}
-          onCopyEnv={() => void handleCopyEnv()}
           onCancel={() => handleOpenChange(false)}
           onSubmit={() => void handleSubmit()}
         />

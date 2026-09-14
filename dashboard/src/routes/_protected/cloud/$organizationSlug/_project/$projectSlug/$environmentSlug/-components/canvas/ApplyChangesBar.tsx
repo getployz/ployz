@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { cn } from "#/lib/utils";
 import type {
   CanvasEnvironmentChangeGroup,
 } from "#/modules/environment-design/canvas-environment-change-state";
@@ -41,29 +42,30 @@ export function ApplyChangesBar({
 
   return (
     <>
-      <ApplyChangesToolbar
-        className={className}
-        canDiscardAll={groups.some(group => group.canDiscard)}
-        canSaveWithoutDeploying={canSaveWithoutDeploying}
-        canDeploy={canDeploy ?? true}
-        totalChanges={totalChanges}
-        onOpenDetails={() => setOpen(true)}
-        onDeploy={() => {
-          setOpen(false);
-          onDeploy();
-        }}
-        onSaveWithoutDeploying={() => {
-          setOpen(false);
-          onSaveWithoutDeploying();
-        }}
-        onDiscardAll={() => {
-          setOpen(false);
-          onDiscardAll();
-        }}
-      />
+      <div className={cn("apply-changes-surface pointer-events-auto rounded-xl border bg-background p-2 shadow-md", className)}>
+        <ApplyChangesToolbar
+          canDiscardAll={groups.some(group => group.canDiscard)}
+          canSaveWithoutDeploying={canSaveWithoutDeploying}
+          canDeploy={canDeploy ?? true}
+          totalChanges={totalChanges}
+          onOpenDetails={() => setOpen(true)}
+          onDeploy={() => {
+            setOpen(false);
+            onDeploy();
+          }}
+          onSaveWithoutDeploying={() => {
+            setOpen(false);
+            onSaveWithoutDeploying();
+          }}
+          onDiscardAll={() => {
+            setOpen(false);
+            onDiscardAll();
+          }}
+        />
+      </div>
 
       <ApplyChangesDialog
-        open={open}
+        open={open && totalChanges > 0}
         groups={groups}
         totalChanges={totalChanges}
         canDeploy={canDeploy ?? true}

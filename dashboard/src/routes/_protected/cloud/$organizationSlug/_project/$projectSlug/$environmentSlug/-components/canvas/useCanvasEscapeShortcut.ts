@@ -1,3 +1,4 @@
+import { prefersReducedMotion } from "#/lib/motion";
 import { useEffect } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { ENVIRONMENT_INDEX_ROUTE_TO } from "../environment-route-paths";
@@ -47,7 +48,7 @@ export function useCanvasEscapeShortcut({
           environmentSlug: params.environmentSlug,
         },
         search: (prev) => prev,
-        viewTransition: { types: ["canvas-inspector-close"] },
+        viewTransition: prefersReducedMotion() ? false : { types: ["canvas-inspector-close"] },
       });
     }
 

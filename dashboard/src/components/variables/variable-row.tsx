@@ -107,20 +107,6 @@ export function VariableRow({
     }
   }
 
-  async function handleCopy() {
-    const clipboard = globalThis.navigator?.clipboard;
-    if (!clipboard) {
-      toast.error("Couldn't access the clipboard");
-      return;
-    }
-    if (isSealed) {
-      toast.error("Sealed values can't be copied");
-      return;
-    }
-    await clipboard.writeText(plainValue);
-    toast.info("Copied to clipboard");
-  }
-
   return (
     <div className="grid grid-cols-[minmax(8rem,14rem)_1fr_auto] items-center gap-3 border-b py-2 last:border-b-0">
       <VariableRowHeading
@@ -142,7 +128,6 @@ export function VariableRow({
         onChangeEditValue={(value) =>
           dispatch({ type: "editValueChanged", value })
         }
-        onCopy={() => void handleCopy()}
         onSave={() => void handleSave()}
         onToggleReveal={() => dispatch({ type: "revealToggled" })}
       />

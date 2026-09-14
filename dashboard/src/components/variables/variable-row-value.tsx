@@ -1,4 +1,5 @@
-import { CopyIcon, EyeIcon, EyeOffIcon } from "lucide-react";
+import { CopyButton } from "#/components/copy-button";
+import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   Tooltip,
@@ -20,7 +21,6 @@ export function VariableRowValue({
   valueTargets,
   onCancelEdit,
   onChangeEditValue,
-  onCopy,
   onSave,
   onToggleReveal,
 }: {
@@ -33,7 +33,6 @@ export function VariableRowValue({
   valueTargets?: ReferenceTarget[];
   onCancelEdit: () => void;
   onChangeEditValue: (value: string) => void;
-  onCopy: () => void;
   onSave: () => void;
   onToggleReveal: () => void;
 }) {
@@ -79,10 +78,7 @@ export function VariableRowValue({
         </Button>
       ) : null}
       {!isSealed ? (
-        <Button type="button" variant="ghost" size="icon-sm" onClick={onCopy}>
-          <CopyIcon />
-          <span className="sr-only">Copy value</span>
-        </Button>
+        <CopyButton value={plainValue} label="Copy value" />
       ) : null}
       {isSealed ? (
         <Tooltip>

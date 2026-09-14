@@ -209,7 +209,7 @@
 @keyframes canvas-inspector-enter {
   from {
     opacity: 0;
-    transform: translateX(160px);
+    transform: translateX(24px);
   }
 
   to {
@@ -226,7 +226,7 @@
 
   to {
     opacity: 0;
-    transform: translateX(80px);
+    transform: translateX(16px);
   }
 }
 
@@ -236,14 +236,54 @@
   }
 }
 
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+@keyframes apply-changes-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+[data-slot="collapsible-content"] {
+  height: var(--collapsible-panel-height);
+  overflow: hidden;
+  transition: height 300ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+[data-slot="collapsible-content"][data-starting-style],
+[data-slot="collapsible-content"][data-ending-style] {
+  height: 0;
+}
+
+.copy-feedback-icon {
+  display: inline-grid;
+}
+
+.copy-feedback-icon > svg {
+  grid-area: 1 / 1;
+  transition: opacity 120ms ease-out;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  .canvas-inspector-enter {
-    animation: canvas-inspector-enter 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* Route-mounted drawers can arrive already open, without data-starting-style. */
+  @starting-style {
+    [data-slot="drawer-popup"] {
+      transform: var(--closed-transform);
+    }
+
+    [data-slot="drawer-overlay"] {
+      opacity: 0;
+    }
   }
 
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation: none;
+  .apply-changes-surface {
+    animation: apply-changes-enter 280ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  .canvas-inspector-enter {
+    animation: canvas-inspector-enter 360ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
   }
 
   ::view-transition-group(canvas-inspector) {
@@ -251,7 +291,7 @@
   }
 
   ::view-transition-old(canvas-inspector) {
-    animation: canvas-inspector-exit 180ms cubic-bezier(0.4, 0, 1, 1) both;
+    animation: canvas-inspector-exit 280ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
   }
 
   ::view-transition-group(canvas-drawer) {
@@ -327,6 +367,21 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+
   .app-boot-mark,
   .app-boot-label,
   .navigation-progress,

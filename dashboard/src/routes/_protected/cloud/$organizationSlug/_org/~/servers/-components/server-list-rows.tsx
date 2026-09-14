@@ -1,5 +1,7 @@
 "use client";
 
+import { copyText } from "#/lib/clipboard";
+
 import { useRef, useState } from "react";
 import { CopyIcon, MoreHorizontalIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
@@ -97,13 +99,7 @@ function RuntimeMachineRow({
   const address = machine.publicIp ?? machine.id;
 
   async function copyAddress() {
-    const clipboard = globalThis.navigator?.clipboard;
-    if (!clipboard) {
-      toast.error("Couldn't access the clipboard");
-      return;
-    }
-    await clipboard.writeText(address);
-    toast.info("Address copied");
+    if (await copyText(address)) toast.info("Address copied");
   }
 
   const description = [

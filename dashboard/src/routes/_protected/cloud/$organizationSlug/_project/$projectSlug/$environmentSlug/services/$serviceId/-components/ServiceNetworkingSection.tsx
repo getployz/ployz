@@ -1,16 +1,15 @@
+import { CopyButton } from "#/components/copy-button";
 import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   CircleAlertIcon,
-  CopyIcon,
   GlobeIcon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
   ZapIcon,
 } from "lucide-react";
-import { toast } from "sonner";
 import { Result, Schema, SchemaGetter } from "effect";
 import type { ServiceManagedHostname, ServiceRoute } from "#/modules/environment-design/tables";
 import {
@@ -52,10 +51,6 @@ import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { CustomDomainDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/CustomDomainDialog";
 
-function copyToClipboard(value: string) {
-  void navigator.clipboard.writeText(value);
-  toast.info("Copied to clipboard");
-}
 
 /** Derive a valid managed-domain prefix from the service's private DNS name. */
 function defaultPrefix(privateDns: string) {
@@ -434,15 +429,7 @@ function ManagedDomainRow({
         icon={<GlobeIcon />}
         actions={
           <>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Copy domain"
-              onClick={() => copyToClipboard(hostname)}
-            >
-              <CopyIcon />
-            </Button>
+            <CopyButton value={hostname} label="Copy domain" />
             <Button
               type="button"
               variant="ghost"
@@ -617,15 +604,7 @@ function CustomDomainRow({
         icon={<GlobeIcon />}
         actions={
           <>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`Copy ${route.hostname}`}
-              onClick={() => copyToClipboard(route.hostname)}
-            >
-              <CopyIcon />
-            </Button>
+            <CopyButton value={route.hostname} label={`Copy ${route.hostname}`} />
             <Button
               type="button"
               variant="ghost"
