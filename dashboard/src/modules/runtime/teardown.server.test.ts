@@ -5,7 +5,7 @@ import type {
   MachineId,
 } from "@ployz/sdk";
 import { it as effectIt } from "@effect/vitest";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -93,16 +93,13 @@ describe("teardown provider outcomes", () => {
     failing.send = async () => {
       throw new Error("Inngest unavailable");
     };
-    const exit = await Effect.runPromise(
+    const failure = await Effect.runPromise(
       dispatchTeardownRequested("attempt-1").pipe(
         Effect.provideService(InngestClient, failing),
-        Effect.exit,
+        Effect.flip,
       ),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      expect(Cause.squash(exit.cause)).toBeInstanceOf(InngestEventSendError);
-    }
+    expect(failure).toBeInstanceOf(InngestEventSendError);
   });
 });

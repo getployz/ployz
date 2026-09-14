@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import { ConfigProvider, Effect, Redacted } from "effect";
-import { AppConfig } from "#/server/config.server";
+import { Config, ConfigProvider, Effect, Redacted } from "effect";
+import { AppConfig, InvalidConfiguration } from "#/server/config.server";
 
 const requiredEnvironment = {
   DATABASE_URL: "postgres://postgres:postgres@localhost:5432/ployz_cloud",
@@ -36,14 +36,14 @@ describe("AppConfig", () => {
 
   it.effect("requires the complete hosted Polar configuration", () =>
     Effect.gen(function* () {
-      const exit = yield* Effect.exit(
+      const failure = yield* Effect.flip(
         load({
           ...requiredEnvironment,
           POLAR_ACCESS_TOKEN: "polar-token",
         }),
       );
 
-      assert.isTrue(exit._tag === "Failure");
+      assert.instanceOf(failure, InvalidConfiguration);
     }),
   );
 
@@ -67,7 +67,7 @@ describe("AppConfig", () => {
         });
       }
 
-      const exit = yield* Effect.exit(
+      const failure = yield* Effect.flip(
         load({
           ...requiredEnvironment,
           POLAR_ACCESS_TOKEN: "polar-token",
@@ -79,7 +79,7 @@ describe("AppConfig", () => {
         }),
       );
 
-      assert.isTrue(exit._tag === "Failure");
+      assert.instanceOf(failure, InvalidConfiguration);
     }),
   );
 
@@ -93,8 +93,8 @@ describe("AppConfig", () => {
       ];
 
       for (const value of invalid) {
-        const exit = yield* Effect.exit(load({ ...requiredEnvironment, ...value }));
-        assert.isTrue(exit._tag === "Failure");
+        const failure = yield* Effect.flip(load({ ...requiredEnvironment, ...value }));
+        assert.instanceOf(failure, Config.ConfigError);
       }
     }),
   );

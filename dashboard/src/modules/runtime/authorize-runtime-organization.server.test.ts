@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit } from "effect";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { authorizeRuntimeOrganization } from "#/modules/runtime/authorize-runtime-organization.server";
@@ -20,26 +20,22 @@ function authorizeWithSession(getSession: AuthService["getSession"]) {
       asTestDouble<AuthService>()({ getSession }),
     ),
     Effect.provideService(Database, undefined as never),
-    Effect.exit,
+    Effect.flip,
   );
 }
 
 describe("authorizeRuntimeOrganization", () => {
   it("returns 401 only when the session is missing", async () => {
-    const exit = await Effect.runPromise(
+    const failure = await Effect.runPromise(
       authorizeWithSession(() => Effect.succeed(null)),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      const failure = Cause.squash(exit.cause);
-      expect(failure).toBeInstanceOf(Unauthorized);
-      expect(publicErrorResponse(failure).status).toBe(401);
-    }
+    expect(failure).toBeInstanceOf(Unauthorized);
+    expect(publicErrorResponse(failure).status).toBe(401);
   });
 
   it("does not map session infrastructure failures to 401", async () => {
-    const exit = await Effect.runPromise(
+    const failure = await Effect.runPromise(
       authorizeWithSession(() =>
         Effect.fail(
           new AuthenticationUnavailable({
@@ -49,11 +45,7 @@ describe("authorizeRuntimeOrganization", () => {
       ),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      const failure = Cause.squash(exit.cause);
-      expect(failure).toBeInstanceOf(AuthenticationUnavailable);
-      expect(publicErrorResponse(failure).status).toBe(500);
-    }
+    expect(failure).toBeInstanceOf(AuthenticationUnavailable);
+    expect(publicErrorResponse(failure).status).toBe(500);
   });
 });

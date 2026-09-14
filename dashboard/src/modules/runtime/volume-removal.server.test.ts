@@ -1,5 +1,5 @@
 import type { MachineId } from "@ployz/sdk";
-import { Cause, Effect, Exit } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
 import {
@@ -22,17 +22,14 @@ describe("volume removal outcomes", () => {
     failing.send = async () => {
       throw new Error("Inngest unavailable");
     };
-    const exit = await Effect.runPromise(
+    const failure = await Effect.runPromise(
       dispatchVolumeRemoveRequested("attempt-1").pipe(
         Effect.provideService(InngestClient, failing),
-        Effect.exit,
+        Effect.flip,
       ),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      expect(Cause.squash(exit.cause)).toBeInstanceOf(InngestEventSendError);
-    }
+    expect(failure).toBeInstanceOf(InngestEventSendError);
   });
 
   it("derives partial completion from the provider's exact identities", () => {

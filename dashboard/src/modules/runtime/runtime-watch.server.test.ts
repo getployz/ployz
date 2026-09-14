@@ -1,5 +1,5 @@
 import type { RuntimeWatchView } from "@ployz/sdk";
-import { Cause, Effect, Exit, Result } from "effect";
+import { Effect, Result } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
@@ -125,7 +125,7 @@ describe("openRuntimeWatchForOrganization", () => {
   });
 
   it("surfaces runtime establishment failures", async () => {
-    const watch = await Effect.runPromise(
+    const failure = await Effect.runPromise(
       openRuntimeWatchForOrganization({
         request: new Request("http://localhost/api/runtime/events"),
         organizationId: "org-1",
@@ -136,17 +136,13 @@ describe("openRuntimeWatchForOrganization", () => {
             open: () => Effect.fail(new Error("offline")),
           }),
         ),
-        Effect.exit,
+        Effect.flip,
       ),
     );
 
-    expect(Exit.isFailure(watch)).toBe(true);
-    if (Exit.isFailure(watch)) {
-      const failure = Cause.squash(watch.cause);
-      expect(failure).toBeInstanceOf(Error);
-      expect(failure).not.toBeInstanceOf(RuntimeConnectionFailure);
-      expect((failure as Error).message).toBe("offline");
-    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(RuntimeConnectionFailure);
+    expect(failure.message).toBe("offline");
   });
 
   it("passes unreachable session errors through without wrapping", async () => {
@@ -183,7 +179,7 @@ describe("openRuntimeWatchForOrganization", () => {
   });
 
   it("maps SDK watch throws to RuntimeConnectionFailure", async () => {
-    const watch = await Effect.runPromise(
+    const failure = await Effect.runPromise(
       openRuntimeWatchForOrganization({
         request: new Request("http://localhost/api/runtime/events"),
         organizationId: "org-1",
@@ -205,13 +201,10 @@ describe("openRuntimeWatchForOrganization", () => {
               }),
           }),
         ),
-        Effect.exit,
+        Effect.flip,
       ),
     );
 
-    expect(Exit.isFailure(watch)).toBe(true);
-    if (Exit.isFailure(watch)) {
-      expect(Cause.squash(watch.cause)).toBeInstanceOf(RuntimeConnectionFailure);
-    }
+    expect(failure).toBeInstanceOf(RuntimeConnectionFailure);
   });
 });

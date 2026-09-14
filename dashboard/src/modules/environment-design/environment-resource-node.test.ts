@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Exit } from "effect";
+import { Effect, Schema } from "effect";
 import {
   decodeEnvironmentResourceNodeConfig,
   getEnvironmentResourceNodeConfigDiffRows,
@@ -66,18 +66,17 @@ describe("Environment Resource node spine", () => {
       }),
     ).toThrow();
 
-    expect(
-      Exit.isFailure(
-        Effect.runSyncExit(
-          decodeEnvironmentResourceNodeConfig("variable_group", {
-            version: 1,
-            name: "Shared",
-            variables: [],
-            extra: true,
-          }),
-        ),
+    const failure = Effect.runSync(
+      Effect.flip(
+        decodeEnvironmentResourceNodeConfig("variable_group", {
+          version: 1,
+          name: "Shared",
+          variables: [],
+          extra: true,
+        }),
       ),
-    ).toBe(true);
+    );
+    expect(Schema.isSchemaError(failure)).toBe(true);
   });
 
   it("diffs explicit resource projections without selecting a baseline", () => {

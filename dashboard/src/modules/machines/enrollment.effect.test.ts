@@ -1,14 +1,14 @@
 import { assert, it } from "@effect/vitest";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { MintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 
 it.effect("rejects extra authenticated enrollment fields", () =>
   Effect.gen(function* () {
-    const exit = yield* Schema.decodeUnknownEffect(MintMachineEnrollmentInput)(
+    const failure = yield* Schema.decodeUnknownEffect(MintMachineEnrollmentInput)(
       { organizationSlug: "acme", userId: "forged" },
       { onExcessProperty: "error" },
-    ).pipe(Effect.exit);
+    ).pipe(Effect.flip);
 
-    assert.isTrue(Exit.isFailure(exit));
+    assert.isTrue(Schema.isSchemaError(failure));
   }),
 );
