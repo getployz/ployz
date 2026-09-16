@@ -95,7 +95,7 @@ export function ApplyChangeGroupCard({
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
       <Card size="sm">
         <CardHeader>
-          <div className="flex min-h-14 items-center justify-between gap-2">
+          <div className="grid min-h-14 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
             {hasSettings ? (
               <CollapsibleTrigger
                 render={
