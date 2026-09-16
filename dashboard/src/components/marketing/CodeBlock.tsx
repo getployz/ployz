@@ -5,7 +5,7 @@ interface CodeBlockProps {
 
 export function CodeBlock({ code, label }: CodeBlockProps) {
   return (
-    <div className="overflow-hidden rounded-[1.5rem] border bg-card shadow-sm">
+    <div className="overflow-hidden rounded-3xl border bg-card shadow-sm">
       <div className="flex items-center gap-2 border-b bg-muted/60 px-4 py-3">
         <span className="size-2 rounded-full bg-foreground/20" />
         <span className="size-2 rounded-full bg-foreground/12" />

@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "#/lib/utils.ts"
 
 const cardVariants = cva(
-  "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 [--card-spacing:--spacing(4)] has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(3)] data-[size=sm]:has-data-[slot=card-footer]:pb-0 data-[size=node]:gap-0 data-[size=node]:py-0 data-[size=node]:text-xs *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
+  "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 data-[selected=true]:ring-2 data-[selected=true]:ring-ring [--card-spacing:--spacing(4)] has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(3)] data-[size=sm]:has-data-[slot=card-footer]:pb-0 data-[size=node]:gap-0 data-[size=node]:py-0 data-[size=node]:text-xs *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
   {
     variants: {
       state: {
@@ -45,7 +45,7 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-header"
       className={cn(
-        "group/card-header @container/card-header grid auto-rows-min items-start gap-1 rounded-t-xl px-(--card-spacing) group-data-[size=node]/card:px-6 group-data-[size=node]/card:pt-6 has-data-[slot=card-action]:grid-cols-[1fr_auto] has-data-[slot=card-description]:grid-rows-[auto_auto] [.border-b]:pb-(--card-spacing) group-data-[size=node]/card:[.border-b]:pb-6",
+        "group/card-header @container/card-header grid grid-cols-1 auto-rows-min items-start gap-1 rounded-t-xl px-(--card-spacing) group-data-[size=node]/card:px-6 group-data-[size=node]/card:pt-6 has-data-[slot=card-action]:grid-cols-[1fr_auto] has-data-[slot=card-description]:grid-rows-[auto_auto] [.border-b]:pb-(--card-spacing) group-data-[size=node]/card:[.border-b]:pb-6",
         className
       )}
       {...props}
@@ -58,7 +58,7 @@ function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-title"
       className={cn(
-        "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm group-data-[size=node]/card:text-xs",
+        "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm group-data-[size=node]/card:text-xs group-data-[size=node]/card:truncate",
         className
       )}
       {...props}
@@ -71,7 +71,7 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-description"
       className={cn(
-        "text-sm text-muted-foreground group-data-[size=node]/card:text-xs",
+        "text-sm text-muted-foreground group-data-[size=node]/card:text-xs group-data-[size=node]/card:truncate",
         className
       )}
       {...props}

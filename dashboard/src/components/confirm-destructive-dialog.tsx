@@ -118,7 +118,7 @@ function ConfirmDestructiveDialogContent({
       ) : null}
 
       <div className="flex flex-col gap-2">
-        <Label htmlFor={inputId} className="font-normal">
+        <Label htmlFor={inputId}>
           Type <strong className="font-mono">{confirmPhrase}</strong> to confirm
         </Label>
         <Input

@@ -70,7 +70,7 @@ function DocsPage() {
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <CloudIcon className="size-4 text-primary" />
-                  <CardTitle className="text-base">Use Ployz Cloud</CardTitle>
+                  <CardTitle>Use Ployz Cloud</CardTitle>
                 </div>
                 <CardDescription>
                   Good fit if you want the workflow fast: GitHub sign-in,
@@ -78,7 +78,7 @@ function DocsPage() {
                 </CardDescription>
               </CardHeader>
               <Separator />
-              <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
+              <CardContent className="flex flex-col gap-2">
                 <p>1. Sign in with GitHub</p>
                 <p>2. Create a project and environment</p>
                 <p>3. Add a service from GitHub or a container image</p>
@@ -95,7 +95,7 @@ function DocsPage() {
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <ServerIcon className="size-4 text-primary" />
-                  <CardTitle className="text-base">Self-host the runtime</CardTitle>
+                  <CardTitle>Self-host the runtime</CardTitle>
                 </div>
                 <CardDescription>
                   Good fit if you want the runtime on your own infrastructure and
@@ -103,7 +103,7 @@ function DocsPage() {
                 </CardDescription>
               </CardHeader>
               <Separator />
-              <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
+              <CardContent className="flex flex-col gap-2">
                 <p>1. Provision a Linux server</p>
                 <p>2. Install the runtime and start a mesh</p>
                 <p>3. Enroll more machines with the Cloud bootstrap command</p>
@@ -171,7 +171,7 @@ function DocsPage() {
                   <CardHeader>
                     <div className="flex items-center gap-2">
                       <Icon className="size-4 text-primary" />
-                      <CardTitle className="text-base">{item.title}</CardTitle>
+                      <CardTitle>{item.title}</CardTitle>
                     </div>
                     <CardDescription>{item.body}</CardDescription>
                   </CardHeader>

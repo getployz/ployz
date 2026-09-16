@@ -63,11 +63,11 @@ export function CanvasInspectorOverlay({
   }
 
   return (
-    <div className="pointer-events-none absolute top-0 right-2 bottom-2 left-2 z-10 mt-2 grid w-auto grid-cols-[minmax(0,1fr)] items-start justify-center sm:grid-cols-[0px_100%] lg:grid-cols-[1fr_70%] xl:grid-cols-[1fr_minmax(auto,_920px)] 2xl:grid-cols-[1fr_minmax(auto,_1024px)]">
+    <div className="pointer-events-none absolute top-0 right-2 bottom-2 left-2 z-10 mt-2 flex justify-end">
       <div
         data-canvas-inspector-pane
         className={cn(
-          "pointer-events-auto col-start-1 h-full min-w-0 max-w-full overflow-hidden rounded-xl border bg-background shadow-2xl [view-transition-name:canvas-inspector] sm:col-start-2",
+          "pointer-events-auto h-full min-w-0 w-full lg:w-3/4 xl:max-w-5xl overflow-hidden rounded-xl border bg-background shadow-2xl [view-transition-name:canvas-inspector]",
           enterAnimated && "canvas-inspector-enter",
         )}
       >

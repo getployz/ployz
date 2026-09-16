@@ -5,7 +5,6 @@ import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Result, Schema } from "effect";
-import { cn } from "#/lib/utils";
 import {
   strictParseOptions,
   type StringSchema,
@@ -83,11 +82,8 @@ export function CanvasInspectorNameEditor({
         type="button"
         variant="ghost"
         size="lg"
-        className={cn(
-          "-mx-3 h-auto w-full min-w-0 justify-start px-3 py-2 text-left text-3xl font-semibold tracking-tight hover:cursor-text",
-          isChanged &&
-            "border-changed-border bg-changed-soft ring-3 ring-changed/10",
-        )}
+        className="w-full min-w-0 justify-start text-left hover:cursor-text"
+        data-changed={isChanged}
         title={
           isChanged && baselineValue != null
             ? `Deployed: ${baselineValue}`

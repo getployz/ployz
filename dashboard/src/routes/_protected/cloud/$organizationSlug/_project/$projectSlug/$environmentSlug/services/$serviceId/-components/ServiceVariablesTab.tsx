@@ -385,7 +385,7 @@ function InheritedVariableGroupVariablesSection({
                     info={`${item.variable.key} comes from ${item.resourceName}.`}
                   />
                 </TableCell>
-                <TableCell className="text-right text-xs text-muted-foreground">
+                <TableCell className="text-right">
                   Read-only
                 </TableCell>
               </TableRow>

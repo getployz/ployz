@@ -21,11 +21,11 @@ import type { CanvasVolumeNodeData } from "./types";
 
 function VolumeLoadingNode() {
   return (
-    <Card size="node" className="h-[144px] w-[288px] justify-between">
+    <Card size="node" className="h-36 w-72 justify-between">
       <CardHeader>
-        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
-          <Skeleton className="size-8 rounded-full" />
-          <div className="min-w-0">
+        <div className="flex items-start gap-3">
+          <Skeleton className="size-8" />
+          <div className="min-w-0 flex-1">
             <Skeleton className="h-5 w-28" />
             <Skeleton className="mt-1.5 h-4 w-20" />
           </div>
@@ -72,38 +72,38 @@ export function VolumeNode({
       search={(prev) => prev}
       preload="intent"
       draggable={false}
-      className="block h-[144px] w-[288px]"
+      className="block h-36 w-72"
     >
       <Handle
         type="target"
         position={Position.Bottom}
         isConnectable={false}
-        style={{ opacity: 0 }}
+        className="opacity-0"
       />
       <Handle
         type="source"
         position={Position.Top}
         isConnectable={false}
-        style={{ opacity: 0 }}
+        className="opacity-0"
       />
       <Card
         size="node"
+        data-selected={selected}
         className={cn(
           "h-full justify-between",
-          selected && "ring-2 ring-ring",
           isRemoved && "opacity-60",
         )}
       >
         <CardHeader>
-          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+          <div className="flex items-start gap-3">
             <Avatar>
               <AvatarFallback>
                 <HardDriveIcon />
               </AvatarFallback>
             </Avatar>
-            <div className="min-w-0 overflow-hidden">
-              <CardTitle className="truncate">{resource.resource.name}</CardTitle>
-              <CardDescription className="truncate">
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <CardTitle>{resource.resource.name}</CardTitle>
+              <CardDescription>
                 Named volume
               </CardDescription>
             </div>

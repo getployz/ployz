@@ -315,7 +315,7 @@ function ReadyDataLoss({
       {list.rust.length > 0 ? (
         <section className="flex flex-col gap-2" aria-label="Named Data Loss">
           <strong>Named Data Loss</strong>
-          <ItemGroup className="gap-2">
+          <ItemGroup>
             {list.rust.map((identity) => (
               <RustIdentityItem
                 key={dataLossIdentityKey(identity)}
@@ -331,7 +331,7 @@ function ReadyDataLoss({
           aria-label="Cloud records to remove (not sent to rust)"
         >
           <strong>Cloud records to remove (not sent to rust)</strong>
-          <ItemGroup className="gap-2">
+          <ItemGroup>
             {list.cloud.map((row) => (
               <CloudRowItem key={cloudRowKey(row)} row={row} />
             ))}

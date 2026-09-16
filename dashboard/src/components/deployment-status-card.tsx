@@ -12,7 +12,7 @@ function Step({ title, detail, state, children }: { title: string; detail: strin
   const Icon = state === "completed" ? CheckIcon : state === "failed" ? XIcon : state === "skipped" ? MinusIcon : state === "unknown" ? TriangleAlertIcon : CircleIcon;
   return <div className={cn("px-4 py-3 sm:px-6", state === "failed" && "bg-destructive/8 text-destructive")}>
     <div className="flex items-start gap-3 sm:gap-5">
-      {state === "running" ? <Spinner className="mt-0.5 size-4 shrink-0 motion-reduce:animate-none" /> : <Icon className={cn("mt-0.5 size-4 shrink-0", state === "completed" ? "text-success" : state === "failed" ? "text-destructive" : "text-muted-foreground")} />}
+      {state === "running" ? <Spinner className="mt-0.5 size-4 shrink-0" /> : <Icon className={cn("mt-0.5 size-4 shrink-0", state === "completed" ? "text-success" : state === "failed" ? "text-destructive" : "text-muted-foreground")} />}
       <div className="min-w-0 flex-1 text-sm"><span className="font-medium">{title}</span><span className={cn("ml-1", state !== "failed" && "text-muted-foreground")}> › {detail}</span>{children}</div>
       {state === "pending" || state === "skipped" ? <span className="shrink-0 text-xs text-muted-foreground">{state === "pending" ? "Not started" : "Skipped"}</span> : null}
     </div>
@@ -67,7 +67,7 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
       <Button variant="outline" size="sm" onClick={() => { onLogsChange(!showLogs); onExpandedChange(true); }} aria-expanded={showLogs} aria-controls={`${id}-logs`}>{showLogs ? "Hide logs" : "View logs"}</Button>{actions}
     </header>
     <button type="button" className={cn("flex w-full items-center gap-3 rounded-md bg-muted/30 px-4 py-3 text-left text-sm focus-visible:outline-2 focus-visible:outline-ring sm:px-6", accent)} aria-expanded={expanded} aria-controls={`${id}-steps`} onClick={() => onExpandedChange(!expanded)}>
-      {successful ? <CheckIcon className="size-4" /> : failed || unknown ? <TriangleAlertIcon className="size-4" /> : active && deployment.status !== "queued" ? <Spinner className="size-4 motion-reduce:animate-none" /> : null}
+      {successful ? <CheckIcon className="size-4" /> : failed || unknown ? <TriangleAlertIcon className="size-4" /> : active && deployment.status !== "queued" ? <Spinner className="size-4" /> : null}
       <span className="flex-1">{headline}</span><ChevronDownIcon className={cn("size-4", expanded && "rotate-180")} />
     </button>
     {expanded ? <div id={`${id}-steps`} className="rounded-b-lg bg-background py-2">

@@ -66,14 +66,14 @@ function ServiceListItem({
       >
         <Card
           state={semantics.state}
-          className={cn("gap-6", selected && "ring-2 ring-ring")}
+          data-selected={selected}
         >
           <CardHeader>
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+            <div className="flex items-start gap-3">
               <Avatar>
                 <AvatarFallback>{getServiceIcon(service)}</AvatarFallback>
               </Avatar>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <CardTitle className="truncate">{service.name}</CardTitle>
                 {subtitle ? (
                   <CardDescription className="truncate">{subtitle}</CardDescription>

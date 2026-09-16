@@ -76,7 +76,7 @@ export function AddServerDialog({
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-xl">
           <div className="flex flex-col gap-3">
-            <DialogHeader className="gap-1">
+            <DialogHeader>
               <DialogTitle>Add machine</DialogTitle>
               <DialogDescription>
                 Run once as administrator · Expires{" "}

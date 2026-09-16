@@ -156,7 +156,7 @@ export function ServiceNetworkingSection({
 
         <div className="flex flex-col gap-2">
           {!hasAnyDomain ? (
-            <Empty className="py-6">
+            <Empty>
               <EmptyDescription>No public domains yet.</EmptyDescription>
             </Empty>
           ) : null}

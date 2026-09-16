@@ -215,7 +215,7 @@ export function VariableAddForm({
           )}
         </Field>
         {allowSealOnCreate || supportsExport ? (
-          <FieldGroup className="gap-3">
+          <FieldGroup>
             {allowSealOnCreate ? (
               <Field orientation="horizontal">
                 <Checkbox
@@ -228,7 +228,7 @@ export function VariableAddForm({
                     })
                   }
                 />
-                <FieldLabel htmlFor="new-variable-sealed" className="font-normal">
+                <FieldLabel htmlFor="new-variable-sealed">
                   Sealed
                 </FieldLabel>
               </Field>
@@ -247,7 +247,6 @@ export function VariableAddForm({
                 />
                 <FieldLabel
                   htmlFor="new-variable-exported"
-                  className="font-normal"
                 >
                   Exported
                 </FieldLabel>

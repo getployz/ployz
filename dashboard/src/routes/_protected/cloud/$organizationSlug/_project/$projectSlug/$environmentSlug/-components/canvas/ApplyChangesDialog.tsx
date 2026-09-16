@@ -39,7 +39,7 @@ export function ApplyChangesDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[calc(100dvh-2rem)] max-w-[calc(100%-2rem)] grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-4xl"
+        className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-4xl"
         padding="none"
       >
         <div className="px-6 py-4 pr-14">
@@ -87,7 +87,7 @@ export function ApplyChangesDialog({
           </div>
         </div>
 
-        {canDeploy ? <DialogFooter className="m-0 px-6 py-4">
+        {canDeploy ? <DialogFooter className="m-0">
           <Button onClick={onDeploy}>
               <CheckIcon data-icon="inline-start" />
             Deploy changes

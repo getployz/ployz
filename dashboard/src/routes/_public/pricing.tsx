@@ -113,13 +113,12 @@ function PricingPage() {
                 {cloudPlans.map((plan) => (
                   <Card
                     key={plan.name}
-                    className={plan.highlight ? 'border-primary' : ''}
                   >
                     <CardHeader>
                       <div className="flex items-center justify-between">
-                        <CardTitle className="text-base">{plan.name}</CardTitle>
+                        <CardTitle>{plan.name}</CardTitle>
                         {plan.highlight ? (
-                          <Badge variant="default" className="text-xs">
+                          <Badge>
                             Best place to start
                           </Badge>
                         ) : null}

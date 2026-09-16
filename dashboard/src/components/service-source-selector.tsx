@@ -112,7 +112,7 @@ function SelectorEmpty({ children }: { children: ReactNode }) {
 function SelectorLoading() {
   return (
     <div className="flex items-center justify-center py-6">
-      <Spinner className="text-muted-foreground" />
+      <Spinner />
     </div>
   );
 }

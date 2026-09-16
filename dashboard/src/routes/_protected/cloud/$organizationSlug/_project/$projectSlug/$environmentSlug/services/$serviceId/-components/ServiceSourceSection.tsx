@@ -260,7 +260,7 @@ function EmptyServiceSourceSection({ state }: { state: ServiceDrawerState }) {
                 variant="link"
                 size="sm"
                 disabled
-                className="h-auto px-0 text-muted-foreground"
+                className="h-auto"
               >
                 Docs
                 <ArrowUpRightIcon data-icon="inline-end" />

@@ -31,10 +31,10 @@ import {
 
 export function LoadingNode() {
   return (
-    <Card size="node" className="h-[144px] w-[288px] justify-between">
-      <CardHeader className="gap-3">
+    <Card size="node" className="h-36 w-72 justify-between">
+      <CardHeader>
         <div className="flex items-start gap-3">
-          <Skeleton className="size-8 rounded-full" />
+          <Skeleton className="size-8" />
           <div className="min-w-0 flex-1">
             <Skeleton className="h-5 w-28" />
             <Skeleton className="mt-1.5 h-4 w-36" />
@@ -43,7 +43,7 @@ export function LoadingNode() {
       </CardHeader>
       <CardContent>
         <div className="flex items-center gap-3">
-          <Skeleton className="size-3 rounded-full" />
+          <Skeleton className="size-3" />
           <Skeleton className="h-4 w-28" />
         </div>
       </CardContent>
@@ -102,41 +102,39 @@ export function ServiceNode({
         search={(prev) => prev}
         preload="intent"
         draggable={false}
-        className="block h-[144px] w-[288px]"
+        className="block h-36 w-72"
       >
         <Handle
           type="target"
           position={Position.Bottom}
           isConnectable={false}
-          style={{ opacity: 0 }}
+          className="opacity-0"
         />
         <Handle
           type="source"
           position={Position.Top}
           isConnectable={false}
-          style={{ opacity: 0 }}
+          className="opacity-0"
         />
         <Card
           size="node"
           state={state}
-          className={cn(
-            "h-full justify-between",
-            selected && "ring-2 ring-primary",
-          )}
+          className="h-full justify-between"
+          data-selected={selected}
         >
           <CardHeader>
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+            <div className="flex items-start gap-3">
               <Avatar>
                 <AvatarFallback>
                   {getServiceIcon(service)}
                 </AvatarFallback>
               </Avatar>
-              <div className="min-w-0 overflow-hidden">
-                <CardTitle className="truncate">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <CardTitle>
                   {service.name}
                 </CardTitle>
                 {subtitle ? (
-                  <CardDescription className="truncate">
+                  <CardDescription>
                     {subtitle}
                   </CardDescription>
                 ) : null}

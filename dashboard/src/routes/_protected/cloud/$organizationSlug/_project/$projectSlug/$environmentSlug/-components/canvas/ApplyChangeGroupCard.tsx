@@ -93,14 +93,14 @@ export function ApplyChangeGroupCard({
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-      <Card className="gap-0 bg-background py-0" size="sm">
-        <CardHeader className="px-0">
-          <div className="grid min-h-14 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-3">
+      <Card size="sm">
+        <CardHeader>
+          <div className="flex min-h-14 items-center justify-between gap-2">
             {hasSettings ? (
               <CollapsibleTrigger
                 render={
                   <Button
-                    className="h-auto min-w-0 justify-start gap-3 bg-transparent px-0 hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-foreground dark:hover:bg-transparent"
+                    className="h-auto min-w-0 justify-start"
                     variant="ghost"
                   />
                 }
@@ -156,20 +156,20 @@ export function ApplyChangeGroupCard({
           <CollapsibleContent>
             <div className="bg-muted/40">
               <Separator />
-              <CardContent className="px-0">
+              <CardContent>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="text-muted-foreground">
+                      <TableHead>
                         Change
                       </TableHead>
                       {showCurrentValue ? (
-                        <TableHead className="text-muted-foreground">
+                        <TableHead>
                           Current Value
                         </TableHead>
                       ) : null}
                       {showNewValue ? (
-                        <TableHead className="text-muted-foreground">
+                        <TableHead>
                           New Value
                         </TableHead>
                       ) : null}

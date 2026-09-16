@@ -51,9 +51,9 @@ export function CopyButton({
         <CopyIcon className={copied ? "opacity-0" : "opacity-100"} />
         <CheckIcon className={copied ? "opacity-100" : "opacity-0"} />
       </span>
-      {showLabel ? <span className="inline-grid">
-        <span className="col-start-1 row-start-1" style={{ visibility: copied ? "hidden" : "visible" }}>{label}</span>
-        <span className="col-start-1 row-start-1" style={{ visibility: copied ? "visible" : "hidden" }}>Copied</span>
+      {showLabel ? <span className="group/copy-label inline-grid" data-copied={copied}>
+        <span className="col-start-1 row-start-1 group-data-[copied=true]/copy-label:invisible">{label}</span>
+        <span className="invisible col-start-1 row-start-1 group-data-[copied=true]/copy-label:visible">Copied</span>
       </span> : null}
       <span className="sr-only" role="status">{copied ? "Copied to clipboard" : ""}</span>
     </Button>
