@@ -1,7 +1,9 @@
 import { canonicalWorkingReview, destructivePublication, destructivePublicationMismatch } from "@ployz/sdk/config";
 import type { CompiledEnvironmentIntent } from "@ployz/sdk/config";
-import type { DestructiveVolumeReview } from "./destructive-volume-review";
-import type { EnvironmentSavedStateBasis } from "./saved-state";
+import { Schema } from "effect";
+import { destructiveVolumeReviewsSchema } from "./destructive-volume-review";
+import { Uuid } from "./workspace-schemas";
+import { environmentSavedStateBasisSchema } from "./saved-state";
 
 type ReviewedNodeSnapshot = {
   nodeType: "service" | "variable_group" | "volume";
@@ -29,12 +31,21 @@ export type DestructiveEnvironmentSave = {
  * The destructive set is required even when empty so every publisher is
  * checked against the same locked transition instead of opting into safety.
  */
-export type ReviewedEnvironmentPublication = {
-  savedStateBasis: EnvironmentSavedStateBasis;
-  workingStateFingerprint: string;
-  destructiveServiceIds: string[];
-  destructiveVolumeReviews: DestructiveVolumeReview[];
-};
+export const reviewedEnvironmentPublicationSchema = Schema.Struct({
+  savedStateBasis: environmentSavedStateBasisSchema,
+  workingStateFingerprint: Schema.String.check(
+    Schema.isPattern(/^environment-working-state-v1:[0-9a-f]{64}$/u),
+  ),
+  destructiveServiceIds: Schema.mutable(Schema.Array(Uuid)).check(
+    Schema.makeFilter((serviceIds) =>
+      new Set(serviceIds).size === serviceIds.length
+        ? undefined
+        : "A destructive Service can be reviewed only once.",
+    ),
+  ),
+  destructiveVolumeReviews: destructiveVolumeReviewsSchema,
+});
+export type ReviewedEnvironmentPublication = typeof reviewedEnvironmentPublicationSchema.Type;
 
 export function projectReviewedEnvironmentPublicationDestructiveSave(
   review: ReviewedEnvironmentPublication,

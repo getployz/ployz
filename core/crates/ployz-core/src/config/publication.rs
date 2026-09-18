@@ -54,16 +54,15 @@ fn present_config() -> Value {
     json!({})
 }
 
-/// Working, saved, and applied ownership facts used to find destructive edits.
+/// Working and applied ownership facts used to find destructive edits.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DestructivePublicationInput {
     working_nodes: Vec<PublicationNode>,
-    saved_nodes: Vec<PublicationNode>,
     applied_nodes: Vec<PublicationNode>,
 }
 
-/// Find applied Service and Volume owners absent from working intent but still present in saved state.
+/// Find all applied Service and Volume owners absent from working intent.
 #[must_use]
 pub fn destructive_publication(input: DestructivePublicationInput) -> DestructivePublication {
     let key = |n: &PublicationNode| format!("{}:{}", n.node_type.as_str(), n.node_id);
@@ -73,20 +72,14 @@ pub fn destructive_publication(input: DestructivePublicationInput) -> Destructiv
         .filter(|n| !n.config.is_null())
         .map(key)
         .collect();
-    let applied: BTreeSet<_> = input
-        .applied_nodes
-        .iter()
-        .filter(|n| !n.config.is_null())
-        .map(key)
-        .collect();
     let mut result = DestructivePublication {
         service_ids: Vec::new(),
         volume_ids: Vec::new(),
     };
     for node in input
-        .saved_nodes
+        .applied_nodes
         .iter()
-        .filter(|n| !n.config.is_null() && !working.contains(&key(n)) && applied.contains(&key(n)))
+        .filter(|n| !n.config.is_null() && !working.contains(&key(n)))
     {
         match node.node_type {
             EnvironmentNodeType::Service => result.service_ids.push(node.node_id.clone()),

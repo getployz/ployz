@@ -3,7 +3,8 @@ import "@tanstack/react-start/server-only";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
-import { Database } from "#/server/database.server";
+import { afterDatabaseCommit, Database } from "#/server/database.server";
+import { failUndispatchedDeployment } from "./runtime-lifecycle.repository.server";
 import { Conflict } from "#/server/public-error";
 import {
   sendInngestEvent,
@@ -25,7 +26,7 @@ export type EnvironmentDeploymentDispatchInput = {
  * deliberately: the event has a deterministic deployment ID, so Inngest owns
  * deduplication across a crash after admission commit or after event send.
  */
-export const dispatchEnvironmentDeployment = Effect.fn(
+const sendEnvironmentDeployment = Effect.fn(
   "Deployments.dispatchEnvironmentDeployment",
 )(function* (input: EnvironmentDeploymentDispatchInput) {
   const { drizzle } = yield* Database;
@@ -54,34 +55,20 @@ export const dispatchEnvironmentDeployment = Effect.fn(
   yield* sendInngestEvent(createEnvironmentDeployRequestedEvent(input)).pipe(
     Effect.catchTag("InngestEventSendError", (failure) =>
       Effect.gen(function* () {
-        const finishedAt = new Date();
-        yield* drizzle
-          .update(schemaEnvironmentDeployment)
-          .set({
-            status: "failed",
-            failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
-            failureMessage: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
-            finishedAt,
-            updatedAt: finishedAt,
-          })
-          .where(
-            and(
-              eq(
-                schemaEnvironmentDeployment.id,
-                input.environmentDeploymentId,
-              ),
-              eq(
-                schemaEnvironmentDeployment.environmentId,
-                input.environmentId,
-              ),
-              eq(schemaEnvironmentDeployment.status, "queued"),
-              isNull(schemaEnvironmentDeployment.inngestRunId),
-            ),
-          )
-          .returning({ id: schemaEnvironmentDeployment.id });
-        return yield* failure;
+        const failed = yield* failUndispatchedDeployment({
+          environmentDeploymentId: input.environmentDeploymentId,
+          failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
+          message: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
+        });
+        if (failed) return yield* failure;
       }),
     ),
   );
   return { state: "dispatched" as const };
 });
+
+export const dispatchEnvironmentDeployment = Effect.fn("Deployments.dispatchAfterCommit")(
+  (input: EnvironmentDeploymentDispatchInput) => afterDatabaseCommit(sendEnvironmentDeployment(input)).pipe(
+    Effect.as({ state: "dispatched" as const }),
+  ),
+);

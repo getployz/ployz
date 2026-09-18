@@ -1,8 +1,10 @@
+import { cancelEnvironmentDeployment, submitReviewedPublication, dispatchExistingQueuedEnvironmentDeployment,
+  prepareEnvironmentDestructiveVolumes, retryEnvironmentDeployment } from "./deployment-command.server";
 import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import {
   cancelEnvironmentDeploymentSchema,
-  createEnvironmentDeploymentSnapshotSchema,
+  reviewedPublicationSchema,
   deploymentOperationEvidencePageQuerySchema,
   dispatchQueuedEnvironmentDeploymentSchema,
   organizationEnvironmentChangeStateQuerySchema,
@@ -10,14 +12,9 @@ import {
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
-  cancelEnvironmentDeployment,
-  createEnvironmentDeploymentSnapshot,
-  dispatchExistingQueuedEnvironmentDeployment,
   listDeploymentOperationEvidence,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
-  prepareEnvironmentDestructiveVolumes,
-  retryEnvironmentDeployment,
 } from "#/modules/deployments/deployment-operations.server";
 import {
   actorMiddleware,
@@ -39,15 +36,15 @@ export const listLatestOrganizationEnvironmentChangeStatesServerFn =
       ),
     );
 
-export const createEnvironmentDeploymentSnapshotServerFn = createServerFn({
+export const submitReviewedPublicationServerFn = createServerFn({
   method: "POST",
 })
   .middleware(deploymentMiddleware)
-  .validator(strictValidator(createEnvironmentDeploymentSnapshotSchema))
+  .validator(strictValidator(reviewedPublicationSchema))
   .handler(({ context, data }) =>
     runActor(
       context,
-      createEnvironmentDeploymentSnapshot(context.actor, data).pipe(
+      submitReviewedPublication(context.actor, data).pipe(
         Effect.catchTag("DestructiveVolumeReviewChangedError", (cause) =>
           Effect.succeed({
             state: "review_updated_evidence" as const,

@@ -246,11 +246,6 @@ export function useCanvasFlowState({
       nodeId: node.id,
       config,
     })),
-    savedNodes: saved.nodes.map(({ node, config }) => ({
-      nodeType: node.type,
-      nodeId: node.id,
-      config,
-    })),
     appliedNodes: applied.nodes.map(({ node, config }) => ({
       nodeType: node.type,
       nodeId: node.id,

@@ -8,7 +8,7 @@ import {
   startGithubPostgresTestHarness,
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import { InngestClient } from "#/modules/inngest/client";
-import { publishEnvironmentSavedState } from "#/modules/environment-design/saved-state-operations.server";
+
 import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
@@ -94,21 +94,11 @@ describe("Saved deployment admission", () => {
     volumes: "first" | "both",
     previousId: string | null,
   ) {
-    return harness.runTransaction(() =>
-        publishEnvironmentSavedState(
-          {
-            environmentId,
-            actorId: userId,
-            message: null,
-            basis: previousId
-              ? { kind: "saved_revision", savedStateSnapshotId: previousId }
-              : { kind: "no_saved_state" },
-            intent: intent(volumes),
-            destructiveVolumeReviews: [],
-            revisionPolicy: "always_create",
-          }
-        ),
-    );
+    const [saved] = await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+      organizationId, environmentId, actorId: userId, intent: intent(volumes), volumeDeletionAuthorizations: [],
+    }).returning();
+    if (!saved) throw new Error("Saved fixture missing");
+    return { savedStateSnapshotId: saved.id, previousId };
   }
 
   function admit(savedStateSnapshotId: string) {
@@ -145,26 +135,24 @@ describe("Saved deployment admission", () => {
     );
   }
 
-  it("serializes concurrent admissions into one mutable queued target", async () => {
+  it("accepts exactly one concurrent manual admission", async () => {
     const saved = await publish("first", null);
 
-    const attempts = await Promise.all(
+    const attempts = await Promise.allSettled(
       Array.from({ length: 8 }, () => admit(saved.savedStateSnapshotId)),
     );
-
-    expect(new Set(attempts.map(({ id }) => id)).size).toBe(1);
+    expect(attempts.filter(attempt => attempt.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter(attempt => attempt.status === "rejected")).toHaveLength(7);
     expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(
       1,
     );
   });
 
-  it("replaces an unowned queued target but freezes one that has started", async () => {
+  it("pins queued manual targets and allows a new attempt once started", async () => {
     const first = await publish("first", null);
     const queued = await admit(first.savedStateSnapshotId);
     const second = await publish("both", first.savedStateSnapshotId);
-    const replaced = await admit(second.savedStateSnapshotId);
-
-    expect(replaced.id).toBe(queued.id);
+    await expect(admit(second.savedStateSnapshotId)).rejects.toMatchObject({ _tag: "Conflict" });
     expect(
       await harness.db
         .select({ nodeId: schema.environmentNodeConfigSnapshot.nodeId })
@@ -175,7 +163,7 @@ describe("Saved deployment admission", () => {
             queued.id,
           ),
         ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
 
     await harness.db
       .update(schema.environmentDeployment)
@@ -201,7 +189,7 @@ describe("Saved deployment admission", () => {
       {
         id: queued.id,
         status: "planning",
-        savedStateSnapshotId: second.savedStateSnapshotId,
+        savedStateSnapshotId: first.savedStateSnapshotId,
       },
       {
         id: next.id,

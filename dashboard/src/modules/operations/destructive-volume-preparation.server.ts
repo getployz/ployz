@@ -1,4 +1,3 @@
-import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
 import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
@@ -208,7 +207,6 @@ function listEnvironmentVolumeNames(environmentId: string) {
         and(
           eq(schemaEnvironmentResource.environmentId, environmentId),
           eq(schemaEnvironmentResource.implementationType, "volume"),
-          volumeIsAuthored,
         ),
       )
       .pipe(

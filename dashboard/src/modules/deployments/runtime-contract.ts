@@ -5,10 +5,6 @@ export type EnvironmentDeployVolume = {
   volumeResourceId: string;
 };
 
-export type EnvironmentDeploymentApplyResult = {
-  coreDeployId: string | null;
-};
-
 export type EnvironmentDeploySnapshot = {
   serviceId: string;
   serviceSlug: string;

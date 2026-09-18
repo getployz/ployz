@@ -17,7 +17,6 @@ import {
   startGithubPostgresTestHarness,
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import {
-  persistDeployApplyResult,
   persistSdkDeployPreview,
   persistSdkDeployOutcome,
 } from "#/modules/deployments/runtime-repository.server";
@@ -154,12 +153,12 @@ describe("deployment runtime persistence", () => {
     ]);
   });
 
-  it("cancels a quiet runner from the persisted row and retains its cancellation outcome", async () => {
+  it.each(["outcome", "rejection"])("settles a cancelled quiet runner after runtime %s", async (completion) => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
-    await harness.db.update(schema.environmentDeployment).set({ status: "deploying", startedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning", startedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
     let aborted = false;
     let closed = false;
     let started = false;
@@ -179,6 +178,7 @@ describe("deployment runtime persistence", () => {
         async *[Symbol.asyncIterator]() {
           started = true;
           await stopped;
+          if (completion === "rejection") throw new Error("Runtime disconnected during cancellation");
           yield { type: "outcome" as const, outcome };
         },
       }),
@@ -188,12 +188,12 @@ describe("deployment runtime persistence", () => {
       kind: "ready", generation: "grant-1", connections: [{ tailcat: "tailcat://candidate" }],
     })).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
-      Effect.provide(runtime), Effect.provideService(SecretEncryption, encryption),
+      Effect.provide(runtime), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
     ));
     const settled = result.then(value => ({ value }), error => ({ error }));
     try {
       await vi.waitFor(() => expect(started).toBe(true));
-      expect(await harness.runEffect(requestDeploymentCancellation(admitted.id))).toBe(false);
+      expect(await harness.runEffect(requestDeploymentCancellation(admitted.id).pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" }))))).toBe(false);
       await vi.waitFor(() => expect(aborted).toBe(true), { timeout: 2000 });
       const [cancelling] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
       expect(cancelling?.status).toBe("deploying");
@@ -201,18 +201,46 @@ describe("deployment runtime persistence", () => {
       expect(cancelling?.finishedAt).toBeNull();
       expect(closed).toBe(false);
       finish();
-      expect(await settled).toEqual({ value: { type: "failed", completed: 0, unexecuted: 0, reason: "cancelled" } });
-      await harness.runEffect(markDeploymentCancelled({ deploymentId: admitted.id }, "Runtime cancelled."));
+      if (completion === "rejection") {
+        expect(await settled).toMatchObject({ error: { _tag: "PloyzProviderError" } });
+      } else {
+        expect(await settled).toEqual({ value: { type: "failed", completed: 0, unexecuted: 0, reason: "cancelled" } });
+      }
+      await harness.runEffect(markDeploymentCancelled({ deploymentId: admitted.id }, "Runtime cancelled.").pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" }))));
       const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
-      expect(row?.status).toBe("cancelled");
-      expect(row?.runtimeProgress?.outcome).toBe("failed");
+      expect(row?.finishedAt).toBeInstanceOf(Date);
       const [secret] = await harness.db.select().from(schema.environmentDeploymentSecret);
-      expect(secret?.encryptedRuntimeOutcome).toBeTruthy();
+      if (completion === "rejection") {
+        expect(row).toMatchObject({ status: "failed", failureCode: "sdk_deploy_outcome_unknown" });
+        expect(secret?.encryptedRuntimeOutcome).toBeFalsy();
+      } else {
+        expect(row?.status).toBe("cancelled");
+        expect(row?.runtimeProgress?.outcome).toBe("failed");
+        expect(secret?.encryptedRuntimeOutcome).toBeTruthy();
+      }
       expect(closed).toBe(true);
     } finally {
       finish();
       await settled;
     }
+  });
+
+  it("settles cancellation between planning and confirmation without runtime effects", async () => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning", cancellationRequestedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, admitted.id));
+    const confirm = vi.fn(() => { throw new Error("Cancelled work must not execute"); });
+    const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), confirm }), close: async () => {} });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ tailcat: "tailcat://candidate" }] }))
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
+      Effect.provide(runtime), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
+    ));
+    expect(result).toMatchObject({ type: "failed", reason: "cancelled", completed: 0 });
+    expect(confirm).not.toHaveBeenCalled();
+    expect((await harness.db.select().from(schema.environmentDeployment))[0]).toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
   });
 
   it("updates current state and retained logs atomically, and scopes log reads to the organization", async () => {
@@ -239,25 +267,20 @@ describe("deployment runtime persistence", () => {
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
     const admitted = await admit();
-    expect((await admit()).id).toBe(admitted.id);
+    await expect(admit()).rejects.toMatchObject({ _tag: "Conflict" });
+    await harness.db.update(schema.environmentDeployment).set({ deployPreview: preview() }).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
       { environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null },
     ]);
     const outcome = { version: 1, outcome: { type: "success" as const, completed: [] } };
     await harness.runEffect(persistSdkDeployOutcome({
       environmentDeploymentId: admitted.id, outcome: Redacted.make(outcome),
-    }).pipe(Effect.provideService(SecretEncryption, encryption)));
+    }).pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption)));
     const privateRows = await harness.db.select().from(schema.environmentDeploymentSecret);
     expect(privateRows).toHaveLength(1);
     const encryptedOutcome = privateRows[0]?.encryptedRuntimeOutcome;
     if (!encryptedOutcome) throw new Error("Runtime evidence was not persisted");
     expect(JSON.parse(encryption.decrypt(encryptedOutcome))).toEqual(outcome);
-    await harness.runEffect(persistDeployApplyResult({
-      environmentDeploymentId: admitted.id, result: { coreDeployId: "admitted-success" },
-    }).pipe(
-      Effect.provideService(SecretEncryption, encryption),
-      Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })),
-    ));
     const [row] = await harness.db.select().from(schema.environmentDeployment)
       .where(eq(schema.environmentDeployment.id, admitted.id));
     expect(row?.status).toBe("applied");
@@ -283,7 +306,7 @@ describe("deployment runtime persistence", () => {
     };
     await harness.runEffect(persistSdkDeployOutcome({
       environmentDeploymentId: targetDeploymentId, outcome: Redacted.make({ version: 1, outcome }),
-    }).pipe(Effect.provideService(SecretEncryption, encryption)));
+    }).pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption)));
     const [privateRow] = await harness.db.select().from(schema.environmentDeploymentSecret)
       .where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, targetDeploymentId));
     const encryptedOutcome = privateRow?.encryptedRuntimeOutcome;
@@ -330,7 +353,7 @@ describe("deployment runtime persistence", () => {
       persistSdkDeployPreview({
         environmentDeploymentId: targetDeploymentId,
         preview: targetPreview,
-      }).pipe(Effect.provideService(SecretEncryption, encryption)),
+      }).pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption)),
     );
     const [previewRow] = await harness.db
       .select({ deployPreview: schema.environmentDeployment.deployPreview })
@@ -338,22 +361,14 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     expect(previewRow?.deployPreview).toEqual(targetPreview);
 
-    await harness.runEffect(
-      persistDeployApplyResult({
-        environmentDeploymentId: targetDeploymentId,
-        result: { coreDeployId: "deploy-whole-success" },
-      }).pipe(
-        Effect.provideService(SecretEncryption, encryption),
-        Effect.provideService(
-          InngestClient,
-          new Inngest({ id: "runtime-persistence-test" }),
-        ),
-      ),
-    );
+    await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
+    await harness.runEffect(persistSdkDeployOutcome({ environmentDeploymentId: targetDeploymentId,
+      outcome: Redacted.make({ version: 1, outcome: { type: "success", completed: [] } }),
+    }).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" }))));
     const projection = await harness.runEffect(
       loadEnvironmentSnapshotProjection(
         { kind: "environment", environmentId },
-      ).pipe(Effect.provideService(SecretEncryption, encryption)),
+      ).pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption)),
     );
     const explicit = projection.explicitStates[0];
 
@@ -450,15 +465,30 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     const outcome: DeployOutcome<ExecutionError> = { type: "failed", completed: [api, removal],
       failed: { type: "operation", operation: worker, error: { type: "cancelled" } }, unexecuted: [] };
-    await harness.db.insert(schema.environmentDeploymentSecret).values({
-      environmentDeploymentId: targetDeploymentId,
-      encryptedRuntimeOutcome: encryption.encrypt(JSON.stringify({ version: 1, outcome })),
-    });
+    await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
+    for (const [id, lineageId, name] of [[apiNodeId, apiLineageId, "api"], [workerNodeId, workerLineageId, "worker"]] as const) {
+      await harness.db.insert(schema.serviceLineage).values({ id: lineageId, projectId, canonicalName: name, canonicalSlug: name });
+      await harness.db.insert(schema.service).values({ id, organizationId, projectId, environmentId, lineageId });
+      await harness.db.insert(schema.environmentNodeIntroduction).values({ organizationId, environmentId, nodeType: "service", nodeId: id, nodeLineageId: lineageId, config: {} });
+    }
+    await harness.db.update(schema.environmentDeployment).set({ inngestRunId: "owner" }).where(eq(schema.environmentDeployment.id, targetDeploymentId));
+    const record = (expectedInngestRunId: string) => harness.runEffect(persistSdkDeployOutcome({
+      environmentDeploymentId: targetDeploymentId, expectedInngestRunId, outcome: Redacted.make({ version: 1, outcome }),
+    }).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "outcome-test" }))));
+    await record("wrong-owner");
+    expect((await harness.db.select().from(schema.environmentDeploymentSecret))[0]?.encryptedRuntimeOutcome).toBeNull();
+    await record("owner");
+    await record("owner");
+    expect((await harness.db.select().from(schema.environmentNodeIntroduction)).map(row => row.nodeId)).toEqual([workerNodeId]);
+    const services = await harness.db.select().from(schema.service);
+    expect(services.find(row => row.id === apiNodeId)?.firstDeployedAt).toBeInstanceOf(Date);
+    expect(services.find(row => row.id === workerNodeId)?.firstDeployedAt).toBeNull();
+    expect((await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, targetDeploymentId)))[0]?.status).toBe("failed");
 
     const projection = await harness.runEffect(
       loadEnvironmentSnapshotProjection(
         { kind: "environment", environmentId },
-      ).pipe(Effect.provideService(SecretEncryption, encryption)),
+      ).pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption)),
     );
     const applied = projection.explicitStates[0]?.applied.nodes;
 

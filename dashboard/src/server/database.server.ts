@@ -24,10 +24,11 @@ export interface DatabaseService {
     DatabaseSubscriptionFailure,
     Scope.Scope
   >;
+  readonly afterCommit: <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.Effect<void, E, R>;
   readonly transaction: <A, E, R>(
     program: Effect.Effect<A, E, R>,
     config?: PgTransactionConfig,
-  ) => Effect.Effect<A, E | SqlError, Exclude<R, Database>>;
+  ) => Effect.Effect<A, E | SqlError | DatabasePostCommitFailure, Exclude<R, Database>>;
 }
 
 export class Database extends Context.Service<Database, DatabaseService>()(
@@ -67,6 +68,10 @@ export class DatabasePoolCloseFailure extends Data.TaggedError(
   "DatabasePoolCloseFailure",
 )<{ readonly cause: unknown }> {}
 
+export class DatabasePostCommitFailure extends Data.TaggedError(
+  "DatabasePostCommitFailure",
+)<{ readonly cause: unknown }> {}
+
 export class DatabaseSubscriptionFailure extends Data.TaggedError(
   "DatabaseSubscriptionFailure",
 )<{
@@ -76,24 +81,51 @@ export class DatabaseSubscriptionFailure extends Data.TaggedError(
 }> {}
 
 export function makeDatabaseService(
-  drizzle: EffectPgDatabase,
+  drizzle: EffectPgDatabase & { $client: PgClient.PgClient },
   subscribe: DatabaseService["subscribe"],
 ): DatabaseService {
-  return {
-    drizzle,
-    subscribe,
-    transaction: (program, config) =>
-      drizzle.transaction(
-        (transaction) =>
-          Effect.provideService(
-            program,
-            Database,
-            makeDatabaseService(transaction, subscribe),
-          ),
-        config,
-      ),
-  };
+  const transactionService = drizzle.$client.transactionService;
+  const database = transactionDatabase(drizzle);
+  return database;
+
+  function transactionDatabase(drizzle: EffectPgDatabase, pending?: Effect.Effect<void, unknown>[]): DatabaseService {
+    return {
+      drizzle,
+      subscribe,
+      afterCommit: <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+        if (!pending) return yield* Effect.asVoid(program);
+        const context = yield* Effect.context<R>();
+        // Keep caller services, but never reuse a committed SQL connection or its savepoint depth.
+        // SAFETY: SQL transaction state is implicit; declared callback capabilities remain available.
+        const committedContext = Context.omit(transactionService)(context) as Context.Context<R>;
+        pending.push(program.pipe(
+          Effect.provide(Context.add(committedContext, Database, database)),
+          Effect.asVoid,
+        ));
+      }),
+      transaction: <A, E, R>(program: Effect.Effect<A, E, R>, config?: PgTransactionConfig) =>
+        Effect.gen(function* () {
+          const effects: Effect.Effect<void, unknown>[] = [];
+          const result = yield* drizzle.transaction(
+            (transaction) => Effect.provideService(program, Database, transactionDatabase(transaction, effects)),
+            config,
+          );
+          if (pending) pending.push(...effects);
+          else {
+            yield* Effect.forEach(effects, effect => effect, { discard: true }).pipe(
+              Effect.mapError(cause => new DatabasePostCommitFailure({ cause })),
+            );
+          }
+          return result;
+        }),
+    };
+  }
 }
+
+/** Defers work to the outermost commit, which reports DatabasePostCommitFailure.
+ * Attach callback-specific recovery to program before registering it. */
+export const afterDatabaseCommit = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  Effect.flatMap(Database, database => database.afterCommit(program));
 
 export function subscribeDatabaseNotifications(
   pool: Pool,

@@ -1,6 +1,6 @@
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
 import { restoreWorkingDocument } from "./working-document-restore.server";
-import { discardEnvironmentChanges } from "./environment-change-set.server";
+import { discardEnvironmentChanges } from "./saved-state-operations.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { loadLatestEnvironmentSavedState } from "./saved-state-repository.server";

@@ -16,6 +16,8 @@ import {
   Database,
   DatabaseLive,
   DatabaseSubscriptionFailure,
+  DatabasePostCommitFailure,
+  afterDatabaseCommit,
   subscribeDatabaseNotifications,
 } from "#/server/database.server";
 import { postgresTestContainer } from "#/test/postgres";
@@ -81,6 +83,23 @@ it.live(
           ),
         );
         assert.strictEqual(count.rows[0]?.count, 0);
+
+        // Inner handlers cannot catch deferred work; the commit boundary owns its failure type.
+        const postCommit = yield* Effect.flip(database.transaction(Effect.gen(function* () {
+          const transaction = yield* Database;
+          yield* transaction.transaction(Effect.gen(function* () {
+            yield* nestedInsert();
+            yield* afterDatabaseCommit(Effect.fail(new Rollback())).pipe(
+              Effect.catchTag("Rollback", () => Effect.void),
+            );
+          }));
+        })));
+        assert.instanceOf(postCommit, DatabasePostCommitFailure);
+        assert.instanceOf(postCommit.cause, Rollback);
+        const committed = yield* Effect.promise(() => betterAuthDatabase.drizzle.execute<{ count: number }>(
+          sql`select count(*)::integer as count from effect_transaction_test`,
+        ));
+        assert.strictEqual(committed.rows[0]?.count, 1);
 
         // Acquisition completes after LISTEN, with identifiers quoted and events buffered.
         const channel = 'database "events';

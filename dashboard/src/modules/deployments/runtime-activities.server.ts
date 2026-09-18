@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import type { DeployEvent, DeployIntent, PreparedDeploy } from "@ployz/sdk";
-import { Data, Effect, Redacted, Schema } from "effect";
+import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
 import { environmentDeployment } from "./tables";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
@@ -13,6 +13,7 @@ import {
   loadResolvedDeployEnv,
   persistSdkDeployPreview,
   persistSdkDeployOutcome,
+  markDeploymentStatus,
   type DeploymentContext,
 } from "#/modules/deployments/runtime-repository.server";
 import {
@@ -20,6 +21,7 @@ import {
   parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
 import { Database } from "#/server/database.server";
+import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { persistDeploymentProgress } from "./deployment-events.server";
 import { deploymentProgressForEvent, type DeploymentProgress } from "./deployment-progress";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -194,56 +196,80 @@ export const executeRuntimeIntent = Effect.fn("Deployments.executeRuntimeIntent"
 
 export const executeEnvironmentDeployment = Effect.fn(
   "Deployments.executeEnvironmentDeployment",
-)(function* (context: DeploymentContext) {
-  const intent = yield* compileRuntimeIntent(context);
-  const prepared = yield* previewRuntimeIntent(context.organization.id, intent);
-  yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, preview: prepared.preview });
-  const database = yield* Database;
-  const readStatus = database.drizzle.select({ status: environmentDeployment.status, cancellationRequestedAt: environmentDeployment.cancellationRequestedAt })
-    .from(environmentDeployment).where(eq(environmentDeployment.id, context.deployment.id)).limit(1);
-  const [current] = yield* readStatus;
-  if (!current || current.status === "cancelled") return yield* Effect.interrupt;
-  if (current.cancellationRequestedAt) return { type: "failed" as const, completed: 0, unexecuted: prepared.prepared.operations.length, reason: "cancelled" as const };
-  const cancellation = new AbortController();
-  // Inngest cancellation cannot interrupt an executing step. Check the durable
-  // row even when the SDK emits no progress, then await its cleanup and outcome.
-  const watchCancellation = Effect.gen(function* () {
-    while (true) {
-      const [deployment] = yield* readStatus;
-      if (!deployment || deployment.cancellationRequestedAt) {
-        cancellation.abort();
-        return yield* Effect.never;
-      }
-      yield* Effect.sleep("1 second");
+)(function* (context: DeploymentContext, expectedInngestRunId?: string) {
+  if (context.deployment.inngestRunId !== (expectedInngestRunId ?? null)) {
+    return yield* new DeploymentRuntimeInvalid({ failureCode: "sdk_outcome_invalid", message: "Deployment belongs to another workflow run." });
+  }
+  // Enter executing state inside the live SDK step so cancellation between
+  // durable steps can still settle planning without waiting for a nonexistent worker.
+  const started = yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id,
+    expectedInngestRunId, status: "deploying" });
+  if (!started) return yield* Effect.interrupt;
+  return yield* Effect.gen(function* () {
+    const intent = yield* compileRuntimeIntent(context);
+    const prepared = yield* previewRuntimeIntent(context.organization.id, intent);
+    yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId: context.deployment.inngestRunId ?? undefined, preview: prepared.preview });
+    const database = yield* Database;
+    const readStatus = database.drizzle.select({ status: environmentDeployment.status, cancellationRequestedAt: environmentDeployment.cancellationRequestedAt })
+      .from(environmentDeployment).where(eq(environmentDeployment.id, context.deployment.id)).limit(1);
+    const [current] = yield* readStatus;
+    if (!current || current.status !== "deploying") return yield* Effect.interrupt;
+    if (current.cancellationRequestedAt) {
+      yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id,
+        expectedInngestRunId, status: "cancelled", message: "Cancelled before runtime execution." });
+      return { type: "failed" as const, completed: 0, unexecuted: prepared.prepared.operations.length, reason: "cancelled" as const };
     }
-  });
-  let previous: DeploymentProgress | null = null;
-  // The SDK reports progress through a Promise callback. Run each persist with
-  // this fiber's services (database, tracer, span, log annotations) instead of
-  // a fresh default runtime.
-  const progressContext = yield* Effect.context<Database>();
-  const persistProgress = Effect.runPromiseWith(progressContext);
-  const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
-    const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
-    const progress = { ...raw, rows: raw.rows.map((row) => {
-      const prior = previous?.rows.find((candidate) => candidate.index === row.index);
-      const projected = {
-        ...row,
-        serviceId: context.snapshots.find((snapshot) => snapshot.config.privateDns === row.serviceName)?.serviceId ?? null,
-      };
-      if (row.status === "failed" && prior) return { ...projected, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health };
-      return projected;
-    }) };
-    previous = progress;
-    await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
-  }, cancellation.signal).pipe(Effect.raceFirst(watchCancellation));
-  yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, outcome: evidence });
-  return outcome;
+    const cancellation = new AbortController();
+    // Inngest cancellation cannot interrupt an executing step. Check the durable
+    // row even when the SDK emits no progress, then await its cleanup and outcome.
+    const watchCancellation = Effect.gen(function* () {
+      while (true) {
+        const [deployment] = yield* readStatus;
+        if (!deployment || deployment.cancellationRequestedAt) {
+          cancellation.abort();
+          return yield* Effect.never;
+        }
+        yield* Effect.sleep("1 second");
+      }
+    });
+    let previous: DeploymentProgress | null = null;
+    // The SDK reports progress through a Promise callback. Run each persist with
+    // this fiber's services (database, tracer, span, log annotations) instead of
+    // a fresh default runtime.
+    const progressContext = yield* Effect.context<Database>();
+    const persistProgress = Effect.runPromiseWith(progressContext);
+    const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
+      const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
+      const progress = { ...raw, rows: raw.rows.map((row) => {
+        const prior = previous?.rows.find((candidate) => candidate.index === row.index);
+        const projected = {
+          ...row,
+          serviceId: context.snapshots.find((snapshot) => snapshot.config.privateDns === row.serviceName)?.serviceId ?? null,
+        };
+        if (row.status === "failed" && prior) return { ...projected, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health };
+        return projected;
+      }) };
+      previous = progress;
+      await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
+    }, cancellation.signal).pipe(Effect.raceFirst(watchCancellation));
+    yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, expectedInngestRunId: context.deployment.inngestRunId ?? undefined, outcome: evidence });
+    return outcome;
+  }).pipe(Effect.onExit(exit => {
+    if (Exit.isSuccess(exit)) return Effect.void;
+    // A cancelled workflow cannot schedule another cleanup step. Settle here
+    // even if preview, confirmation, or outcome decoding fails.
+    const failure = errorEvidenceFrom(Cause.squash(exit.cause));
+    return markDeploymentStatus({
+      environmentDeploymentId: context.deployment.id, expectedInngestRunId,
+      status: "failed", failureCode: failure.failureCode ?? "sdk_deploy_outcome_unknown",
+      message: failure.message ?? "Runtime execution ended without a complete outcome; effects are unknown.",
+    }).pipe(Effect.asVoid);
+  }));
 });
 
 export const executeLatestEnvironmentDeployment = Effect.fn(
   "Deployments.executeLatestEnvironmentDeployment",
-)(function* (environmentDeploymentId: string) {
+)(function* (environmentDeploymentId: string, expectedInngestRunId?: string) {
   const context = yield* loadDeploymentContext(environmentDeploymentId);
   if (!context) {
     return yield* new DeploymentRuntimeInvalid({
@@ -251,5 +277,5 @@ export const executeLatestEnvironmentDeployment = Effect.fn(
       message: "Environment deployment was not found.",
     });
   }
-  return yield* executeEnvironmentDeployment(context);
+  return yield* executeEnvironmentDeployment(context, expectedInngestRunId);
 });

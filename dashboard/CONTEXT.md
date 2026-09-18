@@ -93,7 +93,7 @@ The latest explicitly published immutable revision of authored Environment confi
 _Avoid_: Applied state, frozen attempt target, unsaved draft
 
 **Environment Publication Review**:
-Authority to publish one exact captured Working State revision against one exact Saved State basis; later Working State edits remain unpublished and do not invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Every Saved-state publisher supplies this authority, including automated publishers that are permitted to publish only non-destructive changes. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
+Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Save and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
 
 **Saved State Command**:

@@ -10,7 +10,6 @@ export {
   markDeploymentFailedIfOwned,
   markDeploymentStatus,
   ownsDeploymentRun,
-  persistDeployApplyResult,
   persistSdkDeployPreview,
   persistSdkDeployOutcome,
   recordInngestRun,

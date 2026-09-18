@@ -118,6 +118,7 @@ describe("durable deployment activities", () => {
       await runEffect(
         beginEnvironmentDeploymentPlanning({
           environmentDeploymentId: firstDeploymentId,
+          expectedInngestRunId: "run-owner",
         }),
       ),
     ).toEqual({ state: "started" });
@@ -157,6 +158,7 @@ describe("durable deployment activities", () => {
     await runEffect(
       beginEnvironmentDeploymentPlanning({
         environmentDeploymentId: firstDeploymentId,
+        expectedInngestRunId: "run-active",
       }),
     );
     await harness.db.insert(schema.environmentDeployment).values({
@@ -178,6 +180,7 @@ describe("durable deployment activities", () => {
       await runEffect(
         beginEnvironmentDeploymentPlanning({
           environmentDeploymentId: secondDeploymentId,
+          expectedInngestRunId: "run-waiting",
         }),
       ),
     ).toEqual({ state: "blocked" });
@@ -217,6 +220,7 @@ describe("durable deployment activities", () => {
     await runEffect(
       beginEnvironmentDeploymentPlanning({
         environmentDeploymentId: firstDeploymentId,
+        expectedInngestRunId: "run-owner",
       }),
     );
 

@@ -6,7 +6,6 @@ import {
   desc,
   eq,
   inArray,
-  isNull,
   not,
   type SQL,
 } from "drizzle-orm";
@@ -82,6 +81,7 @@ export type DeploymentAdmissionInput = {
   readonly message: string | null;
   readonly serviceActionPolicy?: EnvironmentDeploymentServiceActionPolicy | null;
   readonly retryOfDeploymentId?: string | null;
+  readonly freshVolumeReviewIds?: readonly string[];
 };
 
 function loadExactSavedDeploymentTarget(input: {
@@ -304,18 +304,24 @@ function writeQueuedSavedTarget(
       .select({
         id: schemaEnvironmentDeployment.id,
         createdAt: schemaEnvironmentDeployment.createdAt,
+        triggerOrigin: schemaEnvironmentDeployment.triggerOrigin,
+        inngestRunId: schemaEnvironmentDeployment.inngestRunId,
       })
       .from(schemaEnvironmentDeployment)
       .where(
         and(
           eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
           eq(schemaEnvironmentDeployment.status, "queued"),
-          isNull(schemaEnvironmentDeployment.inngestRunId),
         ),
       )
       .for("update")
       .limit(1);
     const queued = queuedRows[0];
+    if (queued && (input.triggerOrigin.origin === "manual" || queued.triggerOrigin.origin === "manual" || queued.inngestRunId !== null)) {
+      return yield* new Conflict({
+        message: "An environment deployment is already queued. Wait for it to start or cancel it before deploying again.",
+      });
+    }
     const now = new Date();
     const deploymentRows = queued
       ? yield* drizzle
@@ -388,6 +394,17 @@ function writeQueuedSavedTarget(
       input.environmentId,
       target.volumeDeletionAuthorizations,
     );
+    if (authorizations.length) {
+      const previousRemovals = yield* drizzle.select({ resourceId: schemaVolumeRemoveAttempt.environmentResourceId })
+        .from(schemaVolumeRemoveAttempt).where(and(
+          eq(schemaVolumeRemoveAttempt.environmentId, input.environmentId),
+          inArray(schemaVolumeRemoveAttempt.environmentResourceId, authorizations.map(review => review.target.resourceId)),
+        ));
+      const freshlyReviewed = new Set(input.freshVolumeReviewIds);
+      if (previousRemovals.some(attempt => !freshlyReviewed.has(attempt.resourceId ?? ""))) {
+        return yield* new Conflict({ message: "Volume removal retries require a fresh destructive review from the environment canvas." });
+      }
+    }
     yield* Effect.forEach(
       authorizations,
       (authorization) =>
@@ -426,7 +443,10 @@ export const admitEnvironmentDeployment = Effect.fn(
         }),
     ),
   );
-  yield* lockEnvironmentDeploymentQueue(input.environmentId);
-  const target = yield* loadExactSavedDeploymentTarget(input);
-  return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* lockEnvironmentDeploymentQueue(input.environmentId);
+    const target = yield* loadExactSavedDeploymentTarget(input);
+    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+  }));
 });

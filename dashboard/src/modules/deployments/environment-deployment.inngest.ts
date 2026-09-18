@@ -1,4 +1,4 @@
-import { environmentDeployCancelRequestedEvent, createEnvironmentDeployCancelRequestedEvent } from "#/modules/inngest/events";
+import { environmentDeployCancelRequestedEvent } from "#/modules/inngest/events";
 import { NonRetriableError } from "inngest";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -30,9 +30,7 @@ import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.r
 import {
   beginEnvironmentDeploymentPlanning,
   markDeploymentFailedIfOwned,
-  markDeploymentStatus,
   ownsDeploymentRun,
-  persistDeployApplyResult,
   recordInngestRun,
 } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import type { DeploymentContext } from "#/modules/deployments/runtime-repository.server";
@@ -244,6 +242,7 @@ export async function executeProcessEnvironmentDeployment(
           runEffect(
             beginEnvironmentDeploymentPlanning({
               environmentDeploymentId,
+              expectedInngestRunId: runId,
             }),
           ),
       );
@@ -269,73 +268,17 @@ export async function executeProcessEnvironmentDeployment(
       break;
     }
 
-    const deploying = await step.run("mark-deployment-deploying", () =>
-      runEffect(
-        markDeploymentStatus({
-          environmentDeploymentId,
-          status: "deploying",
-        }),
-      ),
+    await step.run("execute-sdk-deploy", () =>
+      runEffect(Effect.scoped(executeLatestEnvironmentDeployment(environmentDeploymentId, runId))),
     );
-    if (!deploying) {
-      const terminalContext = deploymentContext(
-        await step.run("reload-deployment-after-deploying-race", () =>
-          runEffect(loadDeploymentContext(environmentDeploymentId)),
-        ),
-      );
-      return {
-        environmentDeploymentId,
-        status: terminalContext?.deployment.status ?? "missing",
-        skipped: true,
-      };
+    const completed = deploymentContext(await step.run("load-deployment-outcome", () =>
+      runEffect(loadDeploymentContext(environmentDeploymentId)),
+    ));
+    if (completed && !isTerminalEnvironmentDeployment(completed)) {
+      throw new DeploymentExecutionError({ failureCode: "sdk_deploy_outcome_unknown", message: "Runtime execution ended without a durable outcome; effects are unknown." });
     }
+    return { environmentDeploymentId, status: completed?.deployment.status ?? "missing" };
 
-    const outcome = await step.run("execute-sdk-deploy", () =>
-      runEffect(Effect.scoped(executeLatestEnvironmentDeployment(environmentDeploymentId))),
-    );
-    if (outcome.type === "failed") {
-      const message = `Deployment stopped (${outcome.reason}): ${outcome.completed} operations completed; ${outcome.unexecuted} not attempted. The failed operation may have additional effects.`;
-      if (outcome.reason === "cancelled") {
-        const cancelled = await step.run("mark-runtime-deployment-cancelled", () =>
-          runEffect(markCancelledByInngestRunId(runId, message)),
-        );
-        if (!cancelled) {
-          const latest = deploymentContext(await step.run("reload-runtime-cancellation-race", () =>
-            runEffect(loadDeploymentContext(environmentDeploymentId)),
-          ));
-          return { environmentDeploymentId, status: latest?.deployment.status ?? "missing", skipped: true };
-        }
-        await step.sendEvent("cancel-job-after-sdk-stopped", createEnvironmentDeployCancelRequestedEvent(environmentDeploymentId));
-        return { environmentDeploymentId, status: "cancelled" };
-      }
-      throw new DeploymentExecutionError({ message, failureCode: "sdk_deploy_failed" });
-    }
-
-    const applied = await step.run("persist-deploy-apply-result", () =>
-      runEffect(
-        persistDeployApplyResult({
-          environmentDeploymentId,
-          result: { coreDeployId: null },
-        }),
-      ),
-    );
-    if (!applied) {
-      const durableContext = deploymentContext(
-        await step.run("reload-deployment-after-apply-race", () =>
-          runEffect(loadDeploymentContext(environmentDeploymentId)),
-        ),
-      );
-      return {
-        environmentDeploymentId,
-        status: durableContext?.deployment.status ?? "missing",
-        skipped: true,
-      };
-    }
-
-    return {
-      environmentDeploymentId,
-      status: "applied",
-    };
   } catch (error) {
     const latestContext = deploymentContext(
       await step.run("reload-deployment-before-failure", () =>

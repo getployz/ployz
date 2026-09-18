@@ -1,8 +1,12 @@
+import { eq } from "drizzle-orm";
+import { Database } from "#/server/database.server";
+import { loadCurrentEnvironmentState } from "./working-state-repository.server";
+import { fingerprintReviewedEnvironmentWorkingStateSync } from "./working-state-fingerprint.server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import * as schema from "#/db/schema";
 import {
-  publishEnvironmentSavedState,
+  saveReviewedEnvironmentState,
 } from "./saved-state-operations.server";
 import type { EnvironmentSavedStateBasis } from "./saved-state";
 import {
@@ -55,8 +59,8 @@ function publication(input: {
   basis: EnvironmentSavedStateBasis;
   intent?: typeof emptyIntent | ReturnType<typeof volumeIntent>;
   destructiveVolumeReviews?: Parameters<
-    typeof publishEnvironmentSavedState
-  >[0]["destructiveVolumeReviews"];
+    typeof saveReviewedEnvironmentState
+  >[0]["review"]["destructiveVolumeReviews"];
 }) {
   return {
     environmentId,
@@ -67,6 +71,22 @@ function publication(input: {
     destructiveVolumeReviews: input.destructiveVolumeReviews ?? [],
     revisionPolicy: "always_create" as const,
   };
+}
+
+function publishEnvironmentSavedState(input: Omit<ReturnType<typeof publication>, "message"> & { message: string | null }) {
+  return Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [document] = yield* drizzle.select().from(schema.environment).where(eq(schema.environment.id, environmentId));
+    if (JSON.stringify(document?.intent) !== JSON.stringify(input.intent)) {
+      yield* drizzle.update(schema.environment).set({ intent: input.intent }).where(eq(schema.environment.id, environmentId));
+    }
+    const state = yield* loadCurrentEnvironmentState(environmentId);
+    return yield* saveReviewedEnvironmentState({
+      environmentId, actorId: userId, message: input.message,
+      review: { savedStateBasis: input.basis, workingStateFingerprint: fingerprintReviewedEnvironmentWorkingStateSync(state.projection),
+        destructiveServiceIds: [], destructiveVolumeReviews: [...input.destructiveVolumeReviews] },
+    });
+  });
 }
 
 describe("Environment Saved State aggregate", () => {
@@ -150,10 +170,23 @@ describe("Environment Saved State aggregate", () => {
         },
       },
     };
+    await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+      organizationId, environmentId, actorId: userId, intent: { ...emptyIntent, volumes: [volumeIntent().volumes[0]] }, volumeDeletionAuthorizations: [],
+    });
+    const [baseline] = await harness.db.select().from(schema.environmentSavedStateSnapshot);
+    if (!baseline) throw new Error("missing baseline");
+    const [applied] = await harness.db.insert(schema.environmentDeployment).values({
+      organizationId, environmentId, savedStateSnapshotId: baseline.id, triggerOrigin: { origin: "manual", actorId: userId }, status: "applied", finishedAt: new Date(),
+    }).returning();
+    if (!applied) throw new Error("missing applied baseline");
+    await harness.db.insert(schema.environmentNodeConfigSnapshot).values({
+      organizationId, environmentId, environmentDeploymentId: applied.id, nodeType: "volume", nodeId: firstVolumeId, nodeLineageId: firstLineageId,
+      configVersion: 2, config: { version: 2, name: "First", storage: { kind: "plain" } },
+    });
     const first = await harness.runTransaction(() =>
         publishEnvironmentSavedState(
           publication({
-            basis: { kind: "no_saved_state" },
+            basis: { kind: "saved_revision", savedStateSnapshotId: baseline.id },
             destructiveVolumeReviews: [review],
           })
         ).pipe(Effect.provideService(SecretEncryption, encryption)),
@@ -165,6 +198,7 @@ describe("Environment Saved State aggregate", () => {
               kind: "saved_revision",
               savedStateSnapshotId: first.savedStateSnapshotId,
             },
+            destructiveVolumeReviews: [review],
           })
         ).pipe(Effect.provideService(SecretEncryption, encryption)),
     );

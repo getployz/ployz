@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  createEnvironmentDeploymentSnapshotSchema,
+  reviewedPublicationSchema,
   getDestructiveVolumeReviewMismatch,
   type DestructiveVolumeReview,
 } from "#/modules/deployments/deployment-contract";
@@ -15,59 +15,25 @@ const reviewedWorkingStateFingerprint =
 const savedStateBasis = { kind: "no_saved_state" as const };
 
 describe("destructive reviews on deployment admission", () => {
-  it("accepts each reviewed Service removal once", () => {
-    const valid = isValid(createEnvironmentDeploymentSnapshotSchema, {
-      organizationSlug: "acme",
-      projectSlug: "api",
-      environmentSlug: "production",
-      savedStateBasis,
-      reviewedWorkingStateFingerprint,
-      destructiveServiceIds: ["00000000-0000-4000-8000-000000000001"],
-    });
-    expect(valid).toBe(true);
-
-    const duplicate = isValid(createEnvironmentDeploymentSnapshotSchema, {
-      organizationSlug: "acme",
-      projectSlug: "api",
-      environmentSlug: "production",
-      savedStateBasis,
-      reviewedWorkingStateFingerprint,
-      destructiveServiceIds: [
-        "00000000-0000-4000-8000-000000000001",
-        "00000000-0000-4000-8000-000000000001",
-      ],
-    });
-    expect(duplicate).toBe(false);
-  });
-
-  it("validates complete typed evidence and rejects duplicate resources", () => {
-    const review = reviewedVolume();
-    expect(
-      isValid(createEnvironmentDeploymentSnapshotSchema, {
-        organizationSlug: "acme",
-        projectSlug: "api",
-        environmentSlug: "production",
-        savedStateBasis,
-        reviewedWorkingStateFingerprint,
-        destructiveVolumeReviews: [review],
-      }),
-    ).toBe(true);
-
-    const duplicate = isValid(createEnvironmentDeploymentSnapshotSchema, {
-      organizationSlug: "acme",
-      projectSlug: "api",
-      environmentSlug: "production",
-      savedStateBasis,
-      reviewedWorkingStateFingerprint,
-      destructiveVolumeReviews: [review, review],
-    });
-    expect(duplicate).toBe(false);
-    expect(isValid(destructiveVolumeReviewsSchema, [review, review])).toBe(false);
-    expect(
-      isValid(destructiveVolumeReviewsSchema, [
-        reviewedVolume({ usedBytes: Number.POSITIVE_INFINITY }),
-      ]),
-    ).toBe(false);
+  it.each(["save", "manual_deploy"])("requires an explicit complete review for %s", (intent) => {
+    const review = {
+      savedStateBasis, workingStateFingerprint: reviewedWorkingStateFingerprint,
+      destructiveServiceIds: [], destructiveVolumeReviews: [],
+    };
+    const input = { organizationSlug: "acme", projectSlug: "api", environmentSlug: "production", intent, review };
+    expect(isValid(reviewedPublicationSchema, input)).toBe(true);
+    expect(isValid(reviewedPublicationSchema, { ...input, intent: undefined })).toBe(false);
+    expect(isValid(reviewedPublicationSchema, { ...input, review: undefined })).toBe(false);
+    for (const key of ["destructiveServiceIds", "destructiveVolumeReviews", "savedStateBasis", "workingStateFingerprint"]) {
+      expect(isValid(reviewedPublicationSchema, { ...input, review: { ...review, [key]: undefined } })).toBe(false);
+    }
+    const serviceId = "00000000-0000-4000-8000-000000000001";
+    expect(isValid(reviewedPublicationSchema, { ...input, review: { ...review, destructiveServiceIds: [serviceId] } })).toBe(true);
+    expect(isValid(reviewedPublicationSchema, { ...input, review: { ...review, destructiveServiceIds: [serviceId, serviceId] } })).toBe(false);
+    const volume = reviewedVolume();
+    expect(isValid(reviewedPublicationSchema, { ...input, review: { ...review, destructiveVolumeReviews: [volume] } })).toBe(true);
+    expect(isValid(reviewedPublicationSchema, { ...input, review: { ...review, destructiveVolumeReviews: [volume, volume] } })).toBe(false);
+    expect(isValid(destructiveVolumeReviewsSchema, [reviewedVolume({ usedBytes: Number.POSITIVE_INFINITY })])).toBe(false);
   });
 
   it("rejects availability drift even when the identity fingerprint is stable", () => {

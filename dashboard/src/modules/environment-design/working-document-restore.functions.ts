@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 import { discardEnvironmentChangesSchema, restoreWorkingDocumentSchema } from "./working-document-restore";
 import { restoreWorkingDocument } from "./working-document-restore.server";
-import { discardEnvironmentChanges } from "./environment-change-set.server";
+import { discardEnvironmentChanges } from "./saved-state-operations.server";
 
 export const restoreWorkingDocumentServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])

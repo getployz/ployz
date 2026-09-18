@@ -8,7 +8,7 @@ import {
 } from "#/modules/environment-design/working-state-review";
 
 describe("reviewed Environment Working State", () => {
-  it("reviews only deployed Service and Volume removals that are newly absent from Saved State", () => {
+  it("reviews only deployed Service and Volume removals absent from Working State", () => {
     const node = (
       nodeType: "service" | "volume",
       nodeId: string,
@@ -25,12 +25,6 @@ describe("reviewed Environment Working State", () => {
           node("service", "working-service"),
           node("service", "removed-service", null),
           node("volume", "removed-volume", null),
-        ],
-        savedNodes: [
-          node("service", "working-service"),
-          node("service", "removed-service"),
-          node("volume", "removed-volume"),
-          node("volume", "saved-only-volume"),
         ],
         appliedNodes: [
           node("service", "removed-service"),

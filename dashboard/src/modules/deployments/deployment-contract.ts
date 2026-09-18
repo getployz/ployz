@@ -5,13 +5,8 @@ import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { VariableGroupConfig } from "#/modules/environment-design/variable-group-config";
 import type { VolumeConfig } from "#/modules/environment-design/volume-config";
-import {
-  destructiveVolumeReviewsSchema,
-} from "#/modules/environment-design/destructive-volume-review";
 import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
-import {
-  environmentSavedStateBasisSchema,
-} from "#/modules/environment-design/saved-state";
+import { reviewedEnvironmentPublicationSchema } from "#/modules/environment-design/working-state-review";
 import {
   EnvironmentSlug,
   OrganizationSlug,
@@ -33,9 +28,6 @@ export {
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const PositiveSequence = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
-const WorkingStateFingerprint = Schema.String.check(
-  Schema.isPattern(/^environment-working-state-v1:[0-9a-f]{64}$/u),
-);
 const DeploymentMessage = Schema.NullOr(
   Schema.Trim.check(Schema.isMaxLength(500)),
 );
@@ -83,22 +75,11 @@ export const volumeRemoveAttemptSummarySchema = Schema.Struct({
   updatedAt: Schema.Date,
 });
 
-export const createEnvironmentDeploymentSnapshotSchema = Schema.Struct({
+export const reviewedPublicationSchema = Schema.Struct({
   ...EnvironmentContext,
   message: Schema.optional(DeploymentMessage),
-  deploy: Schema.optional(Schema.Boolean),
-  savedStateBasis: environmentSavedStateBasisSchema,
-  reviewedWorkingStateFingerprint: WorkingStateFingerprint,
-  destructiveServiceIds: Schema.optional(
-    Schema.mutable(Schema.Array(Uuid)).check(
-      Schema.makeFilter((serviceIds) =>
-        new Set(serviceIds).size === serviceIds.length
-          ? undefined
-          : "A destructive Service can be reviewed only once.",
-      ),
-    ),
-  ),
-  destructiveVolumeReviews: Schema.optional(destructiveVolumeReviewsSchema),
+  intent: Schema.Literals(["save", "manual_deploy"]),
+  review: reviewedEnvironmentPublicationSchema,
 });
 
 export const organizationEnvironmentChangeStateQuerySchema = Schema.Struct({
@@ -188,8 +169,8 @@ export type EnvironmentChangeStateProjection = {
   } | null;
 };
 
-export type CreateEnvironmentDeploymentSnapshotInput =
-  typeof createEnvironmentDeploymentSnapshotSchema.Type;
+export type ReviewedPublicationInput =
+  typeof reviewedPublicationSchema.Type;
 export type DestructiveVolumeSubmissionOutcome =
   | { state: "created" }
   | {
@@ -199,6 +180,7 @@ export type DestructiveVolumeSubmissionOutcome =
 export type EnvironmentPublicationSubmissionOutcome =
   | { state: "saved" }
   | { state: "deployment_queued" }
+  | { state: "attempt_dispatch_failed" }
   | Extract<
       DestructiveVolumeSubmissionOutcome,
       { state: "review_updated_evidence" }

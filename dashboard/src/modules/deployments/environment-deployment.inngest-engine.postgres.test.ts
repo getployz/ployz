@@ -95,7 +95,7 @@ describe("deployment Inngest durable smoke", () => {
     ]);
   });
 
-  it("resumes after contention and terminalizes cancellation in PostgreSQL", async () => {
+  it("settles cancellation between planning and runtime execution in PostgreSQL", async () => {
     const runEffect = makeInngestEffectRunner(
       <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption>) =>
         harness.runEffect(
@@ -103,7 +103,8 @@ describe("deployment Inngest durable smoke", () => {
         ),
     ) as typeof runInngestEffect;
     const inngest = new Inngest({ id: "durable-smoke" });
-    let interrupted = false;
+    await harness.db.update(schema.environmentDeployment).set({ status: "applied", finishedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, activeDeploymentId));
 
     const resumed = await new InngestTestEngine({
       function: createProcessEnvironmentDeployment(inngest, runEffect),
@@ -116,26 +117,13 @@ describe("deployment Inngest durable smoke", () => {
           },
         },
       ],
-      steps: [
-        {
-          id: "wait-for-active-deployment",
-          handler: async () => {
-            interrupted = true;
-            await harness.db
-              .update(schema.environmentDeployment)
-              .set({ status: "applied", finishedAt: new Date() })
-              .where(eq(schema.environmentDeployment.id, activeDeploymentId));
-          },
-        },
-      ],
       transformCtx: (context) => ({
         ...mockCtx(context),
         runId: targetRunId,
       }),
-    }).executeStep("mark-deployment-deploying");
+    }).executeStep("mark-deployment-planning");
 
-    expect(interrupted).toBe(true);
-    expect(resumed.result).toBe(true);
+    expect(resumed.result).toEqual({ state: "started" });
     const [planning] = await harness.db
       .select({
         status: schema.environmentDeployment.status,
@@ -143,7 +131,7 @@ describe("deployment Inngest durable smoke", () => {
       })
       .from(schema.environmentDeployment)
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
-    expect(planning).toEqual({ status: "deploying", inngestRunId: targetRunId });
+    expect(planning).toEqual({ status: "planning", inngestRunId: targetRunId });
 
     const cancellation = await new InngestTestEngine({
       function: createMarkCancelledRowBackedWorkflow(inngest, runEffect),

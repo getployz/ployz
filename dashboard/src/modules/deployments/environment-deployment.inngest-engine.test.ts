@@ -19,9 +19,7 @@ const activity = {
   claim: vi.fn(),
   load: vi.fn(),
   planning: vi.fn(),
-  apply: vi.fn(),
   execute: vi.fn(),
-  persistSuccess: vi.fn(),
   authorizeFailure: vi.fn(),
   terminalizeFailure: vi.fn(),
 };
@@ -56,16 +54,6 @@ vi.spyOn(
   "beginEnvironmentDeploymentPlanning",
 ).mockImplementation((input) =>
   Effect.promise(() => activity.planning(input)),
-);
-vi.spyOn(
-  runtimeLifecycle,
-  "markDeploymentStatus",
-).mockImplementation((input) => Effect.promise(() => activity.apply(input)));
-vi.spyOn(
-  runtimeLifecycle,
-  "persistDeployApplyResult",
-).mockImplementation((input) =>
-  Effect.promise(() => activity.persistSuccess(input)),
 );
 vi.spyOn(
   runtimeLifecycle,
@@ -135,11 +123,10 @@ describe("process-environment-deployment Inngest adapter", () => {
     activity.claim.mockResolvedValue(true);
     activity.load.mockResolvedValue(deploymentContext);
     activity.planning.mockResolvedValue({ state: "started" });
-    activity.apply.mockResolvedValue(true);
-    activity.execute.mockResolvedValue({
-      type: "success", completed: 0,
-    } satisfies DeploymentRuntimeOutcome);
-    activity.persistSuccess.mockResolvedValue(true);
+    activity.execute.mockImplementation(async () => {
+      activity.load.mockResolvedValue({ ...deploymentContext, deployment: { ...deploymentContext.deployment, status: "applied" } });
+      return { type: "success", completed: 0 } satisfies DeploymentRuntimeOutcome;
+    });
     activity.authorizeFailure.mockResolvedValue(true);
     activity.terminalizeFailure.mockResolvedValue(true);
   });
@@ -187,7 +174,6 @@ describe("process-environment-deployment Inngest adapter", () => {
     expect(output.result).toEqual({ environmentDeploymentId: "deployment-1", status: "applied" });
     expect(output.ctx.step.waitForEvent).not.toHaveBeenCalled();
     expect(activity.execute).toHaveBeenCalledTimes(1);
-    expect(activity.persistSuccess).toHaveBeenCalledTimes(1);
   });
 
   it("marks typed deterministic activity failures as non-retriable", async () => {

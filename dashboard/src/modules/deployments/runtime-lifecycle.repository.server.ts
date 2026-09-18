@@ -1,29 +1,31 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { Effect, Redacted, type Schema } from "effect";
+import { Effect, Option, Redacted, type Schema } from "effect";
 import {
   environmentDeployment as schemaEnvironmentDeployment,
   environmentDeploymentSecret,
 } from "#/modules/deployments/tables";
 import { service as schemaService } from "#/modules/environment-design/tables";
 import {
-  environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
+  environmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
 } from "#/modules/runtime/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import { DeploymentExecutionError } from "#/modules/deployments/execution-error";
-import { isActiveDeploymentUniqueViolation } from "#/modules/deployments/queue-lock.server";
+import { isActiveDeploymentUniqueViolation, lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
 import {
   ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
   TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES,
-  type EnvironmentDeploymentApplyResult,
 } from "#/modules/deployments/runtime-contract";
 import {
   failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction,
   releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction,
 } from "#/modules/runtime/volume-removal.repository";
 import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
-import { Database } from "#/server/database.server";
+import { projectRuntimeOutcome } from "@ployz/sdk/config";
+import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
+import { coreOperationWatch } from "#/modules/operations/tables";
+import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
@@ -31,7 +33,7 @@ import { DeploymentQueueOccupied } from "./runtime-repository.contract";
 function dispatchReleasedVolumeRemoveAttempts(
   attempts: readonly { id: string }[],
 ) {
-  return Effect.forEach(
+  return afterDatabaseCommit(Effect.forEach(
     attempts,
     (attempt) =>
       dispatchVolumeRemoveRequested(attempt.id).pipe(
@@ -43,48 +45,8 @@ function dispatchReleasedVolumeRemoveAttempts(
         ),
       ),
     { concurrency: "unbounded", discard: true },
-  );
+  ));
 }
-
-function afterAppliedDeployment(
-  environmentDeploymentId: string,
-  released: readonly { id: string }[],
-) {
-  return Effect.gen(function* () {
-    yield* latchFirstDeployedAtForDeployment(environmentDeploymentId);
-    yield* dispatchReleasedVolumeRemoveAttempts(released);
-  });
-}
-
-function latchFirstDeployedAtForDeployment(environmentDeploymentId: string) {
-  return Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const snapshots = yield* drizzle
-      .select({ serviceId: schemaEnvironmentNodeConfigSnapshot.nodeId })
-      .from(schemaEnvironmentNodeConfigSnapshot)
-      .where(
-        and(
-          eq(
-            schemaEnvironmentNodeConfigSnapshot.environmentDeploymentId,
-            environmentDeploymentId,
-          ),
-          eq(schemaEnvironmentNodeConfigSnapshot.nodeType, "service"),
-        ),
-      );
-    const serviceIds = snapshots.map((row) => row.serviceId);
-    if (serviceIds.length === 0) return;
-    yield* drizzle
-      .update(schemaService)
-      .set({ firstDeployedAt: new Date() })
-      .where(
-        and(
-          inArray(schemaService.id, serviceIds),
-          isNull(schemaService.firstDeployedAt),
-        ),
-      );
-  });
-}
-
 
 interface EnvironmentDeploymentStatusPatch {
   status: EnvironmentDeploymentStatus;
@@ -93,26 +55,65 @@ interface EnvironmentDeploymentStatusPatch {
   failureCode?: string;
   startedAt?: Date;
   finishedAt?: Date;
+  cancellationRequestedAt?: Date;
 }
 
-function markEnvironmentDeploymentStatus(input: {
+function lockDeploymentEnvironment(environmentDeploymentId: string) {
+  return Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [deployment] = yield* drizzle.select({ environmentId: schemaEnvironmentDeployment.environmentId })
+      .from(schemaEnvironmentDeployment).where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
+    if (deployment) yield* lockEnvironmentDeploymentQueue(deployment.environmentId);
+  });
+}
+
+type DeploymentRunStatusChange = {
   environmentDeploymentId: string;
-  status: EnvironmentDeploymentStatus;
+  status: Exclude<EnvironmentDeploymentStatus, "queued">;
   message?: string;
   failureCode?: string;
-}) {
+  /** Omit only for an unowned attempt. */
+  expectedInngestRunId?: string;
+};
+
+type DeploymentTransition =
+  | (DeploymentRunStatusChange & { kind: "run" })
+  | { kind: "dispatch_failed"; environmentDeploymentId: string; status: "failed"; message: string; failureCode: string }
+  | { kind: "cancel_before_execution"; environmentDeploymentId: string; status: "cancelled"; message: string; expectedInngestRunId?: string };
+
+function transitionGuard(input: DeploymentTransition) {
+  switch (input.kind) {
+    case "dispatch_failed":
+      return and(eq(schemaEnvironmentDeployment.status, "queued"), isNull(schemaEnvironmentDeployment.inngestRunId));
+    case "cancel_before_execution":
+      return and(inArray(schemaEnvironmentDeployment.status, ["queued", "planning"]),
+        input.expectedInngestRunId ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId) : undefined);
+    case "run":
+      return and(
+        input.expectedInngestRunId ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId) : isNull(schemaEnvironmentDeployment.inngestRunId),
+        input.status === "planning"
+          ? and(eq(schemaEnvironmentDeployment.status, "queued"), isNotNull(schemaEnvironmentDeployment.dispatchRequestedAt))
+          : input.status === "deploying" ? eq(schemaEnvironmentDeployment.status, "planning")
+          : inArray(schemaEnvironmentDeployment.status, [...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES]),
+      );
+  }
+}
+
+function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
   return Effect.gen(function* () {
     const database = yield* Database;
     const updatedAt = new Date();
     return yield* database.transaction(
       Effect.gen(function* () {
+        yield* lockDeploymentEnvironment(input.environmentDeploymentId);
         const tx = (yield* Database).drizzle;
         const patch: EnvironmentDeploymentStatusPatch = {
           status: input.status,
           updatedAt,
         };
         if (input.message) patch.failureMessage = input.message;
-        if (input.failureCode) patch.failureCode = input.failureCode;
+        if ("failureCode" in input && input.failureCode) patch.failureCode = input.failureCode;
+        if (input.status === "cancelled") patch.cancellationRequestedAt = updatedAt;
         if (input.status === "planning") patch.startedAt = updatedAt;
         if (TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES.has(input.status)) {
           patch.finishedAt = updatedAt;
@@ -123,19 +124,22 @@ function markEnvironmentDeploymentStatus(input: {
           .where(
             and(
               eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
-              input.status === "planning"
-                ? and(
-                    eq(schemaEnvironmentDeployment.status, "queued"),
-                    isNotNull(schemaEnvironmentDeployment.dispatchRequestedAt),
-                  )
-                : inArray(schemaEnvironmentDeployment.status, [
-                    ...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
-                  ]),
+              transitionGuard(input),
             ),
           )
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
+        if (input.status === "cancelled") {
+          yield* tx.update(coreOperationWatch).set({ observationState: "cloud_cancelled", terminalAt: updatedAt, updatedAt })
+            .where(and(eq(coreOperationWatch.observationState, "active"), sql`exists (
+              select 1 from ${schemaEnvironmentDeployment} deployment
+              where deployment.id = ${input.environmentDeploymentId}
+                and deployment.organization_id = ${coreOperationWatch.organizationId}
+                and deployment.core_deploy_id = ${coreOperationWatch.operationId}
+            )`));
+        }
         if (input.status === "applied") {
+          yield* settleConfirmedNodes(input.environmentDeploymentId);
           return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
             tx,
             input.environmentDeploymentId,
@@ -200,54 +204,48 @@ export const ownsDeploymentRun = Effect.fn("Deployments.ownsDeploymentRun")(
   },
 );
 
-export const markDeploymentFailedIfOwned = Effect.fn(
-  "Deployments.markDeploymentFailedIfOwned",
-)(function* (input: {
-  environmentDeploymentId: string;
-  expectedInngestRunId: string;
-  message: string;
-  failureCode?: string;
-}) {
-  const database = yield* Database;
-  const now = new Date();
-  return yield* database.transaction(
-    Effect.gen(function* () {
-      const tx = (yield* Database).drizzle;
-      const [deployment] = yield* tx
-        .update(schemaEnvironmentDeployment)
-        .set({
-          status: "failed",
-          failureMessage: input.message,
-          failureCode: input.failureCode,
-          finishedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
-            eq(
-              schemaEnvironmentDeployment.inngestRunId,
-              input.expectedInngestRunId,
-            ),
-            inArray(schemaEnvironmentDeployment.status, [
-              ...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
-            ]),
-          ),
-        )
-        .returning({ id: schemaEnvironmentDeployment.id });
-      if (!deployment) return false;
-      yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
-        tx,
-        {
-          environmentDeploymentId: input.environmentDeploymentId,
-          deploymentDisposition: "failed",
-          now,
-        },
-      );
-      return true;
-    }),
-  );
-});
+export const markDeploymentFailedIfOwned = Effect.fn("Deployments.markDeploymentFailedIfOwned")(
+  (input: { environmentDeploymentId: string; expectedInngestRunId: string; message: string; failureCode?: string }) =>
+    markDeploymentStatus({ ...input, status: "failed" }),
+);
+
+export const failUndispatchedDeployment = Effect.fn("Deployments.failUndispatchedDeployment")(
+  (input: { environmentDeploymentId: string; message: string; failureCode: string }) =>
+    markEnvironmentDeploymentStatus({ ...input, kind: "dispatch_failed", status: "failed" }).pipe(Effect.map(changed => changed !== null)),
+);
+
+/** User cancellation may settle any owner only before execution starts. */
+export const cancelDeploymentBeforeExecution = Effect.fn("Deployments.cancelDeploymentBeforeExecution")(
+  (input: { environmentDeploymentId: string; expectedInngestRunId?: string; message: string }) =>
+    markEnvironmentDeploymentStatus({ ...input, kind: "cancel_before_execution", status: "cancelled" }).pipe(Effect.map(changed => changed !== null)),
+);
+
+/** Derive node cleanup from the same Rust evidence used by Applied State. */
+function settleConfirmedNodes(environmentDeploymentId: string, confirmedNodeIds?: readonly string[]) {
+  return Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [deployment] = yield* drizzle.select().from(schemaEnvironmentDeployment)
+      .where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
+    if (!deployment) return;
+    const nodes = yield* drizzle.select().from(environmentNodeConfigSnapshot).where(and(
+      eq(environmentNodeConfigSnapshot.environmentDeploymentId, environmentDeploymentId),
+      confirmedNodeIds ? inArray(environmentNodeConfigSnapshot.nodeId, [...confirmedNodeIds]) : undefined,
+    ));
+    yield* drizzle.delete(schemaEnvironmentNodeIntroduction).where(and(
+      eq(schemaEnvironmentNodeIntroduction.environmentId, deployment.environmentId),
+      sql`exists (
+        select 1 from ${environmentNodeConfigSnapshot} snapshot
+        where snapshot.environment_deployment_id = ${environmentDeploymentId}
+          and snapshot.node_type = ${schemaEnvironmentNodeIntroduction.nodeType}
+          and snapshot.node_id = ${schemaEnvironmentNodeIntroduction.nodeId}
+          ${confirmedNodeIds ? sql`and ${inArray(sql`snapshot.node_id`, [...confirmedNodeIds])}` : sql``}
+      )`,
+    ));
+    const serviceIds = nodes.filter(node => node.nodeType === "service").map(node => node.nodeId);
+    if (serviceIds.length) yield* drizzle.update(schemaService).set({ firstDeployedAt: new Date() })
+      .where(and(inArray(schemaService.id, serviceIds), isNull(schemaService.firstDeployedAt)));
+  });
+}
 
 // Operation specs and errors can contain credentials; retain the complete SDK
 // evidence only in the existing server-only encrypted attempt record.
@@ -256,30 +254,55 @@ export const persistSdkDeployOutcome = Effect.fn(
 )(function* (input: {
   environmentDeploymentId: string;
   outcome: Redacted.Redacted<Schema.Json>;
+  expectedInngestRunId?: string;
 }) {
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
   const encryption = yield* SecretEncryption;
-  const rows = yield* drizzle
-    .update(environmentDeploymentSecret)
-    .set({
-      encryptedRuntimeOutcome: encryption.encrypt(
-        JSON.stringify(Redacted.value(input.outcome)),
-      ),
-    })
-    .where(
-      eq(
-        environmentDeploymentSecret.environmentDeploymentId,
-        input.environmentDeploymentId,
-      ),
-    )
-    .returning({ id: environmentDeploymentSecret.environmentDeploymentId });
-  if (rows.length === 0) {
-    return yield* new DeploymentExecutionError({
-      message:
-        "Deployment attempt record was not found; runtime outcome could not be retained.",
-      failureCode: "sdk_deploy_outcome_unknown",
+  const released = yield* database.transaction(Effect.gen(function* () {
+    yield* lockDeploymentEnvironment(input.environmentDeploymentId);
+    const { drizzle } = yield* Database;
+    const [deployment] = yield* drizzle.select().from(schemaEnvironmentDeployment)
+      .where(and(eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
+        input.expectedInngestRunId ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId) : isNull(schemaEnvironmentDeployment.inngestRunId)))
+      .for("update");
+    if (!deployment) return [];
+    const rows = yield* drizzle.update(environmentDeploymentSecret).set({
+      encryptedRuntimeOutcome: encryption.encrypt(JSON.stringify(Redacted.value(input.outcome))),
+    }).where(and(eq(environmentDeploymentSecret.environmentDeploymentId, input.environmentDeploymentId),
+      isNull(environmentDeploymentSecret.encryptedRuntimeOutcome))).returning({ id: environmentDeploymentSecret.environmentDeploymentId });
+    if (!rows.length) {
+      const [retained] = yield* drizzle.select().from(environmentDeploymentSecret)
+        .where(eq(environmentDeploymentSecret.environmentDeploymentId, input.environmentDeploymentId));
+      if (!retained) return yield* new DeploymentExecutionError({ message: "Deployment attempt record was not found; runtime outcome could not be retained.", failureCode: "sdk_deploy_outcome_unknown" });
+      return [];
+    }
+    const projected = yield* Effect.try({
+      try: () => projectRuntimeOutcome(deployment.deployPreview, Redacted.value(input.outcome)),
+      catch: () => new DeploymentExecutionError({ message: "Invalid runtime outcome; effects are unknown.", failureCode: "sdk_deploy_outcome_unknown" }),
+    }).pipe(Effect.option);
+    if (Option.isNone(projected)) {
+      yield* markEnvironmentDeploymentStatus({
+        kind: "run", environmentDeploymentId: input.environmentDeploymentId, expectedInngestRunId: input.expectedInngestRunId,
+        status: "failed", message: "Invalid runtime outcome; effects are unknown.", failureCode: "sdk_deploy_outcome_unknown",
+      });
+      return [];
+    }
+    const outcome = projected.value.summary;
+    const released = yield* markEnvironmentDeploymentStatus({
+      kind: "run", environmentDeploymentId: input.environmentDeploymentId,
+      expectedInngestRunId: input.expectedInngestRunId,
+      status: outcome.type === "success" ? "applied" : outcome.reason === "cancelled" ? "cancelled" : "failed",
+      message: outcome.type === "failed" ? `Deployment stopped (${outcome.reason}): ${outcome.completed} operations completed; ${outcome.unexecuted} not attempted. The failed operation may have additional effects.` : undefined,
+      failureCode: outcome.type === "failed" ? "sdk_deploy_failed" : undefined,
     });
-  }
+    if (outcome.type !== "success" || released === null) {
+      const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: deployment.environmentId });
+      const confirmed = [...projection.appliedSavedNodeByKey.values()].filter(node => node.sourceSavedStateSnapshotId === deployment.savedStateSnapshotId);
+      yield* settleConfirmedNodes(input.environmentDeploymentId, confirmed.map(node => node.nodeId));
+    }
+    return released ?? [];
+  }));
+  yield* dispatchReleasedVolumeRemoveAttempts(released);
 });
 
 export const persistSdkDeployPreview = Effect.fn(
@@ -287,6 +310,7 @@ export const persistSdkDeployPreview = Effect.fn(
 )(function* (input: {
   environmentDeploymentId: string;
   preview: SdkDeployPreview;
+  expectedInngestRunId?: string;
 }) {
   const { drizzle } = yield* Database;
   const planned = yield* drizzle
@@ -295,6 +319,7 @@ export const persistSdkDeployPreview = Effect.fn(
     .where(
       and(
         eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
+        input.expectedInngestRunId ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId) : isNull(schemaEnvironmentDeployment.inngestRunId),
         inArray(schemaEnvironmentDeployment.status, [
           ...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
         ]),
@@ -311,68 +336,10 @@ export const persistSdkDeployPreview = Effect.fn(
   }
 });
 
-export const persistDeployApplyResult = Effect.fn(
-  "Deployments.persistDeployApplyResult",
-)(function* (input: {
-  environmentDeploymentId: string;
-  result: EnvironmentDeploymentApplyResult;
-}) {
-  const database = yield* Database;
-  const applied = yield* database.transaction(
-    Effect.gen(function* () {
-      const tx = (yield* Database).drizzle;
-      const updated = yield* tx
-        .update(schemaEnvironmentDeployment)
-        .set({
-          status: "applied",
-          coreDeployId: input.result.coreDeployId,
-          failureCode: null,
-          failureMessage: null,
-          finishedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
-            inArray(schemaEnvironmentDeployment.status, [
-              ...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
-            ]),
-          ),
-        )
-        .returning({ id: schemaEnvironmentDeployment.id });
-      if (updated.length === 0) return null;
-      yield* tx
-        .delete(schemaEnvironmentNodeIntroduction)
-        .where(
-          sql`exists (
-                select 1
-                from ${schemaEnvironmentNodeConfigSnapshot} snapshot
-                where snapshot.environment_deployment_id = ${input.environmentDeploymentId}
-                  and snapshot.environment_id = ${schemaEnvironmentNodeIntroduction.environmentId}
-                  and snapshot.node_type = ${schemaEnvironmentNodeIntroduction.nodeType}
-                  and snapshot.node_id = ${schemaEnvironmentNodeIntroduction.nodeId}
-              )`,
-        );
-      return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
-        tx,
-        input.environmentDeploymentId,
-      );
-    }),
-  );
-  if (!applied) return false;
-  yield* afterAppliedDeployment(input.environmentDeploymentId, applied);
-  return true;
-});
-
 export const markDeploymentStatus = Effect.fn(
   "Deployments.markDeploymentStatus",
-)(function* (input: {
-  environmentDeploymentId: string;
-  status: EnvironmentDeploymentStatus;
-  message?: string;
-  failureCode?: string;
-}) {
-  const changed = yield* markEnvironmentDeploymentStatus(input).pipe(
+)(function* (input: DeploymentRunStatusChange) {
+  const changed = yield* markEnvironmentDeploymentStatus({ ...input, kind: "run" }).pipe(
     Effect.catchIf(
       isActiveDeploymentUniqueViolation,
       (cause) => new DeploymentQueueOccupied({ cause }),
@@ -380,14 +347,14 @@ export const markDeploymentStatus = Effect.fn(
   );
   if (!changed) return false;
   if (input.status === "applied") {
-    yield* afterAppliedDeployment(input.environmentDeploymentId, changed);
+    yield* dispatchReleasedVolumeRemoveAttempts(changed);
   }
   return true;
 });
 
 export const beginEnvironmentDeploymentPlanning = Effect.fn(
   "Deployments.beginEnvironmentDeploymentPlanning",
-)(function* (input: { readonly environmentDeploymentId: string }) {
+)(function* (input: { readonly environmentDeploymentId: string; readonly expectedInngestRunId?: string }) {
   const changed = yield* markDeploymentStatus({
     ...input,
     status: "planning",
