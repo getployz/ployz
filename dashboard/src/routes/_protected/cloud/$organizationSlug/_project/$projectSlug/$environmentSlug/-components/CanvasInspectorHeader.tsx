@@ -32,7 +32,7 @@ export function CanvasInspectorHeader({
   const reducedMotion = useReducedMotion();
 
   return (
-    <div className="flex items-center justify-between gap-4 border-b px-6 py-4">
+    <div className="flex items-center justify-between gap-3 border-b px-4 py-2.5">
       <div className="min-w-0 flex-1">{children}</div>
       {isMobile ? (
         <DrawerClose render={<Button variant="ghost" size="icon" />}>

@@ -54,7 +54,7 @@ export function GitBranchSettings({
         <div className="flex flex-col gap-2">
           <FieldLabel>Branch</FieldLabel>
           <FieldDescription>
-            Deploy changes from this branch to this environment.
+            Updates will be pulled from the latest commit on this GitHub branch.
           </FieldDescription>
         </div>
         {isBranchConnected ? (

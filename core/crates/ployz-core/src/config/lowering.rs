@@ -14,6 +14,22 @@ use crate::{
     VolumeDriver,
 };
 
+/// Injected into a Cloud-authored service only when it has no authored PORT.
+pub const DEFAULT_SERVICE_PORT: u16 = 8080;
+
+fn target_port(
+    explicit: Option<u16>,
+    environment: &BTreeMap<String, String>,
+    path: &str,
+) -> Result<std::num::NonZeroU16, ConfigError> {
+    explicit
+        .or_else(|| environment.get("PORT").and_then(|value| value.parse().ok()))
+        .and_then(std::num::NonZeroU16::new)
+        .ok_or_else(|| {
+            ConfigError::at(path, "Expected a target port or PORT variable from 1–65535")
+        })
+}
+
 /// Captured node settings plus adapter-resolved runtime inputs for one Project.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,7 +47,6 @@ struct LowerDeploymentSnapshot {
     replicas: Option<u8>,
     #[serde(default)]
     resolved_env: BTreeMap<String, String>,
-    healthcheck_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +57,8 @@ struct LowerDeploymentVolume {
 
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
 /// No source lookup, build, provider execution, or Cluster observation occurs here.
+/// Missing PORT defaults to 8080; authored values take precedence, including invalid ones.
+/// Domains without an explicit target and HTTP healthchecks use that same container PORT.
 ///
 /// # Errors
 /// Returns ConfigError when a source lacks a pullable image, a setting is unsupported by the runtime,
@@ -75,30 +92,20 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 "Cron scheduling is not supported by the runtime",
             ));
         }
+        let mut environment = snapshot.resolved_env;
+        environment
+            .entry("PORT".into())
+            .or_insert_with(|| DEFAULT_SERVICE_PORT.to_string());
         let healthcheck = match &config.healthcheck {
             ServiceHealthcheck::None => None,
             ServiceHealthcheck::Http {
                 path,
                 timeout_seconds,
             } => {
-                let port = snapshot
-                    .healthcheck_port
-                    .or_else(|| {
-                        snapshot
-                            .resolved_env
-                            .get("PORT")
-                            .and_then(|v| v.parse::<u16>().ok())
-                    })
-                    .filter(|p| *p != 0)
-                    .ok_or_else(|| {
-                        ConfigError::at(
-                            "healthcheck",
-                            "HTTP healthcheck requires a valid PORT variable",
-                        )
-                    })?;
+                let port = target_port(None, &environment, "healthcheck")?;
                 Some(HealthcheckSpec::Http(HttpHealthcheck {
                     path: path.clone(),
-                    port: port.try_into().map_err(lowering_error)?,
+                    port,
                     timeout_seconds: *timeout_seconds,
                 }))
             }
@@ -175,32 +182,18 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 hostname: IngressHostname::explicit(route.hostname.clone())
                     .map_err(lowering_error)?,
                 load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
-                container_port: route.target_port.try_into().map_err(lowering_error)?,
+                container_port: target_port(route.target_port, &environment, "routes")?,
                 http_protocol: HttpProtocol::Https,
             });
         }
-        if let Some(hostname) = config.managed_hostname {
-            let port = hostname
-                .target_port
-                .or_else(|| {
-                    snapshot
-                        .resolved_env
-                        .get("PORT")
-                        .and_then(|v| v.parse::<u16>().ok())
-                })
-                .filter(|p| *p != 0)
-                .ok_or_else(|| {
-                    ConfigError::at(
-                        "managedHostname",
-                        "Managed domain requires a valid target port or PORT variable",
-                    )
-                })?;
+        for hostname in config.managed_hostnames {
+            let port = target_port(hostname.target_port, &environment, "managedHostnames")?;
             ports.push(PortPublication::Ingress {
                 hostname: IngressHostname::ClusterDomain {
                     label: Some(hostname.prefix.try_into().map_err(lowering_error)?),
                 },
                 load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
-                container_port: port.try_into().map_err(lowering_error)?,
+                container_port: port,
                 http_protocol: HttpProtocol::Https,
             });
         }
@@ -230,7 +223,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                     .as_deref()
                     .map(command)
                     .unwrap_or_default(),
-                environment: snapshot.resolved_env,
+                environment,
                 pull_policy: PullPolicy::Missing,
                 restart,
                 healthcheck,

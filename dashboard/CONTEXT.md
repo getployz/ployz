@@ -105,6 +105,7 @@ _Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
 
 **Derived Service Configuration**:
 The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Variable Groups and Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
+At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
 _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 
 **Applied State**:
@@ -128,7 +129,7 @@ The strictly versioned configuration an environment node had immediately after i
 _Avoid_: Initial diff, creation event log, default config
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only before a node has Saved or Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets while a node is absent from Head (the submitted revision, or Applied State when no attempt is active). Lifecycle changes and setting changes are counted once; deployment progress is separate.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Discard**:

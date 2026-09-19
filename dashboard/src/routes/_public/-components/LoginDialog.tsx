@@ -65,6 +65,7 @@ export function LoginPanel() {
       const response = await authClient.signIn.social({
         provider: "github",
         callbackURL,
+        newUserCallbackURL: "/cloud?welcome=true",
       });
 
       if (response.error) {
@@ -105,7 +106,7 @@ export function LoginPanel() {
           return;
         }
 
-        await router.navigate({ to: "/cloud", reloadDocument: true });
+        await router.navigate({ to: "/cloud", search: { welcome: true }, reloadDocument: true });
       } catch {
         setError(
           "Could not reach the auth server. Check that the dev server is running.",

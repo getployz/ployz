@@ -1,0 +1,260 @@
+import { useState } from "react";
+import {
+  CircleAlertIcon,
+  GlobeIcon,
+  PencilIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { Schema, SchemaGetter } from "effect";
+import { Skeleton } from "#/components/ui/skeleton";
+import { Button } from "#/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "#/components/ui/dialog";
+import { FieldDescription, FieldGroup } from "#/components/ui/field";
+import {
+  appFormOptions,
+  showErrorsAfterBlurOrSubmit,
+  useAppForm,
+  validateOnChangeOrBlur,
+} from "#/form";
+import type { ServiceManagedHostname } from "#/modules/environment-design/tables";
+import {
+  serviceManagedHostnamePrefixSchema,
+  serviceManagedHostnameSchema,
+} from "#/modules/environment-design/services";
+import { strictParseOptions } from "#/modules/environment-design/schema";
+import {
+  CertificateEvidence,
+  DomainRowShell,
+  type DomainCertificateEvidence,
+  DomainTitle,
+} from "./domain-row";
+import { domainPortSchema } from "./domain-port";
+
+export function ManagedDomainRow({
+  managed,
+  hostedDnsHostname,
+  hostedDnsHostnameIsCurrent,
+  certificateEvidence,
+  defaultTargetPort,
+  changed,
+  onEdit,
+  onDelete,
+}: {
+  managed: ServiceManagedHostname;
+  hostedDnsHostname: string | null;
+  hostedDnsHostnameIsCurrent: boolean;
+  certificateEvidence: DomainCertificateEvidence;
+  defaultTargetPort: number | null;
+  changed: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const hostname = hostedDnsHostname
+    ? `${managed.prefix}.${hostedDnsHostname}`
+    : null;
+  const port = managed.targetPort ?? defaultTargetPort;
+  return (
+    <div className="flex flex-col gap-1">
+      <DomainRowShell
+        changed={changed}
+        icon={<GlobeIcon />}
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Edit managed domain"
+              onClick={onEdit}
+            >
+              <PencilIcon />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Remove managed domain"
+              onClick={onDelete}
+            >
+              <Trash2Icon />
+            </Button>
+          </>
+        }
+      >
+        {hostname ? (
+          <DomainTitle hostname={hostname} copyLabel="Copy domain" />
+        ) : (
+          <div className="truncate font-mono text-sm">
+            {managed.prefix}
+            <span className="text-muted-foreground">
+              .<Skeleton variant="inline" aria-label="pending" />
+              .up.ployz.dev
+            </span>
+          </div>
+        )}
+        <div className="text-muted-foreground text-sm">
+          → {port === null ? "Uses PORT" : `Port ${port}`}
+        </div>
+      </DomainRowShell>
+      <FieldDescription>
+        {hostname && !hostedDnsHostnameIsCurrent
+          ? "Last seen address; the server is not connected right now."
+          : null}
+      </FieldDescription>
+      <CertificateEvidence evidence={certificateEvidence} />
+    </div>
+  );
+}
+
+export function ManagedDomainDialog({
+  mode = "edit",
+  managed,
+  hostedDnsHostname,
+  takenPrefixes,
+  defaultTargetPort,
+  onClose,
+  onSubmit,
+}: {
+  mode?: "edit" | "generate";
+  managed: ServiceManagedHostname;
+  hostedDnsHostname: string | null;
+  takenPrefixes: string[];
+  defaultTargetPort: number | null;
+  onClose: () => void;
+  onSubmit: (next: ServiceManagedHostname) => Promise<void>;
+}) {
+  const [saveFailure, setSaveFailure] = useState<string | null>(null);
+  const taken = new Set(takenPrefixes);
+  const schema = Schema.toStandardSchemaV1(
+    Schema.Struct({
+      prefix: serviceManagedHostnamePrefixSchema.check(
+        Schema.makeFilter<string>((value) =>
+          taken.has(value) ? "This subdomain is already in use." : undefined
+        )
+      ),
+      port: domainPortSchema,
+    }).pipe(
+      Schema.decodeTo(serviceManagedHostnameSchema, {
+        decode: SchemaGetter.transform(({ prefix, port }) => ({
+          prefix,
+          targetPort: port,
+        })),
+        encode: SchemaGetter.transform(({ prefix, targetPort }) => ({
+          prefix,
+          port: targetPort,
+        })),
+      })
+    ),
+    { parseOptions: strictParseOptions }
+  );
+  const form = useAppForm({
+    ...appFormOptions.strictSchema({
+      defaultValues: {
+        prefix: managed.prefix,
+        port: managed.targetPort === null ? "" : String(managed.targetPort),
+      },
+      errorVisibility: showErrorsAfterBlurOrSubmit,
+      validators: [validateOnChangeOrBlur(schema)],
+    }),
+    onSubmit: async ({ schemaOutputs }) => {
+      setSaveFailure(null);
+      try {
+        await onSubmit(schemaOutputs[0]);
+        onClose();
+      } catch (error) {
+        setSaveFailure(
+          error instanceof Error
+            ? error.message
+            : "The managed domain could not be saved."
+        );
+      }
+    },
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <form.AppForm>
+          <form.Form className="flex flex-col gap-4">
+            <DialogHeader>
+              <DialogTitle>
+                {mode === "generate"
+                  ? "Generate Service Domain"
+                  : "Edit managed domain"}
+              </DialogTitle>
+              <DialogDescription>
+                {mode === "generate"
+                  ? "Enter the port your app is listening on."
+                  : "Update your domain or target port."}
+              </DialogDescription>
+            </DialogHeader>
+            <FieldGroup>
+              {mode === "edit" ? (
+                <form.Field name="prefix">
+                  {(field) => (
+                    <field.Text
+                      label="Subdomain"
+                      className="font-mono"
+                      description={`.${
+                        hostedDnsHostname ?? "{pending}.up.ployz.dev"
+                      }`}
+                    />
+                  )}
+                </form.Field>
+              ) : null}
+              <form.Field name="port">
+                {(field) => (
+                  <field.Text
+                    label={mode === "generate" ? "Port" : "Target port"}
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    placeholder={
+                      defaultTargetPort === null
+                        ? "Uses PORT"
+                        : String(defaultTargetPort)
+                    }
+                    description="Leave blank to use PORT."
+                  />
+                )}
+              </form.Field>
+            </FieldGroup>
+            {saveFailure ? (
+              <Alert variant="destructive">
+                <CircleAlertIcon />
+                <AlertTitle>Managed domain not saved</AlertTitle>
+                <AlertDescription>{saveFailure}</AlertDescription>
+              </Alert>
+            ) : null}
+            <DialogFooter>
+              <DialogClose
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onMouseDown={(event) => event.preventDefault()}
+                  />
+                }
+              >
+                Cancel
+              </DialogClose>
+              <form.SubmitButton>
+                {mode === "generate" ? "Generate Domain" : "Save domain"}
+              </form.SubmitButton>
+            </DialogFooter>
+          </form.Form>
+        </form.AppForm>
+      </DialogContent>
+    </Dialog>
+  );
+}

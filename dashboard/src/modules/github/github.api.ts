@@ -11,6 +11,7 @@ import type {
   GithubInstallationReposPage,
 } from "#/modules/github/github";
 import { AppConfig } from "#/server/config.server";
+import { githubExactShaSchema, githubRepositoryPathSchema } from "./github-ingestion.contracts";
 
 const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 const GithubId = Schema.Finite.check(
@@ -110,6 +111,41 @@ export const listInstallationRepoBranches = Effect.fn(
   }
   return branches.sort((left, right) => left.name.localeCompare(right.name));
 });
+
+export const listInstallationFiles = Effect.fn("Github.listInstallationFiles")(
+  function* (installationId: number, repositoryFullName: string, ref: string) {
+    const api = yield* GithubApi;
+    const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
+    const base = `https://api.github.com/repos/${repositoryPath}`;
+    const commit = yield* api.json({
+      installationId,
+      url: `${base}/commits/${encodeURIComponent(ref)}`,
+      operation: "resolve_file_ref",
+      schema: Schema.Struct({
+        commit: Schema.Struct({ tree: Schema.Struct({ sha: githubExactShaSchema }) }),
+      }),
+    });
+    const tree = yield* api.json({
+      installationId,
+      url: `${base}/git/trees/${commit.commit.tree.sha}?recursive=1`,
+      operation: "list_files",
+      schema: Schema.Struct({
+        truncated: Schema.Boolean,
+        tree: Schema.Array(Schema.Struct({
+          path: githubRepositoryPathSchema,
+          type: Schema.Literals(["blob", "tree", "commit"]),
+          mode: Schema.String,
+        })),
+      }),
+    });
+    // GitHub bounds recursive trees to 100,000 entries / 7 MB; report partial results.
+    return {
+      paths: tree.tree.filter((entry) => entry.type === "blob" && entry.mode !== "120000")
+        .map((entry) => entry.path),
+      truncated: tree.truncated,
+    };
+  },
+);
 
 export const verifyWebhookSignature = Effect.fn("Github.verifyWebhookSignature")(
 function* (

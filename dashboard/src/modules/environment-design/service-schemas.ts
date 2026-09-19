@@ -122,15 +122,17 @@ export const serviceMemLimitSchema = serviceFieldSchema("memLimit");
 export const serviceCronSchema = serviceFieldSchema("cron");
 export const servicePrivateDnsSchema = serviceFieldSchema("privateDns");
 export const serviceRouteSchema = Schema.Struct({
-  id: Uuid, hostname: Schema.String, targetPort: Schema.Number,
+  id: Uuid, hostname: Schema.String, targetPort: Schema.NullOr(Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: 65_535 }),
+  )),
 });
 export const serviceRoutesSchema = serviceFieldSchema("routes");
 export const serviceManagedHostnamePrefixSchema = serviceFieldSchema("managedHostnamePrefix");
 export const serviceManagedHostnameSchema = serviceFieldSchema("managedHostnameValue");
-export const serviceBuilderSchema = Schema.Literals(["dockerfile", "auto"]);
+export const serviceBuilderSchema = Schema.Literals(["dockerfile", "railpack"]);
 export const serviceBuildConfigSchema = serviceFieldSchema("build");
 export const DEFAULT_SERVICE_BUILD_CONFIG: ServiceBuildConfig = {
-  builder: "auto", dockerfilePath: null, watchPaths: [],
+  builder: "railpack", dockerfilePath: null, watchPaths: [],
 };
 export const serviceSourceSchema = serviceFieldSchema("source");
 
@@ -170,7 +172,7 @@ export const serviceSelectSchema = Schema.Struct({
   memLimit: serviceMemLimitSchema,
   privateDns: servicePrivateDnsSchema,
   routes: serviceRoutesSchema,
-  managedHostname: Schema.NullOr(serviceManagedHostnameSchema),
+  managedHostnames: serviceFieldSchema("managedHostnames"),
   build: serviceBuildConfigSchema,
   firstDeployedAt: serviceDbSelectSchema.fields.firstDeployedAt,
   deletedAt: Schema.NullOr(Schema.Date),
@@ -250,7 +252,7 @@ export const createServiceSchema = Schema.Struct({
     Schema.withDecodingDefaultKey(Effect.succeed({ type: "none" })),
   ),
   restartPolicy: serviceRestartPolicySchema.pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed("unless-stopped")),
+    Schema.withDecodingDefaultKey(Effect.succeed("on-failure")),
   ),
 });
 
@@ -271,8 +273,8 @@ export const updateServiceSchema = Schema.Struct({
   memLimit: Schema.optionalKey(serviceSelectSchema.fields.memLimit),
   privateDns: Schema.optionalKey(serviceSelectSchema.fields.privateDns),
   routes: Schema.optionalKey(serviceSelectSchema.fields.routes),
-  managedHostname: Schema.optionalKey(
-    serviceSelectSchema.fields.managedHostname,
+  managedHostnames: Schema.optionalKey(
+    serviceSelectSchema.fields.managedHostnames,
   ),
   build: Schema.optionalKey(serviceSelectSchema.fields.build),
   deletedAt: Schema.optionalKey(serviceSelectSchema.fields.deletedAt),

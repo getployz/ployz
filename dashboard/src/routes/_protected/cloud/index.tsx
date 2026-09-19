@@ -1,8 +1,11 @@
 import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
-import { Route as AllOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_org/~/index";
+import { Schema } from "effect";
 
 export const Route = createFileRoute("/_protected/cloud/")({
-  beforeLoad: ({ context, cause }) => {
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
+    welcome: Schema.optional(Schema.Boolean),
+  })),
+  beforeLoad: ({ context, cause, search }) => {
     if (cause === "preload") return;
 
     const slug = context.session.session.activeOrganizationSlug;
@@ -12,7 +15,8 @@ export const Route = createFileRoute("/_protected/cloud/")({
     }
 
     throw redirect({
-      to: AllOverviewRoute.to,
+      to: search.welcome ? "/cloud/$organizationSlug/new" : "/cloud/$organizationSlug/~",
+      search: {},
       replace: true,
       params: { organizationSlug: slug },
     });

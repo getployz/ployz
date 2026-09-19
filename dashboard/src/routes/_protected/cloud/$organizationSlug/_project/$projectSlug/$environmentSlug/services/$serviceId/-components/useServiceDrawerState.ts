@@ -7,12 +7,14 @@ import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { DEFAULT_SERVICE_PORT } from "@ployz/sdk/config";
 import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import {
   getServiceDeploymentDiffState,
   type ServiceDeploymentDiffState,
 } from "#/modules/services/service-deployment-diff/state";
-import { resolveEnvironmentWorkingComparison } from "#/modules/environment-design/environment-change-set";
+import { buildEnvironmentNodeChange, type EnvironmentNodeProjection } from "#/modules/environment-design/environment-change-set";
+import { projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 import {
   buildEnvironmentServicesViewQuery,
   type ServiceWriter,
@@ -40,6 +42,7 @@ export type ServiceRouteParams = {
 
 export type ServiceDrawerState = {
   organizationSlug: string;
+  environmentSlug: string;
   service: EnvironmentServiceViewRecord["service"];
   environmentNodes: EnvironmentNodeNameIdentity[];
   diff: ServiceDeploymentDiffState;
@@ -47,29 +50,31 @@ export type ServiceDrawerState = {
   /** Managed-domain prefixes already claimed by other services in this
    * environment, for client-side uniqueness hints (server validates org-wide). */
   managedPrefixesInUse: string[];
-  /** The port a new public domain targets by default: the service's PORT env
-   * var when set, else 8080. */
-  defaultTargetPort: number;
+  /** Advisory PORT hint. Null means the authored PORT is not a known valid literal. */
+  defaultTargetPort: number | null;
 };
 
 function resolveDefaultTargetPort(
   env: EnvironmentServiceViewRecord["service"]["env"] | undefined,
-): number {
+): number | null {
   const portValue = env?.["PORT"];
-  const raw = portValue?.kind === "literal" ? portValue.value : undefined;
-  const port = Number(raw);
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 8080;
+  if (portValue === undefined) return DEFAULT_SERVICE_PORT;
+  if (portValue.kind !== "literal" || portValue.parts?.some((part) => part.kind === "ref")) return null;
+  if (!/^\+?[0-9]+$/.test(portValue.value)) return null;
+  const port = Number(portValue.value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
-function serviceConfig(
+function serviceNodes(
   nodes: Array<{ nodeType: string; nodeId: string; config: unknown }>,
   serviceId: string,
-) {
-  const node = nodes.find(
-    (candidate) =>
-      candidate.nodeType === "service" && candidate.nodeId === serviceId,
-  );
-  return node?.config ? parseDashboardServiceConfig(node.config) : null;
+): EnvironmentNodeProjection[] {
+  return nodes
+    .filter((node) => node.nodeType === "service" && node.nodeId === serviceId)
+    .map((node) => ({
+      node: { type: "service", id: serviceId },
+      config: node.config ? parseDashboardServiceConfig(node.config) : null,
+    }));
 }
 
 export function useServiceDrawerState(
@@ -171,18 +176,23 @@ export function useServiceDrawerState(
     });
   }
 
-  const saved = environmentChangeState?.saved
-    ? serviceConfig(environmentChangeState.saved.nodes, params.serviceId)
+  const node = { type: "service" as const, id: params.serviceId };
+  const change = environmentChangeState
+    ? buildEnvironmentNodeChange({
+        working: { node, config: projectServiceDeploymentConfig(service) },
+        applied: serviceNodes(environmentChangeState.applied.nodes, params.serviceId),
+        submitted: environmentChangeState.deploymentEvidence
+          ? serviceNodes(environmentChangeState.deploymentEvidence.nodes, params.serviceId)
+          : null,
+        introduction:
+          serviceIntroduction?.nodeType === "service"
+            ? { node, config: serviceIntroduction.config }
+            : null,
+      })
     : null;
-  const applied = environmentChangeState
-    ? serviceConfig(environmentChangeState.applied.nodes, params.serviceId)
-    : null;
-  const introduction =
-    serviceIntroduction?.nodeType === "service"
-      ? serviceIntroduction.config
-      : null;
 
   return {
+    environmentSlug: params.environmentSlug,
     organizationSlug: params.organizationSlug,
     service,
     environmentNodes: [
@@ -197,23 +207,11 @@ export function useServiceDrawerState(
         name: item.resource.name,
       })),
     ],
-    diff: getServiceDeploymentDiffState({
-      service,
-      comparison: resolveEnvironmentWorkingComparison({
-        baseline: environmentChangeState?.deploymentEvidence
-          ? serviceConfig(environmentChangeState.deploymentEvidence.nodes, params.serviceId)
-          : applied,
-        introduction: !saved && !applied ? introduction : null,
-      }),
-    }),
+    diff: getServiceDeploymentDiffState(change),
     collection: serviceWriter,
     managedPrefixesInUse: services
-      .filter(
-        (item) =>
-          item.service.id !== service.id &&
-          item.service.managedHostname != null,
-      )
-      .map((item) => item.service.managedHostname?.prefix ?? ""),
+      .filter((item) => item.service.id !== service.id)
+      .flatMap((item) => item.service.managedHostnames.map((m) => m.prefix)),
     defaultTargetPort: resolveDefaultTargetPort(service.env),
   };
 }

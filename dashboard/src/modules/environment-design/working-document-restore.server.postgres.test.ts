@@ -156,7 +156,7 @@ it.live(
           username: "temporary-owner", secret: "temporary-credential" });
         for (const path of ["variableGroupAttachments", "source.credentials"]) {
           yield* discardEnvironmentChanges(actor, { ...scope, revision: yield* revision(),
-            savedStateBasis: { kind: "no_saved_state" }, baselineToken: "applied:none",
+            savedStateBasis: { kind: "no_saved_state" }, headToken: "applied:none",
             command: { kind: "node", nodeType: "service", nodeId: serviceId, path } });
         }
         const restoredIntroduction = (yield* loadEnvironmentDocument(environmentRecord.id)).intent.services[0];
@@ -256,7 +256,7 @@ it.live(
           const state = projection.explicitStates[0];
           if (!state?.saved) return yield* Effect.die("Saved projection missing.");
           return { ...scope, revision: yield* revision(), command,
-            baselineToken: (state.deploymentEvidence ?? state.applied).token,
+            headToken: (state.deploymentEvidence ?? state.applied).token,
             savedStateBasis: { kind: "saved_revision" as const, savedStateSnapshotId: state.saved.snapshotId },
           };
         });

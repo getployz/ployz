@@ -139,11 +139,11 @@ it.live(
           environmentId: environmentRecord.id,
           serviceId: created.data.service.id,
           name: "Registry API",
-          managedHostname: { prefix: "public-api", targetPort: 4000 },
+          managedHostnames: [{ prefix: "public-api", targetPort: 4000 }],
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
         });
         assert.strictEqual(updated.data.intent.services[0]?.config.name, "Registry API");
-        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.config.managedHostname, { prefix: "public-api", targetPort: 4000 });
+        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.config.managedHostnames, [{ prefix: "public-api", targetPort: 4000 }]);
 
         yield* updateServiceCanvasPosition(actor, {
           organizationSlug: "acme",

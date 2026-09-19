@@ -1,10 +1,7 @@
 import { useDeferredValue, useState } from "react";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { Link, createFileRoute } from "@tanstack/react-router";
-import {
-  FolderOpenIcon,
-  PlusIcon,
-} from "lucide-react";
+import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
@@ -17,24 +14,25 @@ import {
   CardHeader,
   CardTitle,
 } from "#/components/ui/card";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "#/components/ui/empty";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
 import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
 import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
-  loader: ({ params, context }) =>
-    context.queryClient.ensureQueryData(
+  loader: async ({ params, context }) => {
+    const projects = await context.queryClient.ensureQueryData(
       projectListQueryOptions(params.organizationSlug),
-    ),
+    );
+    // No projects means nothing to overview: go straight to "Add your app".
+    if (projects.length === 0) {
+      throw redirect({
+        to: NewProjectRoute.to,
+        params: { organizationSlug: params.organizationSlug },
+      });
+    }
+  },
   pendingComponent: ProjectsPending,
   errorComponent: ProjectsError,
   component: RouteComponent,
@@ -90,7 +88,7 @@ function CreateProjectButton({
       className={buttonVariants({ size: "lg" })}
     >
       <PlusIcon data-icon="inline-start" />
-      Project
+      Add app
     </Link>
   );
 }
@@ -123,22 +121,7 @@ function RouteComponent() {
         action={<CreateProjectButton organizationSlug={organizationSlug} />}
       />
 
-      {projects.length === 0 ? (
-        <Empty variant="first-run">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <FolderOpenIcon />
-            </EmptyMedia>
-            <EmptyTitle>No projects yet</EmptyTitle>
-            <EmptyDescription>
-              Create a project to start adding environments and services.
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent className="sm:flex-row sm:justify-center">
-            <CreateProjectButton organizationSlug={organizationSlug} />
-          </EmptyContent>
-        </Empty>
-      ) : filteredProjects.length === 0 ? (
+      {filteredProjects.length === 0 ? (
         <Empty variant="no-results">
           <EmptyHeader>
             <EmptyTitle>No matching projects</EmptyTitle>

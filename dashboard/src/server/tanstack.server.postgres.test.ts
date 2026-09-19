@@ -123,7 +123,7 @@ it(
           const githubTransformed = await vite.transformRequest(
             "/src/modules/github/github.functions.ts",
           );
-          const githubInstallServerFnId = /createClientRpc\("([^"]+)"\)/u.exec(
+          const githubInstallServerFnId = /getGithubInstallUrlServerFn\s*=[^\n]*?createClientRpc\("([^"]+)"\)/u.exec(
             githubTransformed?.code ?? "",
           )?.[1];
           if (githubInstallServerFnId === undefined) {

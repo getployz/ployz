@@ -24,7 +24,6 @@ import { projectDestructiveEnvironmentSave } from "#/modules/environment-design/
 import type { CanvasResourceNode } from "./types";
 
 type UseCanvasFlowStateInput = {
-  environmentNamespace: string;
   servicesWithBoundEnv: EnvironmentServiceViewRecord[];
   environmentResources: VariableGroupResourceRecord[];
   volumeResources: VolumeResourceRecord[];
@@ -57,7 +56,6 @@ function countGroupsByNode(groups: CanvasEnvironmentChangeGroup[]) {
 }
 
 export function useCanvasFlowState({
-  environmentNamespace,
   servicesWithBoundEnv,
   environmentResources,
   volumeResources,
@@ -116,16 +114,6 @@ export function useCanvasFlowState({
       .join("|"),
     nodes: workingNodes,
   };
-  const saved: EnvironmentStateProjection =
-    environmentChangeState?.saved
-      ? {
-          token: environmentChangeState.saved.token,
-          nodes: environmentChangeState.saved.nodes.map(projectedNode),
-        }
-      : {
-          token: `saved:none:${environmentNamespace}`,
-          nodes: [],
-        };
   const applied: EnvironmentStateProjection = {
     token:
       environmentChangeState?.applied.token ??
@@ -166,7 +154,6 @@ export function useCanvasFlowState({
     : null;
   const canvasChangeState = buildCanvasEnvironmentChangeState({
     working,
-    saved,
     applied,
     nodeIntroductions: introductions,
     deploymentEvidence,
@@ -262,7 +249,7 @@ export function useCanvasFlowState({
     diffGroups,
     totalChanges: canvasChangeState.totalCount,
     canDeploy: true,
-    canSave: canvasChangeState.canSave,
+    canSave: canvasChangeState.totalCount > 0,
     diffRowCountByServiceId: countByNodeId,
     servicesById,
     selectedNodePositionKey,

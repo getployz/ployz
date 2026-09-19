@@ -21,13 +21,11 @@ export type CanvasEnvironmentChangeGroup = CanvasNodeDiffGroup & { changeCount: 
 export type CanvasEnvironmentChangeState = {
   groups: CanvasEnvironmentChangeGroup[];
   totalCount: number;
-  canSave: boolean;
-  baselineToken: string;
+  headToken: string;
 };
 
 export function buildCanvasEnvironmentChangeState(input: {
   working: EnvironmentStateProjection;
-  saved: EnvironmentStateProjection;
   applied: EnvironmentStateProjection;
   nodeIntroductions: EnvironmentNodeIntroductionsProjection;
   deploymentEvidence: CanvasDeploymentEvidence | null;
@@ -38,15 +36,14 @@ export function buildCanvasEnvironmentChangeState(input: {
   const visibleState = <T extends EnvironmentStateProjection>(state: T): T => variableGroupsEnabled ? state
     : { ...state, nodes: state.nodes.filter(entry => entry.node.type !== "variable_group") };
   const result = buildEnvironmentChangeSet({
-    working: visibleState(input.working), saved: visibleState(input.saved), applied: visibleState(input.applied),
+    working: visibleState(input.working), applied: visibleState(input.applied),
     submitted: submitted ? visibleState({ token: submitted.token, nodes: submitted.nodes }) : null,
     nodeIntroductions: visibleState(input.nodeIntroductions),
   });
   const presentations = new Map(input.nodes.map(node => [`${node.node.type}:${node.node.id}`, node]));
   return {
     totalCount: result.totalCount,
-    canSave: result.canSave,
-    baselineToken: (submitted ?? input.applied).token,
+    headToken: result.headToken,
     groups: result.groups.map(group => {
       const key = `${group.node.type}:${group.node.id}`;
       const presentation = presentations.get(key);

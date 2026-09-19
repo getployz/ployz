@@ -18,7 +18,6 @@ import {
 import {
   loadEnvironmentSnapshotProjection,
 } from "#/modules/deployments/environment-state.repository.server";
-import { getResolvedHealthcheckPort } from "#/modules/deployments/runtime-contract";
 import {
   decodeStrict,
   strictParseOptions,
@@ -42,7 +41,6 @@ export const loadDeploymentContext = Effect.fn(
 )((environmentDeploymentId: string) =>
   Effect.gen(function* () {
     const database = yield* Database;
-    const encryption = yield* SecretEncryption;
     const [record] = yield* database.drizzle
       .select({
         deployment: schemaEnvironmentDeployment,
@@ -117,14 +115,6 @@ export const loadDeploymentContext = Effect.fn(
       serviceSlug: saved.intent.services.find((node) => node.id === snapshot.serviceId)?.slug ?? snapshot.serviceId,
       config: decodeStrict(serviceDeploymentConfigSchema, snapshot.config),
     }));
-    const resolvedEnvByServiceId = yield* getResolvedDeployEnvBySnapshotConfig(
-      encryption,
-      snapshots.map((snapshot) => ({
-        serviceId: snapshot.serviceId,
-        config: snapshot.config,
-      })),
-      record.deployment.variableProducers,
-    );
 
     return {
       deployment: record.deployment,
@@ -134,9 +124,6 @@ export const loadDeploymentContext = Effect.fn(
       snapshots: snapshots.map((snapshot) => ({
         ...snapshot,
         resolvedEnv: redactedDeployEnv(snapshot.config),
-        healthcheckPort: getResolvedHealthcheckPort(
-          resolvedEnvByServiceId.get(snapshot.serviceId),
-        ),
       })),
       appliedServiceIds:
         appliedProjection.explicitStates

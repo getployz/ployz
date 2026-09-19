@@ -20,12 +20,12 @@ const props = {
 };
 function bar(status: EnvironmentDeploymentStatus, working: number) {
   const changes = buildCanvasEnvironmentChangeState({
-    working: state(working), saved: state(5), applied: state(status === "applied" ? 5 : 1),
+    working: state(working), applied: state(status === "applied" ? 5 : 1),
     deploymentEvidence: { id: "attempt", status, ...state(5) },
     nodeIntroductions: { token: "none", nodes: [] },
     nodes: [{ node: { type: "service", id: "api" }, name: "API", summaryLabel: "API" }],
   });
-  return <ApplyChangesBar {...props} groups={changes.groups} totalChanges={changes.totalCount} canSaveWithoutDeploying={changes.canSave} />;
+  return <ApplyChangesBar {...props} groups={changes.groups} totalChanges={changes.totalCount} canSaveWithoutDeploying={changes.totalCount > 0} />;
 }
 
 it("hides accepted changes, then shows only the new edit", () => {

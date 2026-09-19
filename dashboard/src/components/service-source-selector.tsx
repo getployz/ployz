@@ -1,4 +1,6 @@
 import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
+import { Command as CommandPrimitive } from "cmdk";
+import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
 import { useLoaderData } from "@tanstack/react-router";
 import {
   type ReactNode,
@@ -8,7 +10,9 @@ import {
 } from "react";
 import {
   ChevronRightIcon,
-  PackageIcon,
+  ArrowLeftIcon,
+  InfoIcon,
+  TriangleAlertIcon,
   RefreshCwIcon,
   Settings2Icon,
 } from "lucide-react";
@@ -23,11 +27,21 @@ import {
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
+import { InputGroupAddon, InputGroupInput } from "#/components/ui/input-group";
+import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "#/components/ui/empty";
 import {
   Command,
   CommandDialog,
   CommandGroup,
-  CommandInput,
   CommandItem,
   CommandList,
   CommandSeparator,
@@ -46,9 +60,11 @@ import { toErrorMessage } from "#/lib/error-message";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
 
 const imageExamples = [
+  "hello-world",
   "ghcr.io/acme/api:latest",
-  "registry.example.com/acme/api:main",
-  "docker.io/library/nginx:stable",
+  "quay.io/acme/api:latest",
+  "registry.gitlab.com/acme/api:latest",
+  "mcr.microsoft.com/dotnet/aspnet:10.0",
 ];
 const INITIAL_GITHUB_REPO_LIMIT = 30;
 const FILTERED_GITHUB_REPO_LIMIT = 200;
@@ -68,6 +84,7 @@ type GitRepoSelectorProps = {
 
 type ImageSelectorProps = {
   disabled?: boolean;
+  onBack?: () => void;
   onSelectImage: (image: string) => void | Promise<void>;
 };
 
@@ -84,10 +101,10 @@ type ImageSelectorDialogProps = {
 };
 
 type GitBranchSelectorProps = {
-  repositoryFullName: string;
   repositoryId: number;
   installationId: number;
   query: string;
+  defaultBranch?: string;
   disabled?: boolean;
   onSelectBranch: (branchName: string) => void | Promise<void>;
 };
@@ -202,6 +219,9 @@ function GitRepoSelectorActions() {
   const { data: installUrlData } = useSuspenseQuery(
     githubInstallUrlQueryOptions()
   );
+  const { data: accessState } = useSuspenseQuery(
+    githubRepoAccessQueryOptions()
+  );
   const { mutateAsync: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
       mutationKey: [...githubKeys.repos(), "refresh"],
@@ -211,6 +231,36 @@ function GitRepoSelectorActions() {
       },
     }
   );
+
+  if (!accessState.configured) return null;
+
+  if (!accessState.hasInstallations) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia>
+            <GitHubMarkIcon className="size-8 text-muted-foreground" />
+          </EmptyMedia>
+          <EmptyTitle>Connect GitHub</EmptyTitle>
+          <EmptyDescription>
+            Give Ployz access to the repositories you want to deploy.
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button
+            disabled={!installUrlData.url}
+            onClick={() => {
+              if (installUrlData.url) {
+                window.open(installUrlData.url, "_blank", "width=1020,height=680");
+              }
+            }}
+          >
+            Connect GitHub
+          </Button>
+        </EmptyContent>
+      </Empty>
+    );
+  }
 
   return (
     <CommandGroup>
@@ -306,17 +356,16 @@ function GitRepoSelectorResults({
   if (selectorState === "not-configured") {
     return (
       <SelectorEmpty>
-        <p>GitHub isn’t set up.</p>
+        <p>GitHub connection is unavailable.</p>
         <p className="mt-1">
-          Add `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG` to load
-          repositories.
+          Please try again later or contact support.
         </p>
       </SelectorEmpty>
     );
   }
 
   if (selectorState === "no-installations") {
-    return <SelectorEmpty>No GitHub installations found</SelectorEmpty>;
+    return null;
   }
 
   return (
@@ -386,16 +435,15 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
 }
 
 function GitBranchSelectorResults({
-  repositoryFullName,
   repositoryId,
   installationId,
   query,
+  defaultBranch,
   disabled = false,
   onSelectBranch,
 }: GitBranchSelectorProps) {
   const { data: branchesData } = useSuspenseQuery(
     githubBranchesQueryOptions({
-      repositoryFullName,
       repositoryId,
       installationId,
     })
@@ -435,9 +483,20 @@ function GitBranchSelectorResults({
           onSelect={() => onSelectBranch(branch.name)}
         >
           <span>{branch.name}</span>
+          {branch.name === defaultBranch ? (
+            <CommandShortcut>Default</CommandShortcut>
+          ) : null}
         </CommandItem>
       ))}
     </CommandGroup>
+  );
+}
+
+export function GitBranchSelector(props: GitBranchSelectorProps) {
+  return (
+    <Suspense fallback={<SelectorLoading />}>
+      <GitBranchSelectorResults {...props} />
+    </Suspense>
   );
 }
 
@@ -484,97 +543,100 @@ function OpenGitBranchSelectorDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Select branch"
-      description="Choose a GitHub branch"
+      description={`Choose a branch in ${repositoryFullName}`}
       errorTitle="Couldn’t select branch"
       error={dialog.error}
     >
-      <Command shouldFilter={false}>
-        <CommandInput
-          aria-label="Search branches"
-          disabled={dialog.isPending}
-          value={dialog.query}
-          onValueChange={dialog.setQuery}
-          placeholder="Search branches…"
-        />
+      <SourcePickerLayout title="GitHub Branch">
+      <Command shouldFilter={false} className="gap-3 p-0">
+        <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
+          <CommandPrimitive.Input asChild value={dialog.query} onValueChange={dialog.setQuery}>
+            <InputGroupInput autoFocus aria-label="Search branches" placeholder="Search branches…" disabled={dialog.isPending} />
+          </CommandPrimitive.Input>
+        </SourcePickerInput>
         <CommandList>
-          <Suspense fallback={<SelectorLoading />}>
-            <GitBranchSelectorResults
-              repositoryFullName={repositoryFullName}
-              repositoryId={repositoryId}
-              installationId={installationId}
-              query={dialog.query}
-              disabled={dialog.isPending}
-              onSelectBranch={dialog.runSelect}
-            />
-          </Suspense>
+          <GitBranchSelector
+            repositoryId={repositoryId}
+            installationId={installationId}
+            query={dialog.query}
+            disabled={dialog.isPending}
+            onSelectBranch={dialog.runSelect}
+          />
         </CommandList>
       </Command>
+      </SourcePickerLayout>
     </SelectorCommandDialog>
   );
 }
 
 export function ImageSelector({
   disabled = false,
+  onBack,
   onSelectImage,
 }: ImageSelectorProps) {
   const [value, setValue] = useState("");
   const trimmedValue = value.trim();
+  const validImage = isValidImageReference(trimmedValue);
+  const invalidImage = trimmedValue.length > 0 && !validImage;
+  const registryLink = imageRegistryLink(trimmedValue);
 
   return (
-    <>
-      <CommandGroup>
-        <CommandItem value="image-input" forceMount>
-          <input
-            type="text"
+    <SourcePickerLayout title="Docker Image">
+      <form
+        className="flex min-w-0 flex-col gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (validImage && !disabled) void onSelectImage(trimmedValue);
+        }}
+      >
+        <SourcePickerInput onBack={onBack} disabled={disabled}>
+          <InputGroupInput
             aria-label="Container image"
+            aria-invalid={invalidImage || undefined}
+            aria-describedby={invalidImage ? "invalid-docker-image" : undefined}
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            disabled={disabled}
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder="nginx:latest"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && trimmedValue && !disabled) {
-                event.preventDefault();
-                void onSelectImage(trimmedValue);
-              }
-            }}
           />
-        </CommandItem>
-      </CommandGroup>
-
-      {trimmedValue ? (
-        <>
-          <CommandSeparator />
-          <CommandGroup>
-            <CommandItem
-              value={`Use ${trimmedValue}`}
-              disabled={disabled}
-              onSelect={() => {
-                void onSelectImage(trimmedValue);
-              }}
-            >
-              <PackageIcon />
-              <span className="truncate">{trimmedValue}</span>
-            </CommandItem>
-          </CommandGroup>
-        </>
-      ) : null}
-
-      <CommandSeparator />
-
-      <CommandGroup heading="Examples">
-        {imageExamples.map((example) => (
-          <CommandItem
-            key={example}
-            value={example}
-            keywords={["image", "container", "registry"]}
-            onSelect={() => setValue(example)}
-          >
-            <PackageIcon />
-            <span className="font-mono text-xs">{example}</span>
-          </CommandItem>
-        ))}
-      </CommandGroup>
-    </>
+          {disabled ? <InputGroupAddon align="inline-end"><Spinner /></InputGroupAddon> : null}
+        </SourcePickerInput>
+        {invalidImage ? (
+          <Item state="warning" role="status" id="invalid-docker-image">
+            <ItemMedia variant="icon"><TriangleAlertIcon /></ItemMedia>
+            <ItemContent>Invalid Docker image</ItemContent>
+          </Item>
+        ) : trimmedValue ? (
+          <Item variant="muted">
+            <ItemContent>
+              {registryLink ? (
+                <a href={registryLink} target="_blank" rel="noopener noreferrer" className="break-all underline underline-offset-4">
+                  {registryLink.replace(/^https:\/\//, "")}
+                </a>
+              ) : <span>Enter a Docker image reference.</span>}
+            </ItemContent>
+          </Item>
+        ) : (
+          <>
+            <Item state="info">
+              <ItemContent>Enter a Docker image to deploy.</ItemContent>
+              <ItemMedia variant="icon"><InfoIcon /></ItemMedia>
+            </Item>
+            <Item variant="muted">
+              <ItemContent>
+                <ItemTitle>Examples</ItemTitle>
+                <ul className="list-disc space-y-1 pl-5">
+                  {imageExamples.map((example) => <li key={example} className="break-all">{example}</li>)}
+                </ul>
+              </ItemContent>
+            </Item>
+          </>
+        )}
+      </form>
+    </SourcePickerLayout>
   );
 }
 
@@ -601,6 +663,7 @@ function OpenGitRepoSelectorDialog({
   onOpenChange,
   onSelectRepo,
 }: GitRepoSelectorDialogProps) {
+  const { data: githubAccess } = useQuery(githubRepoAccessQueryOptions());
   const dialog = useSelectorDialogState<GitRepoSelection>({
     onOpenChange,
     onSelect: onSelectRepo,
@@ -616,14 +679,23 @@ function OpenGitRepoSelectorDialog({
       errorTitle="Couldn’t connect repository"
       error={dialog.error}
     >
-      <Command shouldFilter={false}>
-        <CommandInput
-          aria-label="Search GitHub repositories"
-          disabled={dialog.isPending}
-          value={dialog.query}
-          onValueChange={dialog.setQuery}
-          placeholder="Search GitHub repositories…"
-        />
+      <SourcePickerLayout title="GitHub Repository">
+      <Command shouldFilter={false} className="gap-3 p-0">
+        {githubAccess?.hasInstallations ? (
+          <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
+            <CommandPrimitive.Input
+              asChild
+              value={dialog.query}
+              onValueChange={dialog.setQuery}
+            >
+              <InputGroupInput autoFocus aria-label="Search GitHub repositories" placeholder="Search GitHub repositories…" disabled={dialog.isPending} />
+            </CommandPrimitive.Input>
+          </SourcePickerInput>
+        ) : (
+          <Button variant="ghost" size="sm" className="self-start" onClick={() => onOpenChange(false)}>
+            <ArrowLeftIcon /> Back
+          </Button>
+        )}
         <CommandList>
           <GitRepoSelector
             query={dialog.query}
@@ -632,6 +704,7 @@ function OpenGitRepoSelectorDialog({
           />
         </CommandList>
       </Command>
+      </SourcePickerLayout>
     </SelectorCommandDialog>
   );
 }
@@ -674,14 +747,11 @@ function OpenImageSelectorDialog({
       errorTitle="Couldn’t select image"
       error={dialog.error}
     >
-      <Command>
-        <CommandList>
-          <ImageSelector
-            disabled={dialog.isPending}
-            onSelectImage={dialog.runSelect}
-          />
-        </CommandList>
-      </Command>
+      <ImageSelector
+        disabled={dialog.isPending}
+        onBack={() => onOpenChange(false)}
+        onSelectImage={dialog.runSelect}
+      />
     </SelectorCommandDialog>
   );
 }

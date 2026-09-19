@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Schema, SchemaGetter } from "effect";
 import {
   GitRepoSelectorDialog,
   ImageSelectorDialog,
@@ -27,6 +28,14 @@ import {
 } from "#/modules/environment-design/services";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import { SchemaFieldInput } from "#/components/stageable/schema-field-input";
+
+/** Blank means "the repo root": commit `/` so the field can collapse again. */
+const optionalRootDirSchema = Schema.String.pipe(
+  Schema.decodeTo(serviceRootDirSchema, {
+    decode: SchemaGetter.transform((raw: string) => (raw.trim() === "" ? "/" : raw)),
+    encode: SchemaGetter.transform((value: string) => value),
+  }),
+);
 import { GitBranchSettings } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/GitBranchSettings";
 import { ServiceRegistryCredentialsSection } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialsSection";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
@@ -58,10 +67,10 @@ function GitServiceSourceSection({
 }) {
   const { service, diff, collection } = state;
   const [isGitRepoSelectorOpen, setIsGitRepoSelectorOpen] = useState(false);
+  // Collapsed until someone sets a non-root directory (now or in the deployed baseline).
   const [isGitRootDirVisible, setIsGitRootDirVisible] = useState(
     source.rootDir !== "/" ||
-      diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceRootDir).baselineValue !==
-        "/"
+      (diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceRootDir).baselineValue ?? "/") !== "/"
   );
 
   const repositoryUrl = `https://github.com/${source.repository}`;
@@ -150,21 +159,22 @@ function GitServiceSourceSection({
               </Button>
             </FieldDescription>
             <SchemaFieldInput
-              schema={serviceRootDirSchema}
+              schema={optionalRootDirSchema}
               value={source.rootDir}
               baselineLabel={rootDirDiff.baselineLabel}
               baselineValue={rootDirDiff.baselineValue}
               isChanged={rootDirDiff.changed}
               label="Root directory"
-              onCommit={(rootDir) =>
-                collection.update(service.id, (draft) => {
+              onCommit={(rootDir) => {
+                if (rootDir === "/") setIsGitRootDirVisible(false);
+                return collection.update(service.id, (draft) => {
                   if (draft.source.type !== "git") {
                     return;
                   }
 
                   draft.source.rootDir = rootDir;
-                })
-              }
+                });
+              }}
             />
           </div>
         )}

@@ -122,7 +122,7 @@ function createServiceWriter(
         healthcheck: modified.healthcheck, restartPolicy: modified.restartPolicy,
         maxRetries: modified.maxRetries, cron: modified.cron, replicas: modified.replicas,
         cpuLimit: modified.cpuLimit, memLimit: modified.memLimit, privateDns: modified.privateDns,
-        routes: modified.routes, managedHostname: modified.managedHostname, build: modified.build,
+        routes: modified.routes, managedHostnames: modified.managedHostnames, build: modified.build,
         deletedAt: modified.deletedAt ?? null,
       };
       return persist({ serviceId, environmentId: document.id, revision: document.revision, settings });

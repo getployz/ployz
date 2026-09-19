@@ -387,20 +387,14 @@ const showErrorsAfterBlurOrSubmit = createErrorVisibility(
     fieldState.meta.isBlurred || state.submissionAttempts > 0,
 );
 
-const validateAfterBlurThenWhileInvalid = createValidator({
-  triggers: [
-    "blur",
-    {
-      trigger: "change",
-      when: ({ fieldApi }) => fieldApi !== undefined && fieldApi.meta.isInvalid,
-    },
-  ],
+const validateOnChangeOrBlur = createValidator({
+  triggers: ["change", "blur"],
 });
 
 export {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
   useAppForm,
-  validateAfterBlurThenWhileInvalid,
+  validateOnChangeOrBlur,
 };
 export type { ReactFormType } from "@tanstack/react-form";

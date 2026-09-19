@@ -287,9 +287,10 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
       const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: input.environmentId });
       const state = projection.explicitStates.find(state => state.environmentId === input.environmentId);
       const submitted = state?.deploymentEvidence;
-      const baselineToken = (submitted ?? state?.applied)?.token ?? "applied:none";
+      const head = submitted ?? state?.applied;
+      const headToken = head?.token ?? "applied:none";
       const latest = yield* loadLatestEnvironmentSavedState(input.environmentId);
-      if (baselineToken !== input.baselineToken || !environmentSavedStateBasisMatches(input.savedStateBasis, latest?.id ?? null)) {
+      if (headToken !== input.headToken || !environmentSavedStateBasisMatches(input.savedStateBasis, latest?.id ?? null)) {
         return yield* new Conflict({ message: "Environment changes moved after this review. Review the latest changes and try again." });
       }
       let baseline: SavedEnvironmentIntent;
@@ -303,16 +304,13 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
         baseline = yield* loadAppliedIntent(input.environmentId, document.namespace, projection);
       }
       const command = input.command;
-      let introduction = false;
-      if (command.kind === "node" && command.path) {
-        const exists = (nodes: Array<{ nodeType: string; nodeId: string; config: unknown }> = []) =>
-          nodes.some(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId && node.config !== null);
-        if (!exists((submitted ?? state?.applied)?.nodes) && !exists(state?.saved?.nodes) && !exists(state?.applied.nodes)) {
-          baseline = yield* loadEnvironmentNodeIntroductionIntent({
-            environmentId: input.environmentId, nodeType: command.nodeType, nodeId: command.nodeId,
-          });
-          introduction = true;
-        }
+      // Same rule as the Environment Change Set: a node absent from Head compares against its Introduction.
+      const introduction = command.kind === "node" && command.path !== undefined && !(head?.nodes ?? [])
+        .some(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId && node.config !== null);
+      if (introduction) {
+        baseline = yield* loadEnvironmentNodeIntroductionIntent({
+          environmentId: input.environmentId, nodeType: command.nodeType, nodeId: command.nodeId,
+        });
       }
       const restore = (current: SavedEnvironmentIntent) => Effect.try({
         try: () => command.kind === "all" ? baseline
@@ -320,13 +318,14 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
         catch: () => new Conflict({ message: "Discard would leave invalid Environment relationships." }),
       });
       const working = yield* restore(document.intent);
-      const savedNode = command.kind === "node" ? state?.saved?.nodes.find(node =>
-        node.nodeType === command.nodeType && node.nodeId === command.nodeId) : null;
-      const baselineNode = command.kind === "node" ? (submitted ?? state?.applied)?.nodes.find(node =>
-        node.nodeType === command.nodeType && node.nodeId === command.nodeId) : null;
+      // Saved follows so a non-manual trigger ships the discarded state.
+      const nodeAt = (nodes: Array<{ nodeType: string; nodeId: string; config: unknown }> = []) => command.kind === "node"
+        ? nodes.find(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId)?.config ?? null : null;
+      const savedNode = nodeAt(state?.saved?.nodes);
+      const headNode = nodeAt(head?.nodes);
       const savedNeedsRestore = command.kind === "all" || !command.path ||
-        (savedNode?.config != null && baselineNode?.config != null &&
-          compareDashboardServiceSettings(parseDashboardServiceConfig(savedNode.config), parseDashboardServiceConfig(baselineNode.config))
+        (savedNode != null && headNode != null &&
+          compareDashboardServiceSettings(parseDashboardServiceConfig(savedNode), parseDashboardServiceConfig(headNode))
             .some(row => row.path === command.path && row.canRestore));
       // New-node field resets use its Introduction and do not publish it.
       if (latest && !introduction && savedNeedsRestore) {

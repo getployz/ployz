@@ -1,6 +1,9 @@
 import type { ServiceConfig, ServiceSettingChange, ServiceSettingInput } from './generated/payloads';
 export type * from './generated/payloads';
 
+/** Core injects this PORT only when no authored PORT exists. */
+export const DEFAULT_SERVICE_PORT: number;
+
 export function parseServiceConfig(value: unknown): ServiceConfig;
 export function parseServiceSetting<Field extends ServiceSettingInput['field']>(field: Field, value: unknown): Extract<ServiceSettingInput, { field: Field }>['value'];
 export function compareServiceSettings(current: ServiceConfig, baseline: ServiceConfig | null): ServiceSettingChange[];
@@ -23,7 +26,7 @@ export function destructivePublicationMismatch(value: { expected: { serviceIds: 
 export function canonicalWorkingReview(value: unknown): string;
 export function parsePublicationBasis(value: unknown): import('./generated/payloads').PublicationBasis;
 export function reusePublication(input: { policy: 'always_create' | 'reuse_latest_if_equivalent'; current: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown }; latest: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown } | null }): boolean;
-export function lowerDeployment(value: { projectName: string; snapshots: readonly { config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; healthcheckPort?: number }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
+export function lowerDeployment(value: { projectName: string; snapshots: readonly { config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string> }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
 
 export function redactEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
 

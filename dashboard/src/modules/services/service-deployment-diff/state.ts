@@ -1,14 +1,8 @@
-import type {
-  ServiceDeploymentFieldSelection,
-  ServiceRecord,
-} from "#/modules/environment-design/services";
-import type { EnvironmentWorkingComparison } from "#/modules/environment-design/environment-change-set";
-import {
-  projectServiceDeploymentConfig,
-  type ServiceDeploymentConfig,
-} from "#/modules/environment-design/services";
+import type { DashboardReviewNodeChange } from "#/modules/environment-design/environment-change-set";
+import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import {
   getServiceDeploymentDiffRows,
+  presentSettingChange,
   SERVICE_DEPLOYMENT_DIFF_PATHS,
   type ServiceDeploymentDiffKind,
   type ServiceDeploymentDiffPath,
@@ -28,26 +22,18 @@ export type ServiceDeploymentDiffState = {
   field: (path: ServiceDeploymentDiffPath) => ServiceDeploymentFieldState;
 };
 
-export function getServiceDeploymentDiffState(input: {
-  service: Pick<ServiceRecord, "id" | "source"> &
-    ServiceDeploymentFieldSelection;
-  comparison: EnvironmentWorkingComparison<ServiceDeploymentConfig>;
-}): ServiceDeploymentDiffState {
-  const current = projectServiceDeploymentConfig(input.service);
-  const rows = input.comparison
-    ? getServiceDeploymentDiffRows({
-        serviceId: input.service.id,
-        current,
-        baseline: input.comparison.value,
-      })
-    : [];
+/** Field states for the drawer, read off the node's change group; the Environment Change Set decides what it compares against. */
+export function getServiceDeploymentDiffState(change: DashboardReviewNodeChange | null): ServiceDeploymentDiffState {
+  const rows = (change?.settings ?? []).map((row) => ({
+    ...row,
+    ...presentSettingChange("service", row.path, row.before, row.after),
+  }));
   const rowsByPath = new Map(rows.map((row) => [row.path, row]));
 
   return {
     hasChanges: rows.length > 0,
-    sourceTypeChanged:
-      input.comparison?.value.source.type != null &&
-      input.comparison.value.source.type !== input.service.source.type,
+    // Core emits a `source` row only when the source type itself changed.
+    sourceTypeChanged: rowsByPath.has(SERVICE_DEPLOYMENT_DIFF_PATHS.source),
     field: (path) => {
       const row =
         rowsByPath.get(path) ??
@@ -58,11 +44,7 @@ export function getServiceDeploymentDiffState(input: {
       return row
         ? {
             changed: true,
-            baselineLabel: input.comparison
-              ? input.comparison.role === "baseline"
-                ? "Current"
-                : "Introduced"
-              : undefined,
+            baselineLabel: change?.comparison === "introduction" ? "Introduced" : "Current",
             baselineValue: row.currentValue,
             currentValue: row.newValue,
             kind: row.kind,

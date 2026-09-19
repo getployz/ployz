@@ -3,7 +3,7 @@
 
 export type AdvertisedEndpoint = string;
 
-export type AuthoredServiceConfig = { version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostname: ServiceManagedHostname | null, build: ServiceBuildConfig, };
+export type AuthoredServiceConfig = { version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
@@ -25,7 +25,7 @@ export type CertificateObservation = { hostname: IngressHost, status: Certificat
 
 export type ChangeKind = "add" | "update" | "remove";
 
-export type ChangeSetInput = { working: ReviewStateProjection, saved: ReviewStateProjection, applied: ReviewStateProjection, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
+export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
 export type ClusterDomainLabel = string;
 
@@ -591,11 +591,21 @@ export type RestartAttempt<E> = { "type": "not_attempted" } | { "type": "restart
 
 export type RestartPolicy = { "name": "no" } | { "name": "always" } | { "name": "unless-stopped" } | { "name": "on-failure", maximum_retry_count: number | null, };
 
-export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number, canSave: boolean, };
+export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number,
+/**
+ * Token of the Head this set was computed against; discard must present it back.
+ */
+headToken: string, };
+
+export type ReviewComparisonRole = "head" | "introduction";
 
 export type ReviewLifecycleKind = "create" | "update" | "delete";
 
-export type ReviewNodeChange = { node: ReviewNodeIdentity, lifecycle: ReviewLifecycleKind, settings: Array<ServiceSettingChange>, };
+export type ReviewNodeChange = { node: ReviewNodeIdentity, lifecycle: ReviewLifecycleKind,
+/**
+ * What `settings` and discard compare against; `None` only when nothing exists to compare.
+ */
+comparison: ReviewComparisonRole | null, settings: Array<ServiceSettingChange>, };
 
 export type ReviewNodeIdentity = { type: EnvironmentNodeType, id: string, };
 
@@ -682,9 +692,9 @@ name: ServiceName, };
 
 export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null, watchPaths: Array<string>, };
 
-export type ServiceBuilder = "dockerfile" | "auto";
+export type ServiceBuilder = "dockerfile" | "railpack";
 
-export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostname: ServiceManagedHostname | null, build: ServiceBuildConfig, };
+export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 
 export type ServiceContainer = ContainerObservation;
 
@@ -758,11 +768,11 @@ export type ServiceObservation = { identity: QualifiedService, service_id: Servi
 
 export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 'no';
 
-export type ServiceRoute = { id: string, hostname: string, targetPort: number, };
+export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 
 export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, };
 
-export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "cron", "value": string | null } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostname", "value": ServiceManagedHostname | null } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig };
+export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "cron", "value": string | null } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig };
 
 export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, installationId: number, rootDir: string, branch: ServiceGitBranch, autoDeploy: boolean, waitForCi: boolean, } | { "type": "image", version: 1, image: string, autoUpdate: ServiceImageAutoUpdate, credentials: ServiceImageCredentials, };
 

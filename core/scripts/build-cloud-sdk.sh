@@ -8,7 +8,8 @@ case "$(uname -s)" in
   Linux) binding=${CARGO_TARGET_DIR:-target}/release/libployz_sdk.so ;;
   *) echo 'Cloud SDK build requires Linux or macOS' >&2; exit 1 ;;
 esac
-cp "$binding" crates/ployz-sdk/ployz-sdk.node
+# Replace, don't overwrite: macOS caches the code signature per inode and SIGKILLs a stale one.
+rm -f crates/ployz-sdk/ployz-sdk.node && cp "$binding" crates/ployz-sdk/ployz-sdk.node
 CGO_ENABLED=0 PLOYZ_VERSION=$(node -p 'require("./crates/ployz-sdk/package.json").version') bash native/tailcat/build.sh "$repo_dir/crates/ployz-sdk/ployz-tailcat"
 bash scripts/build-config-browser.sh
 node crates/ployz-sdk/tests/config-contract.mjs

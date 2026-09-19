@@ -9,12 +9,8 @@ import {
   uniqueNamesGenerator,
 } from "unique-names-generator";
 import type { Actor } from "#/modules/identity/actor";
-import {
-  getCustomDomainCapability,
-  routeMutationRequiresCustomDomainCapability,
-} from "#/modules/billing/custom-domain-capability";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { Conflict, Forbidden, NotFound } from "#/server/public-error";
+import { Conflict, NotFound } from "#/server/public-error";
 import { slugifySegment } from "#/utils/slug";
 import {
   SecretEncryption,
@@ -194,13 +190,10 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
 
 export const updateService = Effect.fn("EnvironmentDesign.updateService")(
   function* (actor: Actor, input: UpdateServiceInput) {
-    const context = yield* requireEnvironmentForActorById(actor, input);
+    yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const { document, node } = yield* loadServiceEdit(input);
-      if (routeMutationRequiresCustomDomainCapability(node.config.routes, input.routes ?? node.config.routes)) {
-        const capability = yield* getCustomDomainCapability(context.organization.id);
-        if (!capability.allowed) return yield* new Forbidden({ message: capability.reason });
-      }
+      // ponytail: custom domains are ungated for alpha; re-add getCustomDomainCapability when plans ship.
       const name = input.name ?? node.config.name;
       if (isEnvironmentNodeNameTaken(name, yield* listEnvironmentNodeNameIdentities(input.environmentId), { type: "service", id: node.id })) {
         return yield* new Conflict({ message: getDuplicateEnvironmentNodeNameMessage(name) });

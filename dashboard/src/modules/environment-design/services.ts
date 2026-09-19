@@ -43,7 +43,7 @@ const SERVICE_DEPLOYMENT_OPTIONAL_FIELD_KEYS = [
   "cpuLimit",
   "memLimit",
   "routes",
-  "managedHostname",
+  "managedHostnames",
   "build",
 ] as const;
 
@@ -80,7 +80,7 @@ export function createDefaultServiceHealthcheck(): ServiceHealthcheckRecord {
 }
 
 export function createDefaultServiceRestartPolicy(): ServiceRestartPolicyRecord {
-  return decodeStrict(serviceRestartPolicySchema, "unless-stopped");
+  return decodeStrict(serviceRestartPolicySchema, "on-failure");
 }
 
 export function createEmptyServiceSource(rootDir = "/"): ServiceSource {
@@ -333,8 +333,8 @@ export function projectServiceDeploymentConfig(
   if (service.cpuLimit !== undefined) config.cpuLimit = service.cpuLimit;
   if (service.memLimit !== undefined) config.memLimit = service.memLimit;
   if (service.routes !== undefined) config.routes = service.routes;
-  if (service.managedHostname !== undefined) {
-    config.managedHostname = service.managedHostname;
+  if (service.managedHostnames !== undefined) {
+    config.managedHostnames = service.managedHostnames;
   }
   if (service.build !== undefined) config.build = service.build;
   return decodeStrict(serviceDeploymentConfigSchema, config);

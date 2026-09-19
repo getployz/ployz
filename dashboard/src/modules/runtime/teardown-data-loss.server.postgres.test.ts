@@ -51,7 +51,7 @@ const serviceConfig = projectServiceDeploymentConfig({
   healthcheck: createDefaultServiceHealthcheck(),
   restartPolicy: createDefaultServiceRestartPolicy(),
   privateDns: "api",
-  build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
+  build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
 });
 const {
   env: _serviceEnvironment,

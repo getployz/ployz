@@ -115,6 +115,7 @@ describe("compileSdkDeployIntent", () => {
           update: { order: null, monitor_millis: null },
           container: {
             ...resolvedServiceSpecFixture().container,
+            restart: { name: "on-failure", maximum_retry_count: 10 },
             image: "nginx:1.27",
             environment: { API_KEY: "decrypted-secret", PORT: "8080" },
             pull_policy: "missing",

@@ -47,7 +47,7 @@ const FIELDS: &[&str] = &[
     "cpuLimit",
     "memLimit",
     "privateDns",
-    "managedHostname",
+    "managedHostnames",
     "build",
 ];
 
@@ -177,7 +177,7 @@ fn default_value(path: &str) -> Value {
         "restartPolicy" => json!("unless-stopped"),
         "maxRetries" => json!(10),
         "replicas" => json!(1),
-        "build" => json!({"builder": "auto", "dockerfilePath": null, "watchPaths": []}),
+        "build" => json!({"builder": "railpack", "dockerfilePath": null, "watchPaths": []}),
         _ => Value::Null,
     }
 }

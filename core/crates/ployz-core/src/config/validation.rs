@@ -50,7 +50,7 @@ pub enum ServiceSettingInput {
     MemLimit(Option<f64>),
     PrivateDns(ServiceName),
     Routes(Vec<ServiceRoute>),
-    ManagedHostname(Option<ServiceManagedHostname>),
+    ManagedHostnames(Vec<ServiceManagedHostname>),
     ManagedHostnameValue(ServiceManagedHostname),
     ManagedHostnamePrefix(String),
     Build(ServiceBuildConfig),
@@ -131,22 +131,27 @@ impl ServiceSettingInput {
                     IngressHost::parse(&route.hostname)
                         .map_err(|_| ConfigError::at("routes", "Invalid public hostname"))?;
                     range(
-                        route.target_port != 0,
+                        route.target_port != Some(0),
                         "routes",
                         "Expected a port from 1–65535",
                     )?;
                 }
                 Ok(())
             }
-            Self::ManagedHostname(Some(value)) | Self::ManagedHostnameValue(value) => {
-                hostname_prefix(&mut value.prefix)?;
-                range(
-                    value.target_port != Some(0),
-                    "managedHostname",
-                    "Expected a port from 1–65535",
-                )
+            Self::ManagedHostnames(values) => {
+                let mut seen = std::collections::BTreeSet::new();
+                for value in values.iter_mut() {
+                    managed_hostname(value)?;
+                    if !seen.insert(value.prefix.clone()) {
+                        return Err(ConfigError::at(
+                            "managedHostnames",
+                            "Each managed domain needs a distinct subdomain",
+                        ));
+                    }
+                }
+                Ok(())
             }
-            Self::ManagedHostname(None) => Ok(()),
+            Self::ManagedHostnameValue(value) => managed_hostname(value),
             Self::ManagedHostnamePrefix(value) => hostname_prefix(value),
             Self::Build(value) => {
                 optional_trimmed(
@@ -260,6 +265,15 @@ fn timeout(value: u16) -> Result<(), ConfigError> {
         (1..=300).contains(&value),
         "healthcheck.timeoutSeconds",
         "Expected 1–300 seconds",
+    )
+}
+
+fn managed_hostname(value: &mut ServiceManagedHostname) -> Result<(), ConfigError> {
+    hostname_prefix(&mut value.prefix)?;
+    range(
+        value.target_port != Some(0),
+        "managedHostnames",
+        "Expected a port from 1–65535",
     )
 }
 

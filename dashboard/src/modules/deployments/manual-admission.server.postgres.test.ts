@@ -425,18 +425,11 @@ describe("manual environment saved-state persistence", () => {
     );
     const changeSet = buildEnvironmentChangeSet({
       working: { token: "working:unchanged", nodes },
-      saved: explicit.saved
-        ? {
-            token: explicit.saved.token,
-            nodes,
-          }
-        : { token: "saved:none", nodes: [] },
       applied: { token: explicit.applied.token, nodes: [] },
       nodeIntroductions: { token: "introductions:none", nodes: [] },
       submitted: null,
     });
 
-    expect(changeSet.canSave).toBe(false);
     expect(changeSet.groups).toMatchObject([
       {
         node: { type: "service", id: serviceId },

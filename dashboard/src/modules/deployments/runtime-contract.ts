@@ -11,7 +11,6 @@ export type EnvironmentDeploySnapshot = {
   config: ServiceDeploymentConfig;
   replicas?: number;
   resolvedEnv?: Record<string, string>;
-  healthcheckPort?: number;
 };
 
 export const TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES =
@@ -27,8 +26,3 @@ export const ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES =
     "planning",
     "deploying",
   ]);
-
-export function getResolvedHealthcheckPort(values: Record<string, string> | undefined) {
-  const port = Number(values?.["PORT"]);
-  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
-}

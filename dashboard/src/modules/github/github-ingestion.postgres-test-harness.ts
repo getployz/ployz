@@ -44,7 +44,7 @@ export function savedGithubServiceNode(input: {
       healthcheck: createDefaultServiceHealthcheck(),
       restartPolicy: createDefaultServiceRestartPolicy(),
       privateDns: "api",
-      build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
+      build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
     }),
     encryptedRegistryUsername: null,
     encryptedRegistrySecret: null,

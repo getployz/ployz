@@ -49,6 +49,8 @@ export type GithubObservationOperation =
   | "fetch_check_suite"
   | "list_repositories"
   | "list_branches"
+  | "resolve_file_ref"
+  | "list_files"
   | "installation_token";
 
 export type GithubObservationErrorCode =
@@ -570,4 +572,3 @@ export const GithubApiLive = Layer.effect(
     return { json };
   }),
 );
-

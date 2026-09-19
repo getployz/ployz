@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildEnvironmentNodeChange } from "#/modules/environment-design/environment-change-set";
 import {
   createDefaultServiceHealthcheck,
   createDefaultServiceRestartPolicy,
@@ -72,10 +73,10 @@ describe("service deployment state", () => {
     if (baselineSource.type !== "git") throw new Error("Expected git source");
     baselineSource.branch = { name: "main", type: "connected" };
 
-    const diff = getServiceDeploymentDiffState({
-      service: {
+    const node = { type: "service" as const, id: crypto.randomUUID() };
+    const diff = getServiceDeploymentDiffState(buildEnvironmentNodeChange({
+      working: { node, config: projectServiceDeploymentConfig({
         ...currentConfig,
-        id: crypto.randomUUID(),
         source: createGitServiceSource({
           repository: "acme/api",
           repositoryId: 42,
@@ -83,12 +84,11 @@ describe("service deployment state", () => {
           rootDir: "/apps/api",
           branch: { type: "connected", name: "main" },
         }),
-      },
-      comparison: {
-        role: "baseline",
-        value: { ...currentConfig, source: baselineSource },
-      },
-    });
+      }) },
+      applied: [{ node, config: projectServiceDeploymentConfig({ ...currentConfig, source: baselineSource }) }],
+      submitted: null,
+      introduction: null,
+    }));
 
     expect(diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceBranch)).toEqual({
       changed: false,

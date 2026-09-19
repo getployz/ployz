@@ -99,7 +99,6 @@ export function CanvasFlow({
     destructiveServiceNames,
     deletedDeployedVolumeIds,
   } = useCanvasFlowState({
-    environmentNamespace: params.environmentSlug,
     servicesWithBoundEnv,
     environmentResources,
     volumeResources,

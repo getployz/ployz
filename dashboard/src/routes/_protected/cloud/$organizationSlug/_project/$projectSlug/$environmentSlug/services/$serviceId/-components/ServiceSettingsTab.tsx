@@ -35,28 +35,23 @@ export function ServiceSettingsTab({ state }: { state: ServiceDrawerState }) {
   } satisfies Record<ServiceSettingsSectionId, ReactNode>;
 
   return (
-    <TabsContent
-      value="settings"
-      className="mt-4 min-h-0 flex-1 overflow-hidden"
-    >
-      <div className="-mx-1 h-full overflow-y-auto px-1">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-8">
-          {SERVICE_SETTINGS_SECTIONS.map((section, index) => (
-            <div key={section.id} className="flex flex-col gap-4">
-              <ServiceSettingsSection
-                id={section.id}
-                title={section.label}
-                variant={section.id === "danger" ? "danger" : "default"}
-              >
-                {bodies[section.id]}
-              </ServiceSettingsSection>
-              {index < SERVICE_SETTINGS_SECTIONS.length - 1 ? (
-                <Separator />
-              ) : null}
-            </div>
+    <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
+      <div className="h-full overflow-y-auto pr-1 pb-8">
+        <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 **:data-[slot=field-group]:gap-4">
+          {SERVICE_SETTINGS_SECTIONS.map((section) => (
+            <ServiceSettingsSection
+              key={section.id}
+              id={section.id}
+              title={section.label}
+              description={section.description}
+              variant={section.id === "danger" ? "danger" : "default"}
+            >
+              {bodies[section.id]}
+            </ServiceSettingsSection>
           ))}
         </div>
       </div>
     </TabsContent>
   );
 }
+

@@ -25,7 +25,7 @@ export type RestoreWorkingDocumentInput = typeof restoreWorkingDocumentSchema.Ty
 export const discardEnvironmentChangesSchema = Schema.Struct({
   ...restoreScope,
   savedStateBasis: environmentSavedStateBasisSchema,
-  baselineToken: Schema.NonEmptyString,
+  headToken: Schema.NonEmptyString,
   command: Schema.Union([Schema.Struct({ kind: Schema.Literal("all") }), nodeCommand]),
 });
 export type DiscardEnvironmentChangesInput = typeof discardEnvironmentChangesSchema.Type;

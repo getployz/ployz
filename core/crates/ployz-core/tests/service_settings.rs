@@ -133,15 +133,15 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
         "env.URL"
     );
     for value in [
-        json!({"prefix":"api","targetPort":null}),
-        json!({"prefix":"api","targetPort":8080}),
+        json!([{"prefix":"api","targetPort":null}]),
+        json!([{"prefix":"api","targetPort":8080},{"prefix":"admin","targetPort":9000}]),
     ] {
         let mut edited = before.clone();
-        edited["managedHostname"] = value;
+        edited["managedHostnames"] = value;
         let current = parse_service_config(edited).unwrap();
         assert_eq!(
             compare_service_settings(&current, Some(&baseline))[0].path,
-            "managedHostname"
+            "managedHostnames"
         );
     }
     before["mounts"] =

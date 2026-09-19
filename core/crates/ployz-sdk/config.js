@@ -1,5 +1,7 @@
 const { configRequest: request } = require('./index.js');
 
+exports.DEFAULT_SERVICE_PORT = request({ operation: 'default_service_port' });
+
 exports.parseServiceConfig = value => request({ operation: 'parse_service', value });
 exports.parseServiceSetting = (field, value) => request({ operation: 'parse_setting', value: { field, value } });
 exports.compareServiceSettings = (current, baseline) => request({ operation: 'compare_service', current, baseline });

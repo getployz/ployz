@@ -7,13 +7,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import { createFileRoute } from "@tanstack/react-router";
 import { ServiceCreateCommand } from "#/components/service-create-command";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "#/components/ui/card";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/new",
@@ -41,17 +34,9 @@ function RouteComponent() {
           </ReactFlow>
         </ReactFlowProvider>
       </div>
-      <Card className="relative w-full max-w-md">
-        <CardHeader>
-          <CardTitle>Create project</CardTitle>
-          <CardDescription>
-            Start with a service or create an empty project.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ServiceCreateCommand organizationSlug={organizationSlug} />
-        </CardContent>
-      </Card>
+      <div className="relative w-full max-w-md">
+        <ServiceCreateCommand organizationSlug={organizationSlug} />
+      </div>
     </main>
   );
 }

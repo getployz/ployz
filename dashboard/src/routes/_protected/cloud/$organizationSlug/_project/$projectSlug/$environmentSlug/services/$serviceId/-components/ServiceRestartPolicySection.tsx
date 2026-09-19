@@ -15,18 +15,37 @@ import {
 } from "#/components/ui/select";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import {
-  SERVICE_RESTART_POLICIES,
+  serviceMaxRetriesSchema,
   type ServiceRestartPolicy,
 } from "#/modules/environment-design/services";
+import { isValid } from "#/modules/environment-design/schema";
 import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 
 const RESTART_POLICY_LABELS = {
   "unless-stopped": "Unless stopped",
   always: "Always",
-  "on-failure": "On failure",
-  no: "No",
+  "on-failure": "On Failure",
+  no: "Never",
 } as const satisfies Record<ServiceRestartPolicy, string>;
+
+const RESTART_POLICY_DESCRIPTIONS = {
+  "unless-stopped": "Restart the container unless it was manually stopped.",
+  always: "Restart the container whenever it stops.",
+  "on-failure": "Restart the container if it exits with a non-zero exit code.",
+  no: "Never restart the container if it stops.",
+} as const satisfies Record<ServiceRestartPolicy, string>;
+
+function RestartPolicyOption({ policy }: { policy: ServiceRestartPolicy }) {
+  return (
+    <span className="grid gap-1 whitespace-normal">
+      <span>{RESTART_POLICY_LABELS[policy]}</span>
+      <span className="text-muted-foreground">
+        {RESTART_POLICY_DESCRIPTIONS[policy]}
+      </span>
+    </span>
+  );
+}
 
 export function ServiceRestartPolicySection({
   state,
@@ -35,57 +54,79 @@ export function ServiceRestartPolicySection({
 }) {
   const { service, collection, diff } = state;
   const restartDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.restartPolicy);
+  const retriesDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.maxRetries);
   const cronDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.cron);
-  // "on-failure" (with bounded max-retries) and cron schedules aren't yet
-  // deployable by the Rust runtime. Block newly selecting/configuring them,
-  // but keep existing values visible so users can switch away.
-  const restartPolicyUnsupported = service.restartPolicy === "on-failure";
 
   return (
     <FieldGroup>
-      <Field data-invalid={restartPolicyUnsupported || undefined}>
+      <Field>
         <FieldLabel htmlFor="service-restart-policy">Restart policy</FieldLabel>
         <FieldDescription>
-          What to do when the container exits.
+          Configure what to do when the process exits.
         </FieldDescription>
         <Select
           value={service.restartPolicy}
           onValueChange={(next) => {
+            if (next !== "always" && next !== "on-failure" && next !== "no") return;
             const transaction = collection.update(service.id, (draft) => {
-              // SAFETY: Select only emits SERVICE_RESTART_POLICIES values from the items below.
-              draft.restartPolicy = next as ServiceRestartPolicy;
+              draft.restartPolicy = next;
+              if (next === "on-failure" && draft.maxRetries === 0) {
+                draft.maxRetries = 10;
+              }
             });
             void transaction.isPersisted.promise;
           }}
         >
           <SelectTrigger
             id="service-restart-policy"
-            aria-invalid={restartPolicyUnsupported || undefined}
-            className="w-full"
+            className="w-full data-[size=default]:h-auto"
             data-changed={restartDiff.changed || undefined}
           >
-            <SelectValue />
+            <SelectValue>
+              <RestartPolicyOption policy={service.restartPolicy} />
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              {SERVICE_RESTART_POLICIES.map((policy) => (
-                <SelectItem
-                  key={policy}
-                  value={policy}
-                  disabled={policy === "on-failure" && !restartPolicyUnsupported}
-                >
-                  {RESTART_POLICY_LABELS[policy]}
+              {(["always", "on-failure", "no"] as const).map((policy) => (
+                <SelectItem key={policy} value={policy} label={RESTART_POLICY_LABELS[policy]}>
+                  <RestartPolicyOption policy={policy} />
                 </SelectItem>
               ))}
             </SelectGroup>
           </SelectContent>
         </Select>
-        {restartPolicyUnsupported ? (
-          <FieldError>
-            Select Always, Unless stopped, or No before deploying
-          </FieldError>
-        ) : null}
       </Field>
+
+      {service.restartPolicy === "on-failure" ? (
+        <Field>
+          <FieldDescription>
+            Number of times to try and restart the service if it stopped due to an error.
+          </FieldDescription>
+          <ServiceSettingInput
+            ariaLabel="Restart retries"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={100}
+            step={1}
+            value={String(service.maxRetries)}
+            isChanged={retriesDiff.changed}
+            baselineLabel={retriesDiff.baselineLabel}
+            baselineValue={retriesDiff.baselineValue}
+            validate={(raw) =>
+              Number(raw) >= 1 && isValid(serviceMaxRetriesSchema, Number(raw))
+                ? null
+                : "Enter a whole number from 1 to 100."
+            }
+            onCommit={(raw) =>
+              collection.update(service.id, (draft) => {
+                draft.maxRetries = Number(raw);
+              })
+            }
+          />
+        </Field>
+      ) : null}
 
       {service.cron ? (
         <Field data-invalid>

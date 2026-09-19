@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
-import { Command, CommandSeparator } from "#/components/ui/command";
 import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
-import { Input } from "#/components/ui/input";
+import { InputGroupAddon, InputGroupInput } from "#/components/ui/input-group";
+import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
+import { Spinner } from "#/components/ui/spinner";
 import { Result, Schema } from "effect";
 import {
   strictParseOptions,
@@ -37,6 +38,7 @@ export function CanvasInspectorNameEditor({
   const [isOpen, setIsOpen] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [isPending, setIsPending] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const parsed = Schema.decodeUnknownResult(schema)(draftValue, strictParseOptions);
   const error = Result.isFailure(parsed)
     ? parsed.failure instanceof Error
@@ -48,6 +50,7 @@ export function CanvasInspectorNameEditor({
   function openEditor() {
     setDraftValue(value);
     setIsPending(false);
+    setSaveError(null);
     setIsOpen(true);
   }
 
@@ -57,11 +60,14 @@ export function CanvasInspectorNameEditor({
     }
 
     setIsPending(true);
+    setSaveError(null);
 
     try {
       await onRename(parsed.success);
       setDraftValue(parsed.success);
       setIsOpen(false);
+    } catch {
+      setSaveError("Could not save the name. Try again.");
     } finally {
       setIsPending(false);
     }
@@ -112,19 +118,21 @@ export function CanvasInspectorNameEditor({
         surface="unstyled"
         showCloseButton={false}
       >
-        <div className="flex w-full min-w-0 flex-col gap-2">
-          <Command shouldFilter={false}>
-            <div className="p-1">
-              <Input
+        <SourcePickerLayout title={editTitle}>
+          <SourcePickerInput onBack={handleClose} disabled={isPending}>
+              <InputGroupInput
                 aria-label={editTitle}
+                aria-invalid={Boolean(error || saveError) || undefined}
                 value={draftValue}
                 placeholder={placeholder}
                 disabled={isPending}
-                variant="title"
                 data-changed={isChanged}
                 autoFocus
                 onFocus={(event) => event.currentTarget.select()}
-                onChange={(event) => setDraftValue(event.target.value)}
+                onChange={(event) => {
+                  setDraftValue(event.target.value);
+                  setSaveError(null);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
                     event.preventDefault();
@@ -137,21 +145,14 @@ export function CanvasInspectorNameEditor({
                   if (event.key === "Enter") {
                     event.preventDefault();
                     event.stopPropagation();
-                    void handleSubmit();
+                    if (!event.nativeEvent.isComposing && !event.repeat) void handleSubmit();
                   }
                 }}
               />
-            </div>
-            {error ? (
-              <>
-                <CommandSeparator />
-                <div className="px-3 pb-3 pt-2">
-                  <FieldError>{error}</FieldError>
-                </div>
-              </>
-            ) : null}
-          </Command>
-        </div>
+              {isPending ? <InputGroupAddon align="inline-end"><Spinner /></InputGroupAddon> : null}
+          </SourcePickerInput>
+          {error || saveError ? <FieldError>{error ?? saveError}</FieldError> : null}
+        </SourcePickerLayout>
       </CommandDialog>
     </>
   );

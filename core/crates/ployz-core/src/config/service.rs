@@ -34,7 +34,7 @@ pub struct AuthoredServiceConfig {
     #[serde(default)]
     pub routes: Vec<ServiceRoute>,
     #[serde(default)]
-    pub managed_hostname: Option<ServiceManagedHostname>,
+    pub managed_hostnames: Vec<ServiceManagedHostname>,
     #[serde(default)]
     pub build: ServiceBuildConfig,
 }
@@ -180,16 +180,16 @@ impl From<ServiceRestartPolicy> for String {
     }
 }
 
-/// A stable public route identity, hostname, and target container port.
+/// A stable public route identity and hostname. A null target follows container PORT.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceRoute {
     pub id: String,
     pub hostname: String,
-    pub target_port: u16,
+    pub target_port: Option<u16>,
 }
 
-/// A managed hostname label with an optional explicit target port.
+/// A managed hostname label. A null target follows container PORT.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceManagedHostname {
@@ -203,7 +203,8 @@ pub struct ServiceManagedHostname {
 pub enum ServiceBuilder {
     Dockerfile,
     #[default]
-    Auto,
+    #[serde(alias = "auto")]
+    Railpack,
 }
 
 /// Build policy supplied to the selected builder.

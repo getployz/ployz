@@ -6,7 +6,7 @@ import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
   useAppForm,
-  validateAfterBlurThenWhileInvalid,
+  validateOnChangeOrBlur,
 } from "#/form";
 import {
   registryCredentialSecretSchema,
@@ -25,7 +25,7 @@ const registryCredentialFormSchema = Schema.toStandardSchemaV1(
 const registryCredentialFormOptions = appFormOptions.strictSchema({
   defaultValues: { username: "", secret: "" },
   errorVisibility: showErrorsAfterBlurOrSubmit,
-  validators: [validateAfterBlurThenWhileInvalid(registryCredentialFormSchema)],
+  validators: [validateOnChangeOrBlur(registryCredentialFormSchema)],
 });
 
 type ServiceRegistryCredentialFormProps = {

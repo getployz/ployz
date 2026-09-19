@@ -5,7 +5,7 @@ import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
   useAppForm,
-  validateAfterBlurThenWhileInvalid,
+  validateOnChangeOrBlur,
 } from "#/form";
 import { asRecord, asString } from "#/lib/json";
 import {
@@ -71,7 +71,7 @@ export function SchemaFieldInput({
       value,
     },
     errorVisibility: showErrorsAfterBlurOrSubmit,
-    validators: [validateAfterBlurThenWhileInvalid(formSchema)],
+    validators: [validateOnChangeOrBlur(formSchema)],
   });
   const form = useAppForm({
     ...formOptions,

@@ -1,13 +1,14 @@
 import "@tanstack/react-start/server-only";
 
 import { Data, Effect } from "effect";
+import { Minimatch } from "minimatch";
 import {
   createGithubRepositoriesSyncRequestedEvent,
   type GithubInstallationRepositoriesWebhookEventData,
   type GithubInstallationWebhookEventData,
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { listInstallationRepoBranches } from "#/modules/github/github.api";
+import { listInstallationFiles, listInstallationRepoBranches } from "#/modules/github/github.api";
 import {
   deleteCachedGithubRepositories,
   deleteCachedGithubRepositoriesById,
@@ -261,3 +262,31 @@ export const listGithubBranches = Effect.fn("Github.listBranches")(
 );
 
 export { verifyWebhookSignature } from "#/modules/github/github.api";
+
+export const searchGithubFiles = Effect.fn("Github.searchFiles")(
+  function* (actor: Actor, input: {
+    repositoryId: number;
+    installationId: number;
+    ref: string;
+    pattern: string;
+  }) {
+    const repository = yield* getCachedGithubRepositoryForUser({
+      userId: actor.userId,
+      repositoryId: input.repositoryId,
+      installationId: input.installationId,
+    });
+    if (repository === null) {
+      return yield* new NotFound({ message: "The GitHub repository installation was not found." });
+    }
+    const files = yield* listInstallationFiles(input.installationId, repository.fullName, input.ref);
+    // Basic globs only: avoid unbounded brace expansion for user-supplied patterns.
+    const matcher = new Minimatch(input.pattern, {
+      dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true,
+    });
+    const paths = files.paths.filter((path) => matcher.match(path)).sort();
+    return {
+      paths: paths.slice(0, 200),
+      truncated: files.truncated || paths.length > 200,
+    };
+  },
+);

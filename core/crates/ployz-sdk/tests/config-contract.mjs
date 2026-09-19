@@ -70,7 +70,6 @@ for (const api of [native, browser]) {
   }));
   const review = api.projectEnvironmentChanges({
     working: { token: 'working', nodes: nodes(api.compileEnvironmentIntent(id(3), changed)) },
-    saved: { token: 'saved', nodes: nodes(compiled) },
     applied: { token: 'applied', nodes: nodes(compiled) },
     nodeIntroductions: { token: 'introductions', nodes: [] }, submitted: null,
   });

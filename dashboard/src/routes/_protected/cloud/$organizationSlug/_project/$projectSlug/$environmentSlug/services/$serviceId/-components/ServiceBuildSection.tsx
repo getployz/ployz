@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
+import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { PlusIcon, XIcon } from "lucide-react";
 import type { ServiceBuildConfig } from "#/modules/environment-design/tables";
 import { Badge } from "#/components/ui/badge";
@@ -15,6 +18,52 @@ import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deploy
 import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 
+type GitRef = {
+  repositoryId: number;
+  installationId: number;
+  ref: string;
+};
+
+function DockerfilePathInput({
+  gitRef,
+  value,
+  isChanged,
+  onCommit,
+}: {
+  gitRef: GitRef;
+  value: string;
+  isChanged: boolean;
+  onCommit: (raw: string) => PersistableTransaction;
+}) {
+  const [search, setSearch] = useState(false);
+  const files = useQuery({
+    ...githubFileSearchQueryOptions({
+      ...gitRef,
+      pattern: "**/*Dockerfile*",
+    }),
+    enabled: search,
+    retry: false,
+  });
+  const suggestions = (files.data?.paths ?? [])
+    .filter((path) => !path.endsWith(".dockerignore"))
+    .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right));
+
+  return (
+    <ServiceSettingInput
+      ariaLabel="Dockerfile path"
+      placeholder="Dockerfile"
+      suggestions={suggestions}
+      suggestionsLoading={files.isFetching}
+      suggestionsMessage={files.isError ? "Couldn’t load suggestions. Enter a path." : undefined}
+      suggestionsNotice={files.data?.truncated ? "Some files are omitted. You can enter a path manually." : undefined}
+      onFocus={() => setSearch(true)}
+      value={value}
+      isChanged={isChanged}
+      onCommit={onCommit}
+    />
+  );
+}
+
 export function ServiceBuildSection({
   state,
 }: {
@@ -24,12 +73,30 @@ export function ServiceBuildSection({
   const buildDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.build);
   const build = service.build;
   const [watchInput, setWatchInput] = useState("");
+  const source = service.source;
+  const gitRef =
+    source.type === "git" && source.branch.type === "connected"
+      ? {
+          repositoryId: source.repositoryId,
+          installationId: source.installationId,
+          ref: source.branch.name,
+        }
+      : null;
 
   function updateBuild(patch: Partial<ServiceBuildConfig>) {
     const transaction = collection.update(service.id, (draft) => {
       draft.build = { ...draft.build, ...patch };
     });
     void transaction.isPersisted.promise;
+  }
+
+  function commitDockerfilePath(raw: string) {
+    return collection.update(service.id, (draft) => {
+      draft.build = {
+        ...draft.build,
+        dockerfilePath: raw.length > 0 ? raw : null,
+      };
+    });
   }
 
   function addWatchPath() {
@@ -46,19 +113,19 @@ export function ServiceBuildSection({
       <Field>
         <FieldLabel>Builder</FieldLabel>
         <FieldDescription>
-          Build from a Dockerfile, or let the platform detect a builder.
+          Build with Railpack or use your own Dockerfile.
         </FieldDescription>
         <ToggleGroup
           variant="outline"
           value={[build.builder]}
           onValueChange={(value) => {
             const [next] = value;
-            if (next === "auto" || next === "dockerfile") {
+            if (next === "railpack" || next === "dockerfile") {
               updateBuild({ builder: next });
             }
           }}
         >
-          <ToggleGroupItem value="auto">Auto-detect</ToggleGroupItem>
+          <ToggleGroupItem value="railpack">Railpack</ToggleGroupItem>
           <ToggleGroupItem value="dockerfile">Dockerfile</ToggleGroupItem>
         </ToggleGroup>
       </Field>
@@ -69,20 +136,22 @@ export function ServiceBuildSection({
           <FieldDescription>
             Path to the Dockerfile within the repository.
           </FieldDescription>
-          <ServiceSettingInput
-            ariaLabel="Dockerfile path"
-            placeholder="Dockerfile"
-            value={build.dockerfilePath ?? ""}
-            isChanged={buildDiff.changed}
-            onCommit={(raw) =>
-              collection.update(service.id, (draft) => {
-                draft.build = {
-                  ...draft.build,
-                  dockerfilePath: raw.length > 0 ? raw : null,
-                };
-              })
-            }
-          />
+          {gitRef ? (
+            <DockerfilePathInput
+              gitRef={gitRef}
+              value={build.dockerfilePath ?? ""}
+              isChanged={buildDiff.changed}
+              onCommit={commitDockerfilePath}
+            />
+          ) : (
+            <ServiceSettingInput
+              ariaLabel="Dockerfile path"
+              placeholder="Dockerfile"
+              value={build.dockerfilePath ?? ""}
+              isChanged={buildDiff.changed}
+              onCommit={commitDockerfilePath}
+            />
+          )}
         </Field>
       ) : null}
 

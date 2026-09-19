@@ -5,7 +5,6 @@ import {
 import { environmentDesignFields } from "#/modules/environment-design/fields";
 import {
   Field,
-  FieldDescription,
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
@@ -39,9 +38,6 @@ export function ServiceNameSection({
           label="Name"
           schema={nameSchema}
         />
-        <FieldDescription>
-          This label is used in the environment and throughout the project.
-        </FieldDescription>
       </Field>
     </FieldGroup>
   );

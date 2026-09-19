@@ -6,6 +6,7 @@ import {
   getGithubRepoAccessState,
   listGithubBranches,
   requestGithubRepoSync,
+  searchGithubFiles,
 } from "#/modules/github/github.server";
 import {
   actorMiddleware,
@@ -19,6 +20,15 @@ const RepositoryIdentity = Schema.Struct({
   repositoryId: githubIdSchema,
   installationId: githubIdSchema,
 });
+
+export const searchGithubFilesServerFn = createServerFn({ method: "GET" })
+  .middleware(authenticated)
+  .validator(strictValidator(Schema.Struct({
+    ...RepositoryIdentity.fields,
+    ref: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+    pattern: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+  })))
+  .handler(({ context, data }) => runActor(context, searchGithubFiles(context.actor, data)));
 
 export const getGithubInstallUrlServerFn = createServerFn({ method: "GET" })
   .middleware(authenticated)

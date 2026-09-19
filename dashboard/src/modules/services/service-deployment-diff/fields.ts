@@ -29,7 +29,7 @@ export const SERVICE_DEPLOYMENT_DIFF_PATHS = {
   memLimit: "memLimit",
   privateDns: "privateDns",
   routes: "routes",
-  managedHostname: "managedHostname",
+  managedHostnames: "managedHostnames",
   build: "build",
 } as const;
 
@@ -43,7 +43,7 @@ const labels = new Map(Object.entries({
   startCommand: "Start command", healthcheck: "Healthcheck", restartPolicy: "Restart policy",
   maxRetries: "Max retries", cron: "Cron schedule", replicas: "Replicas",
   cpuLimit: "CPU limit", memLimit: "Memory limit", privateDns: "Private DNS",
-  managedHostname: "Managed domain", build: "Build",
+  managedHostnames: "Managed domains", build: "Build",
   variableGroupAttachments: "Variable Group attachments (in precedence order)",
 }));
 
@@ -57,16 +57,18 @@ function displaySetting(path: string, value: ServiceSettingChange["before"]): st
   const record = asRecord(value);
   if (path.startsWith("env.")) return record?.["kind"] === "secret" ? "Secret value" : asString(record?.["value"]) ?? "";
   if (path.startsWith("mounts.")) return asString(record?.["mountPath"]) ?? "";
-  if (path.startsWith("routes.")) return `${asString(record?.["hostname"])}:${asFiniteNumber(record?.["targetPort"])}`;
+  if (path.startsWith("routes.")) return `${asString(record?.["hostname"])}:${asFiniteNumber(record?.["targetPort"]) ?? "PORT"}`;
   switch (path) {
     case "source": return asString(record?.["type"]) ?? "";
     case "source.branch": return asString(record?.["name"] ?? record?.["previousName"]) ?? "Disconnected";
     case "source.autoUpdate": return record?.["type"] === "off" ? "Off" : asString(record?.["tag"]) ?? "";
     case "source.credentials": return record?.["type"] === "none" ? "None" : "Configured";
     case "healthcheck": return record?.["type"] === "none" ? "Disabled" : `${asString(record?.["path"])} (${asFiniteNumber(record?.["timeoutSeconds"])}s timeout)`;
-    case "restartPolicy": return ({ always: "Always", "on-failure": "On failure", no: "No", "unless-stopped": "Unless stopped" })[asString(value) ?? ""] ?? "";
-    case "managedHostname": return `${asString(record?.["prefix"])} (port ${asFiniteNumber(record?.["targetPort"]) ?? "PORT"})`;
-    case "build": return record?.["builder"] === "dockerfile" ? (record["dockerfilePath"] ? `Dockerfile (${asString(record["dockerfilePath"])})` : "Dockerfile") : "Auto-detect";
+    case "restartPolicy": return ({ always: "Always", "on-failure": "On Failure", no: "Never", "unless-stopped": "Unless stopped" })[asString(value) ?? ""] ?? "";
+    case "managedHostnames": return Array.isArray(value) && value.length
+      ? value.map((item) => { const row = asRecord(item); return `${asString(row?.["prefix"])} (port ${asFiniteNumber(row?.["targetPort"]) ?? "PORT"})`; }).join(", ")
+      : "None";
+    case "build": return record?.["builder"] === "dockerfile" ? (record["dockerfilePath"] ? `Dockerfile (${asString(record["dockerfilePath"])})` : "Dockerfile") : "Railpack";
     case "cpuLimit": return `${asFiniteNumber(value)} vCPU`;
     case "memLimit": return `${asFiniteNumber(value)} GB`;
     default: {

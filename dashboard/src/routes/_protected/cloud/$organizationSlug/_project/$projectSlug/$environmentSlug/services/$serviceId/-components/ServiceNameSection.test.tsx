@@ -42,6 +42,7 @@ function createState(overrides?: Partial<ServiceDrawerState>) {
 
   const state: ServiceDrawerState = {
     organizationSlug: "acme",
+    environmentSlug: "production",
     service,
     environmentNodes: [
       {

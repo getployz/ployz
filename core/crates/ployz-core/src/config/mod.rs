@@ -31,6 +31,7 @@ pub use variables::*;
 #[derive(serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum ConfigRequest {
+    DefaultServicePort,
     ParseRuntimePreview {
         value: serde_json::Value,
     },
@@ -131,6 +132,7 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
     let input = serde_json::from_value(input)
         .map_err(|_| ConfigError::at("request", "Invalid configuration request"))?;
     Ok(match input {
+        ConfigRequest::DefaultServicePort => serde_json::json!(DEFAULT_SERVICE_PORT),
         ConfigRequest::ParseRuntimePreview { value } => {
             serde_json::json!(parse_runtime_preview(value)?)
         }

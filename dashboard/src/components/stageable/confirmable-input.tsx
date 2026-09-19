@@ -1,6 +1,5 @@
 import * as React from "react"
 import { CheckIcon, XIcon } from "lucide-react"
-
 import { cn } from "#/lib/utils"
 import { FieldError } from "#/components/ui/field"
 import { Spinner } from "#/components/ui/spinner"
@@ -13,20 +12,7 @@ import {
   InputGroupTextarea,
 } from "#/components/ui/input-group"
 
-function ConfirmableInput({
-  value,
-  onValueChange,
-  onConfirm,
-  onCancel,
-  isDirty = false,
-  isPending = false,
-  isChanged = false,
-  suffix,
-  error,
-  className,
-  multiline = false,
-  ...props
-}: Omit<
+export type ConfirmableInputProps = Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
   "defaultValue" | "onChange" | "onSubmit" | "value"
 > & {
@@ -40,7 +26,28 @@ function ConfirmableInput({
   suffix?: React.ReactNode
   error?: React.ReactNode
   multiline?: boolean
-}) {
+  endAddon?: React.ReactNode
+  renderInput?: (
+    props: Omit<React.ComponentProps<typeof InputGroupInput>, "value" | "onChange">,
+  ) => React.ReactNode
+}
+
+function ConfirmableInput({
+  value,
+  onValueChange,
+  onConfirm,
+  onCancel,
+  isDirty = false,
+  isPending = false,
+  isChanged = false,
+  suffix,
+  error,
+  className,
+  multiline = false,
+  endAddon,
+  renderInput,
+  ...props
+}: ConfirmableInputProps) {
   // SAFETY: input and textarea onKeyDown handlers are the same function; their event element types don't unify.
   const onKeyDown = props.onKeyDown as
     | ((event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void)
@@ -102,6 +109,13 @@ function ConfirmableInput({
             onChange={updateDraftValue}
             onKeyDown={handleKeyDown}
           />
+        ) : renderInput ? (
+          renderInput({
+            ...props,
+            "aria-invalid": props["aria-invalid"] ?? !!error,
+            disabled: props.disabled,
+            onKeyDown: handleKeyDown,
+          })
         ) : (
           <InputGroupInput
             {...props}
@@ -112,10 +126,11 @@ function ConfirmableInput({
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || isDirty ? (
+        {suffix || endAddon || (isDirty && !isPending) ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
-            {isDirty ? (
+            {endAddon}
+            {isDirty && !isPending ? (
               <>
                 <InputGroupButton
                   size="icon-xs"
@@ -146,6 +161,7 @@ function ConfirmableInput({
       {error ? <FieldError>{error}</FieldError> : null}
     </div>
   )
+
 }
 
 export { ConfirmableInput }

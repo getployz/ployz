@@ -11,11 +11,11 @@ fn projections(state: &ReviewStateProjection) -> BTreeMap<String, &ReviewNodePro
 }
 
 fn compare(
-    baseline: &ReviewStateProjection,
+    head: &ReviewStateProjection,
     working: &ReviewStateProjection,
     introductions: &BTreeMap<String, &ReviewNodeProjection>,
 ) -> Result<Vec<ReviewNodeChange>, ConfigError> {
-    let before = projections(baseline);
+    let before = projections(head);
     let after = projections(working);
     let keys: BTreeSet<_> = before.keys().chain(after.keys()).collect();
     let mut groups = Vec::new();
@@ -27,8 +27,13 @@ fn compare(
             .or_else(|| before.get(key))
             .expect("union contains node")
             .node;
-        let comparison =
-            previous.or_else(|| introductions.get(key).and_then(|node| node.config.as_ref()));
+        let (comparison, role) = match previous {
+            Some(config) => (Some(config), Some(ReviewComparisonRole::Head)),
+            None => match introductions.get(key).and_then(|node| node.config.as_ref()) {
+                Some(config) => (Some(config), Some(ReviewComparisonRole::Introduction)),
+                None => (None, None),
+            },
+        };
         let settings: Vec<_> = match (next, comparison) {
             (Some(current), Some(baseline)) => {
                 compare_resource_settings(node.node_type, current.clone(), Some(baseline.clone()))?
@@ -47,6 +52,7 @@ fn compare(
         groups.push(ReviewNodeChange {
             node: node.clone(),
             lifecycle,
+            comparison: role,
             settings,
         });
     }
@@ -54,34 +60,19 @@ fn compare(
 }
 
 pub fn project_environment_changes(input: ChangeSetInput) -> Result<ReviewChangeSet, ConfigError> {
-    let baseline = input.submitted.as_ref().unwrap_or(&input.applied);
-    let saved = projections(&input.saved);
-    let applied = projections(&input.applied);
-    let introductions = projections(&input.node_introductions)
-        .into_iter()
-        .filter(|(key, _)| {
-            saved
-                .get(key)
-                .and_then(|node| node.config.as_ref())
-                .is_none()
-                && applied
-                    .get(key)
-                    .and_then(|node| node.config.as_ref())
-                    .is_none()
-        })
-        .collect();
-    let groups = compare(baseline, &input.working, &introductions)?;
+    let head = input.submitted.as_ref().unwrap_or(&input.applied);
+    let introductions = projections(&input.node_introductions);
+    let groups = compare(head, &input.working, &introductions)?;
     let total_count = groups
         .iter()
         .map(|group| {
             group.settings.len() + usize::from(group.lifecycle != ReviewLifecycleKind::Update)
         })
         .sum();
-    let can_save = !compare(&input.saved, &input.working, &BTreeMap::new())?.is_empty();
     Ok(ReviewChangeSet {
         groups,
         total_count,
-        can_save,
+        head_token: head.token.clone(),
     })
 }
 
@@ -125,7 +116,6 @@ mod tests {
         ] {
             let review = project_environment_changes(ChangeSetInput {
                 working: state(Some(working)),
-                saved: state(Some(5)),
                 applied: state(Some(applied)),
                 submitted: submitted.map(|n| state(Some(n))),
                 node_introductions: state(None),
@@ -139,7 +129,33 @@ mod tests {
                 .collect();
             assert_eq!(rows, expected);
             assert_eq!(review.total_count, expected.len());
-            assert_eq!(review.can_save, working != 5);
+            assert_eq!(
+                review.head_token,
+                format!("{:?}", submitted.or(Some(applied)))
+            );
         }
+    }
+
+    #[test]
+    fn new_node_compares_against_its_introduction_until_head_has_it() {
+        let review = project_environment_changes(ChangeSetInput {
+            working: state(Some(7)),
+            applied: state(None),
+            submitted: None,
+            node_introductions: state(Some(1)),
+        })
+        .unwrap();
+        let group = review.groups.first().expect("new node has a change group");
+        assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
+        assert_eq!(group.comparison, Some(ReviewComparisonRole::Introduction));
+        assert_eq!(
+            group
+                .settings
+                .iter()
+                .map(|row| (row.before.clone(), row.after.clone()))
+                .collect::<Vec<_>>(),
+            vec![(json!(1), json!(7))]
+        );
+        assert_eq!(review.total_count, 2);
     }
 }

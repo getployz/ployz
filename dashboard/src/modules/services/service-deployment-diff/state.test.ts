@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveEnvironmentWorkingComparison } from "#/modules/environment-design/environment-change-set";
+import { buildEnvironmentNodeChange } from "#/modules/environment-design/environment-change-set";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import { getServiceDeploymentDiffState } from "#/modules/services/service-deployment-diff/state";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
@@ -26,8 +26,8 @@ function config(replicas: number): ServiceDeploymentConfig {
     memLimit: null,
     privateDns: "api",
     routes: [],
-    managedHostname: null,
-    build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
+    managedHostnames: [],
+    build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
     env: {},
     mounts: [],
     variableGroupAttachments: [],
@@ -49,11 +49,13 @@ describe("service drawer Working comparison", () => {
       baselineValue: "1",
     },
   ])("preserves $baselineLabel provenance for field copy", (input) => {
-    const working = config(3);
-    const diff = getServiceDeploymentDiffState({
-      service: { id: "service-1", ...working },
-      comparison: resolveEnvironmentWorkingComparison({ baseline: input.baseline, introduction: input.introduction }),
-    });
+    const node = { type: "service" as const, id: "service-1" };
+    const diff = getServiceDeploymentDiffState(buildEnvironmentNodeChange({
+      working: { node, config: config(3) },
+      applied: input.baseline ? [{ node, config: input.baseline }] : [],
+      submitted: null,
+      introduction: { node, config: input.introduction },
+    }));
 
     expect(diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.replicas)).toMatchObject({
       changed: true,
@@ -64,14 +66,10 @@ describe("service drawer Working comparison", () => {
   });
 
   it("does not invent field comparisons without a baseline or Introduction", () => {
-    const working = config(3);
-    const diff = getServiceDeploymentDiffState({
-      service: { id: "service-1", ...working },
-      comparison: resolveEnvironmentWorkingComparison<ServiceDeploymentConfig>({
-        baseline: null,
-        introduction: null,
-      }),
-    });
+    const node = { type: "service" as const, id: "service-1" };
+    const diff = getServiceDeploymentDiffState(buildEnvironmentNodeChange({
+      working: { node, config: config(3) }, applied: [], submitted: null, introduction: null,
+    }));
 
     expect(diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.replicas)).toEqual({
       changed: false,

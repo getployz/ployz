@@ -125,7 +125,7 @@ export function useCanvasChangeActions({
       if (!document) throw new Error("Environment is not loaded.");
       const result = await discard({ data: {
         organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
-        savedStateBasis, baselineToken: changeState.baselineToken, command,
+        savedStateBasis, headToken: changeState.headToken, command,
       } });
       await environments.writeCommitted(result.data);
       await reconcileDeploymentCollections(params.organizationSlug, collectionScope);

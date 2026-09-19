@@ -21,7 +21,7 @@ export function ServiceDrawerTabs({
           void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
         }
       }}
-      className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
       <TabsList variant="line">
         <TabsTrigger value="settings">Settings</TabsTrigger>

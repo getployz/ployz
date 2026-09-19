@@ -9,7 +9,8 @@ import { Validation } from "#/server/public-error";
 /**
  * Resolve a deployment's snapshot env to concrete strings at apply time: decrypt
  * sealed values and resolve `${{ }}` templates against the environment's current
- * producers. Cycles fail; missing references resolve to "".
+ * producers. Cycles fail; missing references resolve to "". Core's lowerDeployment
+ * applies service defaults after this step, so authored values always take precedence.
  */
 export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
   "Deployments.getResolvedDeployEnvBySnapshotConfig",
@@ -22,7 +23,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
   frozenProducers: EnvironmentSnapshotVariableProducer[] | null,
 ) {
   const envByServiceId = new Map<string, Record<string, string>>(
-    snapshots.map((snapshot) => [snapshot.serviceId, { PORT: "8080" }]),
+    snapshots.map((snapshot) => [snapshot.serviceId, {}]),
   );
 
   const hasTemplates = snapshots.some((snapshot) =>

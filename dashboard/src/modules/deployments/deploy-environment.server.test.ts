@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { getResolvedDeployEnvBySnapshotConfig } from "./deploy-environment.server";
 import { makeSecretEncryption } from "#/utils/encrypted-secret.server";
 
-it("defaults PORT while preserving explicit literal and secret values", async () => {
+it("resolves authored values and leaves service defaults to Core", async () => {
   const encryption = makeSecretEncryption("test-encryption-secret");
   const env = await Effect.runPromise(getResolvedDeployEnvBySnapshotConfig(
     encryption,
@@ -16,7 +16,7 @@ it("defaults PORT while preserving explicit literal and secret values", async ()
     null,
   ));
   expect(Object.fromEntries(env)).toEqual({
-    default: { PORT: "8080" },
+    default: {},
     explicit: { PORT: "80" },
     empty: { PORT: "" },
     secret: { PORT: "3000" },
