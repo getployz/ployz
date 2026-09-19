@@ -1,5 +1,5 @@
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import "@tanstack/react-start/server-only";
-import { restoreEnvironmentNode } from "@ployz/sdk/config";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -8,7 +8,7 @@ import { Database } from "#/server/database.server";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
-import { emptyEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
+import { emptyEnvironmentIntent, restoreDashboardEnvironmentNode, type SavedEnvironmentIntent } from "./saved-intent";
 import { loadEnvironmentSavedIntentById } from "./saved-state-repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
 import type { RestoreWorkingDocumentInput } from "./working-document-restore";
@@ -16,6 +16,10 @@ import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introd
 
 export const restoreWorkingDocument = Effect.fn("EnvironmentDesign.restoreWorkingDocument")(
   function* (actor: Actor, input: RestoreWorkingDocumentInput) {
+    if (!variableGroupsEnabled && input.command.kind === "node" &&
+      (input.command.nodeType === "variable_group" || input.command.path === "variableGroupAttachments")) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
     yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
@@ -42,7 +46,7 @@ export const restoreWorkingDocument = Effect.fn("EnvironmentDesign.restoreWorkin
       const command = input.command;
       const next = yield* Effect.try({
         try: () => command.kind === "all" ? baseline ?? emptyEnvironmentIntent(document.namespace)
-          : restoreEnvironmentNode(document.intent, baseline, { nodeType: command.nodeType, nodeId: command.nodeId }, command.path),
+          : restoreDashboardEnvironmentNode(document.intent, baseline, { nodeType: command.nodeType, nodeId: command.nodeId }, command.path),
         catch: () => new Conflict({ message: "Discard would leave invalid Environment relationships." }),
       });
       return yield* writeEnvironmentDocument(document, next);

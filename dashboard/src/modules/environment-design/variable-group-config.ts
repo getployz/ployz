@@ -1,16 +1,29 @@
-import { parseResourceConfig } from "@ployz/sdk/config";
-import { sharedSchema } from "#/modules/environment-design/service-config";
+import { Schema } from "effect";
 import type { VariableGroupResourceRecord } from "#/modules/environment-design/resources";
 import {
   variableValueSchema,
+  encryptedSecretValueSchema,
 } from "#/modules/environment-design/variables";
 import { decodeStrict } from "#/modules/environment-design/schema";
-import {
-  getResourceDeploymentDiffRows,
-  type DiffRow,
-} from "#/modules/services/service-deployment-diff/fields";
 
-export const variableGroupConfigSchema = sharedSchema((value) => parseResourceConfig("variable_group", value));
+export const variableGroupConfigSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  name: Schema.String,
+  variables: Schema.mutable(Schema.Array(Schema.Struct({
+    key: Schema.String,
+    description: Schema.NullOr(Schema.String),
+    exported: Schema.Boolean,
+    value: Schema.Union([
+      Schema.Struct({ type: Schema.Literal("plain"), value: Schema.String }),
+      Schema.Struct({
+        type: Schema.Literal("sealed"),
+        hasValue: Schema.Literal(true),
+        fingerprint: Schema.NonEmptyString,
+        encryptedValue: Schema.optionalKey(encryptedSecretValueSchema),
+      }),
+    ]),
+  }))),
+});
 export type VariableGroupConfig = typeof variableGroupConfigSchema.Type;
 
 export function projectVariableGroupConfig(
@@ -30,10 +43,3 @@ export function projectVariableGroupConfig(
   };
 }
 
-export function getVariableGroupConfigDiffRows(input: {
-  nodeId: string;
-  current: VariableGroupConfig;
-  baseline: VariableGroupConfig | null;
-}): DiffRow[] {
-  return getResourceDeploymentDiffRows("variable_group", input);
-}

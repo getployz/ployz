@@ -3,8 +3,8 @@ import {
   createSelectSchema,
 } from "drizzle-orm/effect-schema";
 import { Effect, Schema } from "effect";
-import { serviceFieldSchema, sharedServiceConfigSchema, savedServiceConfigSchema } from "./service-config";
-import type { ServiceConfig, ServiceGitBranch as SharedServiceGitBranch, ServiceImageAutoUpdate as SharedServiceImageAutoUpdate, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
+import { serviceFieldSchema, sharedServiceConfigSchema, savedServiceConfigSchema, type DashboardServiceConfig } from "./service-config";
+import type { ServiceGitBranch as SharedServiceGitBranch, ServiceImageAutoUpdate as SharedServiceImageAutoUpdate, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
 import {
   environmentCanvasNodePosition,
   REGISTRY_CREDENTIAL_AUTH_MODES,
@@ -294,7 +294,7 @@ export type ServiceDeployEnvValue = DeepMutable<
   typeof serviceDeployEnvValueSchema.Type
 >;
 export type ServiceDeployEnv = DeepMutable<typeof serviceDeployEnvSchema.Type>;
-export type ServiceDeploymentConfig = ServiceConfig;
+export type ServiceDeploymentConfig = DashboardServiceConfig;
 export type ServiceRecord = DeepMutable<typeof serviceSelectSchema.Type>;
 export type ServiceWithContextRecord = DeepMutable<
   typeof serviceWithContextSelectSchema.Type

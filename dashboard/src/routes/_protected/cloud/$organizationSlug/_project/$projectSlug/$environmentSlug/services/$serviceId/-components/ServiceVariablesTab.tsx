@@ -1,3 +1,4 @@
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
@@ -136,7 +137,9 @@ export function ServiceVariablesTab({
         ? [
             [
               variable.id,
-              "Overridden by an attached Variable Group variable.",
+              variableGroupsEnabled
+                ? "Overridden by an attached Variable Group variable."
+                : "Overridden by shared configuration.",
             ] as const,
           ]
         : [],
@@ -223,15 +226,15 @@ export function ServiceVariablesTab({
                 </Button>
               </AlertAction>
             </Alert>
-            <ServiceVariableGroupAttachmentsPanel state={state} />
+            {variableGroupsEnabled && <ServiceVariableGroupAttachmentsPanel state={state} />}
           </>
         )}
         renderAfterList={() => (
           <>
-            <InheritedVariableGroupVariablesSection
+            {variableGroupsEnabled && <InheritedVariableGroupVariablesSection
               items={inheritedVariables}
               duplicateKeyCounts={inheritedKeyCounts}
-            />
+            />}
             <Separator />
             <Collapsible>
               <CollapsibleTrigger

@@ -84,7 +84,6 @@ pub fn destructive_publication(input: DestructivePublicationInput) -> Destructiv
         match node.node_type {
             EnvironmentNodeType::Service => result.service_ids.push(node.node_id.clone()),
             EnvironmentNodeType::Volume => result.volume_ids.push(node.node_id.clone()),
-            EnvironmentNodeType::VariableGroup => {}
         }
     }
     result.service_ids.sort();

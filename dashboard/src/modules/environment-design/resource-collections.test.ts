@@ -3,7 +3,7 @@ import { createOptimisticAction } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
 import { createApiCollection, reconcileCollection, preloadCollection } from "#/collections/query-collection";
 import { createVolumeResourcesCollection } from "./resource-collections";
-import { compileEnvironmentIntent, type SavedEnvironmentIntent } from "@ployz/sdk/config";
+import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import type { Collection } from "@tanstack/react-db";
 type Sources = Parameters<typeof createVolumeResourcesCollection>[0]["sources"];
 type Row<Key extends keyof Sources> = Sources[Key] extends Collection<infer R, infer _K, infer _U, infer _S, infer _I> ? R : never;
@@ -23,7 +23,7 @@ function createStores() {
   const server = {
     resources: [{ id, environmentId, projectId, organizationId, lineageId, implementationType: "volume", variableGroupId: null, createdAt: now, updatedAt: now }] satisfies Row<"resources">[],
     lineages: [{ id: lineageId, projectId, organizationId, canonicalName: "data", canonicalSlug: "data", createdAt: now, updatedAt: now }] satisfies Row<"lineages">[],
-    documents: [{ id: environmentId, projectId, organizationId, projectSlug: "app", namespace: "production", name: "Production", revision: "00000000-0000-4000-8000-000000000099", createdAt: now, updatedAt: now, intent, compiled: compileEnvironmentIntent(environmentId, intent) }] satisfies Row<"documents">[],
+    documents: [{ id: environmentId, projectId, organizationId, projectSlug: "app", namespace: "production", name: "Production", revision: "00000000-0000-4000-8000-000000000099", createdAt: now, updatedAt: now, intent, compiled: compileSavedEnvironmentIntent({ environmentId, intent }) }] satisfies Row<"documents">[],
     positions: [{ id: "00000000-0000-4000-8000-000000000006", environmentId, organizationId, resourceType: "volume", resourceId: id, x: 10, y: 20, createdAt: now, updatedAt: now }] satisfies Row<"positions">[],
     snapshots: new Array<Row<"snapshots">>(),
     removals: new Array<Row<"removals">>(),

@@ -90,7 +90,8 @@ describe("manual environment saved-state persistence", () => {
 
   beforeEach(async () => {
     vi.mocked(inngest.send).mockReset().mockResolvedValue({ ids: [] });
-    const { env: _env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...config } = parseServiceConfig({ version: 2, name: "API", source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: "api" });
+    const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, name: "API", source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: "api" });
+
     const intent = { version: 1, environmentSlug: "production", variableGroups: [], volumes: [], services: [{
       id: serviceId, lineageId, slug: "api", config, encryptedRegistryUsername: null, encryptedRegistrySecret: null,
       variables: [{ id: variableId, key: "API_TOKEN", description: null, exported: false, valueFingerprint: "fingerprint", value: { kind: "secret", encryptedValue: null } }],

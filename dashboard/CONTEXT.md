@@ -88,6 +88,9 @@ _Avoid_: Prepared snapshot, build workflow, Core Deploy
 The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
+**Variable Group**:
+A Cloud-owned collection of variables that can be attached to Services. Cloud resolves its values into Service configuration before requesting Engine operations; the Engine has no Variable Group identity or lifecycle.
+
 **Saved State**:
 The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save and Deploy both plan against a selected Working State revision and obtain any required approval before publishing it; Save stops at publication without building images or changing running resources, while Deploy starts an attempt against that exact Saved revision.
 _Avoid_: Applied state, frozen attempt target, unsaved draft

@@ -5,7 +5,6 @@ import {
 } from "#/modules/environment-design/environment-resource-types";
 import { decodeStrict, strictParseOptions } from "#/modules/environment-design/schema";
 import {
-  getVariableGroupConfigDiffRows,
   variableGroupConfigSchema,
   type VariableGroupConfig,
 } from "#/modules/environment-design/variable-group-config";
@@ -15,7 +14,7 @@ import {
   persistedVolumeConfigSchema,
   type VolumeConfig,
 } from "#/modules/environment-design/volume-config";
-import type { DiffRow } from "#/modules/services/service-deployment-diff/fields";
+import { getResourceDeploymentDiffRows, type DiffRow } from "#/modules/services/service-deployment-diff/fields";
 
 export type EnvironmentResourceNodeType = EnvironmentResourceType;
 export const isEnvironmentResourceNodeType = isEnvironmentResourceType;
@@ -101,7 +100,7 @@ export function getEnvironmentResourceNodeConfigDiffRows(input: {
 }): DiffRow[] {
   switch (input.nodeType) {
     case "variable_group":
-      return getVariableGroupConfigDiffRows({
+      return getResourceDeploymentDiffRows("variable_group", {
         nodeId: input.nodeId,
         current: decodeStrict(variableGroupConfigSchema, input.current),
         baseline:

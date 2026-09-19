@@ -1,6 +1,6 @@
 import type { CollectionScope } from "#/collections/scope";
 import { createOptimisticAction } from "@tanstack/react-db";
-import { type SavedEnvironmentIntent, type SavedVariableIntent } from "@ployz/sdk/config";
+import type { SavedEnvironmentIntent, SavedVariableIntent } from "./saved-intent";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import type { VariableRecord } from "./variables";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";

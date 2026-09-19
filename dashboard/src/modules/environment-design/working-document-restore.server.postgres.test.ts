@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
 import { restoreWorkingDocument } from "./working-document-restore.server";
 import { discardEnvironmentChanges } from "./saved-state-operations.server";
@@ -15,7 +17,7 @@ import { loadCurrentEnvironmentState, writeEnvironmentDocument } from "./working
 import { environmentDeployment, environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
-import { canonicalizeEnvironmentIntent, compileEnvironmentIntent } from "@ployz/sdk/config";
+import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent } from "./saved-intent";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
@@ -199,10 +201,10 @@ it.live(
         assert.strictEqual((yield* revision()), current.revision);
         const restored = yield* restoreWorkingDocument(actor, { ...scope, revision: current.revision, snapshotSource, command });
         assert.notStrictEqual(restored.data.revision, current.revision);
-        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent, canonicalizeEnvironmentIntent(baseline));
+        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent, canonicalizeSavedEnvironmentIntent(baseline));
         assert.ok(!JSON.stringify(restored.data.intent).includes("ciphertext"));
         const renderedReview = projectReviewedEnvironmentWorkingState({ ...restored.data,
-          compiled: compileEnvironmentIntent(environmentRecord.id, restored.data.intent) });
+          compiled: compileSavedEnvironmentIntent({ environmentId: environmentRecord.id, intent: restored.data.intent }) });
         const captured = yield* loadCurrentEnvironmentState(environmentRecord.id);
         assert.strictEqual(yield* Effect.promise(() => fingerprintReviewedEnvironmentWorkingState(renderedReview)),
           yield* Effect.promise(() => fingerprintReviewedEnvironmentWorkingState(captured.projection)));
@@ -241,7 +243,7 @@ it.live(
             savedStateSnapshotId: saved.id, status, triggerOrigin: { origin: "manual", actorId: actor.userId },
           }).returning();
           if (!attempt) return yield* Effect.die("Attempt missing.");
-          for (const node of compileEnvironmentIntent(scope.environmentId, intent).nodeSnapshots) {
+          for (const node of compileSavedEnvironmentIntent({ environmentId: scope.environmentId, intent }).nodeSnapshots) {
             yield* database.drizzle.insert(environmentNodeConfigSnapshot).values({
               ...node, organizationId: organizationRecord.id, environmentId: scope.environmentId,
               environmentDeploymentId: attempt.id,
@@ -291,10 +293,10 @@ it.live(
         assert.strictEqual(new Set(discardWrites.map(row => row.txid)).size, 1);
 
         yield* discardEnvironmentChanges(actor, yield* reviewDiscard({ kind: "node", nodeType: "service", nodeId: serviceId }));
-        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(scope.environmentId)).intent, canonicalizeEnvironmentIntent(baseline));
+        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(scope.environmentId)).intent, canonicalizeSavedEnvironmentIntent(baseline));
         yield* deleteVolumeResource(actor, { ...scope, revision: yield* revision(), resourceId: volume.data.resource.id });
         yield* discardEnvironmentChanges(actor, yield* reviewDiscard({ kind: "all" }));
-        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(scope.environmentId)).intent, canonicalizeEnvironmentIntent(baseline));
+        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(scope.environmentId)).intent, canonicalizeSavedEnvironmentIntent(baseline));
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -45,13 +45,13 @@ for (const api of [native, browser]) {
   assert.equal(resolved.secret, true);
   assert.equal(resolved.value, 'private-value');
   const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-  const { env, mounts, variableGroupAttachments, ...settings } = baseline;
+  const { env, mounts, ...settings } = baseline;
   const intent = api.parseEnvironmentIntent({
     version: 1, environmentSlug: 'production',
     services: [{ id: id(1), lineageId: id(2), slug: 'api', config: settings,
-      variables: [], variableGroupAttachments: [], volumeAttachments: [],
+      variables: [], volumeAttachments: [],
       encryptedRegistryUsername: null, encryptedRegistrySecret: null }],
-    variableGroups: [], volumes: [],
+    volumes: [],
   });
   const compiled = api.compileEnvironmentIntent(id(3), intent);
   assert.equal(compiled.nodeSnapshots[0].config.name, 'API');

@@ -1,4 +1,3 @@
-import { renderVariableParts } from "@ployz/sdk/config";
 import type { ValuePart, ValuePartRefOwner } from "#/modules/environment-design/tables";
 
 /**
@@ -114,13 +113,13 @@ export function partsToDisplay(
   parts: ValuePart[],
   lookupSlug: LookupSlug,
 ): string {
-  const slugs: Record<string, string> = {};
-  for (const part of parts) {
-    if (part.kind !== "ref" || part.owner.scope === "self") continue;
-    const slug = lookupSlug(part.owner.lineageId);
-    if (slug !== null) slugs[part.owner.lineageId] = slug;
-  }
-  return renderVariableParts(parts, slugs);
+  return parts.map((part) => {
+    if (part.kind === "text") return part.value.replaceAll("${{", () => "$${{");
+    const prefix = part.owner.scope === "self"
+      ? ""
+      : `${lookupSlug(part.owner.lineageId) ?? DELETED_OWNER_SENTINEL}.`;
+    return `\${{ ${prefix}${part.key} }}`;
+  }).join("");
 }
 
 /**

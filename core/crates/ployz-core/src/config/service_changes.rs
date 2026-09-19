@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{ConfigError, EnvSource, ServiceConfig, parse_service_config};
+use super::{ConfigError, ServiceConfig, parse_service_config};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether an owned setting appeared, changed, or disappeared.
@@ -25,9 +25,6 @@ pub struct ServiceSettingChange {
     pub before: Value,
     pub after: Value,
     pub can_restore: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub derived_from: Option<EnvSource>,
 }
 
 const FIELDS: &[&str] = &[
@@ -52,7 +49,6 @@ const FIELDS: &[&str] = &[
     "privateDns",
     "managedHostname",
     "build",
-    "variableGroupAttachments",
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
@@ -182,7 +178,6 @@ fn default_value(path: &str) -> Value {
         "maxRetries" => json!(10),
         "replicas" => json!(1),
         "build" => json!({"builder": "auto", "dockerfilePath": null, "watchPaths": []}),
-        "variableGroupAttachments" => json!([]),
         _ => Value::Null,
     }
 }
@@ -206,7 +201,6 @@ pub(super) fn change(
         before,
         after,
         can_restore,
-        derived_from: None,
     }
 }
 
@@ -254,20 +248,12 @@ fn compare_related_settings(current: &Value, baseline: &Value) -> Vec<ServiceSet
         if comparable_env(before) == comparable_env(after) {
             continue;
         }
-        let mut row = change(
+        let row = change(
             &format!("env.{key}"),
             redacted_env(before),
             redacted_env(after),
             false,
         );
-        // Detaching a group can reveal a local value. That is still a derived
-        // effect of the attachment edit, not a second service-variable edit.
-        let source = if after["source"].is_null() {
-            &before["source"]
-        } else {
-            &after["source"]
-        };
-        row.derived_from = serde_json::from_value(source.clone()).ok();
         changes.push(row);
     }
     changes

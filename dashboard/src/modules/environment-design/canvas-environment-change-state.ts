@@ -1,3 +1,4 @@
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceRecord } from "./services";
 import type {
@@ -34,10 +35,12 @@ export function buildCanvasEnvironmentChangeState(input: {
 }): CanvasEnvironmentChangeState {
   const submitted = input.deploymentEvidence && ["queued", "planning", "deploying"].includes(input.deploymentEvidence.status)
     ? input.deploymentEvidence : null;
+  const visibleState = <T extends EnvironmentStateProjection>(state: T): T => variableGroupsEnabled ? state
+    : { ...state, nodes: state.nodes.filter(entry => entry.node.type !== "variable_group") };
   const result = buildEnvironmentChangeSet({
-    working: input.working, saved: input.saved, applied: input.applied,
-    submitted: submitted ? { token: submitted.token, nodes: submitted.nodes } : null,
-    nodeIntroductions: input.nodeIntroductions,
+    working: visibleState(input.working), saved: visibleState(input.saved), applied: visibleState(input.applied),
+    submitted: submitted ? visibleState({ token: submitted.token, nodes: submitted.nodes }) : null,
+    nodeIntroductions: visibleState(input.nodeIntroductions),
   });
   const presentations = new Map(input.nodes.map(node => [`${node.node.type}:${node.node.id}`, node]));
   return {

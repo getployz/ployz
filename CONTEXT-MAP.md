@@ -14,6 +14,8 @@ owns authored configuration and product workflow history, not runtime truth.
 
 At the boundary:
 
+- Variable Groups belong exclusively to Cloud authoring. Cloud supplies their effects as Service variables; the Engine has no group identity, attachment, or reference owner.
+
 - Cloud **Server** refers to an Engine **Machine**, with no separate runtime identity.
 - A **Cloud Deployment Attempt** includes product steps around an Engine **Deploy**;
   the two are not interchangeable.

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { compileEnvironmentIntent } from "@ployz/sdk/config";
+import { compileSavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { beforeEach, expect, it, vi } from "vitest";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
 
@@ -25,9 +25,9 @@ const mocks = {
 vi.spyOn(scopes, "useCollectionScope").mockReturnValue(asTestDouble<ReturnType<typeof scopes.useCollectionScope>>()({}));
 vi.spyOn(collections, "getEnvironmentsCollection").mockReturnValue(asTestDouble<ReturnType<typeof collections.getEnvironmentsCollection>>()({}));
 vi.spyOn(documents, "useEnvironmentDocument").mockImplementation(() => asTestDouble<NonNullable<ReturnType<typeof documents.useEnvironmentDocument>>>()({
-  id: "env", revision: "reviewed-revision", compiled: compileEnvironmentIntent("env", {
+  id: "env", revision: "reviewed-revision", compiled: compileSavedEnvironmentIntent({ environmentId: "env", intent: {
     version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [],
-  }),
+  } }),
 }));
 vi.spyOn(runtime, "useRuntimeLens").mockReturnValue(asTestDouble<ReturnType<typeof runtime.useRuntimeLens>>()({ status: "ready", machines: [{}], isLoading: false }));
 vi.spyOn(preflight, "getDeployTargetPreflight").mockReturnValue({ ok: true });

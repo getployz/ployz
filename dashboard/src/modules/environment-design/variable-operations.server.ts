@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
@@ -19,6 +20,9 @@ type VariableEdit = { id?: string; variableId?: string; key?: string; descriptio
 
 const editVariables = Effect.fn("EnvironmentDesign.editVariables")(
   function* (actor: Actor, input: ServiceScope | GroupScope, edits: readonly VariableEdit[], deletes: readonly string[] = []) {
+    if ("variableGroupId" in input && !variableGroupsEnabled) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
     yield* requireEnvironmentForActorById(actor, input);
     const encryption = yield* SecretEncryption;
     return yield* withMutationResult(Effect.gen(function* () {
@@ -45,6 +49,10 @@ const editVariables = Effect.fn("EnvironmentDesign.editVariables")(
         } else {
           if (!existing) return yield* new Validation({ message: "A variable value is required." });
           next = { ...existing, description: edit.description === undefined ? existing.description : edit.description, exported: edit.exported ?? existing.exported };
+        }
+        if (!variableGroupsEnabled && edit.value && next.value.kind === "template" &&
+          next.value.parts.some((part) => part.kind === "ref" && part.owner.scope === "variable_group")) {
+          return yield* new Validation({ message: "Variable Groups are disabled." });
         }
         if (existing) node.variables[node.variables.indexOf(existing)] = next;
         else node.variables.push(next);
@@ -89,6 +97,9 @@ export const bulkUpdateServiceVariables = Effect.fn("EnvironmentDesign.bulkUpdat
 
 const editGroupAttachment = Effect.fn("EnvironmentDesign.editGroupAttachment")(
   function* (actor: Actor, input: ServiceScope & { readonly variableGroupId: string }, attach: boolean) {
+    if (!variableGroupsEnabled) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
     yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);

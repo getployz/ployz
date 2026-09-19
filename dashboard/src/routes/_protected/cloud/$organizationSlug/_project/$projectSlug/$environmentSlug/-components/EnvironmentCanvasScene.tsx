@@ -1,3 +1,4 @@
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { Suspense, useRef } from "react";
@@ -175,15 +176,16 @@ function CanvasWithData() {
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );
+  const visibleGroups = variableGroupsEnabled ? environmentResources : [];
   const initialNodes = buildNodes(
     activeServicesWithBoundEnv,
-    environmentResources,
+    visibleGroups,
     canvasPositions,
     selectedNodeId,
     volumeResources,
   );
   const initialEdges = buildEdges(
-    environmentResources,
+    visibleGroups,
     serviceVariableGroupAttachments,
     volumeResources,
     serviceVolumeAttachments,
@@ -204,7 +206,7 @@ function CanvasWithData() {
         organizationId={organizationId}
         environmentId={environmentId}
         servicesWithBoundEnv={servicesWithBoundEnv}
-        environmentResources={environmentResources}
+        environmentResources={visibleGroups}
         volumeResources={volumeResources}
         environmentChangeState={environmentChangeState}
         nodeIntroductions={nodeIntroductions}

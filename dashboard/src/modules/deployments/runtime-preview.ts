@@ -1,3 +1,4 @@
+import { toCoreServiceConfig } from "#/modules/environment-design/service-config";
 import type { DeployIntent } from "@ployz/sdk";
 import { lowerDeployment, parseRuntimePreview } from "@ployz/sdk/config";
 import { Schema } from "effect";
@@ -29,7 +30,7 @@ export function compileSdkDeployIntent(input: {
   snapshots: readonly EnvironmentDeploySnapshot[];
   volumes?: readonly EnvironmentDeployVolume[];
 }): DeployIntent {
-  return lowerDeployment(input);
+  return lowerDeployment({ ...input, snapshots: input.snapshots.map((snapshot) => ({ ...snapshot, config: toCoreServiceConfig(snapshot.config) })) });
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {

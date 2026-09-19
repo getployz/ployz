@@ -33,7 +33,7 @@ fn compare(
             (Some(current), Some(baseline)) => {
                 compare_resource_settings(node.node_type, current.clone(), Some(baseline.clone()))?
                     .into_iter()
-                    .filter(|row| row.path != "node" && row.derived_from.is_none())
+                    .filter(|row| row.path != "node")
                     .collect()
             }
             _ => Vec::new(),

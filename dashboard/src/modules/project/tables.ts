@@ -3,7 +3,7 @@ import { createdAt, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 
 import { organization } from "#/modules/organization/tables";
-import type { SavedEnvironmentIntent } from "@ployz/sdk/config";
+import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
 import { foreignKey, index, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 

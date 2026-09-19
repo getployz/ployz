@@ -1,6 +1,6 @@
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { serviceDocumentRecord } from "#/modules/environment-design/service-document";
@@ -264,7 +264,7 @@ export function normalizeEnvironmentServicesViewRecord(
   const node = record.document.intent.services.find((node) => node.id === record.service.id);
   const snapshot = record.document.compiled.nodeSnapshots.find((node) => node.nodeType === "service" && node.nodeId === record.service.id);
   if (!node || !snapshot) throw new Error("Service is absent from the environment document.");
-  const config = parseServiceConfig(snapshot.config);
+  const config = parseDashboardServiceConfig(snapshot.config);
   const { document: _document, ...view } = record;
   return {
     ...view,

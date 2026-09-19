@@ -11,7 +11,6 @@ use super::*;
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentNodeType {
     Service,
-    VariableGroup,
     Volume,
 }
 
@@ -19,7 +18,6 @@ impl EnvironmentNodeType {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Service => "service",
-            Self::VariableGroup => "variable_group",
             Self::Volume => "volume",
         }
     }
@@ -52,21 +50,9 @@ pub fn restore_environment_node(
         let prior = baseline
             .and_then(|b| b.services.iter().find(|s| s.id == node_id))
             .ok_or_else(|| ConfigError::at("service", "Authored baseline is unavailable"))?;
-        if path == "variableGroupAttachments" {
-            if service.variable_group_attachments == prior.variable_group_attachments {
-                return Err(ConfigError::at(
-                    "path",
-                    "Requested setting is not a restorable change",
-                ));
-            }
-            service
-                .variable_group_attachments
-                .clone_from(&prior.variable_group_attachments);
-        } else {
-            service
-                .configuration
-                .restore_setting(&prior.configuration, path)?;
-        }
+        service
+            .configuration
+            .restore_setting(&prior.configuration, path)?;
     } else {
         match node_type {
             EnvironmentNodeType::Service => {
@@ -75,51 +61,6 @@ pub fn restore_environment_node(
                     baseline.and_then(|b| b.services.iter().find(|s| s.id == node_id))
                 {
                     current.services.push(prior.clone());
-                }
-            }
-            EnvironmentNodeType::VariableGroup => {
-                let old = current
-                    .variable_groups
-                    .iter()
-                    .find(|g| g.resource_id == node_id)
-                    .cloned();
-                let prior = baseline
-                    .and_then(|b| b.variable_groups.iter().find(|g| g.resource_id == node_id));
-                current.variable_groups.retain(|g| g.resource_id != node_id);
-                if let Some(prior) = prior {
-                    current.variable_groups.push(prior.clone());
-                }
-                for service in &mut current.services {
-                    match (&old, prior) {
-                        (None, Some(prior)) => {
-                            let attachment = baseline
-                                .and_then(|b| b.services.iter().find(|s| s.id == service.id))
-                                .and_then(|s| {
-                                    s.variable_group_attachments
-                                        .iter()
-                                        .find(|a| a.variable_group_id == prior.variable_group_id)
-                                });
-                            if let Some(attachment) = attachment
-                                && !service
-                                    .variable_group_attachments
-                                    .iter()
-                                    .any(|a| a.variable_group_id == attachment.variable_group_id)
-                            {
-                                service.variable_group_attachments.push(attachment.clone());
-                            }
-                        }
-                        (Some(old), Some(prior)) => {
-                            for attachment in &mut service.variable_group_attachments {
-                                if attachment.variable_group_id == old.variable_group_id {
-                                    attachment.variable_group_id = prior.variable_group_id.clone();
-                                }
-                            }
-                        }
-                        (Some(old), None) => service
-                            .variable_group_attachments
-                            .retain(|a| a.variable_group_id != old.variable_group_id),
-                        (None, None) => {}
-                    }
                 }
             }
             EnvironmentNodeType::Volume => {

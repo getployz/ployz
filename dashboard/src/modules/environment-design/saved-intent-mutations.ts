@@ -1,7 +1,6 @@
-import { restoreEnvironmentNode } from "@ployz/sdk/config";
 import { Effect } from "effect";
 import type { EnvironmentResourceNodeType } from "#/modules/environment-design/environment-resource-node";
-import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import { restoreDashboardEnvironmentNode, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { Conflict, Validation } from "#/server/public-error";
 
 type SavedIntentNodeIdentity = {
@@ -16,7 +15,7 @@ export const replaceSavedEnvironmentIntentNode = Effect.fn(
   baseline: SavedEnvironmentIntent | null;
   node: SavedIntentNodeIdentity;
 }) => Effect.try({
-  try: () => restoreEnvironmentNode(input.current, input.baseline, input.node),
+  try: () => restoreDashboardEnvironmentNode(input.current, input.baseline, input.node),
   catch: () => new Conflict({
     message: "Discard would leave invalid Saved Environment relationships.",
   }),
@@ -30,7 +29,7 @@ export const discardSavedServiceIntentSetting = Effect.fn(
   serviceId: string;
   path: string;
 }) => Effect.try({
-  try: () => restoreEnvironmentNode(input.current, input.baseline, {
+  try: () => restoreDashboardEnvironmentNode(input.current, input.baseline, {
     nodeType: "service", nodeId: input.serviceId,
   }, input.path),
   catch: () => new Validation({

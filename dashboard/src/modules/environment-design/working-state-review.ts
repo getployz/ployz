@@ -1,9 +1,11 @@
-import { canonicalWorkingReview, destructivePublication, destructivePublicationMismatch } from "@ployz/sdk/config";
-import type { CompiledEnvironmentIntent } from "@ployz/sdk/config";
+import { canonicalJson } from "./canonical-json";
+import { destructivePublication, destructivePublicationMismatch } from "@ployz/sdk/config";
+import type { CompiledSavedEnvironmentIntent } from "./saved-intent";
 import { Schema } from "effect";
 import { destructiveVolumeReviewsSchema } from "./destructive-volume-review";
 import { Uuid } from "./workspace-schemas";
 import { environmentSavedStateBasisSchema } from "./saved-state";
+
 
 type ReviewedNodeSnapshot = {
   nodeType: "service" | "variable_group" | "volume";
@@ -59,7 +61,19 @@ export function projectReviewedEnvironmentPublicationDestructiveSave(
 }
 
 export const getDestructiveEnvironmentSaveReviewMismatch = destructivePublicationMismatch;
-export const projectDestructiveEnvironmentSave = destructivePublication;
+export function projectDestructiveEnvironmentSave(input: {
+  workingNodes: ReviewableNodeIdentity[];
+  appliedNodes: ReviewableNodeIdentity[];
+}) {
+  const runtimeNodes = (nodes: ReviewableNodeIdentity[]) => nodes.flatMap((node) =>
+    node.nodeType === "variable_group" ? [] : [{
+      nodeType: node.nodeType, nodeId: node.nodeId, config: node.config === null ? null : {},
+    }]);
+  return destructivePublication({
+    workingNodes: runtimeNodes(input.workingNodes),
+    appliedNodes: runtimeNodes(input.appliedNodes),
+  });
+}
 
 export type ReviewedEnvironmentWorkingState = {
   nodeSnapshots: ReviewedNodeSnapshot[];
@@ -68,13 +82,21 @@ export type ReviewedEnvironmentWorkingState = {
 
 /** The rendered document revision is the manual publication review boundary. */
 export function projectReviewedEnvironmentWorkingState(document: {
-  id: string; revision: string; compiled: CompiledEnvironmentIntent;
+  id: string; revision: string; compiled: CompiledSavedEnvironmentIntent;
 }): ReviewedEnvironmentWorkingState {
   return { nodeSnapshots: document.compiled.nodeSnapshots,
     revisionMarkers: [`environment:${document.id}:${document.revision}`] };
 }
 
-export const canonicalReviewedEnvironmentWorkingStateJson = canonicalWorkingReview;
+export function canonicalReviewedEnvironmentWorkingStateJson(input: ReviewedEnvironmentWorkingState) {
+  const order = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  return canonicalJson({
+    nodeSnapshots: input.nodeSnapshots.map(({ nodeType, nodeId, nodeLineageId, configVersion, config }) =>
+      ({ nodeType, nodeId, nodeLineageId, configVersion, config }))
+      .sort((a, b) => order(`${a.nodeType}:${a.nodeId}`, `${b.nodeType}:${b.nodeId}`)),
+    revisionMarkers: [...input.revisionMarkers ?? []].sort(order),
+  }, ["encryptedValue", "parts"]);
+}
 
 export function formatReviewedEnvironmentWorkingStateFingerprint(
   digestHex: string,

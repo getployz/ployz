@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { createVariableGroupResource } from "./resource-operations.server";

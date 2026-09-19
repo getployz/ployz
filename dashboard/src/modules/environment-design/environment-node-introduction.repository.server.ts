@@ -1,12 +1,11 @@
 import "@tanstack/react-start/server-only";
-import { compileEnvironmentIntent, redactEnvironmentIntent } from "@ployz/sdk/config";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { asRecord } from "#/lib/json";
 import { environmentNodeIntroduction, environmentNodeIntroductionSecret } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
-import { decodePersistedSavedEnvironmentIntent } from "./saved-intent";
+import { compileSavedEnvironmentIntent, decodePersistedSavedEnvironmentIntent, redactSavedEnvironmentIntent } from "./saved-intent";
 import { loadCurrentEnvironmentState } from "./working-state-repository.server";
 
 type IntroductionIdentity = Pick<typeof environmentNodeIntroduction.$inferInsert, "environmentId" | "nodeType" | "nodeId">;
@@ -16,7 +15,7 @@ export const captureEnvironmentNodeIntroduction = Effect.fn("EnvironmentDesign.c
   function* (identity: IntroductionIdentity) {
     const { drizzle } = yield* Database;
     const { document, intent } = yield* loadCurrentEnvironmentState(identity.environmentId);
-    const snapshot = compileEnvironmentIntent(identity.environmentId, redactEnvironmentIntent(intent)).nodeSnapshots
+    const snapshot = compileSavedEnvironmentIntent({ environmentId: identity.environmentId, intent: redactSavedEnvironmentIntent(intent) }).nodeSnapshots
       .find((node) => node.nodeType === identity.nodeType && node.nodeId === identity.nodeId);
     const config = snapshot && asRecord(snapshot.config);
     if (!snapshot || !config) return yield* new Conflict({ message: "The new node has no authored introduction." });

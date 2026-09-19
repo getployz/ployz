@@ -13,10 +13,9 @@ export function canonicalizeEnvironmentIntent(value: import('./generated/payload
 export function compileEnvironmentIntent(environmentId: string, value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').CompiledEnvironmentIntent;
 export function renderVariableParts(parts: import('./generated/payloads').ValuePart[], slugs: Record<string, string>): string;
 export function parseSavedVariable(value: unknown): import('./generated/payloads').SavedVariableIntent;
-export function restoreEnvironmentNode(current: import('./generated/payloads').SavedEnvironmentIntent, baseline: import('./generated/payloads').SavedEnvironmentIntent | null, node: { nodeType: 'service' | 'variable_group' | 'volume'; nodeId: string }, path?: string): import('./generated/payloads').SavedEnvironmentIntent;
+export function restoreEnvironmentNode(current: import('./generated/payloads').SavedEnvironmentIntent, baseline: import('./generated/payloads').SavedEnvironmentIntent | null, node: { nodeType: 'service' | 'volume'; nodeId: string }, path?: string): import('./generated/payloads').SavedEnvironmentIntent;
 export function parseResourceConfig(nodeType: 'volume', value: unknown): import('./generated/payloads').VolumeConfig;
-export function parseResourceConfig(nodeType: 'variable_group', value: unknown): import('./generated/payloads').VariableGroupConfig;
-export function compareResourceSettings(nodeType: 'volume' | 'variable_group', current: import('./generated/payloads').VolumeConfig | import('./generated/payloads').VariableGroupConfig, baseline: import('./generated/payloads').VolumeConfig | import('./generated/payloads').VariableGroupConfig | null): ServiceSettingChange[];
+export function compareResourceSettings(nodeType: 'volume', current: import('./generated/payloads').VolumeConfig, baseline: import('./generated/payloads').VolumeConfig | null): ServiceSettingChange[];
 export function projectEnvironmentChanges(value: import('./generated/payloads').ChangeSetInput): import('./generated/payloads').ReviewChangeSet;
 export function publicationBasisMatches(basis: { kind: 'no_saved_state' } | { kind: 'saved_revision'; savedStateSnapshotId: string }, latest: string | null): boolean;
 export function destructivePublication(value: unknown): { serviceIds: string[]; volumeIds: string[] };

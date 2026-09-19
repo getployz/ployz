@@ -357,7 +357,7 @@ export const environmentNodeIntroductionSecret = pgTable(
     environmentId: uuid("environment_id").notNull(),
     nodeType: text("node_type").notNull().$type<CanvasNodeType>(),
     nodeId: uuid("node_id").notNull(),
-    authoredIntent: jsonb("authored_intent").notNull().$type<import("@ployz/sdk/config").SavedEnvironmentIntent>(),
+  authoredIntent: jsonb("authored_intent").notNull().$type<import("#/modules/environment-design/saved-intent").SavedEnvironmentIntent>(),
   },
   (table) => [
     primaryKey({ columns: [table.environmentId, table.nodeType, table.nodeId] }),

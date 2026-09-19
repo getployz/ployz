@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { variableGroupsEnabled } from "#/lib/feature-flags";
+import { createFileRoute, notFound } from "@tanstack/react-router";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -24,6 +25,8 @@ function RouteComponent() {
   if (volumeState) {
     return <VolumeDrawer params={params} state={volumeState} />;
   }
+
+  if (variableGroupState && !variableGroupsEnabled) throw notFound();
 
   if (variableGroupState) {
     return <VariableGroupDrawer params={params} state={variableGroupState} />;

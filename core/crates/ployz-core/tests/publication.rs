@@ -48,7 +48,7 @@ fn publication_review_binds_exact_basis_removals_and_visible_revision() {
     assert_eq!(before, canonical(state.clone()));
     state["revisionMarkers"] = json!(["revision-2"]);
     assert_ne!(before, canonical(state));
-    let candidate = json!({"intent":{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]},"volumeDeletionAuthorizations":[]});
+    let candidate = json!({"intent":{"version":1,"environmentSlug":"production","services":[],"volumes":[]},"volumeDeletionAuthorizations":[]});
     assert_eq!(config_request(json!({"operation":"reuse_publication","policy":"reuse_latest_if_equivalent","current":candidate,"latest":candidate})).unwrap(), true);
     assert_eq!(config_request(json!({"operation":"reuse_publication","policy":"always_create","current":candidate,"latest":candidate})).unwrap(), false);
 }

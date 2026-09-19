@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
-import { resolveVariables, type VariableProducer } from "@ployz/sdk/config";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
+import { resolveVariableParts, type ResolvedVariableProducer } from "#/modules/environment-design/variable-resolution";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { SecretEncryptionService } from "#/utils/encrypted-secret.server";
 import { Validation } from "#/server/public-error";
@@ -37,7 +37,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
     });
   }
 
-  const producers: VariableProducer[] = [];
+  const producers: ResolvedVariableProducer[] = [];
   for (const producer of frozenProducers ?? []) {
     const frozenValue = producer.value;
     const value = frozenValue.kind === "secret"
@@ -53,9 +53,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
         }
       : frozenValue;
     producers.push({
-      ownerId: producer.ownerId,
-      owner: { scope: producer.ownerScope, lineageId: producer.ownerLineageId },
-      key: producer.key,
+      ...producer,
       value,
     });
   }
@@ -71,13 +69,10 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
         if (value.parts) {
           const parts = value.parts;
           const resolved = yield* Effect.try({
-            try: () => resolveVariables({ parts, selfOwnerId: snapshot.serviceId, producers }),
-            catch: () => new Validation({ message: "Variable resolution inputs are invalid." }),
+            try: () => resolveVariableParts(parts, snapshot.serviceId, producers),
+            catch: (cause) => new Validation({ message: cause instanceof Error ? cause.message : "Variable resolution inputs are invalid." }),
           });
-          if (resolved.status === "cycle") {
-            return yield* new Validation({ message: `Circular variable reference: ${resolved.path.join(" -> ")}` });
-          }
-          env[key] = resolved.value;
+          env[key] = resolved;
         } else {
           env[key] = value.value;
         }

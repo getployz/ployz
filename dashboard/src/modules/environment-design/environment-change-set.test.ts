@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { parseDashboardServiceConfig as parseServiceConfig } from "#/modules/environment-design/service-config";
 import { buildEnvironmentChangeSet, type EnvironmentNodeProjection } from "./environment-change-set";
 
 const service = parseServiceConfig({

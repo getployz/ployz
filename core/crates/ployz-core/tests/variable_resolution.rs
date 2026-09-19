@@ -51,22 +51,11 @@ fn resolves_literals_references_secrets_missing_and_diamonds() {
     );
     assert_eq!(cross["value"], "postgres:private-sentinel");
     assert_eq!(cross["secret"], true);
-    let missing = run(
-        json!([reference("MISSING"),{"kind":"ref","owner":{"scope":"variable_group","lineageId":"gone"},"key":"KEY"}]),
-        json!([]),
-    );
+    let missing = run(json!([reference("MISSING")]), json!([]));
     assert_eq!(missing["value"], "");
     assert_eq!(
         missing["warnings"],
-        json!([{"kind":"missing","ownerId":"db","key":"MISSING"},{"kind":"missing","ownerId":null,"key":"KEY"}])
-    );
-    let group = json!([{"ownerId":"group","owner":{"scope":"variable_group","lineageId":"group-lineage"},"key":"KEY","value":{"kind":"literal","value":"group-value"}}]);
-    assert_eq!(
-        run(
-            json!([{"kind":"ref","owner":{"scope":"variable_group","lineageId":"group-lineage"},"key":"KEY"}]),
-            group
-        )["value"],
-        "group-value"
+        json!([{"kind":"missing","ownerId":"db","key":"MISSING"}])
     );
 }
 

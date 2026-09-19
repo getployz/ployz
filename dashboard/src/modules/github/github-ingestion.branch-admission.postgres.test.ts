@@ -74,7 +74,7 @@ function savedIntent(
     version: 1,
     environmentSlug: "production",
     services: services.map(({ id, lineageId, config }) => {
-      const { env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...authoredConfig } = config;
+      const { env, mounts: _mounts, variableGroupAttachments: _attachments, ...authoredConfig } = config;
       void _mounts;
       return {
         id,

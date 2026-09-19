@@ -179,7 +179,7 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
       const lineage = yield* createServiceLineage({ projectId: context.project.id, name, slug });
       if (!lineage) return yield* new Conflict({ message: "Could not allocate a service lineage." });
       const identity = yield* insertServiceIdentity({ projectId: context.project.id, environmentId: input.environmentId, lineageId: lineage.id });
-      const { env: _env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...config } = parseServiceConfig({ version: 2, name, source: input.source,
+      const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, name, source: input.source,
         preDeployCommand: input.preDeployCommand, startCommand: input.startCommand,
         healthcheck: input.healthcheck, restartPolicy: input.restartPolicy, privateDns: slug });
       const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], variableGroupAttachments: [], volumeAttachments: [], encryptedRegistryUsername: null, encryptedRegistrySecret: null };

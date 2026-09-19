@@ -3,10 +3,9 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { canonicalizeEnvironmentIntent, parseEnvironmentIntent, redactEnvironmentIntent } from "@ployz/sdk/config";
 import { environment } from "#/modules/project/tables";
 import { service, serviceRegistryCredential, variable, variableSecret, environmentResource, environmentVariableGroup } from "./tables";
-import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
+import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent, parseDashboardEnvironmentIntent, redactSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
@@ -17,7 +16,7 @@ export type CurrentEnvironmentSnapshotProjection = ReturnType<typeof compileSave
 
 export const decodeEnvironmentDocument = Effect.fn("EnvironmentDesign.decodeEnvironmentDocument")(
   (value: SavedEnvironmentIntent) => Effect.try({
-    try: () => parseEnvironmentIntent(value),
+    try: () => parseDashboardEnvironmentIntent(value),
     catch: () => new Conflict({ message: "The authored Environment document is invalid." }),
   }),
 );
@@ -48,7 +47,7 @@ export const requireDocumentRevision = Effect.fn("EnvironmentDesign.requireDocum
 export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnvironmentDocument")(
   function* (document: EnvironmentDocument, candidate: SavedEnvironmentIntent) {
     const { drizzle } = yield* Database;
-    const intent = canonicalizeEnvironmentIntent(yield* decodeEnvironmentDocument(candidate));
+    const intent = canonicalizeSavedEnvironmentIntent(yield* decodeEnvironmentDocument(candidate));
     if (intent.environmentSlug !== document.namespace) {
       return yield* new Conflict({ message: "An edit cannot change the Environment identity." });
     }
@@ -95,7 +94,7 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
         .where(and(eq(service.environmentId, document.id), inArray(service.id, credentials.map((credential) => credential.serviceId))));
     }
     const [written] = yield* drizzle.update(environment).set({
-      intent: redactEnvironmentIntent(intent), revision: randomUUID(), updatedAt: new Date(),
+      intent: redactSavedEnvironmentIntent(intent), revision: randomUUID(), updatedAt: new Date(),
     }).where(and(eq(environment.id, document.id), eq(environment.revision, document.revision))).returning();
     if (!written) return yield* new Conflict({ message: "Working State changed while this edit was being saved." });
     return written;

@@ -83,10 +83,7 @@ pub fn parse_service_config(value: Value) -> Result<ServiceConfig, ConfigError> 
     }
     let mut value = serde_json::to_value(config).expect("config is JSON");
     for (field, value) in value.as_object_mut().expect("config is an object") {
-        if matches!(
-            field.as_str(),
-            "version" | "env" | "mounts" | "variableGroupAttachments"
-        ) {
+        if matches!(field.as_str(), "version" | "env" | "mounts") {
             continue;
         }
         *value = parse_service_setting(serde_json::json!({ "field": field, "value": value }))?;

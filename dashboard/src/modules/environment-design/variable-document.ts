@@ -1,7 +1,7 @@
 import type { SavedEnvironmentIntent, SavedVariableIntent } from "./saved-intent";
 import type { VariableRecord } from "./variables";
-import { parseSavedVariable } from "@ployz/sdk/config";
-import { parseDisplayToParts, isPureLiteral, partsToLiteralString, partsToDisplay } from "./variable-template";
+import { savedVariableIntent } from "./saved-intent";
+import { parseDisplayToParts, partsToDisplay } from "./variable-template";
 
 export function environmentVariableReferences(intent: SavedEnvironmentIntent) {
   const owners = [
@@ -33,6 +33,6 @@ export async function plainVariableIntent(variable: VariableRecord, intent: Save
   if (unresolved.length) throw new Error(`Unknown variable reference: ${unresolved.join(", ")}`);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({ kind: "plain", value: JSON.stringify(parts) })));
   const fingerprint = `v1:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-  return parseSavedVariable({ id: variable.id, key: variable.key, description: variable.description, exported: variable.exported,
-    valueFingerprint: fingerprint, value: isPureLiteral(parts) ? { kind: "literal", value: partsToLiteralString(parts) ?? "" } : { kind: "template", parts } });
+  return savedVariableIntent({ id: variable.id, key: variable.key, description: variable.description, exported: variable.exported,
+    valueFingerprint: fingerprint, valueKind: "plain", valueParts: parts, encryptedValue: null });
 }

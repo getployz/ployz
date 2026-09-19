@@ -46,7 +46,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       serviceId,
       lineageId: serviceLineageId,
     });
-    const { env: _env, mounts: _mounts, variableGroupAttachments: _variableGroupAttachments, ...config } = node.config;
+    const { env: _env, mounts: _mounts, variableGroupAttachments: _attachments, ...config } = node.config;
     void _env;
     void _mounts;
     const intent = {

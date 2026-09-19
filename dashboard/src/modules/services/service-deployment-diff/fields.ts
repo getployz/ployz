@@ -1,4 +1,6 @@
-import { compareResourceSettings, type VolumeConfig, type VariableGroupConfig, compareServiceSettings, type ChangeKind, type ServiceSettingChange } from "@ployz/sdk/config";
+import type { VariableGroupConfig } from "#/modules/environment-design/variable-group-config";
+import { compareDashboardServiceSettings, compareVariableGroupSettings } from "#/modules/environment-design/config-changes";
+import { compareResourceSettings, type VolumeConfig, type ChangeKind, type ServiceSettingChange } from "@ployz/sdk/config";
 import { asBoolean, asFiniteNumber, asString, asRecord } from "#/lib/json";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 
@@ -99,27 +101,12 @@ export function countOwnedRows(rows: Pick<DiffRow, "derivedFrom">[]): number {
   return rows.filter((row) => !row.derivedFrom).length;
 }
 
-export function getDiffKind<TBaseline, TCurrent>(
-  baselineValue: TBaseline,
-  currentValue: TCurrent,
-): ServiceDeploymentDiffKind {
-  if (baselineValue == null) {
-    return "add";
-  }
-
-  if (currentValue == null) {
-    return "remove";
-  }
-
-  return "update";
-}
-
 export function getServiceDeploymentDiffRows(input: {
   serviceId: string;
   current: ServiceDeploymentConfig;
   baseline: ServiceDeploymentConfig | null;
 }): ServiceDeploymentDiffRow[] {
-  return compareServiceSettings(input.current, input.baseline).map((change) => ({
+  return compareDashboardServiceSettings(input.current, input.baseline).map((change) => ({
     changeKey: `${input.serviceId}:${change.path}`,
     path: change.path,
     ...presentSettingChange("service", change.path, change.before, change.after),
@@ -129,13 +116,16 @@ export function getServiceDeploymentDiffRows(input: {
   }));
 }
 
-/** Resource labels and redacted value formatting; Rust supplies change policy. */
 export function getResourceDeploymentDiffRows(nodeType: "volume" | "variable_group", input: {
   nodeId: string;
   current: VolumeConfig | VariableGroupConfig;
   baseline: VolumeConfig | VariableGroupConfig | null;
 }): DiffRow[] {
-  return compareResourceSettings(nodeType, input.current, input.baseline).map((change) => ({
+  // SAFETY: resource configurations are parsed by their node type before presentation.
+  const changes = nodeType === "variable_group"
+    ? compareVariableGroupSettings(input.current, input.baseline)
+    : compareResourceSettings("volume", input.current as VolumeConfig, input.baseline as VolumeConfig | null);
+  return changes.map((change) => ({
     changeKey: `${input.nodeId}:${change.path}`,
     path: change.path,
     ...presentSettingChange(nodeType, change.path, change.before, change.after),

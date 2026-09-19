@@ -35,7 +35,7 @@ export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironme
 
 export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, nodeLineageId: string, encryptedRegistryUsername?: EncryptedSecretValue, encryptedRegistrySecret?: EncryptedSecretValue, nodeType: EnvironmentNodeType, configVersion: number, config: CompiledNodeConfig, };
 
-export type CompiledNodeConfig = ServiceConfig | VariableGroupConfig | VolumeConfig;
+export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
 export type ComposePruneRefusal = "filtered_profiles" | "guessed_project_name";
 
@@ -240,9 +240,7 @@ machines: Array<Machine>,
  */
 target_versions: { [key in string]: number }, };
 
-export type EnvSource = { kind: 'variable_group', resourceId: string, resourceName: string, variableGroupId: string, key: string, };
-
-export type EnvironmentNodeType = "service" | "variable_group" | "volume";
+export type EnvironmentNodeType = "service" | "volume";
 
 export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
 
@@ -655,15 +653,13 @@ hosted_dns_hostname: string | null, incomplete_ids: RuntimeWatchIncompleteIds,
  */
 observed_at: string, };
 
-export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, variableGroups: Array<SavedVariableGroupIntent>, volumes: Array<SavedVolumeIntent>, };
+export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>, };
 
-export type SavedServiceIntent = { id: string, lineageId: string, slug: string, variables: Array<SavedVariableIntent>, variableGroupAttachments: Array<VariableGroupAttachment>, volumeAttachments: Array<VolumeAttachment>, config: AuthoredServiceConfig, encryptedRegistryUsername: EncryptedSecretValue | null, encryptedRegistrySecret: EncryptedSecretValue | null, };
-
-export type SavedVariableGroupIntent = { resourceId: string, resourceLineageId: string, variableGroupId: string, variableGroupLineageId: string, slug: string, name: string, variables: Array<SavedVariableIntent>, };
+export type SavedServiceIntent = { id: string, lineageId: string, slug: string, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>, config: AuthoredServiceConfig, encryptedRegistryUsername: EncryptedSecretValue | null, encryptedRegistrySecret: EncryptedSecretValue | null, };
 
 export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean, valueFingerprint: string, value: SavedVariableValue, };
 
-export type SavedVariableProducer = { ownerScope: 'service' | 'variable_group', ownerId: string, ownerLineageId: string, key: string, value: SavedVariableValue, };
+export type SavedVariableProducer = { ownerScope: 'service', ownerId: string, ownerLineageId: string, key: string, value: SavedVariableValue, };
 
 export type SavedVariableValue = { "kind": "literal", value: string, } | { "kind": "template", parts: Array<ValuePart>, } | { "kind": "secret",
 /**
@@ -688,7 +684,7 @@ export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: stri
 
 export type ServiceBuilder = "dockerfile" | "auto";
 
-export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, variableGroupAttachments: Array<VariableGroupAttachment>, version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostname: ServiceManagedHostname | null, build: ServiceBuildConfig, };
+export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostname: ServiceManagedHostname | null, build: ServiceBuildConfig, };
 
 export type ServiceContainer = ContainerObservation;
 
@@ -718,7 +714,7 @@ condition: DependencyCondition, };
 
 export type ServiceDeployMount = { volumeResourceId: string, volumeName: string, mountPath: string, };
 
-export type ServiceEnvValue = { "kind": "literal", value: string, source?: EnvSource, parts?: Array<ValuePart>, } | { "kind": "secret", variableId?: string, encryptedValue?: EncryptedSecretValue, fingerprint: string, source?: EnvSource, interpolated?: boolean, };
+export type ServiceEnvValue = { "kind": "literal", value: string, parts?: Array<ValuePart>, } | { "kind": "secret", variableId?: string, encryptedValue?: EncryptedSecretValue, fingerprint: string, interpolated?: boolean, };
 
 export type ServiceGitBranch = { "type": "connected", name: string, } | { "type": "disconnected", previousName: string | null, };
 
@@ -764,7 +760,7 @@ export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number, };
 
-export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, derivedFrom?: EnvSource, };
+export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, };
 
 export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "cron", "value": string | null } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostname", "value": ServiceManagedHostname | null } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig };
 
@@ -867,15 +863,7 @@ export type UpdateOrder = "start_first" | "stop_first";
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 
-export type ValuePartOwner = { "scope": "self" } | { "scope": "service", lineageId: string, } | { "scope": "variable_group", lineageId: string, };
-
-export type VariableGroupAttachment = { variableGroupId: string, sortOrder: number, };
-
-export type VariableGroupConfig = { version: 1, name: string, variables: Array<VariableGroupConfigVariable>, };
-
-export type VariableGroupConfigValue = { "type": "plain", value: string, } | { "type": "sealed", hasValue: true, fingerprint: string, encryptedValue?: EncryptedSecretValue, };
-
-export type VariableGroupConfigVariable = { key: string, description: string | null, exported: boolean, value: VariableGroupConfigValue, };
+export type ValuePartOwner = { "scope": "self" } | { "scope": "service", lineageId: string, };
 
 export type VariableProducer = { ownerId: string, owner: ValuePartOwner, key: string, value: ResolverValue, };
 

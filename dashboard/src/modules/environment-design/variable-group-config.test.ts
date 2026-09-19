@@ -1,6 +1,6 @@
+import { getResourceDeploymentDiffRows } from "#/modules/services/service-deployment-diff/fields";
 import { describe, expect, it } from "vitest";
 import {
-  getVariableGroupConfigDiffRows,
   type VariableGroupConfig,
 } from "#/modules/environment-design/variable-group-config";
 
@@ -13,7 +13,7 @@ const emptyConfig: VariableGroupConfig = {
 describe("getVariableGroupConfigDiffRows", () => {
   it("stages a new empty Variable Group as a node-level add", () => {
     expect(
-      getVariableGroupConfigDiffRows({
+      getResourceDeploymentDiffRows("variable_group", {
         nodeId: "variable-group-1",
         current: emptyConfig,
         baseline: null,

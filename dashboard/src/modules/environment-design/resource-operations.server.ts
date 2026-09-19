@@ -11,9 +11,13 @@ import { createResourceIdentity, getResourceIdentity, getVariableGroupResource, 
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
 import type { CreateVariableGroupResourceInput, CreateVolumeResourceInput, DeleteVariableGroupResourcePlanInput, DeleteVolumeResourceInput, UpdateEnvironmentResourceCanvasPositionInput, UpdateVariableGroupResourceInput, UpdateVolumeResourceInput } from "./resources";
 import { Conflict, NotFound } from "#/server/public-error";
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 
 const createResource = Effect.fn("EnvironmentDesign.createResource")(
   function* (actor: Actor, input: CreateVolumeResourceInput, type: "variable_group" | "volume") {
+    if (type === "variable_group" && !variableGroupsEnabled) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
     const context = yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
@@ -48,6 +52,9 @@ export const createVolumeResource = Effect.fn("EnvironmentDesign.createVolumeRes
 
 const editResource = Effect.fn("EnvironmentDesign.editResource")(
   function* (actor: Actor, input: DeleteVolumeResourceInput & { name?: string }, type: "variable_group" | "volume") {
+    if (type === "variable_group" && !variableGroupsEnabled) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
     yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
@@ -96,6 +103,9 @@ export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   );
   if (resource === null) {
     return yield* new NotFound({ message: "Resource not found." });
+  }
+  if (resource.implementationType === "variable_group" && !variableGroupsEnabled) {
+    return yield* new Conflict({ message: "Variable Groups are disabled." });
   }
   return yield* withMutationResult(
     upsertResourceCanvasPosition({

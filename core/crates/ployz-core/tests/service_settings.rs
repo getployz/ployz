@@ -94,14 +94,12 @@ fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes(
     let baseline = parse_service_config(before.clone()).unwrap();
     let mut after = before;
     after["env"]["TOKEN"]["fingerprint"] = json!("after-private-fingerprint");
-    after["env"]["TOKEN"]["source"] = json!({"kind":"variable_group","resourceId":"33333333-3333-4333-8333-333333333333","resourceName":"Shared","variableGroupId":"44444444-4444-4444-8444-444444444444","key":"TOKEN"});
     after["mounts"][0]["volumeName"] = json!("renamed");
     after["routes"][0]["hostname"] = json!("new.example.com");
     let current = parse_service_config(after).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 2, "volume rename is not a mount edit");
     let secret = rows.iter().find(|row| row.path == "env.TOKEN").unwrap();
-    assert!(secret.derived_from.is_some());
     assert!(!secret.can_restore);
     let output = serde_json::to_string(&rows).unwrap();
     assert!(!output.contains("private-"));

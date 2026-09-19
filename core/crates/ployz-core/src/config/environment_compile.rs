@@ -79,7 +79,6 @@ impl TryFrom<CompiledNodeSnapshotWire> for CompiledNodeSnapshot {
 #[serde(untagged)]
 pub enum CompiledNodeConfig {
     Service(Box<ServiceConfig>),
-    VariableGroup(VariableGroupConfig),
     Volume(VolumeConfig),
 }
 
@@ -89,7 +88,6 @@ impl CompiledNodeConfig {
     pub const fn node_type(&self) -> EnvironmentNodeType {
         match self {
             Self::Service(_) => EnvironmentNodeType::Service,
-            Self::VariableGroup(_) => EnvironmentNodeType::VariableGroup,
             Self::Volume(_) => EnvironmentNodeType::Volume,
         }
     }
@@ -98,52 +96,10 @@ impl CompiledNodeConfig {
     #[must_use]
     pub const fn snapshot_version(&self) -> u8 {
         match self {
-            Self::Service(_) | Self::VariableGroup(_) => 1,
+            Self::Service(_) => 1,
             Self::Volume(_) => 2,
         }
     }
-}
-
-/// Variable Group settings projected into a node snapshot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct VariableGroupConfig {
-    #[ts(type = "1")]
-    pub version: u8,
-    pub name: String,
-    pub variables: Vec<VariableGroupConfigVariable>,
-}
-
-/// One projected variable with authored metadata and display-safe value state.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct VariableGroupConfigVariable {
-    pub key: String,
-    pub description: Option<String>,
-    pub exported: bool,
-    pub value: VariableGroupConfigValue,
-}
-
-/// Plain text or sealed-value evidence in a Variable Group snapshot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(
-    tag = "type",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum VariableGroupConfigValue {
-    Plain {
-        value: String,
-    },
-    Sealed {
-        #[ts(type = "true")]
-        has_value: bool,
-        fingerprint: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        encrypted_value: Option<EncryptedSecretValue>,
-    },
 }
 
 /// The name-bearing configuration of a Volume node snapshot.
@@ -159,7 +115,7 @@ pub struct VolumeConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedVariableProducer {
-    #[ts(type = "'service' | 'variable_group'")]
+    #[ts(type = "'service'")]
     pub owner_scope: String,
     pub owner_id: String,
     pub owner_lineage_id: String,
@@ -179,9 +135,7 @@ pub fn render_variable_parts(parts: &[ValuePart], slugs: &BTreeMap<String, Strin
                 key,
             } => format!("${{{{ {key} }}}}"),
             ValuePart::Ref {
-                owner:
-                    ValuePartOwner::Service { lineage_id }
-                    | ValuePartOwner::VariableGroup { lineage_id },
+                owner: ValuePartOwner::Service { lineage_id },
                 key,
             } => {
                 let slug = slugs
@@ -194,62 +148,27 @@ pub fn render_variable_parts(parts: &[ValuePart], slugs: &BTreeMap<String, Strin
         .collect()
 }
 
-fn env_value(
-    variable: &SavedVariableIntent,
-    slugs: &BTreeMap<String, String>,
-    group: Option<&SavedVariableGroupIntent>,
-) -> ServiceEnvValue {
-    let source = group.map(|g| EnvSource {
-        kind: "variable_group".into(),
-        resource_id: g.resource_id.clone(),
-        resource_name: g.name.clone(),
-        variable_group_id: g.variable_group_id.clone(),
-        key: variable.key.clone(),
-    });
+fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -> ServiceEnvValue {
     match &variable.value {
         SavedVariableValue::Literal { value } => ServiceEnvValue::Literal {
             value: value.clone(),
-            source,
             parts: None,
         },
         SavedVariableValue::Secret { encrypted_value } => ServiceEnvValue::Secret {
             variable_id: Some(variable.id.clone()),
             encrypted_value: encrypted_value.clone(),
             fingerprint: variable.value_fingerprint.clone(),
-            source,
             interpolated: None,
         },
         SavedVariableValue::Template { parts } => ServiceEnvValue::Literal {
             value: render_variable_parts(parts, slugs),
-            source,
-            parts: Some(
-                parts
-                    .iter()
-                    .map(|part| match (part, group) {
-                        (
-                            ValuePart::Ref {
-                                owner: ValuePartOwner::Self_,
-                                key,
-                            },
-                            Some(group),
-                        ) => ValuePart::Ref {
-                            owner: ValuePartOwner::VariableGroup {
-                                lineage_id: group.variable_group_lineage_id.clone(),
-                            },
-                            key: key.clone(),
-                        },
-                        _ => part.clone(),
-                    })
-                    .collect(),
-            ),
+            parts: Some(parts.clone()),
         },
     }
 }
 
 /// Compile a validated authored document into node snapshots and variable producers.
 ///
-/// # Panics
-/// Panics if an attachment references a missing owner; pass documents admitted by parse_environment_intent.
 #[must_use]
 pub fn compile_environment_intent(
     environment_id: &str,
@@ -260,36 +179,16 @@ pub fn compile_environment_intent(
         .services
         .iter()
         .map(|s| (s.lineage_id.clone(), s.slug.clone()))
-        .chain(
-            intent
-                .variable_groups
-                .iter()
-                .map(|g| (g.variable_group_lineage_id.clone(), g.slug.clone())),
-        )
         .collect();
     let mut node_snapshots = Vec::new();
     let mut variable_producers = Vec::new();
     for service in &intent.services {
         let mut config = ServiceConfig::from(service.configuration.settings().clone());
-        config.variable_group_attachments = service.variable_group_attachments.clone();
         config.env = service
             .variables
             .iter()
-            .map(|v| (v.key.clone(), env_value(v, &slugs, None)))
+            .map(|v| (v.key.clone(), env_value(v, &slugs)))
             .collect();
-        for attachment in &service.variable_group_attachments {
-            let group = intent
-                .variable_groups
-                .iter()
-                .find(|g| g.variable_group_id == attachment.variable_group_id)
-                .expect("validated attachment");
-            for variable in group.variables.iter().filter(|v| v.exported) {
-                config.env.insert(
-                    variable.key.clone(),
-                    env_value(variable, &slugs, Some(group)),
-                );
-            }
-        }
         config.mounts = service
             .volume_attachments
             .iter()
@@ -343,54 +242,6 @@ pub fn compile_environment_intent(
             owner_scope: "service".into(),
             owner_id: service.id.clone(),
             owner_lineage_id: service.lineage_id.clone(),
-            key: v.key.clone(),
-            value: v.value.clone(),
-        }));
-    }
-    for group in &intent.variable_groups {
-        let mut variables: Vec<_> = group
-            .variables
-            .iter()
-            .map(|v| VariableGroupConfigVariable {
-                key: v.key.clone(),
-                description: v.description.clone(),
-                exported: v.exported,
-                value: match &v.value {
-                    SavedVariableValue::Literal { value } => VariableGroupConfigValue::Plain {
-                        value: value.clone(),
-                    },
-                    SavedVariableValue::Template { parts } => VariableGroupConfigValue::Plain {
-                        value: render_variable_parts(parts, &slugs),
-                    },
-                    SavedVariableValue::Secret { encrypted_value } => {
-                        VariableGroupConfigValue::Sealed {
-                            has_value: true,
-                            fingerprint: v.value_fingerprint.clone(),
-                            encrypted_value: encrypted_value.clone(),
-                        }
-                    }
-                },
-            })
-            .collect();
-        variables.sort_by(|a, b| a.key.cmp(&b.key));
-        node_snapshots.push(CompiledEnvironmentNode {
-            environment_id: environment_id.into(),
-            node_id: group.resource_id.clone(),
-            node_lineage_id: group.resource_lineage_id.clone(),
-            snapshot: CompiledNodeSnapshot(CompiledNodeConfig::VariableGroup(
-                VariableGroupConfig {
-                    version: 1,
-                    name: group.name.clone(),
-                    variables,
-                },
-            )),
-            encrypted_registry_username: None,
-            encrypted_registry_secret: None,
-        });
-        variable_producers.extend(group.variables.iter().map(|v| SavedVariableProducer {
-            owner_scope: "variable_group".into(),
-            owner_id: group.variable_group_id.clone(),
-            owner_lineage_id: group.variable_group_lineage_id.clone(),
             key: v.key.clone(),
             value: v.value.clone(),
         }));

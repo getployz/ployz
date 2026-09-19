@@ -1,3 +1,4 @@
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useState } from "react";
 import {
   Background,
@@ -274,14 +275,14 @@ export function CanvasFlow({
           });
         }}
       />
-      <VariableGroupCreatorDialog
+      {variableGroupsEnabled && <VariableGroupCreatorDialog
         open={variableGroupCreator.creatorOpen}
         onOpenChange={variableGroupCreator.setCreatorOpen}
         position={variableGroupCreator.creatorPosition}
         onCreate={async (input) => {
           await variableGroupCreator.createVariableGroup(input);
         }}
-      />
+      />}
       <VolumeCreatorDialog
         open={volumeCreator.creatorOpen}
         onOpenChange={volumeCreator.setCreatorOpen}

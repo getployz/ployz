@@ -1,4 +1,5 @@
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { getManagedServiceExports } from "#/modules/environment-design/managed-service-exports";
 import { buildReferenceTargets, type ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
 
@@ -22,7 +23,7 @@ export function useReferenceTargets(input: {
       variables: variables(service.variables),
       managedExports: getManagedServiceExports({ ...service.config, id: service.id, lineageId: service.lineageId, slug: service.slug, environmentId: document.id, environmentSlug: document.namespace }).map((exported) => ({ key: exported.key, description: exported.description })),
     })),
-    variableGroups: document.intent.variableGroups.map((group) => ({ slug: group.slug, name: group.name,
+    variableGroups: (variableGroupsEnabled ? document.intent.variableGroups : []).map((group) => ({ slug: group.slug, name: group.name,
       isSelf: input.owner.kind === "variable_group" && group.variableGroupId === input.owner.variableGroupId,
       variables: variables(group.variables),
     })),

@@ -1,6 +1,6 @@
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { compileEnvironmentIntent } from "@ployz/sdk/config";
+import { compileSavedEnvironmentIntent } from "./saved-intent";
 import { createLiveQueryCollection, eq, useLiveQuery } from "@tanstack/react-db";
 import { getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
 import { plainRowCollection, withoutVirtualProps } from "#/lib/tanstack-db";
@@ -14,7 +14,7 @@ export function createEnvironmentDocumentsCollection(organizationSlug: string, {
     query: (q) => q.from({ environment: environments })
       .innerJoin({ project: projects }, ({ environment, project }) => eq(environment.projectId, project.id))
       .fn.select(({ environment, project }) => ({ ...withoutVirtualProps(environment), projectSlug: project.slug,
-        compiled: compileEnvironmentIntent(environment.id, environment.intent),
+        compiled: compileSavedEnvironmentIntent({ environmentId: environment.id, intent: environment.intent }),
       })),
     getKey: (document) => document.id,
   }));

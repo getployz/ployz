@@ -51,8 +51,6 @@ pub struct ServiceConfig {
     pub env: BTreeMap<String, ServiceEnvValue>,
     #[serde(default)]
     pub mounts: Vec<ServiceDeployMount>,
-    #[serde(default)]
-    pub variable_group_attachments: Vec<super::VariableGroupAttachment>,
 }
 
 impl From<AuthoredServiceConfig> for ServiceConfig {
@@ -61,7 +59,6 @@ impl From<AuthoredServiceConfig> for ServiceConfig {
             settings,
             env: BTreeMap::new(),
             mounts: Vec::new(),
-            variable_group_attachments: Vec::new(),
         }
     }
 }
@@ -227,18 +224,6 @@ pub struct ServiceDeployMount {
     pub mount_path: String,
 }
 
-/// The Variable Group owner responsible for a derived environment value.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EnvSource {
-    #[ts(type = "'variable_group'")]
-    pub kind: String,
-    pub resource_id: String,
-    pub resource_name: String,
-    pub variable_group_id: String,
-    pub key: String,
-}
-
 /// The stable producer scope referenced by a template expression.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -251,9 +236,6 @@ pub enum ValuePartOwner {
     #[serde(rename = "self")]
     Self_,
     Service {
-        lineage_id: String,
-    },
-    VariableGroup {
         lineage_id: String,
     },
 }
@@ -290,9 +272,6 @@ pub enum ServiceEnvValue {
         value: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        source: Option<EnvSource>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
         parts: Option<Vec<ValuePart>>,
     },
     Secret {
@@ -303,9 +282,6 @@ pub enum ServiceEnvValue {
         #[ts(optional)]
         encrypted_value: Option<EncryptedSecretValue>,
         fingerprint: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        source: Option<EnvSource>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         interpolated: Option<bool>,
