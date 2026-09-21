@@ -157,13 +157,13 @@ One command restoring a field, node, or the whole Environment to the Environment
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Cloud Deployment Stage**:
-The current progress of a Cloud Deployment Attempt: queued, planning, building, or deploying before a terminal outcome. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
+The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Source acquisition, builder selection, building, and image delivery are progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
 
 **Deploy Preview**:
-The read-only Core projection Cloud persists before building to explain tentative machines and per-service Build Platform Requirements. It is product history rather than runtime authority and may differ from the later authoritative Deploy Plan.
+The read-only Core projection Cloud persists after preparation and image delivery, before confirming application execution. It is product history rather than runtime authority; the live prepared handle owns confirmation and retained image resources.
 _Avoid_: Deploy Plan, reservation, dry run
 
 **Build Platform Requirement**:
-The set of target platforms a service image must cover for one Cloud Deployment Attempt, derived from that service's tentative targets in its Deploy Preview. A reused image receipt may cover a superset.
+The set of target platforms a service image must cover for one Cloud Deployment Attempt, derived by shared Core preparation from placement and build settings. Preparation checks actual destinations again before image delivery. A reused image receipt may cover a superset.
 _Avoid_: Organization Cluster architecture, global build platform, builder architecture

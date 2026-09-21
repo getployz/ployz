@@ -42,6 +42,26 @@ pub struct ComposeProject {
 }
 
 impl ComposeProject {
+    /// Construct a frozen SDK project without ambient host inputs.
+    pub(crate) fn from_frozen_services(
+        name: String,
+        services: BTreeMap<String, RequestedServiceSpec>,
+        builds: BTreeMap<String, BuildSpec>,
+    ) -> Self {
+        Self {
+            name,
+            working_dir: PathBuf::from("/"),
+            context: None,
+            services,
+            builds,
+            dependencies: BTreeMap::new(),
+            warnings: Vec::new(),
+            service_profiles: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            environment: BTreeMap::new(),
+        }
+    }
+
     #[must_use]
     pub fn selected_context<'a>(
         &'a self,
@@ -122,8 +142,26 @@ impl ComposeProject {
     }
 }
 
+/// Remote failure evidence cannot contain a successful build outcome.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteBuildFailure {
+    Failed {
+        stage: ployz_build::Stage,
+        message: String,
+        work: ployz_build::WorkEvidence,
+    },
+    Unknown {
+        stage: ployz_build::Stage,
+        message: String,
+        work: ployz_build::WorkEvidence,
+    },
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ComposeError {
+    #[error("Build {outcome:?}")]
+    RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("{0}")]
     Prerequisite(String),
     #[error("{0}")]

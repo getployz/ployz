@@ -10,6 +10,7 @@ import {
   resolveInstallationBranchHead as resolveInstallationBranchHeadEffect,
   resolveInstallationRepository as resolveInstallationRepositoryEffect,
   GithubApiLive,
+  GithubApi,
 } from "#/modules/github/github-observation.api";
 import { AppConfig } from "#/server/config.server";
 
@@ -694,5 +695,35 @@ describe("GitHub repository synchronization provider", () => {
       operation: "list_repositories",
       retriable: false,
     });
+  });
+});
+
+
+describe("source archives", () => {
+  it("requests the exact SHA and never forwards installation credentials to codeload", async () => {
+    const sha = "a".repeat(40);
+    const fetchMock = mockFetchSequence(installationTokenResponse(),
+      new Response(null, { status: 302, headers: { location: `https://codeload.github.com/ployz/example/tar.gz/${sha}?token=private` } }),
+      new Response("archive"));
+    const response = await Effect.runPromise(Effect.gen(function* () {
+      const api = yield* GithubApi;
+      return yield* api.archive({ installationId: 4001, repository: { id: 9001, fullName: "ployz/example" }, sha });
+    }).pipe(Effect.provide(GithubTestLive)));
+    expect(await response.text()).toBe("archive");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`https://api.github.com/repos/ployz/example/tarball/${sha}`);
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer installation-secret" });
+    expect(fetchMock.mock.calls[2]?.[1]?.headers).toBeUndefined();
+    expect(fetchMock.mock.calls[2]?.[1]?.redirect).toBe("error");
+  });
+  it("rejects archive redirects outside GitHub without exposing the signed URL", async () => {
+    const fetchMock = mockFetchSequence(installationTokenResponse(),
+      new Response(null, { status: 302, headers: { location: "https://evil.example/?token=private" } }));
+    const result = await Effect.runPromise(Effect.gen(function* () {
+      const api = yield* GithubApi;
+      return yield* api.archive({ installationId: 4001, repository: { id: 9001, fullName: "ployz/example" }, sha: "a".repeat(40) });
+    }).pipe(Effect.result, Effect.provide(GithubTestLive)));
+    expect(Result.isFailure(result)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

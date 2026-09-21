@@ -18,6 +18,7 @@ import {
   environmentDeploymentSummarySchema,
   type EnvironmentDeploymentSummary,
 } from "#/modules/deployments/deployment-contract";
+import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
@@ -79,6 +80,8 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             coreDeployId: deployment.coreDeployId,
             deployPreview: deployment.deployPreview,
             runtimeProgress: deployment.runtimeProgress,
+            sourcePins: deployment.sourcePins,
+            buildServiceIds: snapshots.filter((snapshot) => snapshot.nodeType === "service" && parseDashboardServiceConfig(snapshot.config).source.type === "git").map((snapshot) => snapshot.nodeId),
             canRetry:
               deployment.status === "failed" &&
               volumeAttempts.length === 0,

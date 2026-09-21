@@ -258,13 +258,13 @@ fn invalid_argument(message: String) -> RpcError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PushOutcome {
+pub(crate) struct PushOutcome {
     pub pushed: Vec<PushedImage>,
     pub failures: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PushedImage {
+pub(crate) struct PushedImage {
     pub image: String,
     pub machine_id: MachineId,
 }
@@ -277,13 +277,13 @@ impl From<IngressDnsWarning> for DeployWarning {
     }
 }
 
-pub(super) async fn push_project_images(
+pub(crate) async fn push_project_images(
     client: &mut Client,
     builds: &[BuiltService],
     machines: &[MachineObservation],
     preview: &DeployPlan,
     cancellation: &CancellationToken,
-) -> Result<PushOutcome, Failure> {
+) -> Result<PushOutcome, crate::preparation::PreparationError> {
     let mut pushed = Vec::new();
     let mut failures = Vec::new();
     // Check every actual destination before any image or application changes.
@@ -297,11 +297,11 @@ pub(super) async fn push_project_images(
             let compatible = architecture.is_some_and(|architecture|
                 service.built.platforms.iter().any(|platform| crate::image::platform_compatible(platform, architecture)));
             if !compatible {
-                return Err(Failure::usage(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
+                return Err(crate::preparation::PreparationError::Delivery(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
             }
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
-    }).collect::<Result<Vec<_>, Failure>>()?;
+    }).collect::<Result<Vec<_>, crate::preparation::PreparationError>>()?;
     for (service, targets) in deliveries {
         if targets.is_empty() {
             continue;
@@ -317,14 +317,14 @@ pub(super) async fn push_project_images(
     Ok(PushOutcome { pushed, failures })
 }
 
-pub(super) async fn plan_project(
+pub(crate) async fn plan_project(
     client: &mut Client,
     candidate: &CapturedCompose,
     machines: Vec<MachineObservation>,
-) -> Result<DeployPlan, Failure> {
+) -> Result<DeployPlan, DeployError> {
     let intent = candidate.intent();
     let (snapshot, warnings) = gather_deploy_snapshot(client, machines, intent).await?;
-    Ok(preview_gathered(client, snapshot, warnings, intent).await?)
+    preview_gathered(client, snapshot, warnings, intent).await
 }
 
 pub(super) async fn plan_scale(

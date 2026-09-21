@@ -1,3 +1,4 @@
+import { deploymentSourcePinsSchema, validateDeploymentSourcePins, type DeploymentSourcePins } from "./source-pins";
 import { serviceRegistryCredential, service as serviceIdentity } from "#/modules/environment-design/tables";
 import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import "@tanstack/react-start/server-only";
@@ -84,6 +85,7 @@ export type DeploymentAdmissionInput = {
   readonly message: string | null;
   readonly serviceActionPolicy?: EnvironmentDeploymentServiceActionPolicy | null;
   readonly retryOfDeploymentId?: string | null;
+  readonly sourcePins?: DeploymentSourcePins;
   readonly freshVolumeReviewIds?: readonly string[];
 };
 
@@ -332,6 +334,18 @@ function writeQueuedSavedTarget(
 ) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    let sourcePins = input.sourcePins ?? {};
+    if (input.retryOfDeploymentId) {
+      const [previous] = yield* drizzle.select({ sourcePins: schemaEnvironmentDeployment.sourcePins })
+        .from(schemaEnvironmentDeployment).where(and(eq(schemaEnvironmentDeployment.id, input.retryOfDeploymentId),
+          eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
+          eq(schemaEnvironmentDeployment.savedStateSnapshotId, input.savedStateSnapshotId)));
+      if (!previous) return yield* new Conflict({ message: "Retry source attempt does not match the Saved revision." });
+      sourcePins = previous.sourcePins;
+    }
+    sourcePins = yield* Schema.decodeUnknownEffect(deploymentSourcePinsSchema)(sourcePins, strictParseOptions)
+      .pipe(Effect.mapError(() => new Conflict({ message: "Deployment source pins are invalid." })));
+    sourcePins = yield* validateDeploymentSourcePins(sourcePins, target.nodeSnapshots);
     const queuedRows = yield* drizzle
       .select({
         id: schemaEnvironmentDeployment.id,
@@ -362,6 +376,7 @@ function writeQueuedSavedTarget(
             triggerOrigin: input.triggerOrigin,
             message: input.message,
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
+            sourcePins,
             variableProducers: target.variableProducers,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
@@ -382,6 +397,7 @@ function writeQueuedSavedTarget(
             status: "queued",
             message: input.message,
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
+            sourcePins,
             variableProducers: target.variableProducers,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,

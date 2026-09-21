@@ -25,14 +25,18 @@ export const runtimeDeployPreviewSchema = Schema.Struct({
 
 export type SdkDeployPreview = EnvironmentDeploymentPreview;
 
-export function compileSdkDeployIntent(input: {
+export function compileSdkPreparationInput(input: {
   projectName: string;
   snapshots: readonly EnvironmentDeploySnapshot[];
   volumes?: readonly EnvironmentDeployVolume[];
-}): DeployIntent {
-  return lowerDeployment({ ...input, snapshots: input.snapshots.map((snapshot) => ({ ...snapshot, config: toCoreServiceConfig(snapshot.config) })) });
+}) {
+  return { ...input, snapshots: input.snapshots.map((snapshot) => ({ ...snapshot, config: toCoreServiceConfig(snapshot.config) })) };
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {
   return parseRuntimePreview(value);
+}
+
+export function compileSdkDeployIntent(input: Parameters<typeof compileSdkPreparationInput>[0]): DeployIntent {
+  return lowerDeployment(compileSdkPreparationInput(input));
 }

@@ -90,7 +90,7 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
   return <>
     <DeploymentStatusCard deployment={deployment} serviceId={serviceId} progress={deployment.runtimeProgress}
       showLogs={showLogs} onLogsChange={setShowLogs}
-      logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={
+      logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} hasBuild={deployment.buildServiceIds.some((id) => !serviceId || id === serviceId)} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={
         <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon" />}

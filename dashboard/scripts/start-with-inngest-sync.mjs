@@ -24,6 +24,8 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 void syncInngestFunctions();
 
 async function syncInngestFunctions() {
+  // Trigger this replica locally. The adapter registers INNGEST_SERVE_ORIGIN
+  // (or APP_URL) as the execution URL, never this loopback sync address.
   const endpoint = new URL(
     "/api/inngest",
     `http://127.0.0.1:${port}`,

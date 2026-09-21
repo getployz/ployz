@@ -51,7 +51,8 @@ export type GithubObservationOperation =
   | "list_branches"
   | "resolve_file_ref"
   | "list_files"
-  | "installation_token";
+  | "installation_token"
+  | "download_source";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -150,6 +151,7 @@ export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
 };
 
 export interface GithubApiService {
+  readonly archive: (input: { installationId: number; repository: GithubResolvedRepository; sha: string }) => Effect.Effect<Response, GithubObservationError>;
   readonly json: <S extends Schema.ConstraintDecoder<unknown>>(
     input: GithubJsonRequest<S>,
   ) => Effect.Effect<S["Type"], GithubObservationError>;
@@ -569,6 +571,32 @@ export const GithubApiLive = Layer.effect(
       },
     );
 
-    return { json };
+    const archive = Effect.fn("GithubApi.archive")(function* (input: {
+      installationId: number; repository: GithubResolvedRepository; sha: string;
+    }) {
+      const repository = resolvedRepositoryPath(input.repository);
+      if (!repository || !isValidGithubExactSha(input.sha)) {
+        return yield* githubObservationError({ code: "invalid_input", operation: "download_source", retriable: false });
+      }
+      const token = yield* installationToken(input.installationId);
+      return yield* Effect.tryPromise({
+        try: async (signal) => {
+          // Never forward installation credentials across the archive redirect.
+          const redirect = await fetch(`https://api.github.com/repos/${repository}/tarball/${input.sha}`, {
+            signal, redirect: "manual", headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": GITHUB_API_VERSION },
+          });
+          const location = redirect.headers.get("location");
+          await redirect.body?.cancel();
+          if (redirect.status !== 302 || !location) throw new Error("Archive redirect missing");
+          const url = new URL(location);
+          if (url.protocol !== "https:" || url.hostname !== "codeload.github.com" || url.port || url.username || url.password) throw new Error("Invalid archive destination");
+          const response = await fetch(url, { signal, redirect: "error" });
+          if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error("Archive download failed"); }
+          return response;
+        },
+        catch: () => githubObservationError({ code: "request_failed", operation: "download_source", retriable: false }),
+      });
+    });
+    return { json, archive };
   }),
 );

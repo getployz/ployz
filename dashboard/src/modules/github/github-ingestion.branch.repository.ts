@@ -384,6 +384,7 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
     }
     const deployment = yield* admitEnvironmentDeployment({
       environmentId: trigger.environmentId, savedStateSnapshotId: target.savedStateSnapshotId,
+      sourcePins: Object.fromEntries(selected.serviceIds.map(serviceId => [serviceId, { commitSha: trigger.headSha }])),
       triggerOrigin: { origin: "github", deliveryId: trigger.sourceDeliveryId,
         branchEvaluationRevision: trigger.branchEvaluationRevision,
         installationId: trigger.installationId, repositoryId: trigger.repositoryId }, message: null,

@@ -80,6 +80,29 @@ class Client {
     return withRpcError(this._inner.about());
   }
 
+  prepare(input, options = {}) {
+    options.signal?.throwIfAborted();
+    let pending;
+    try { pending = this._inner.prepare(input); } catch (error) { throwRpcError(error); }
+    const stop = () => pending.abort();
+    options.signal?.addEventListener("abort", stop, { once: true });
+    const finished = withRpcError(pending.finished()).then(wrapPreview)
+      .finally(() => options.signal?.removeEventListener("abort", stop));
+    // Callers may consume progress before awaiting the terminal result.
+    void finished.catch(() => {});
+    return {
+      abort: stop,
+      finished,
+      async *[Symbol.asyncIterator]() {
+        for (;;) {
+          const value = await withRpcError(pending.next());
+          if (value == null) return;
+          yield value;
+        }
+      },
+    };
+  }
+
   async preview(intent) {
     return wrapPreview(await withRpcError(this._inner.preview(intent)));
   }
@@ -134,6 +157,7 @@ function wrapPreview(handle) {
   return {
     ...payload,
     noop: payload.operations.length === 0,
+    close: () => handle.close(),
     confirm(options = {}) {
       try {
         return wrapRunning(handle.confirm(), options && options.signal);

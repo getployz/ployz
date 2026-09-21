@@ -44,7 +44,7 @@ pub enum TargetEvidence {
 }
 
 /// Per-target evidence accumulated independently of terminal success.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkEvidence(pub std::collections::BTreeMap<String, TargetEvidence>);
 impl WorkEvidence {
     /// Initially none of the admitted targets has been attempted.

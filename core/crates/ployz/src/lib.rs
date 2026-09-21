@@ -16,6 +16,7 @@ pub mod handlers;
 pub mod image;
 pub mod ingress;
 pub mod operator;
+pub mod preparation;
 pub mod project;
 mod provisioning;
 pub mod sdk;

@@ -1,3 +1,6 @@
+import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
+import { persistDeploymentSourcePin } from "#/modules/deployments/source-pins.server";
+import { createRetryAttempt } from "#/modules/deployments/retry-repository.server";
 import { resumeGithubWaitingTriggers } from "./github-ingestion.branch.repository";
 import { randomUUID } from "node:crypto";
 import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
@@ -175,6 +178,58 @@ describe("GitHub branch deployment admission", () => {
     });
   });
 
+  it("freezes manual pins before checkout, rejects replacement, and retries the captured inputs after branch movement", async () => {
+    const admitted = await harness.runEffect(admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    const [unresolved] = await harness.db.select().from(schema.environmentDeployment);
+    expect(unresolved?.sourcePins).toEqual({});
+    await harness.db.update(schema.environmentDeployment).set({ status: "deploying", inngestRunId: "owner" })
+      .where(eq(schema.environmentDeployment.id, admitted.id));
+    const pin = { organizationId, environmentDeploymentId: admitted.id, inngestRunId: "owner", serviceId, commitSha: "a".repeat(40) };
+    await harness.runEffect(persistDeploymentSourcePin(pin));
+    await expect(harness.runEffect(persistDeploymentSourcePin({ ...pin, commitSha: "b".repeat(40) })))
+      .rejects.toMatchObject({ _tag: "Conflict" });
+    await expect(harness.runEffect(persistDeploymentSourcePin({ ...pin, inngestRunId: "stale" })))
+      .rejects.toMatchObject({ _tag: "Conflict" });
+    await expect(harness.runEffect(persistDeploymentSourcePin({ ...pin, serviceId: replacementServiceId })))
+      .rejects.toMatchObject({ _tag: "Conflict" });
+    await expect(harness.runEffect(persistDeploymentSourcePin({ ...pin, commitSha: "not-a-sha" })))
+      .rejects.toMatchObject({ _tag: "Conflict" });
+    await harness.db.update(schema.environmentDeployment).set({ cancellationRequestedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, admitted.id));
+    await expect(harness.runEffect(persistDeploymentSourcePin(pin))).rejects.toMatchObject({ _tag: "Conflict" });
+    // The working branch/config can change without mutating the attempt's Saved revision.
+    await harness.db.update(schema.environment).set({ intent: savedIntent([{ id: serviceId, lineageId,
+      config: { ...savedServiceConfig("Changed command"), source: createGitServiceSource({ repository: "acme/api", repositoryId,
+        installationId, branch: { type: "connected", name: "new-branch" } }) } }]) }).where(eq(schema.environment.id, environmentId));
+    await harness.db.update(schema.environmentDeployment).set({ status: "failed" }).where(eq(schema.environmentDeployment.id, admitted.id));
+    const retry = await harness.runEffect(createRetryAttempt({ environmentId, userId, failedDeploymentId: admitted.id })
+      .pipe(Effect.provideService(InngestClient, inngest)));
+    const [retried] = await harness.db.select().from(schema.environmentDeployment)
+      .where(eq(schema.environmentDeployment.id, retry.data.environmentDeploymentId));
+    expect(retried).toMatchObject({ savedStateSnapshotId, sourcePins: { [serviceId]: { commitSha: "a".repeat(40) } } });
+    const [node] = await harness.db.select().from(schema.environmentNodeConfigSnapshot)
+      .where(eq(schema.environmentNodeConfigSnapshot.environmentDeploymentId, retry.data.environmentDeploymentId));
+    expect(node?.config).toMatchObject({ startCommand: "Saved API", source: { branch: { name: "main" } } });
+  });
+
+  it("keeps unresolved failures unpinned and allows their explicit Retry to capture source", async () => {
+    const admitted = await harness.runEffect(admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "failed", failureCode: "source_resolution_failed" })
+      .where(eq(schema.environmentDeployment.id, admitted.id));
+    const retry = await harness.runEffect(createRetryAttempt({ environmentId, userId, failedDeploymentId: admitted.id })
+      .pipe(Effect.provideService(InngestClient, inngest)));
+    await harness.db.update(schema.environmentDeployment).set({ status: "deploying", inngestRunId: "retry-owner" })
+      .where(eq(schema.environmentDeployment.id, retry.data.environmentDeploymentId));
+    await harness.runEffect(persistDeploymentSourcePin({ organizationId,
+      environmentDeploymentId: retry.data.environmentDeploymentId, inngestRunId: "retry-owner", serviceId, commitSha: "b".repeat(40) }));
+    const [original] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(original?.sourcePins).toEqual({});
+  });
+
   async function admitPush(input: {
     deliveryId: string;
     headSha: string;
@@ -285,6 +340,7 @@ describe("GitHub branch deployment admission", () => {
 
     expect(deployment).toMatchObject({
       savedStateSnapshotId,
+      sourcePins: { [serviceId]: { commitSha: headSha } },
       triggerOrigin: {
         origin: "github",
         deliveryId: "saved-state",

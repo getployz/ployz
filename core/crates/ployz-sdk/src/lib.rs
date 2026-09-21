@@ -109,6 +109,36 @@ pub struct DeployPreviewHandle {
     inner: sdk::PreparedDeploy,
 }
 
+/// Native cancellable preparation retaining opaque image resources.
+#[napi]
+pub struct PreparationHandle {
+    inner: sdk::RunningPreparation,
+}
+
+#[napi]
+impl PreparationHandle {
+    /// Request cancellation and await finished for termination evidence.
+    #[napi]
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+    /// Bounded progress; lagging readers receive a truncation frame.
+    #[napi]
+    pub async fn next(&self) -> Option<serde_json::Value> {
+        self.inner.next().await
+    }
+    /// Await preparation independently of progress consumption.
+    ///
+    /// # Errors
+    /// Returns structured preparation failure or unknown outcome.
+    #[napi]
+    pub async fn finished(&self) -> Result<DeployPreviewHandle> {
+        Ok(DeployPreviewHandle {
+            inner: self.inner.finished().await.map_err(rpc_to_napi)?,
+        })
+    }
+}
+
 /// In-flight execution of one Deploy Preview.
 #[napi]
 pub struct RunningDeployHandle {
@@ -182,6 +212,18 @@ impl Client {
     pub async fn watch(&self) -> Result<WatchStream> {
         let inner = self.inner.watch().await.map_err(rpc_to_napi)?;
         Ok(WatchStream { inner })
+    }
+
+    /// Start preparation from frozen Cloud settings and checked-out source paths.
+    ///
+    /// # Errors
+    /// Rejects malformed input or closed sessions.
+    #[napi]
+    pub fn prepare(&self, input: serde_json::Value) -> Result<PreparationHandle> {
+        let input = serde_json::from_value(input).map_err(invalid_json)?;
+        Ok(PreparationHandle {
+            inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
+        })
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -404,6 +446,12 @@ impl Client {
 
 #[napi]
 impl DeployPreviewHandle {
+    /// Release unconfirmed retained images.
+    #[napi]
+    pub fn close(&self) {
+        self.inner.close();
+    }
+
     /// Planned rows and warnings.
     ///
     /// # Errors

@@ -34,6 +34,29 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect("keeps private execution separate from public URLs and signing", () =>
+    Effect.gen(function* () {
+      const config = yield* load({
+        ...requiredEnvironment,
+        APP_URL: "https://ployz.dev",
+        INNGEST_SERVE_ORIGIN: "http://web.railway.internal:8080",
+        INNGEST_SIGNING_KEY: "signkey-test-secret",
+      });
+      assert.strictEqual(config.inngest.serveOrigin, "http://web.railway.internal:8080");
+      assert.strictEqual(config.app.url.origin, "https://ployz.dev");
+      assert.strictEqual(config.auth.url.origin, "https://ployz.dev");
+      assert.strictEqual(config.polarSuccessUrl, "https://ployz.dev/cloud?checkout_id={CHECKOUT_ID}");
+      assert.isDefined(config.inngest.signingKey);
+      assert.strictEqual(Redacted.value(config.inngest.signingKey), "signkey-test-secret");
+      const defaults = yield* load(requiredEnvironment);
+      assert.strictEqual(defaults.inngest.serveOrigin, "http://localhost:3000");
+      for (const origin of ["ftp://host", "http://host/api/inngest", "http://user:pass@host", "http://host?query", "http://host#fragment"]) {
+        const failure = yield* Effect.flip(load({ ...requiredEnvironment, INNGEST_SERVE_ORIGIN: origin }));
+        assert.instanceOf(failure, InvalidConfiguration);
+      }
+    }),
+  );
+
   it.effect("requires the complete hosted Polar configuration", () =>
     Effect.gen(function* () {
       const failure = yield* Effect.flip(
@@ -87,6 +110,7 @@ describe("AppConfig", () => {
     Effect.gen(function* () {
       const invalid: ReadonlyArray<Record<string, string>> = [
         { APP_URL: "not-a-url" },
+        { INNGEST_SERVE_ORIGIN: "not-a-url" },
         { PORT: "65536" },
         { PLOYZ_INSTALLER_SHA256: "not-a-digest" },
         { APP_ENCRYPTION_SECRET: "too-short" },

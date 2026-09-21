@@ -11,16 +11,11 @@ use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{
-    compose::{BuiltService, CapturedCompose},
-    connect::Client,
-    failure::Failure,
-    project::ResolvedProject,
-};
+use crate::{connect::Client, failure::Failure, project::ResolvedProject};
 
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
-    pipeline::{PushOutcome, plan_options, plan_project, plan_scale, push_project_images},
+    pipeline::{plan_options, plan_scale},
     render,
     report::{self, Ink},
 };
@@ -156,29 +151,14 @@ pub(crate) struct ConfirmGate<'a> {
 
 pub(crate) async fn deploy_project(
     client: &mut Client,
-    candidate: &CapturedCompose,
-    builds: &[BuiltService],
+    candidate_id: &str,
+    prepared: crate::preparation::Prepared,
     cancellation: &CancellationToken,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    let machines =
-        crate::cancellation::read(cancellation, async { Ok(client.machines().await?) }).await?;
-    let preview = crate::cancellation::read(
-        cancellation,
-        plan_project(client, candidate, machines.clone()),
-    )
-    .await?;
-    let outcome = push_project_images(client, builds, &machines, &preview, cancellation).await?;
-    print_pushed_images(&outcome);
-    if !outcome.failures.is_empty() {
-        return Err(Failure::usage(format!(
-            "image push failed: {}",
-            outcome.failures.join("; ")
-        )));
-    }
-    println!("Captured candidate {}", candidate.id());
-    print_warnings(&preview);
-    confirm_and_execute(client, &preview, gate, cancellation).await
+    println!("Captured candidate {candidate_id}");
+    print_warnings(&prepared.plan);
+    confirm_and_execute(client, &prepared.plan, gate, cancellation).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -400,12 +380,6 @@ fn progress_signature(event: &DeployEvent) -> String {
             format!("{completed}:{}", kinds.join(","))
         }
         DeployEvent::Outcome { .. } => String::new(),
-    }
-}
-
-fn print_pushed_images(outcome: &PushOutcome) {
-    for pushed in &outcome.pushed {
-        println!("Pushed {} to {}", pushed.image, pushed.machine_id);
     }
 }
 

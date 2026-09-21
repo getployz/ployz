@@ -1,3 +1,4 @@
+import { deploymentSourcePinsSchema } from "./source-pins";
 import { deploymentProgressSchema } from "./deployment-progress";
 import { Schema } from "effect";
 import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
@@ -114,6 +115,8 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   coreDeployId: Schema.NullOr(Schema.String),
   deployPreview: Schema.NullOr(runtimeDeployPreviewSchema),
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
+  sourcePins: deploymentSourcePinsSchema,
+  buildServiceIds: Schema.Array(Schema.String),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),

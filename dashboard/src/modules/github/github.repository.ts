@@ -6,7 +6,7 @@ import {
   githubInstallation as schemaGithubInstallation,
   githubRepositoryCache as schemaGithubRepositoryCache,
 } from "#/modules/github/tables";
-import { account as schemaAccount } from "#/modules/identity/tables";
+import { member as schemaMember, account as schemaAccount } from "#/modules/identity/tables";
 import type { GithubRepository } from "#/modules/github/github";
 import { Database } from "#/server/database.server";
 
@@ -228,3 +228,20 @@ export const findUserIdByGithubAccountId = Effect.fn(
     .limit(1);
   return records[0]?.userId ?? null;
 });
+
+export const getCachedGithubRepositoryForOrganization = Effect.fn("Github.getCachedRepositoryForOrganization")(
+  function* (input: { organizationId: string; installationId: number; repositoryId: number }) {
+    const database = yield* Database;
+    const rows = yield* database.drizzle.select({ fullName: schemaGithubRepositoryCache.fullName })
+      .from(schemaGithubRepositoryCache)
+      .innerJoin(schemaGithubInstallation, and(
+        eq(schemaGithubInstallation.userId, schemaGithubRepositoryCache.userId),
+        eq(schemaGithubInstallation.installationId, schemaGithubRepositoryCache.installationId),
+      ))
+      .innerJoin(schemaMember, eq(schemaMember.userId, schemaGithubInstallation.userId))
+      .where(and(eq(schemaMember.organizationId, input.organizationId),
+        eq(schemaGithubRepositoryCache.installationId, input.installationId),
+        eq(schemaGithubRepositoryCache.repositoryId, input.repositoryId))).limit(1);
+    return rows[0] ?? null;
+  },
+);

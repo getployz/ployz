@@ -174,6 +174,7 @@ pub(super) struct DiscoveryService {
     pub(super) accept_volume_creates: bool,
     pub(super) existing_created_volume: Option<DockerVolume>,
     pub(super) created_volume_verification_error: Option<RpcError>,
+    pub(super) inspect_container_result: Option<ployz_core::ContainerDetails>,
     pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -217,6 +218,7 @@ impl DiscoveryService {
             accept_volume_creates: false,
             existing_created_volume: None,
             created_volume_verification_error: None,
+            inspect_container_result: None,
             create_container_error: None,
             create_container_blocked: None,
             list_machines_blocked: None,
@@ -399,6 +401,31 @@ impl MachineRpc for DiscoveryService {
                 }
             }
             recorder.uploads.fetch_add(1, Ordering::SeqCst);
+            if recorder.quiet_until_cancel {
+                sender
+                    .send(Ok(remote::encode(&Event::Progress(
+                        ployz_build::Progress::Stage(ployz_build::Stage::Building),
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                let cancellation = request.message().await.unwrap().unwrap();
+                assert!(matches!(
+                    remote::decode(&cancellation).unwrap(),
+                    Input::Cancel
+                ));
+                recorder.cancelled.store(true, Ordering::SeqCst);
+                sender
+                    .send(Ok(remote::encode(&Event::Finished(Outcome::Failed {
+                        stage: ployz_build::Stage::Building,
+                        message: "cancelled with cleanup complete".into(),
+                        work: ployz_build::WorkEvidence::new(&definition.targets),
+                    }))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                return;
+            }
             let outcome = match definition.output {
                 Output::Validate => Outcome::Validated { machine_id },
                 Output::Registry => Outcome::Published { machine_id },
@@ -416,9 +443,16 @@ impl MachineRpc for DiscoveryService {
                         .collect(),
                 },
             };
+            recorder
+                .retained
+                .store(recorder.retain_images, Ordering::SeqCst);
             let _ = sender
                 .send(Ok(remote::encode(&Event::Finished(outcome)).unwrap()))
                 .await;
+            if recorder.retain_images {
+                sender.closed().await;
+                recorder.retained.store(false, Ordering::SeqCst);
+            }
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
@@ -729,7 +763,11 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let details = self
+            .inspect_container_result
+            .clone()
+            .ok_or_else(|| Status::unimplemented("unused"))?;
+        Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
     }
 
     async fn get_container_observations(
@@ -855,6 +893,19 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(builds) = &self.builds
+            && builds.retain_images
+        {
+            assert!(
+                builds.retained.load(Ordering::SeqCst),
+                "image owner lost before execution"
+            );
+            assert!(
+                builds.delivered.load(Ordering::SeqCst),
+                "execution preceded image delivery"
+            );
+            builds.created.store(true, Ordering::SeqCst);
+        }
         if let Some(received) = &self.create_container_blocked {
             received.notify_one();
             std::future::pending::<()>().await;
@@ -991,21 +1042,72 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let builds = self
+            .builds
+            .as_ref()
+            .filter(|builds| builds.retain_images)
+            .ok_or_else(|| Status::unimplemented("unused"))?;
+        assert!(builds.retained.load(Ordering::SeqCst));
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::MachineImages {
+                containerd_store: true,
+                images: vec![ployz_core::ImageSummary {
+                    id: format!("sha256:{}", "1".repeat(64)),
+                    repo_tags: vec!["example.test/api:built".into()],
+                    created: 0,
+                    size: 0,
+                    containers: 0,
+                    platforms: vec!["linux/amd64".into()],
+                }],
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn ensure_image_ingest(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        self.builds
+            .as_ref()
+            .filter(|builds| builds.retain_images)
+            .ok_or_else(|| Status::unimplemented("unused"))?;
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ImageIngestOpened {
+                destination: ployz_core::ImageIngestDestination {
+                    management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
+                    port: 5000,
+                },
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn pull_image_from_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let builds = self
+            .builds
+            .as_ref()
+            .filter(|builds| builds.retain_images)
+            .ok_or_else(|| Status::unimplemented("unused"))?;
+        assert!(builds.retained.load(Ordering::SeqCst));
+        let route = ployz_core::routing_from_metadata(request.metadata()).unwrap();
+        let RpcRequestBody::PullImageFromMachine(pull) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("expected direct peer pull");
+        };
+        builds.deliveries.lock().unwrap().push((route, pull));
+        builds.delivered.store(true, Ordering::SeqCst);
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ImagePulled {})
+                .encode()
+                .unwrap(),
+        ))
     }
 
     async fn get_ingress_proxy_config(
@@ -1285,5 +1387,17 @@ pub(super) struct BuildRecorder {
     pub(super) targets: Mutex<Vec<Vec<String>>>,
     pub(super) uploads: AtomicUsize,
     pub(super) queued: bool,
+    pub(super) retain_images: bool,
+    pub(super) quiet_until_cancel: bool,
+    pub(super) cancelled: AtomicBool,
+    pub(super) deliveries: Mutex<
+        Vec<(
+            ployz_core::RoutingRequest,
+            ployz_core::PullImageFromMachineRequest,
+        )>,
+    >,
+    pub(super) retained: AtomicBool,
+    pub(super) delivered: AtomicBool,
+    pub(super) created: AtomicBool,
     pub(super) admission_outcome: Option<ployz_build::remote::Outcome>,
 }

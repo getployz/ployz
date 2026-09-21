@@ -1,7 +1,13 @@
+import { Header } from "tar";
+import { gzipSync } from "node:zlib";
+import { access } from "node:fs/promises";
+import { Schema } from "effect";
+import { createGitServiceSource, projectServiceDeploymentConfig, createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy } from "#/modules/environment-design/services";
+import { GithubApi } from "#/modules/github/github-observation.api";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
-import { executeLatestEnvironmentDeployment } from "./runtime-activities.server";
+import { executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
 import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
 import { loadDeploymentEvents, persistDeploymentProgress } from "./deployment-events.server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -153,6 +159,59 @@ describe("deployment runtime persistence", () => {
     ]);
   });
 
+  it.each(["failed", "unknown", "cancelled"] as const)("preparation %s cleans source and never confirms or applies", async (kind) => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+    await harness.pool.query('insert into member(user_id,organization_id) values($1,$2)', [userId, organizationId]);
+    await harness.pool.query("insert into github_installation(user_id,installation_id,account_login,account_type) values($1,17,'owner','User')", [userId]);
+    await harness.pool.query("insert into github_repository_cache(user_id,installation_id,repository_id,name,full_name,default_branch,private,html_url,repo_updated_at) values($1,17,42,'repo','owner/repo','main',true,'https://github.com/owner/repo',now())", [userId]);
+    const header = new Header({ path: "root/Dockerfile", size: 0, mode: 0o644, type: "File" });
+    header.encode();
+    if (!header.block) throw new Error("Archive fixture failed");
+    const archive = gzipSync(Buffer.concat([Buffer.from(header.block), Buffer.alloc(1024)]));
+    let checkout: string | undefined;
+    let confirmed = 0;
+    const client = asTestDouble<Client>()({
+      prepare: (input: Parameters<Client["prepare"]>[0]) => {
+        checkout = Object.values(input.sources)[0];
+        const finished = Promise.reject({ code: "internal", details: { preparation: { kind, stage: "Building" } } });
+        void finished.catch(() => undefined);
+        return {
+          abort: () => undefined,
+          finished,
+          async *[Symbol.asyncIterator]() { yield { Build: { Stage: "Building" } }; },
+        };
+      },
+      preview: async () => { confirmed += 1; throw new Error("Preparation failure must never preview/confirm"); },
+      close: async () => undefined,
+    });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const config = projectServiceDeploymentConfig({ source: createGitServiceSource({ repository: "owner/repo", repositoryId: 42, installationId: 17 }),
+      privateDns: "api", preDeployCommand: null, startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
+    await harness.runEffect(executeEnvironmentDeployment({
+      deployment: { id: admitted.id, environmentId, status: "planning", inngestRunId: null, sourcePins: { [apiNodeId]: { commitSha: "a".repeat(40) } } },
+      environment: { id: environmentId, namespace: "production" }, project: { id: projectId, organizationId }, organization: { id: organizationId, slug: "runtime" },
+      snapshots: [{ serviceId: apiNodeId, serviceSlug: "api", config }], volumes: [],
+    }).pipe(Effect.scoped, Effect.provide(runtime),
+      Effect.provideService(GithubApi, {
+        json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo" }).pipe(Effect.orDie),
+        archive: () => Effect.succeed(new Response(archive)),
+      }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.result));
+    expect(confirmed).toBe(0);
+    expect(checkout).toBeDefined();
+    if (checkout) await expect(access(checkout)).rejects.toThrow();
+    const [attempt] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(attempt?.status).toBe(kind === "cancelled" ? "cancelled" : "failed");
+    expect(attempt?.failureCode).toBe(`sdk_preparation_${kind}`);
+    expect(attempt?.finishedAt).toBeInstanceOf(Date);
+    expect(attempt?.deployPreview).toBeNull();
+    expect(attempt?.runtimeProgress?.preparation?.phase).toBe("build");
+  });
+
   it.each(["outcome", "rejection"])("settles a cancelled quiet runner after runtime %s", async (completion) => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,
@@ -188,7 +247,7 @@ describe("deployment runtime persistence", () => {
       kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }],
     })).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
-      Effect.provide(runtime), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
+      Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
     ));
     const settled = result.then(value => ({ value }), error => ({ error }));
     try {
@@ -236,11 +295,48 @@ describe("deployment runtime persistence", () => {
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }))
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
-      Effect.provide(runtime), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
+      Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
     ));
     expect(result).toMatchObject({ type: "failed", reason: "cancelled", completed: 0 });
     expect(confirm).not.toHaveBeenCalled();
     expect((await harness.db.select().from(schema.environmentDeployment))[0]).toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+  });
+
+  it.each(["success", "cancelled"])("holds the execution slot through cleanup before persisting %s", async (resultKind) => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+    let release: () => void = () => undefined;
+    let closing: () => void = () => undefined;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    const closeStarted = new Promise<void>((resolve) => { closing = resolve; });
+    const outcome = { type: "success" as const, completed: [] };
+    const confirm = vi.fn(() => ({ finished: Promise.resolve(outcome), abort: () => undefined,
+      async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; },
+    }));
+    const client = asTestDouble<Client>()({
+      preview: async () => {
+        if (resultKind === "cancelled") await harness.db.update(schema.environmentDeployment).set({ cancellationRequestedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
+        return asTestDouble<PreparedDeploy>()({ ...preview(), confirm });
+      },
+      close: async () => { closing(); await cleanup; },
+    });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const running = harness.runEffect(executeLatestEnvironmentDeployment(admitted.id).pipe(Effect.scoped, Effect.provide(runtime),
+      Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
+      Effect.provideService(InngestClient, new Inngest({ id: "cleanup-test" })), Effect.provideService(SecretEncryption, encryption)));
+    try {
+      await closeStarted;
+      const [active] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+      expect(active?.status).toBe("deploying");
+      expect(active?.finishedAt).toBeNull();
+      expect(confirm).toHaveBeenCalledTimes(resultKind === "success" ? 1 : 0);
+    } finally { release(); }
+    await running;
+    const [terminal] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(terminal?.status).toBe(resultKind === "success" ? "applied" : "cancelled");
   });
 
   it("updates current state and retained logs atomically, and scopes log reads to the organization", async () => {

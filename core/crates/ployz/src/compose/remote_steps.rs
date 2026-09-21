@@ -261,16 +261,24 @@ pub(super) fn remote_error(outcome: Outcome) -> ComposeError {
             stage,
             message,
             work,
-        } => invalid_build(&format!(
-            "Build failed during {stage:?}: {message}; target evidence: {work:?}"
-        )),
+        } => ComposeError::RemoteBuild {
+            outcome: Box::new(crate::compose::RemoteBuildFailure::Failed {
+                stage,
+                message,
+                work,
+            }),
+        },
         Outcome::Unknown {
             stage,
             message,
             work,
-        } => invalid_build(&format!(
-            "Build outcome unknown during {stage:?}: {message}; target evidence: {work:?}"
-        )),
+        } => ComposeError::RemoteBuild {
+            outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
+                stage,
+                message,
+                work,
+            }),
+        },
         Outcome::CapabilitiesChecked { .. }
         | Outcome::Images { .. }
         | Outcome::Validated { .. }

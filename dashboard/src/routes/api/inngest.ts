@@ -10,7 +10,7 @@ function handleInngestRequest(request: Request) {
   return runAppEffect(Effect.gen(function* () {
     const config = yield* AppConfig;
     const inngest = yield* InngestClient;
-    return yield* handleInngestHttp(inngest, config.app.url.href, request);
+    return yield* handleInngestHttp(inngest, config.inngest.serveOrigin, request);
   }).pipe(
     Effect.catchTag("InngestRequestError", (cause) =>
       Effect.succeed(publicErrorResponse(cause)),

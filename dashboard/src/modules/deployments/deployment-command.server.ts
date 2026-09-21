@@ -11,13 +11,11 @@ import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { DeployImageNotPullableError } from "#/modules/deployments/deployment-errors";
 import { isActiveDeploymentUniqueViolation } from "#/modules/deployments/queue-lock.server";
 import { createRetryAttempt } from "#/modules/deployments/retry-repository.server";
-import { loadCurrentEnvironmentSnapshotProjection, loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { loadCurrentEnvironmentSnapshotProjection } from "#/modules/environment-design/working-state-repository.server";
 import { gatherExactTombstonedVolumeReviews } from "#/modules/deployments/destructive-volume-review.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
-import { findUnpullableSdkDeployImages } from "#/modules/deployments/image-gate";
 import type { Actor } from "#/modules/identity/actor";
 
 import { getEnvironmentContextForActor } from "#/modules/environment-design/authoring-repository.server";
@@ -36,13 +34,6 @@ type EnvironmentContextInput = {
   readonly projectSlug: string;
   readonly environmentSlug: string;
 };
-
-function requirePullableSdkDeployImagesEffect(
-  input: Parameters<typeof findUnpullableSdkDeployImages>[0],
-): Effect.Effect<void, DeployImageNotPullableError> {
-  const error = findUnpullableSdkDeployImages(input);
-  return error ? Effect.fail(error) : Effect.void;
-}
 
 const requireEnvironment = Effect.fn("Deployments.requireEnvironment")(
   function* (actor: Actor, input: EnvironmentContextInput) {
@@ -89,26 +80,11 @@ export const prepareEnvironmentDestructiveVolumes = Effect.fn(
     });
 });
 
-const requirePullableManualSdkDeploy = Effect.fn(
-  "Deployments.requirePullableManualSdkDeploy",
-)(function* (environmentId: string) {
-  const document = yield* loadEnvironmentDocument(environmentId);
-  const services = document.intent.services.map((node) => ({
-    id: node.id,
-    name: node.slug,
-    source: node.config.source,
-  }));
-  return yield* requirePullableSdkDeployImagesEffect(services);
-});
-
 export const submitReviewedPublication = Effect.fn(
   "Deployments.submitReviewedPublication",
 )(function* (actor: Actor, input: ReviewedPublicationInput) {
   const context = yield* requireEnvironment(actor, input);
   const shouldDeploy = input.intent === "manual_deploy";
-  if (shouldDeploy) {
-    yield* requirePullableManualSdkDeploy(context.environment.id);
-  }
   const message = input.message?.trim() || null;
   const destructiveVolumeReviews = input.review.destructiveVolumeReviews;
   const reviewedDestructiveSave = {

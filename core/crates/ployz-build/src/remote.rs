@@ -102,7 +102,7 @@ pub enum Event {
 }
 
 /// Terminal evidence, including known work when execution fails.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
     /// Worker and host capabilities were checked, without validating or executing a recipe.
     CapabilitiesChecked {

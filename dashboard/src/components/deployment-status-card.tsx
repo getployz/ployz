@@ -27,6 +27,27 @@ export function summarizeRows(rows: readonly DeploymentProgressRow[]) {
   return [replicas.length ? `${replicas.filter((r) => r.status === "completed").length} / ${replicas.length} replicas updated` : `${done} / ${rows.length} operations complete`, running ? `${running} in progress` : null, failed ? `${failed} failed` : null, unexecuted ? `${unexecuted} not attempted` : null].filter(Boolean).join(" · ");
 }
 
+function preparationPresentation({ deployment, preparation, hasBuild, failed, active, successful }: {
+  deployment: EnvironmentDeploymentSummary;
+  preparation: DeploymentProgress["preparation"];
+  hasBuild: boolean; failed: boolean; active: boolean; successful: boolean;
+}) {
+  if (!hasBuild) return { state: "skipped", detail: "Using prebuilt images", ready: true } as const;
+  if (preparation?.phase === "ready" || deployment.deployPreview || successful) {
+    return { state: "completed", detail: "Images prepared", ready: true } as const;
+  }
+  if (!active && deployment.failureCode === "sdk_preparation_unknown") {
+    return { state: "unknown", detail: "Preparation outcome unavailable", ready: false } as const;
+  }
+  if (failed) return { state: "failed", detail: deployment.failureMessage ?? "Image preparation failed", ready: false } as const;
+  if (deployment.status === "cancelled") return { state: "skipped", detail: "Preparation cancelled", ready: false } as const;
+  if (preparation) {
+    const labels = { source: "Acquiring source", selection: "Selecting build Server", build: "Building images", transfer: "Transferring images", ready: "Images prepared" } as const;
+    return { state: active ? "running" : "pending", detail: labels[preparation.phase], ready: false } as const;
+  }
+  return { state: "pending", detail: "Waiting to prepare images", ready: false } as const;
+}
+
 export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs, onLogsChange, expanded, onExpandedChange, actions, children, serviceId }: {
   deployment: EnvironmentDeploymentSummary; progress: DeploymentProgress | null;
   logsPanel: ReactNode; showLogs: boolean; onLogsChange: (open: boolean) => void; expanded: boolean; onExpandedChange: (open: boolean) => void;
@@ -48,9 +69,14 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
   const tone = failed || partial ? "border-destructive/30 bg-destructive/4" : successful ? "border-success/30 bg-success/4" : active ? "border-info/30 bg-info/4" : "border-border bg-muted/20";
   const accent = failed || partial ? "text-destructive" : successful ? "text-success" : active ? "text-info" : "text-muted-foreground";
   const unknown = !active && deployment.status !== "applied" && !progress?.outcome && deployment.failureCode === "sdk_deploy_outcome_unknown";
-  const buildFailed = deployment.failureCode === "deploy_image_not_pullable";
-  const initState: StepState = progress || deployment.deployPreview || deployment.status === "applied" ? "completed" : deployment.status === "planning" ? "running" : deployment.status === "failed" && !buildFailed ? "failed" : "pending";
-  const deployState: StepState = unchanged ? "skipped" : failedRows.length ? "failed" : successful ? "completed" : unknown ? "unknown" : deployment.status === "deploying" ? "running" : progress?.outcome === "failed" ? "failed" : "pending";
+  const preparation = progress?.preparation;
+  const pins = Object.entries(deployment.sourcePins).filter(([id]) => !serviceId || id === serviceId);
+  const hasBuild = deployment.buildServiceIds.some((id) => !serviceId || id === serviceId);
+  const build = preparationPresentation({ deployment, preparation, hasBuild, failed, active, successful });
+  const preparationUnknown = build.state === "unknown";
+  const buildFailed = build.state === "failed";
+  const initState: StepState = progress || deployment.deployPreview || deployment.status === "applied" ? "completed" : deployment.status === "planning" ? "running" : deployment.status === "failed" && !buildFailed && !preparationUnknown ? "failed" : "pending";
+  const deployState: StepState = unchanged ? "skipped" : failedRows.length ? "failed" : successful ? "completed" : unknown ? "unknown" : deployment.status === "deploying" && build.ready ? "running" : progress?.outcome === "failed" ? "failed" : "pending";
   const runningLabels = [...new Set(rows.filter((r) => r.status === "running").map(progressRowLabel))];
   const serviceGroups = new Map<string, DeploymentProgressRow[]>();
   for (const row of rows) {
@@ -59,7 +85,7 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
     group.push(row);
     serviceGroups.set(key, group);
   }
-  const headline = cancelling ? "Cancelling deployment · waiting for runtime cleanup" : unchanged ? "No changes for this service" : serviceDone ? "Service applied" : notAttempted ? "Service not attempted" : partial ? "Rollout partially applied" : successful ? "Deployment successful" : unknown ? "Deployment ended · runtime outcome unknown" : failed ? "Deployment failed" : deployment.status === "cancelled" ? "Deployment cancelled" : deployment.status === "queued" ? (deployment.dispatchRequestedAt ? "Waiting to deploy" : "Queued for next trigger") : deployment.status === "applied" ? "Environment applied · service evidence unavailable" : "Deployment in progress";
+  const headline = cancelling ? "Cancelling deployment · waiting for runtime cleanup" : unchanged ? "No changes for this service" : serviceDone ? "Service applied" : notAttempted ? "Service not attempted" : partial ? "Rollout partially applied" : successful ? "Deployment successful" : preparationUnknown ? "Preparation ended · outcome unknown" : unknown ? "Deployment ended · runtime outcome unknown" : failed ? "Deployment failed" : deployment.status === "cancelled" ? "Deployment cancelled" : deployment.status === "queued" ? (deployment.dispatchRequestedAt ? "Waiting to deploy" : "Queued for next trigger") : deployment.status === "applied" ? "Environment applied · service evidence unavailable" : "Deployment in progress";
   return <article className={cn("min-w-0 rounded-xl border p-1", tone)}>
     <header className="flex flex-wrap items-center gap-3 rounded-lg px-3 py-4 sm:gap-5 sm:px-5">
       <span className={cn("rounded-md bg-muted/50 px-2.5 py-1.5 text-xs font-medium capitalize", accent)}>{badge}</span>
@@ -72,8 +98,12 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
     </button>
     {expanded ? <div id={`${id}-steps`} className="rounded-b-lg bg-background py-2">
       <Step title="Init" state={initState} detail={initState === "completed" ? "Configuration and targets prepared" : initState === "running" ? "Resolving configuration and planning targets" : initState === "failed" ? deployment.failureMessage ?? "Planning failed" : "Waiting to start"} />
-      <Step title="Build" state={buildFailed ? "failed" : "skipped"} detail={buildFailed ? "Image must be built before deployment" : "Using prebuilt images"} />
-      <Step title="Deploy" state={deployState} detail={unchanged ? "No operations planned for this service" : rows.length ? summarizeRows(rows) : progress?.outcome === "success" ? "No runtime changes needed" : deployment.status === "applied" ? "Applied · operation evidence unavailable" : unknown ? "Runtime outcome unavailable" : deployment.status === "deploying" ? "Waiting for runtime progress" : "Waiting to start"}>
+      <Step title="Build" state={build.state} detail={build.detail}>
+        {pins.map(([id, pin]) => <p key={id} className="mt-1 break-all font-mono text-xs">Commit: {pin.commitSha}</p>)}
+        {hasBuild && (preparation?.machineName || preparation?.machineId) ? <p className="mt-1 text-xs text-muted-foreground">Build Server: {preparation.machineName ?? preparation.machineId}</p> : null}
+        {hasBuild && preparation?.outputTruncated ? <p className="mt-1 text-xs text-muted-foreground">Build output truncated. Open logs for retained output.</p> : null}
+      </Step>
+      <Step title="Deploy" state={deployState} detail={unchanged ? "No operations planned for this service" : rows.length ? summarizeRows(rows) : progress?.outcome === "success" ? "No runtime changes needed" : deployment.status === "applied" ? "Applied · operation evidence unavailable" : preparationUnknown ? "Not started" : unknown ? "Runtime outcome unavailable" : deployment.status === "deploying" && build.ready ? "Waiting for runtime progress" : "Waiting to start"}>
         {runningLabels.length ? <p className="mt-1 text-xs text-muted-foreground">{runningLabels.join(" · ")}</p> : null}
         {serviceGroups.size > 1 && !serviceId ? <div className="mt-3 space-y-2">{[...serviceGroups].map(([key, group]) => <p key={key} className="flex flex-wrap justify-between gap-2 text-xs"><span>{group[0]?.serviceName ?? "Environment"}</span><span className="text-muted-foreground">{summarizeRows(group)}</span></p>)}</div> : null}
         {rows.filter((r) => r.elapsedMs !== null && (r.status === "running" || r.status === "failed")).map((r) => <p key={r.index} className="mt-2 text-xs text-muted-foreground">{r.displayName ?? r.serviceName} · {r.machineName ?? r.machineId} · {r.health ?? progressRowLabel(r)} · {Math.floor((r.elapsedMs ?? 0) / 1000)}s / {Math.floor((r.deadlineMs ?? 0) / 1000)}s deadline</p>)}

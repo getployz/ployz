@@ -1,11 +1,6 @@
-use std::time::Duration;
-
 use clap::ArgMatches;
 
-use crate::connect::ConnectError;
 use ployz_build::Output;
-use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, RpcErrorCode, op};
-use serde_json::Value;
 
 use crate::compose::{
     BuildOptions, LoadOptions, capture_build, execute_build, load_project, plan_build,
@@ -160,79 +155,35 @@ pub(super) async fn select_build_machine(
     visible: &[ployz_core::MachineObservation],
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<ployz_core::Machine, Error> {
-    // Resolve pins before filtering so policy cannot hide Name Ambiguity.
-    let mut candidates = if let Some(target) = target {
-        vec![crate::cluster::visible_machine(target, visible).map_err(ConnectError::Remote)?]
-    } else {
-        visible.iter().collect::<Vec<_>>()
-    };
-    if target.is_none() {
-        candidates.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+    let selected =
+        crate::preparation::select_build_machine(client, target, targets, visible, cancellation)
+            .await
+            .map_err(selection_error)?;
+    report_selection(&selected);
+    Ok(selected.machine)
+}
+
+pub(super) fn selection_error(mut error: crate::connect::ConnectError) -> Error {
+    if let crate::connect::ConnectError::Remote(rpc) = &mut error
+        && rpc.code == ployz_core::RpcErrorCode::Unsupported
+    {
+        rpc.message.push_str("; retry after resolving these observations, pin with --remote=<Machine>, or build here with --local");
     }
-    let mut reasons = Vec::new();
-    for observed in candidates {
-        if cancellation.is_cancelled() {
-            reasons.push("Build selection cancelled".into());
-            break;
-        }
-        let machine = &observed.machine;
-        let reason = if !observed.membership.invites_rpc() {
-            format!("membership is {:?}", observed.membership)
-        } else if !machine.accepts_builds {
-            "does not accept Builds".into()
-        } else {
-            match client
-                .invoke::<op::DescribeContract>(
-                    DescribeContractRequest {},
-                    &MachineTarget::from(&machine.id),
-                    Some(Duration::from_secs(5)),
-                )
-                .await
-            {
-                Ok(contract) if contract.machine_id != machine.id => format!(
-                    "contract identifies a different Machine ({})",
-                    contract.machine_id
-                ),
-                Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => {
-                    "does not support remote Builds".into()
-                }
-                Ok(_) => match client
-                    .check_build_capabilities(machine.id, targets, cancellation)
-                    .await
-                {
-                    Ok(()) => {
-                        if !reasons.is_empty() {
-                            eprintln!(
-                                "Build eligibility was not confirmed for {}",
-                                reasons.join("; ")
-                            );
-                        }
-                        println!("Selected Build Machine {} ({})", machine.name, machine.id);
-                        eprintln!("Build Machine: {}", machine.id);
-                        return Ok(machine.clone());
-                    }
-                    Err(error) => format!("Build capability could not be verified: {error}"),
-                },
-                Err(error) => format!("Build capability could not be verified: {error}"),
-            }
-        };
-        reasons.push(format!(
-            "Machine {} ({}): {reason}",
-            machine.name, machine.id
-        ));
+    error.into()
+}
+
+pub(super) fn report_selection(selected: &crate::preparation::SelectedBuilder) {
+    if !selected.rejections.is_empty() {
+        eprintln!(
+            "Build eligibility was not confirmed for {}",
+            selected.rejections.join("; ")
+        );
     }
-    Err(ConnectError::Remote(RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: format!(
-            "no eligible Build Machine: {}; retry after resolving these observations, pin with --remote=<Machine>, or build here with --local",
-            if reasons.is_empty() {
-                "no Machines observed".into()
-            } else {
-                reasons.join("; ")
-            }
-        ),
-        details: Value::Null,
-    }).into())
+    println!(
+        "Selected Build Machine {} ({})",
+        selected.machine.name, selected.machine.id
+    );
+    eprintln!("Build Machine: {}", selected.machine.id);
 }
 
 pub(super) fn progress(event: ployz_build::Progress) {

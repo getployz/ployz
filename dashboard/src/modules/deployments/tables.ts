@@ -88,6 +88,7 @@ export const environmentDeployment = pgTable(
       (): AnyPgColumn => environmentDeployment.id,
       { onDelete: "no action" },
     ),
+    sourcePins: jsonb("source_pins").notNull().default({}).$type<import("./source-pins").DeploymentSourcePins>(),
     variableProducers: jsonb("variable_producers").$type<
       EnvironmentSnapshotVariableProducer[] | null
     >(),

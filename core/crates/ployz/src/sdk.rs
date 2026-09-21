@@ -27,6 +27,8 @@ use ployz_core::{
 pub use payloads::typescript_declarations;
 
 mod payloads;
+mod preparation;
+pub use preparation::PreparationInput;
 
 /// The public SDK Watch frame: the RPC frame plus the Services this observer
 /// derives from its Containers. The RPC frame carries only Container observations.
@@ -69,6 +71,7 @@ pub struct PreparedDeploy {
     preview: DeployPlan,
     session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
+    retained: std::sync::Mutex<Option<Vec<crate::compose::BuiltService>>>,
 }
 
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
@@ -261,6 +264,71 @@ impl Session {
         })
     }
 
+    /// Start shared capture, build, fresh planning and image delivery.
+    ///
+    /// # Errors
+    /// Rejects a closed session. Preparation failures arrive through `finished`.
+    pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
+        let mut client = self.client()?;
+        let cancel = self.inner.cancel.child_token();
+        let token = cancel.clone();
+        let session = Arc::downgrade(&self.inner);
+        let (events, receiver) = tokio::sync::broadcast::channel(128);
+        let join = tokio::spawn(async move {
+            let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
+                .await
+                .map_err(|_| invalid_argument("source capture task failed".into()))??;
+            if token.is_cancelled() {
+                return Err(preparation_error(
+                    crate::preparation::PreparationError::Cancelled,
+                    true,
+                ));
+            }
+            let prepared =
+                crate::preparation::prepare(
+                    &mut client,
+                    captured.0,
+                    captured.1,
+                    crate::preparation::BuildLocation::Remote(None),
+                    &token,
+                    |mut progress| {
+                        if let crate::preparation::Progress::Build(ployz_build::Progress::Output(
+                            bytes,
+                        )) = &mut progress
+                            && bytes.len() > 4096
+                        {
+                            bytes.drain(..bytes.len() - 4096);
+                            let _ =
+                                events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
+                        }
+                        let value = serde_json::to_value(progress)
+                            .expect("preparation progress serializes");
+                        // Build output is lossy progress, never a backpressure dependency of cleanup.
+                        let value = if value.to_string().len() > 16_384 {
+                            serde_json::json!({"phase":"truncated", "dropped":1})
+                        } else {
+                            value
+                        };
+                        let _ = events.send(value);
+                    },
+                )
+                .await
+                .map_err(|error| preparation_error(error, token.is_cancelled()))?;
+            let (preview, retained) = prepared.into_parts();
+            Ok(PreparedDeploy {
+                preview,
+                session,
+                confirmed: AtomicBool::new(false),
+                retained: std::sync::Mutex::new(Some(retained)),
+            })
+        });
+        Ok(RunningPreparation {
+            cancel,
+            events: Mutex::new(receiver),
+            join: Mutex::new(Some(join)),
+        })
+    }
+
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Same planner, ingress expansion, and DNS warnings as the CLI. Confirming
@@ -281,6 +349,7 @@ impl Session {
             preview,
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
+            retained: std::sync::Mutex::new(None),
         })
     }
 
@@ -305,6 +374,7 @@ impl Session {
             preview,
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
+            retained: std::sync::Mutex::new(None),
         })
     }
 
@@ -522,6 +592,13 @@ impl PreparedDeploy {
         self.preview.noop()
     }
 
+    /// Release an unconfirmed preparation and its retained images.
+    pub fn close(&self) {
+        let mut retained = self.retained.lock().expect("retained build lock");
+        self.confirmed.store(true, Ordering::SeqCst);
+        retained.take();
+    }
+
     /// Execute these operations. Illegal after a previous confirm.
     ///
     /// # Errors
@@ -534,6 +611,7 @@ impl PreparedDeploy {
         if session.inner.cancel.is_cancelled() {
             return Err(closed());
         }
+        let mut retained = self.retained.lock().expect("retained build lock");
         if self.confirmed.swap(true, Ordering::SeqCst) {
             return Err(invalid_argument(
                 "this Deploy Preview already confirmed".into(),
@@ -545,7 +623,9 @@ impl PreparedDeploy {
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
+        let retained = retained.take();
         let join = tokio::spawn(async move {
+            let _retained = retained;
             tokio::select! {
                 biased;
                 () = session_cancel.cancelled() => Err(RpcError {
@@ -716,5 +796,200 @@ fn invalid_argument(message: String) -> RpcError {
         code: RpcErrorCode::InvalidArgument,
         message,
         details: Value::Null,
+    }
+}
+
+/// Cancellable preparation with bounded, lossy progress independent of completion.
+pub struct RunningPreparation {
+    cancel: CancellationToken,
+    events: Mutex<tokio::sync::broadcast::Receiver<Value>>,
+    join: Mutex<Option<tokio::task::JoinHandle<Result<PreparedDeploy, RpcError>>>>,
+}
+impl RunningPreparation {
+    /// Request cancellation; finished reports whether remote termination was confirmed.
+    pub fn abort(&self) {
+        self.cancel.cancel();
+    }
+    /// Read one progress frame; slow consumers receive explicit truncation evidence.
+    pub async fn next(&self) -> Option<Value> {
+        match self.events.lock().await.recv().await {
+            Ok(value) => Some(value),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                Some(serde_json::json!({"phase":"truncated", "dropped":dropped}))
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+        }
+    }
+    /// Await preparation without draining or blocking on progress consumption.
+    ///
+    /// # Errors
+    /// Returns typed preparation failure/unknown or rejects a second await.
+    pub async fn finished(&self) -> Result<PreparedDeploy, RpcError> {
+        let join = self
+            .join
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| invalid_argument("preparation already awaited".into()))?;
+        join.await.map_err(|_| RpcError {
+            code: RpcErrorCode::Internal,
+            message: "preparation task failed".into(),
+            details: Value::Null,
+        })?
+    }
+}
+impl Drop for RunningPreparation {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+fn preparation_error(
+    error: crate::preparation::PreparationError,
+    cancellation_requested: bool,
+) -> RpcError {
+    use crate::compose::ComposeError;
+    use crate::preparation::PreparationError;
+    let message = error.to_string();
+    match error {
+        PreparationError::Selection(error) => {
+            let rejections = if let ConnectError::Remote(error) = &error {
+                error
+                    .details
+                    .get("rejections")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "No eligible Build Machine was selected; no build was started.".into(),
+                details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
+                    "message":"No eligible Build Machine was selected; no build was started.", "rejections":rejections}}),
+            }
+        }
+        PreparationError::Connect(_) => RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Could not read Machine observations during preparation.".into(),
+            details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
+                "message":"Could not read Machine observations during preparation."}}),
+        },
+        PreparationError::Compose(ComposeError::RemoteBuild { outcome }) => {
+            let cancelled = cancellation_requested
+                && matches!(*outcome, crate::compose::RemoteBuildFailure::Failed { .. });
+            let mut details = serde_json::json!({"preparation": outcome});
+            // Failed confirms termination; a cancellation request alone cannot erase Unknown.
+            if cancelled {
+                *details
+                    .pointer_mut("/preparation/kind")
+                    .expect("remote Build failures serialize a kind") =
+                    serde_json::json!("cancelled");
+            }
+            RpcError {
+                code: RpcErrorCode::Internal,
+                message,
+                details,
+            }
+        }
+        PreparationError::Cancelled => RpcError {
+            code: RpcErrorCode::Unavailable,
+            message,
+            details: serde_json::json!({"preparation":{"kind":"cancelled"}}),
+        },
+        PreparationError::Compose(_)
+        | PreparationError::Plan(_)
+        | PreparationError::Delivery(_) => RpcError {
+            code: RpcErrorCode::Internal,
+            details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
+            message,
+        },
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    #[tokio::test]
+    async fn slow_preparation_consumer_is_bounded_and_cannot_block_completion() {
+        let (events, receiver) = tokio::sync::broadcast::channel(128);
+        let join = tokio::spawn(async move {
+            for n in 0..1000 {
+                events.send(serde_json::json!({"n":n})).unwrap();
+            }
+            Err(invalid_argument("fixture failure".into()))
+        });
+        let running = RunningPreparation {
+            cancel: CancellationToken::new(),
+            events: Mutex::new(receiver),
+            join: Mutex::new(Some(join)),
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), running.finished())
+            .await
+            .unwrap();
+        assert_eq!(result.unwrap_err().message, "fixture failure");
+        assert_eq!(
+            running.next().await.unwrap().get("phase").unwrap(),
+            "truncated"
+        );
+        let mut count = 0;
+        while running.next().await.is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 128);
+    }
+    #[test]
+    fn selection_failure_is_known_and_does_not_expose_provider_details() {
+        let error = preparation_error(
+            crate::preparation::PreparationError::Selection(ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: "provider token=secret".into(),
+                details: serde_json::json!({"rejections":{"builds disabled":2}}),
+            })),
+            false,
+        );
+        assert_eq!(
+            error.details.pointer("/preparation/kind").unwrap(),
+            "failed"
+        );
+        assert_eq!(
+            error
+                .details
+                .pointer("/preparation/rejections/builds disabled")
+                .unwrap(),
+            2
+        );
+        assert!(!error.message.contains("secret"));
+        assert!(!error.details.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn requested_cancellation_preserves_unknown_stage_and_evidence() {
+        let error = preparation_error(
+            crate::preparation::PreparationError::Compose(
+                crate::compose::ComposeError::RemoteBuild {
+                    outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
+                        stage: ployz_build::Stage::Building,
+                        message: "lost stream".into(),
+                        work: ployz_build::WorkEvidence::default(),
+                    }),
+                },
+            ),
+            true,
+        );
+        assert_eq!(
+            error.details.pointer("/preparation/kind").unwrap(),
+            "unknown"
+        );
+        assert_eq!(
+            error.details.pointer("/preparation/stage").unwrap(),
+            "Building"
+        );
+        assert!(
+            error
+                .details
+                .pointer("/preparation/work")
+                .unwrap()
+                .is_object()
+        );
     }
 }

@@ -6,8 +6,7 @@ use ployz_core::{ComposePruneRefusal, ServiceSelector};
 use crate::{
     compose::{
         BuildOptions, CapturedBuild, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
-        capture_build, compose_identity, has_explicit_nondefault_compose_file, load_project,
-        plan_build,
+        compose_identity, has_explicit_nondefault_compose_file, load_project,
     },
     deploy::{
         ReconciliationHints, ServiceAttempt, deploy_project, deploy_scale, deploy_spec,
@@ -57,34 +56,46 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let mut options = plan_options(force_recreate, skip_health_monitor);
     options.selected = selected_attempts(&project, &string_values(matches, "service"))?;
     let cancellation = crate::cancellation::listen()?;
-    let (mut candidate, captured_build) =
-        prepare_deploy(matches, &load, project, &resolved, options)?;
+    let (candidate, captured_build) = prepare_deploy(matches, &load, project, &resolved, options)?;
     runtime()?.block_on(async {
         let mut client =
             crate::cancellation::read(&cancellation, connect_client(root, context.as_deref()))
                 .await?;
-        // Every required Build finishes before preparation or application changes.
-        let builds = match captured_build {
-            Some(build) => {
-                build_images(
-                    &mut client,
-                    build,
-                    &candidate,
-                    matches,
-                    &load,
-                    &cancellation,
-                )
-                .await?
+        let remote = matches
+            .get_one::<String>("remote")
+            .filter(|target| !target.is_empty())
+            .map(ployz_core::MachineTarget::parse)
+            .transpose()?;
+        let location = if matches.get_flag("local") {
+            crate::preparation::BuildLocation::Local {
+                docker: load.docker.as_deref(),
             }
-            None => Vec::new(),
+        } else {
+            crate::preparation::BuildLocation::Remote(remote.as_ref())
         };
-        candidate
-            .bind_builds(&builds)
-            .map_err(crate::deploy::DeployError::from)?;
+        let candidate_id = candidate.id().to_owned();
+        let prepared = crate::preparation::prepare(
+            &mut client,
+            candidate,
+            captured_build,
+            location,
+            &cancellation,
+            preparation_progress,
+        )
+        .await
+        .map_err(|error| {
+            if let crate::preparation::PreparationError::Connect(error)
+            | crate::preparation::PreparationError::Selection(error) = error
+            {
+                super::build::selection_error(error)
+            } else {
+                Error::from(error)
+            }
+        })?;
         deploy_project(
             &mut client,
-            &candidate,
-            &builds,
+            &candidate_id,
+            prepared,
             &cancellation,
             crate::deploy::ConfirmGate {
                 auto_confirm: yes,
@@ -96,75 +107,20 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Build every captured target where the Deploy asked, from one read-only
-/// Machine observation: it fixes the platforms Railpack builds and the
-/// Machines an automatic selection may choose between.
-async fn build_images(
-    client: &mut crate::connect::Client,
-    mut build: CapturedBuild,
-    candidate: &CapturedCompose,
-    matches: &ArgMatches,
-    load: &LoadOptions,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<Vec<crate::compose::BuiltService>, Error> {
-    let mut machines =
-        crate::cancellation::read(cancellation, async { Ok(client.machines().await?) }).await?;
-    let applied = candidate.intent().applied_names();
-    if candidate.intent().target.iter().any(|spec| {
-        applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
-    }) {
-        crate::cancellation::read(cancellation, async {
-            client.observe_machine_storage(&mut machines).await;
-            Ok(())
-        })
-        .await?;
+fn preparation_progress(event: crate::preparation::Progress) {
+    match event {
+        crate::preparation::Progress::Platforms(platforms) if !platforms.is_empty() => {
+            eprintln!("Build platforms: {}", platforms.join(", "))
+        }
+        crate::preparation::Progress::Platforms(_) | crate::preparation::Progress::Transfer => {}
+        crate::preparation::Progress::Selected(selected) => {
+            super::build::report_selection(&selected)
+        }
+        crate::preparation::Progress::Build(event) => super::build::progress(event),
+        crate::preparation::Progress::Delivered { image, machine_id } => {
+            println!("Pushed {image} to {machine_id}")
+        }
     }
-    build
-        .cover_machines(candidate, &machines)
-        .map_err(crate::deploy::DeployError::from)?;
-    let targets = build.targets().map_err(crate::deploy::DeployError::from)?;
-    let platforms = targets
-        .iter()
-        .flat_map(|target| target.platforms.iter().map(String::as_str))
-        .collect::<std::collections::BTreeSet<_>>();
-    if !platforms.is_empty() {
-        eprintln!(
-            "Build platforms: {}",
-            platforms.into_iter().collect::<Vec<_>>().join(", ")
-        );
-    }
-    if matches.get_flag("local") {
-        return Ok(build
-            .execute(load.docker.as_deref(), cancellation)
-            .map_err(crate::deploy::DeployError::from)?);
-    }
-    let remote = matches
-        .get_one::<String>("remote")
-        .filter(|target| !target.is_empty())
-        .map(ployz_core::MachineTarget::parse)
-        .transpose()?;
-    let machine = super::build::select_build_machine(
-        client,
-        remote.as_ref(),
-        &targets,
-        &machines,
-        cancellation,
-    )
-    .await?;
-    let result = build
-        .execute_remote_images(
-            client,
-            machine.id,
-            cancellation.clone(),
-            super::build::progress,
-        )
-        .await;
-    if cancellation.is_cancelled() {
-        return Err(Error::usage(
-            "Build cancelled. No Service, hook, or volume change was attempted.",
-        ));
-    }
-    Ok(result.map_err(crate::deploy::DeployError::from)?)
 }
 
 /// Render the captured Compose candidate against fresh, read-only Cluster evidence.
@@ -348,7 +304,7 @@ fn resolve_from_compose_load(
 fn prepare_deploy(
     matches: &ArgMatches,
     load: &LoadOptions,
-    mut project: ComposeProject,
+    project: ComposeProject,
     resolved: &ResolvedProject,
     options: ployz_core::PlanOptions,
 ) -> Result<(CapturedCompose, Option<CapturedBuild>), Error> {
@@ -370,22 +326,16 @@ fn prepare_deploy(
         pull: matches.get_flag("build-pull"),
         services: build_names,
     };
-    let builds = plan_build(&project, &build_options)?;
-    let captured_build = if matches.get_flag("no-build") || builds.is_empty() {
-        None
-    } else {
-        Some(capture_build(&builds, &build_options, &mut project)?)
-    };
-    project.resolve_secrets()?;
-    let hints = reconciliation_hints(load, resolved);
-    let candidate = project.capture(
+    crate::preparation::capture(
+        project,
         resolved.name.clone(),
         options,
-        hints.requested_profiles,
-        hints.compose_refusal,
-        load.files.clone(),
-    );
-    Ok((candidate, captured_build))
+        load,
+        &build_options,
+        matches.get_flag("no-build"),
+        compose_prune_refusal(load, resolved),
+    )
+    .map_err(Into::into)
 }
 
 fn selected_attempts(

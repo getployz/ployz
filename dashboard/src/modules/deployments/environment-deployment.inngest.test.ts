@@ -277,8 +277,8 @@ describe("process environment deployment", () => {
     mocks.loadDeploymentContext.mockResolvedValue(createDeploymentContext());
     mocks.executeEnvironmentDeployment.mockRejectedValue(
       new DeploymentRuntimeInvalid({
-        failureCode: "deploy_image_not_pullable",
-        message: "Git sources are not pullable.",
+        failureCode: "sdk_preview_invalid",
+        message: "Runtime preview is invalid.",
       }),
     );
 
@@ -289,7 +289,7 @@ describe("process environment deployment", () => {
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(mocks.markDeploymentFailedIfOwned).toHaveBeenCalledWith(
       expect.objectContaining({
-        failureCode: "deploy_image_not_pullable",
+        failureCode: "sdk_preview_invalid",
       }),
     );
   });

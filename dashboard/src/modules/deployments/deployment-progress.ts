@@ -20,7 +20,17 @@ export const deploymentProgressRowSchema = Schema.Struct({
   health: text,
   error: text,
 });
+export const preparationProgressSchema = Schema.Struct({
+  phase: Schema.Literals(["source", "selection", "build", "transfer", "ready"]),
+  serviceId: text, machineId: text, machineName: text, message: text,
+  output: Schema.String, outputTruncated: Schema.Boolean,
+  failureCode: Schema.optional(Schema.String),
+  stage: Schema.optional(Schema.String),
+  work: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type PreparationProgress = typeof preparationProgressSchema.Type;
 export const deploymentProgressSchema = Schema.Struct({
+  preparation: Schema.optional(preparationProgressSchema),
   completed: Schema.Number,
   total: Schema.Number,
   outcome: Schema.NullOr(Schema.Literals(["success", "failed"])),

@@ -179,8 +179,8 @@ describe("process-environment-deployment Inngest adapter", () => {
   it("marks typed deterministic activity failures as non-retriable", async () => {
     activity.execute.mockRejectedValue(
       new DeploymentRuntimeInvalid({
-        failureCode: "deploy_image_not_pullable",
-        message: "Git sources are not pullable.",
+        failureCode: "sdk_preview_invalid",
+        message: "Runtime preview is invalid.",
       }),
     );
 
@@ -188,7 +188,7 @@ describe("process-environment-deployment Inngest adapter", () => {
 
     expect(output.error).toEqual(
       expect.objectContaining({
-        message: "Git sources are not pullable.",
+        message: "Runtime preview is invalid.",
         stack: expect.stringContaining("NonRetriableError"),
       }),
     );

@@ -21,7 +21,7 @@ import type {
   EnrollmentSnapshot,
   RemoveVolumesRequest,
   RequestedServiceSpec,
-  RpcError,
+  RpcError as RpcErrorPayload,
   RuntimeWatchView,
 } from "./generated/payloads";
 export * from "./generated/payloads";
@@ -50,12 +50,34 @@ export type ConfirmOptions = WatchOptions;
 export type RunOptions = WatchOptions;
 
 export declare const RpcError: {
-  new (error: RpcError, options?: ErrorOptions): Error & RpcError;
+  new (error: RpcErrorPayload, options?: ErrorOptions): Error & RpcErrorPayload;
 };
 
 export type PreparedDeploy = DeployPreview & {
   readonly noop: boolean;
+  /** Release unconfirmed retained image resources. */
+  close(): void;
   confirm(options?: ConfirmOptions): RunningDeploy;
+};
+
+/** Backend-only input. Checkout paths are repository roots, keyed by config.privateDns. */
+export type PreparationInput = {
+  deployment: Parameters<typeof import("./config").lowerDeployment>[0];
+  sources: Record<string, string>;
+};
+
+export type PreparationEvent =
+  | { Platforms: string[] }
+  | { Selected: { machine: import("./generated/payloads").Machine; rejections: string[] } }
+  | { Build: { Stage: string } | { Output: number[] } | { Timing: unknown } | { Target: unknown } }
+  | "Transfer"
+  | { Delivered: { image: string; machine_id: MachineId } }
+  | { phase: "truncated"; dropped: number };
+
+export type RunningPreparation = AsyncIterable<PreparationEvent> & {
+  abort(): void;
+  /** Completes without consuming progress; failures preserve typed stage and work evidence. */
+  readonly finished: Promise<PreparedDeploy>;
 };
 
 export type RunningDeploy = AsyncIterable<DeployEvent> & {
@@ -79,6 +101,7 @@ export declare function applyOne(
 ): DeployIntent;
 
 export declare class Client {
+  prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
   removeCloudPairing(): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
@@ -116,6 +139,6 @@ export declare class Client {
   dataLossIfClusterDestroyed(): Promise<ObservedDataLoss>;
   destroyCluster(confirmDataLoss: DataLossConfirmation): Promise<ClusterTeardown>;
   close(): Promise<void>;
-};
+}
 
 export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;

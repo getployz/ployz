@@ -8,6 +8,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/runtime/ployz.server.ts",
   "modules/billing/polar-provider.server.ts",
   "modules/github/github-observation.api.ts",
+  "modules/github/github-source.server.ts",
   "server/auth.server.ts",
   "server/database.server.ts",
   "modules/inngest/client.ts",

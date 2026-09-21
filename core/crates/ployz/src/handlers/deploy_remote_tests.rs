@@ -906,3 +906,92 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn shared_preparation_preserves_failed_and_unknown_work_without_confirmation() {
+    for unknown in [false, true] {
+        let (root, service, builds) = fixture();
+        let mutations = service.mutating_rpcs();
+        let work = WorkEvidence(std::collections::BTreeMap::from([
+            ("one".into(), TargetEvidence::Unknown),
+            ("two".into(), TargetEvidence::Unattempted),
+        ]));
+        let outcome = if unknown {
+            Outcome::Unknown {
+                stage: Stage::Building,
+                message: "lost terminal response".into(),
+                work,
+            }
+        } else {
+            Outcome::Failed {
+                stage: Stage::Building,
+                message: "recipe failed".into(),
+                work,
+            }
+        };
+        *builds.terminal.lock().unwrap() = Some(outcome.clone());
+        let load = crate::compose::LoadOptions {
+            files: vec![root.join("compose.yaml")],
+            ..Default::default()
+        };
+        let project = crate::compose::load_project(&load).unwrap();
+        let (candidate, capture) = crate::preparation::capture(
+            project,
+            "example".parse().unwrap(),
+            Default::default(),
+            &load,
+            &crate::compose::BuildOptions {
+                deps: true,
+                ..Default::default()
+            },
+            false,
+            None,
+        )
+        .unwrap();
+        let (mut client, server) = connected(service).await;
+        let result = crate::preparation::prepare(
+            &mut client,
+            candidate,
+            capture,
+            crate::preparation::BuildLocation::Remote(None),
+            &tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await;
+        let Err(crate::preparation::PreparationError::Compose(
+            crate::compose::ComposeError::RemoteBuild { outcome: actual },
+        )) = result
+        else {
+            panic!("expected typed remote Build evidence")
+        };
+        let expected = match outcome {
+            Outcome::Failed {
+                stage,
+                message,
+                work,
+            } => crate::compose::RemoteBuildFailure::Failed {
+                stage,
+                message,
+                work,
+            },
+            Outcome::Unknown {
+                stage,
+                message,
+                work,
+            } => crate::compose::RemoteBuildFailure::Unknown {
+                stage,
+                message,
+                work,
+            },
+            Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
+            | Outcome::Validated { .. }
+            | Outcome::Published { .. } => panic!("expected failure fixture"),
+        };
+        assert_eq!(*actual, expected);
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        assert!(builds.pulls.lock().unwrap().is_empty());
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
+    }
+}

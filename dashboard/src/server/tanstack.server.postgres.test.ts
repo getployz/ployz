@@ -117,6 +117,17 @@ it(
 
         const vite = await createServer({
           configFile,
+          // Keep concurrent cold SSR imports in flight long enough to expose partial exports.
+          // Vite <8.2.2 mistakes completed dependencies for an active import cycle (#23009).
+          plugins: [{
+            name: "delay-cold-server-function",
+            enforce: "post",
+            transform(code, id) {
+              if (id.includes("/collections/read.functions.ts?tss-serverfn-split")) {
+                return "await new Promise(resolve => setTimeout(resolve, 100));\n" + code;
+              }
+            },
+          }],
           optimizeDeps: { noDiscovery: true },
           server: {
             host: "127.0.0.1",

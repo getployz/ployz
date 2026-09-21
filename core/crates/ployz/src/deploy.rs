@@ -19,7 +19,7 @@ use crate::{
 
 mod apply;
 mod exec;
-mod pipeline;
+pub(crate) mod pipeline;
 mod planning;
 mod progress;
 mod render;

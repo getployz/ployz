@@ -173,14 +173,14 @@ describe("Effect execution boundary", () => {
         Effect.fail(
           new TerminalProviderFailure({
             retriable: false,
-            failureCode: "deploy_image_not_pullable",
+            failureCode: "sdk_preparation_failed",
           }),
         ),
       ),
     ).rejects.toMatchObject({
       name: "NonRetriableError",
       cause: expect.objectContaining({
-        failureCode: "deploy_image_not_pullable",
+        failureCode: "sdk_preparation_failed",
       }),
     });
     await expect(

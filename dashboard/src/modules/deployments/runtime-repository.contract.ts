@@ -18,6 +18,7 @@ export class DeploymentQueueOccupied extends Data.TaggedError(
 export type DeploymentContext = {
   deployment: {
     id: string;
+    sourcePins?: import("./source-pins").DeploymentSourcePins;
     status: EnvironmentDeploymentStatus;
     environmentId: string;
     inngestRunId?: string | null;
