@@ -8,13 +8,13 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
-    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
-    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
-    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
-    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
-    associate_wireguard_peers, synthesize_membership,
+    InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
+    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
+    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
+    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
+    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::OwnedMutexGuard;
@@ -35,12 +35,13 @@ use crate::{
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
+    management_client: Option<[u8; 32]>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
 }
 
 mod container;
-mod tailcat_removal;
+mod pairing;
 mod upgrade;
 
 #[derive(Clone)]
@@ -90,6 +91,8 @@ pub enum Error {
     StoragePreparation(#[from] ployz_core::RpcError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error("management credential has been revoked")]
+    ManagementRevoked,
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -146,9 +149,17 @@ impl LocalMachine {
     pub fn new(owner: RecordOwner) -> Self {
         Self {
             owner,
+            management_client: None,
             cluster: None,
             containers: None,
         }
+    }
+
+    /// Bind subsequent mutation admission to this authenticated management client.
+    #[must_use]
+    pub(crate) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+        self.management_client = Some(remote);
+        self
     }
 
     #[must_use]
@@ -183,8 +194,18 @@ impl LocalMachine {
         &self.owner
     }
 
+    pub(crate) fn require_management_access(&self) -> Result<(), Error> {
+        if let Some(remote) = self.management_client
+            && self.record().accepted_client() != Some(remote)
+        {
+            return Err(Error::ManagementRevoked);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
         let local = self.owner.admission_lock().lock_owned().await;
+        self.require_management_access()?;
         let installation = self.owner.mutation_gate().try_mutation()?;
         Ok(MutationAdmission {
             _local: local,
@@ -308,7 +329,7 @@ impl LocalMachine {
             advertised_endpoints,
             store_version,
             rtts,
-            cloud_paired: record.cloud_pairing.is_some(),
+            cloud_paired: record.cloud_pairing().is_some(),
             telemetry,
             storage,
         })
@@ -523,25 +544,6 @@ impl LocalMachine {
             .await
     }
 
-    /// Persist or clear the current Cloud Pairing credential.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NotParticipating`] when this Machine is not
-    /// participating, [`Error::RecordOwner`] when the record owner has
-    /// stopped, and [`Error::Store`] when the record cannot be written.
-    async fn set_cloud_pairing_admitted(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
-        self.owner
-            .mutate(move |store| {
-                if store.record().phase() != LocalMachinePhase::Participating {
-                    return Err(Error::NotParticipating);
-                }
-                store.persist_cloud_pairing(pairing)?;
-                Ok(())
-            })
-            .await?
-    }
-
     /// Membership Observation of Machines visible from this participating Machine.
     ///
     /// # Errors
@@ -594,6 +596,7 @@ impl LocalMachine {
             && request.update.public_ip == ployz_core::PublicIpUpdate::Keep
             && request.update.advertised_endpoints.is_none()
         {
+            self.require_management_access()?;
             let installation = self.owner.mutation_gate().try_mutation()?;
             return tokio::spawn(async move {
                 let _installation = installation;

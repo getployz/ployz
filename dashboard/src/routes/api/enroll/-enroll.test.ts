@@ -325,14 +325,14 @@ describe("machine enrollment routes", () => {
 
   it("accepts a bounded protected candidate without reflecting capabilities", async () => {
     mocks.completeFounding.mockReturnValue(Effect.succeed({ machineId }));
-    const published = { stage: "publish", machineId, pairingCredential: "ppair_secret", tailcat: "private-capability" };
+    const published = { stage: "publish", machineId, pairingCredential: "ppair_secret", capability: "private-capability" };
     const accepted = await callback(published);
     expect(accepted.status).toBe(200);
     expect(mocks.completeFounding).toHaveBeenCalledWith({ token, ...published });
     expect(await accepted.json()).toEqual({ machineId });
     mocks.completeFounding.mockClear();
-    for (const tailcat of ["", "x".repeat(16 * 1024 + 1)]) {
-      const rejected = await callback({ ...published, tailcat });
+    for (const capability of ["", "x".repeat(94)]) {
+      const rejected = await callback({ ...published, capability });
       expect(rejected.status).toBe(422);
       expect(await rejected.text()).not.toContain("private-capability");
     }

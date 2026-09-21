@@ -16,8 +16,10 @@ use ployz_core::{
 use thiserror::Error;
 
 use super::{
-    FoundingCluster, LocalMachineBody, LocalMachineRecord, ParticipationOrigin, local_runtime,
+    CloudAccess, FoundingCluster, LocalMachineBody, LocalMachineRecord, ParticipationOrigin,
+    local_runtime,
 };
+use crate::management::ManagementSecret;
 use crate::network::{WireGuardPrivateKey, allocate_machine_subnet};
 
 const STATE_FILE_NAME: &str = "machine.json";
@@ -121,8 +123,9 @@ impl LocalMachineStore {
                         id: MachineId::random(),
                     },
                     wireguard_private_key: WireGuardPrivateKey::generate(),
+                    management_secret: ManagementSecret::generate(),
+                    cloud_access: CloudAccess::Unpaired {},
                     wireguard_mtu: None,
-                    cloud_pairing: None,
                     selected_endpoints: BTreeMap::new(),
                 };
                 save(&data_dir, &record)?;
@@ -245,7 +248,7 @@ impl LocalMachineStore {
             },
         };
         initialized.wireguard_mtu = wireguard_mtu;
-        initialized.cloud_pairing = cloud_pairing;
+        initialized.cloud_access = cloud_pairing.into();
         save(&self.data_dir, &initialized)?;
         self.record = initialized;
         Ok(machine)
@@ -280,7 +283,7 @@ impl LocalMachineStore {
                 origin: ParticipationOrigin::Join { .. },
             } if machine == &assigned_machine
                 && self.record.wireguard_mtu == wireguard_mtu
-                && self.record.cloud_pairing == cloud_pairing =>
+                && self.record.cloud_pairing() == cloud_pairing.as_ref() =>
             {
                 return Ok(true);
             }
@@ -296,7 +299,7 @@ impl LocalMachineStore {
             min_store_version: target_versions,
         };
         joining.wireguard_mtu = wireguard_mtu;
-        joining.cloud_pairing = cloud_pairing;
+        joining.cloud_access = cloud_pairing.into();
         save(&self.data_dir, &joining)?;
         self.record = joining;
         Ok(false)
@@ -355,12 +358,51 @@ impl LocalMachineStore {
         Ok(())
     }
 
+    /// Stage a replacement client key, or clear both keys and the pairing in one write.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn persist_cloud_pairing(
         &mut self,
-        pairing: Option<CloudPairing>,
+        replacement: Option<(CloudPairing, [u8; 32])>,
     ) -> Result<(), StoreError> {
         let mut updated = self.record.clone();
-        updated.cloud_pairing = pairing;
+        updated.cloud_access = match replacement {
+            None => CloudAccess::Unpaired {},
+            Some((pairing, pending)) => match self.record.accepted_client() {
+                Some(accepted) => CloudAccess::Rotating {
+                    pairing,
+                    accepted,
+                    pending,
+                },
+                None => CloudAccess::Pending { pairing, pending },
+            },
+        };
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
+    /// Commit a pending key for its holder's first operational RPC, after identity verification.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn activate_management_client(&mut self, remote: [u8; 32]) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        let (CloudAccess::Pending { pairing, pending }
+        | CloudAccess::Rotating {
+            pairing, pending, ..
+        }) = updated.cloud_access
+        else {
+            return Ok(());
+        };
+        if pending != remote {
+            return Ok(());
+        }
+        updated.cloud_access = CloudAccess::Active {
+            pairing,
+            accepted: remote,
+        };
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())

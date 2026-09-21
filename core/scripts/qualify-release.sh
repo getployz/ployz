@@ -28,6 +28,7 @@ SSH_KEY=${PLOYZ_QUALIFY_SSH_KEY:-}
 SSH_KNOWN_HOSTS=${PLOYZ_QUALIFY_SSH_KNOWN_HOSTS:-}
 CONFIG_DIR=
 TRAFFIC_PID=
+OFFLINE_HOST=
 TRAFFIC_STOP=/var/lib/ployz/qualification/traffic.stop
 REMOTE_RELEASE_ROOT=/var/lib/ployz/qualification/releases
 APP_URL=http://127.0.0.1:18082/identity
@@ -227,9 +228,18 @@ stop_traffic() {
 }
 
 cleanup() {
+    [ -z "$OFFLINE_HOST" ] || ssh_host "$OFFLINE_HOST" 'sudo systemctl start ployz.service' || true
     stop_traffic
     [ -z "${work:-}" ] || rm -rf "$work"
     [ -z "$CONFIG_DIR" ] || rm -rf "$CONFIG_DIR"
+}
+
+run_cloud_offline() {
+    OFFLINE_HOST=$1
+    ssh_host "$OFFLINE_HOST" 'sudo systemctl stop ployz.service'
+    run_cloud_phase "$2"
+    ssh_host "$OFFLINE_HOST" 'sudo systemctl start ployz.service'
+    OFFLINE_HOST=
 }
 
 stage_remote_release() {
@@ -335,7 +345,6 @@ tar -xzf "$UPGRADE_ARTIFACT_DIR/$(cli_archive)" -C "$work/target-cli"
 controller_daemon_archive=$(daemon_archive "$(uname -m)")
 need_file "$ARTIFACT_DIR" PLOYZ_ARTIFACT_DIR "$controller_daemon_archive"
 tar -xzf "$ARTIFACT_DIR/$controller_daemon_archive" -C "$work/source-cli"
-[ -x "$work/source-cli/ployz-tailcat" ] || error "source daemon archive did not contain ployz-tailcat"
 export PATH="$work/source-cli:$PATH"
 PLOYZ=$work/source-cli/ployz
 TARGET_PLOYZ=$work/target-cli/ployz
@@ -384,14 +393,12 @@ python3 - "$PLOYZ_CONFIG" <<'CONTEXT_EOF'
 import json, sys
 config = json.load(open(sys.argv[1]))
 connections = config["contexts"]["qualify"]["connections"]
-if len(connections) < 2 or any(set(connection) - {"tailcat", "machine_id"} or not connection.get("tailcat") for connection in connections):
-    raise SystemExit("Cloud driver did not write an all-Tailcat qualification context")
+if len(connections) < 2 or any(set(connection) - {"management", "machine_id"} or not connection.get("management") for connection in connections):
+    raise SystemExit("Cloud driver did not write an all-management qualification context")
 CONTEXT_EOF
 
-echo "prove ordered runtime fallback with the preferred helper stopped"
-ssh_host "$first" 'sudo systemctl stop ployz-tailcat.service'
-run_cloud_phase fallback
-ssh_host "$first" 'sudo systemctl start ployz-tailcat.service'
+echo "prove ordered runtime fallback"
+run_cloud_offline "$first" fallback
 
 machine_arch=$(ssh_host "$first" uname -m)
 machine_archive=$(daemon_archive "$machine_arch")
@@ -416,7 +423,7 @@ echo 'intentional qualification activation failure' >&2
 exit 42
 EOF
 chmod 0755 "$work/target-payload/ployzd"
-tar -czf "$work/releases/failure/$machine_archive" -C "$work/target-payload" ployzd ployz-tailcat ployz-uninstall
+tar -czf "$work/releases/failure/$machine_archive" -C "$work/target-payload" ployzd ployz-uninstall
 failure_daemon_hash=$(sha256 "$work/target-payload/ployzd")
 printf '%s  %s\n' "$(sha256 "$work/releases/failure/$machine_archive")" "$machine_archive" >"$work/releases/failure/checksums.txt"
 
@@ -497,14 +504,12 @@ wait_for_application
 [ "$(machine_state_signature)" = "$state_before" ] || error "Machine identity, pairing, or configuration changed after explicit repair"
 [ "$(machine_cloud_pairing)" = "$pairing_before" ] || error "Cloud Pairing changed after explicit repair"
 
-echo "record truthful Cloud revocation with an unreachable helper, then confirm online"
+echo "record truthful Cloud revocation offline, then confirm online"
 if [ "${PLOYZ_QUALIFY_PAUSE_BEFORE_REVOCATION:-0}" != 0 ]; then
     echo "paused before Cloud revocation; pairing remains live for additional qualification phases"
     exit 0
 fi
-ssh_host "${HOST_LIST[1]}" 'sudo systemctl stop ployz-tailcat.service'
-run_cloud_phase revoke-offline
-ssh_host "${HOST_LIST[1]}" 'sudo systemctl start ployz-tailcat.service'
+run_cloud_offline "${HOST_LIST[1]}" revoke-offline
 run_cloud_phase revoke-online
 
 stop_traffic

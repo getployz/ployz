@@ -3,6 +3,7 @@ use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Durat
 use super::*;
 use crate::context::SshDestination;
 use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER};
+use tokio::io::AsyncWriteExt;
 
 #[test]
 fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
@@ -370,16 +371,21 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
 }
 
 #[tokio::test]
-async fn tailcat_auxiliary_proxy_is_explicitly_unsupported_and_redacted() {
-    let connection = Connection::tailcat("private-capability").unwrap();
+async fn management_auxiliary_proxy_is_explicitly_unsupported_and_redacted() {
+    let secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    )
+    .to_secret_string();
+    let connection = Connection::management(&secret).unwrap();
     let result = SystemConnector::default()
         .dial_proxy(&connection, "tcp", "127.0.0.1:1234")
         .await;
     let Err(ConnectError::ProxyUnsupported(message)) = result else {
-        panic!("Tailcat must reject auxiliary proxy");
+        panic!("the management transport must reject auxiliary proxy");
     };
-    assert!(message.contains("tailcat"));
-    assert!(!message.contains("private-capability"));
+    assert!(message.contains("management"));
+    assert!(!message.contains(&secret));
 }
 
 #[tokio::test]

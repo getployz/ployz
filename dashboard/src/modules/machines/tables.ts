@@ -115,7 +115,7 @@ export const organizationMachine = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
     clusterKey: text("cluster_key").notNull(),
-    encryptedTailcat: jsonb("encrypted_tailcat").notNull().$type<EncryptedSecretValue>(),
+    encryptedCapability: jsonb("encrypted_capability").notNull().$type<EncryptedSecretValue>(),
     isDialEntry: boolean("is_dial_entry").default(false).notNull(),
     createdAt,
     updatedAt,

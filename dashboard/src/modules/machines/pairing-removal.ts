@@ -12,8 +12,6 @@ export const RemovalEndpoint = Schema.Union([
   Schema.Struct({ status: Schema.Literal("unknown"), machineId: rustMachineIdSchema }),
   Schema.Struct({ status: Schema.Literal("pending"), machineId: rustMachineIdSchema,
     encryptedExpected: EncryptedCredential }),
-  Schema.Struct({ status: Schema.Literal("prepared"), machineId: rustMachineIdSchema,
-    encryptedExpected: EncryptedCredential, encryptedSuccessor: EncryptedCredential }),
   Schema.Struct({ status: Schema.Literal("confirmed"), machineId: rustMachineIdSchema }),
 ]);
 

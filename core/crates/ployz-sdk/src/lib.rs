@@ -28,11 +28,10 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value> {
     ployz_core::config::config_request(input).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-/// One cancellable connection attempt. Owns no shared helper manager.
+/// One cancellable connection attempt.
 #[napi]
 pub struct PendingConnection {
     connections: std::sync::Mutex<Option<Vec<ployz::context::Connection>>>,
-    helper: String,
     cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -41,10 +40,7 @@ pub struct PendingConnection {
 /// # Errors
 /// Returns InvalidArgument for malformed or empty connections.
 #[napi]
-pub fn start_connections(
-    connections: serde_json::Value,
-    helper: String,
-) -> Result<PendingConnection> {
+pub fn start_connections(connections: serde_json::Value) -> Result<PendingConnection> {
     let connections: Vec<ployz::context::Connection> = serde_json::from_value(connections)
         .map_err(|_| {
             rpc_to_napi(RpcError {
@@ -62,14 +58,13 @@ pub fn start_connections(
     }
     Ok(PendingConnection {
         connections: std::sync::Mutex::new(Some(connections)),
-        helper,
         cancel: tokio_util::sync::CancellationToken::new(),
     })
 }
 
 #[napi]
 impl PendingConnection {
-    /// Cancel this attempt; dropping the dial future reaps its helper.
+    /// Cancel this attempt; dropping the dial future closes its transport.
     #[napi]
     pub fn cancel(&self) {
         self.cancel.cancel();
@@ -87,9 +82,7 @@ impl PendingConnection {
             .map_err(|_| Error::from_reason("connection lock failed"))?
             .take()
             .ok_or_else(|| Error::from_reason("connection already awaited"))?;
-        let connector = std::sync::Arc::new(
-            ployz::connect::SystemConnector::default().with_tailcat_program(&self.helper),
-        );
+        let connector = std::sync::Arc::new(ployz::connect::SystemConnector::default());
         tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null })),
@@ -124,18 +117,13 @@ pub struct RunningDeployHandle {
 
 #[napi]
 impl Client {
-    /// Request endpoint revocation. Confirm separately through the successor.
+    /// Clear this Machine's Cloud Pairing.
     ///
     /// # Errors
-    /// Returns invalid input or uncertain mutation failures.
+    /// Returns uncertain mutation failures.
     #[napi]
-    pub async fn remove_cloud_pairing(&self, removal: serde_json::Value) -> Result<()> {
-        let removal = serde_json::from_value(removal)
-            .map_err(|_| Error::from_reason("invalid Tailcat removal"))?;
-        self.inner
-            .remove_cloud_pairing(removal)
-            .await
-            .map_err(rpc_to_napi)
+    pub async fn remove_cloud_pairing(&self) -> Result<()> {
+        self.inner.remove_cloud_pairing().await.map_err(rpc_to_napi)
     }
 
     /// Inspect identity and Cloud Pairing presence on this session.
@@ -548,38 +536,4 @@ pub fn allocate_enrollment(
             })
         })?;
     to_json(&assignment)
-}
-
-/// Prepare an offline removal successor without exposing capabilities in argv.
-///
-/// # Errors
-/// Returns a redacted error for invalid input or helper failure.
-#[napi]
-pub async fn prepare_tailcat_removal(expected: String, helper: String) -> Result<String> {
-    use std::process::Stdio;
-    use tokio::io::AsyncWriteExt;
-    let failure = || Error::from_reason("Tailcat successor preparation failed");
-    let expected = ployz_core::TailcatCapability::parse(expected).map_err(|_| failure())?;
-    let mut child = tokio::process::Command::new(helper)
-        .arg("successor")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| failure())?;
-    let mut input = child.stdin.take().ok_or_else(failure)?;
-    input
-        .write_all(format!("{}\n", expected.as_str()).as_bytes())
-        .await
-        .map_err(|_| failure())?;
-    drop(input);
-    let output = child.wait_with_output().await.map_err(|_| failure())?;
-    if !output.status.success() {
-        return Err(failure());
-    }
-    let successor = String::from_utf8(output.stdout).map_err(|_| failure())?;
-    let successor = successor.strip_suffix('\n').ok_or_else(failure)?;
-    let successor = ployz_core::TailcatCapability::parse(successor).map_err(|_| failure())?;
-    Ok(successor.into())
 }

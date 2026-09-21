@@ -22,9 +22,6 @@ recorded here so they are not re-raised:
   which is what makes reconnect possible. It stays.
 - `pg_notify` in `pairing-removal.server.ts` runs inside the transaction on
   purpose: transactional NOTIFY fires on commit.
-- `prepareTailcatRemoval` is local: it spawns the tailcat helper to derive a
-  successor capability (`core/crates/ployz-sdk/src/lib.rs`). The transaction in
-  `pairing-removal.server.ts` wraps a fast subprocess, not a network call.
 - `Schema.is` takes no parse options, so it cannot replace the guards that
   reject excess properties (`isValid`, the two GitHub struct guards). Only the
   three option-free scalar guards were converted.

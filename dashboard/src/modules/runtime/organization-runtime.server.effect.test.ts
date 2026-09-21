@@ -11,8 +11,8 @@ import {
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
 
 const connections: Connection[] = [
-  { tailcat: "tailcat://preferred" },
-  { tailcat: "tailcat://spare" },
+  { management: "ployz1:preferred" },
+  { management: "ployz1:spare" },
 ];
 
 it.effect("passes ordered candidates to one SDK connection and finalizes the session", () =>
@@ -331,7 +331,7 @@ it.effect("dials only the requested saved Machine and refuses an unknown Machine
   Effect.gen(function* () {
     const intended = "00000000000000000000000000000001" as MachineId;
     const unknown = "00000000000000000000000000000002" as MachineId;
-    const candidate = { tailcat: "tailcat://intended", machine_id: intended };
+    const candidate = { management: "ployz1:intended", machine_id: intended };
     const dialed: unknown[] = [];
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "current", connections: [...connections, candidate],

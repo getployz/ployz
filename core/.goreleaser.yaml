@@ -79,11 +79,7 @@ archives:
       {{- .Arch }}
     builds_info:
       mode: 0755
-    files:
-      - src: target/tailcat/{{ .Os }}_{{ .Arch }}/ployz-tailcat
-        dst: ployz-tailcat
-        info:
-          mode: 0755
+    files: [none*]
 
   - id: ployzd
     builds: [ployzd-linux-amd64, ployzd-linux-arm64]
@@ -92,10 +88,6 @@ archives:
     builds_info:
       mode: 0755
     files:
-      - src: target/tailcat/{{ .Os }}_{{ .Arch }}/ployz-tailcat
-        dst: ployz-tailcat
-        info:
-          mode: 0755
       - src: scripts/uninstall.sh
         dst: ployz-uninstall
         info:

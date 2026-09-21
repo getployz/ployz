@@ -11,6 +11,7 @@ use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
     LocalMachineStore, ParticipationOrigin, RecordOwner, StoreError,
 };
+use ployzd::management::ManagementSecret;
 use ployzd::network::WireGuardPrivateKey;
 
 use test_dir::TestDir;
@@ -103,7 +104,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     else {
         panic!("initialized Machine must retain its founding Cluster seed");
     };
-    assert_eq!(first.record().cloud_pairing, None);
+    assert_eq!(first.record().cloud_pairing(), None);
     assert!(
         first
             .initialize(ployz_core::InitializeRequest {
@@ -147,7 +148,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     assert_eq!(second.record().phase(), LocalMachinePhase::Joining);
     assert_eq!(second.record().bootstrap(), [initialized].as_slice());
     assert_eq!(second.record().min_store_version().get("actor"), Some(&4));
-    assert_eq!(second.record().cloud_pairing, None);
+    assert_eq!(second.record().cloud_pairing(), None);
 }
 
 fn sample_cloud_pairing() -> CloudPairing {
@@ -174,14 +175,14 @@ async fn initialize_with_cloud_pairing_stores_pairing_credential() {
         .await
         .unwrap();
 
-    assert_eq!(local.record().cloud_pairing.as_ref(), Some(&pairing));
+    assert_eq!(local.record().cloud_pairing(), Some(&pairing));
     drop(local);
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert_eq!(reopened.record().cloud_pairing.as_ref(), Some(&pairing));
+    assert_eq!(reopened.record().cloud_pairing(), Some(&pairing));
     let persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
-    let pairing_json = persisted.get("cloud_pairing").expect("cloud_pairing field");
+    let pairing_json = persisted.pointer("/cloud_access/pairing").unwrap();
     assert_eq!(
         pairing_json,
         &serde_json::json!({
@@ -211,7 +212,7 @@ async fn set_cloud_pairing_after_initialize_persists() {
         })
         .await
         .unwrap();
-    assert_eq!(local.record().cloud_pairing, None);
+    assert_eq!(local.record().cloud_pairing(), None);
 
     local
         .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
@@ -219,10 +220,10 @@ async fn set_cloud_pairing_after_initialize_persists() {
         })
         .await
         .unwrap();
-    assert_eq!(local.record().cloud_pairing.as_ref(), Some(&pairing));
+    assert_eq!(local.record().cloud_pairing(), Some(&pairing));
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert_eq!(reopened.record().cloud_pairing.as_ref(), Some(&pairing));
+    assert_eq!(reopened.record().cloud_pairing(), Some(&pairing));
 }
 
 #[tokio::test]
@@ -246,10 +247,10 @@ async fn set_cloud_pairing_none_clears_persisted_pairing() {
         .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {})
         .await
         .unwrap();
-    assert_eq!(local.record().cloud_pairing, None);
+    assert_eq!(local.record().cloud_pairing(), None);
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert_eq!(reopened.record().cloud_pairing, None);
+    assert_eq!(reopened.record().cloud_pairing(), None);
 }
 
 #[tokio::test]
@@ -313,12 +314,12 @@ async fn join_with_cloud_pairing_stores_the_pairing_credential() {
         .await
         .unwrap();
 
-    assert_eq!(local.record().cloud_pairing.as_ref(), Some(&pairing));
+    assert_eq!(local.record().cloud_pairing(), Some(&pairing));
     drop(local);
 
     let reopened = LocalMachineStore::open(&second_dir.0).unwrap();
     assert_eq!(reopened.record().id(), assigned.id);
-    assert_eq!(reopened.record().cloud_pairing.as_ref(), Some(&pairing));
+    assert_eq!(reopened.record().cloud_pairing(), Some(&pairing));
 }
 
 #[test]
@@ -643,7 +644,9 @@ fn opening_joining_without_a_machine_or_key_fails() {
                 "bootstrap": [],
                 "min_store_version": { "actor": 1 }
             },
-            "wireguard_private_key": key
+            "wireguard_private_key": key,
+            "management_secret": ManagementSecret::generate(),
+        "cloud_access": { "state": "unpaired" }
         }))
         .unwrap(),
     )
@@ -826,7 +829,9 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
     );
     let valid = serde_json::json!({
         "body": { "phase": "joining", "machine": machine, "bootstrap": [peer] },
-        "wireguard_private_key": key
+        "wireguard_private_key": key,
+        "management_secret": ManagementSecret::generate(),
+        "cloud_access": { "state": "unpaired" }
     });
     assert!(serde_json::from_value::<LocalMachineRecord>(valid.clone()).is_ok());
     for (path, value) in [
@@ -963,4 +968,24 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
     conflict.wireguard_mtu = None;
     assert!(local.join(conflict).await.is_err());
     assert_eq!(local.record().id(), id);
+}
+
+#[test]
+fn local_record_rejects_contradictory_cloud_access() {
+    let dir = TestDir::new("ployzd-invalid-cloud-access");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let valid = serde_json::to_value(store.record()).unwrap();
+    let pairing = serde_json::to_value(sample_cloud_pairing()).unwrap();
+    let key = serde_json::to_value([1_u8; 32]).unwrap();
+    for access in [
+        serde_json::json!({"state": "unpaired", "accepted": key}),
+        serde_json::json!({"state": "active", "accepted": key}),
+        serde_json::json!({"state": "pending", "pairing": pairing}),
+        serde_json::json!({"state": "enrolling", "pairing": pairing, "pending": key}),
+        serde_json::json!({"state": "rotating", "pairing": pairing, "accepted": key}),
+    ] {
+        let mut invalid = valid.clone();
+        *invalid.get_mut("cloud_access").unwrap() = access;
+        assert!(serde_json::from_value::<LocalMachineRecord>(invalid).is_err());
+    }
 }

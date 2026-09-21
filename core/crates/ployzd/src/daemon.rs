@@ -39,6 +39,7 @@ use crate::{
         StoreError,
     },
     machine_api::MachineApi,
+    management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
 };
 
@@ -59,6 +60,8 @@ pub struct DaemonConfig {
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
     pub containers: ContainerMode,
+    /// Management transport bind port and relay; defaults are production values.
+    pub management: ManagementConfig,
 }
 
 /// Running Local Machine daemon. Callers do not choose which planes start.
@@ -223,6 +226,10 @@ impl Daemon {
             .map_or((None, None), |(management, gateway)| {
                 (Some(management), Some(gateway))
             });
+        let management_endpoint =
+            management::bind(local_record.management_secret(), &config.management)
+                .await
+                .map_err(io::Error::other)?;
         let socket = config.socket.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -238,6 +245,12 @@ impl Daemon {
                     ),
                     serve_machine_api(management_listener, machine_api.clone(), shutdown.clone()),
                     serve_machine_api(gateway_listener, machine_api.clone(), shutdown.clone()),
+                    management::serve(
+                        management_endpoint,
+                        crate::machine::LocalMachine::new(local.clone()),
+                        machine_api.clone(),
+                        shutdown.clone()
+                    ),
                 )
                 .map(|_| ())
             };
@@ -742,8 +755,8 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, claim_socket, listen_socket, wait_for_participation,
-        wait_until_socket_accepts,
+        ContainerMode, Daemon, DaemonConfig, ManagementConfig, claim_socket, listen_socket,
+        wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -759,9 +772,18 @@ mod tests {
                 machine_api_address: None,
                 containerd_socket: None,
                 containers,
+                management: test_management(),
             },
             socket,
         )
+    }
+
+    /// Ephemeral management port so parallel daemons never contend for the fixed one.
+    fn test_management() -> ManagementConfig {
+        ManagementConfig {
+            port: 0,
+            ..ManagementConfig::default()
+        }
     }
 
     async fn describe(path: &Path) -> ployz_core::ContractDescription {
@@ -882,6 +904,7 @@ mod tests {
             machine_api_address: None,
             containerd_socket: None,
             containers: ContainerMode::Absent,
+            management: test_management(),
         })
         .await
         .unwrap();
@@ -892,6 +915,7 @@ mod tests {
             machine_api_address: None,
             containerd_socket: None,
             containers: ContainerMode::Absent,
+            management: test_management(),
         })
         .await;
         assert!(second.is_err());

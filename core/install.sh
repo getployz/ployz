@@ -83,19 +83,17 @@ install_cli() {
     curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
     curl -fsSL -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt" || error "Failed to download checksums.txt"
     verify_checksum "$archive" "$tmp_dir/checksums.txt" "$tmp_dir" || error "Checksum verification failed"
-    tar -xzf "$tmp_dir/$archive" -C "$tmp_dir" ployz ployz-tailcat || error "Release archive is incomplete"
-    for binary in ployz ployz-tailcat; do
-        if [ ! -f "$tmp_dir/$binary" ] || [ -L "$tmp_dir/$binary" ] || [ ! -x "$tmp_dir/$binary" ]; then
-            error "Release binary $binary is invalid"
-        fi
-        installed_version=$("$tmp_dir/$binary" version) || error "Cannot run $binary"
-        [ "$installed_version" = "$version" ] || error "Release binary $binary has version $installed_version, expected $version"
-    done
+    tar -xzf "$tmp_dir/$archive" -C "$tmp_dir" ployz || error "Release archive is incomplete"
+    if [ ! -f "$tmp_dir/ployz" ] || [ -L "$tmp_dir/ployz" ] || [ ! -x "$tmp_dir/ployz" ]; then
+        error "Release binary ployz is invalid"
+    fi
+    installed_version=$("$tmp_dir/ployz" version) || error "Cannot run ployz"
+    [ "$installed_version" = "$version" ] || error "Release binary ployz has version $installed_version, expected $version"
 
     if [ -w "$INSTALL_BIN_DIR" ]; then
-        install -m 0755 "$tmp_dir/ployz" "$tmp_dir/ployz-tailcat" "$INSTALL_BIN_DIR/"
+        install -m 0755 "$tmp_dir/ployz" "$INSTALL_BIN_DIR/"
     else
-        sudo install -m 0755 "$tmp_dir/ployz" "$tmp_dir/ployz-tailcat" "$INSTALL_BIN_DIR/"
+        sudo install -m 0755 "$tmp_dir/ployz" "$INSTALL_BIN_DIR/"
     fi
     echo "Installed ployz to $INSTALL_BIN_DIR/ployz"
 }

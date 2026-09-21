@@ -29,6 +29,7 @@ TARGET=$TMP/target
 mkdir -p "$TMP/bin" "$SOURCE" "$TARGET"
 export LOG=$TMP/calls.log
 export SSH_LOG=$TMP/ssh.log
+export QUALIFY_OFFLINE_FILE=$TMP/offline-host
 export QUALIFY_STATE=$TMP/current-release
 printf 'target\n' >"$QUALIFY_STATE"
 
@@ -175,17 +176,15 @@ cat >"$TARGET/ployzd" <<'DAEMON'
 DAEMON
 printf '#!/bin/sh\nexit 0\n' >"$SOURCE/ployz-uninstall"
 cp "$SOURCE/ployz-uninstall" "$TARGET/ployz-uninstall"
-printf '#!/bin/sh\nexit 0\n' >"$SOURCE/ployz-tailcat"
-cp "$SOURCE/ployz-tailcat" "$TARGET/ployz-tailcat"
-chmod 0755 "$SOURCE/ployzd" "$TARGET/ployzd" "$SOURCE/ployz-uninstall" "$TARGET/ployz-uninstall" "$SOURCE/ployz-tailcat" "$TARGET/ployz-tailcat"
+chmod 0755 "$SOURCE/ployzd" "$TARGET/ployzd" "$SOURCE/ployz-uninstall" "$TARGET/ployz-uninstall"
 
 for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
     tar -czf "$SOURCE/$archive" -C "$SOURCE" ployz
     tar -czf "$TARGET/$archive" -C "$TARGET" ployz
 done
 for archive in ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
-    tar -czf "$SOURCE/$archive" -C "$SOURCE" ployzd ployz-tailcat ployz-uninstall
-    tar -czf "$TARGET/$archive" -C "$TARGET" ployzd ployz-tailcat ployz-uninstall
+    tar -czf "$SOURCE/$archive" -C "$SOURCE" ployzd ployz-uninstall
+    tar -czf "$TARGET/$archive" -C "$TARGET" ployzd ployz-uninstall
 done
 (
     cd "$SOURCE"
@@ -213,6 +212,8 @@ shift
 command=$*
 printf 'ssh host=%s command=%s\n' "$host" "$command" >>"$SSH_LOG"
 case "$command" in
+    'sudo systemctl stop ployz.service') printf '%s' "$host" >"$QUALIFY_OFFLINE_FILE" ;;
+    'sudo systemctl start ployz.service') rm -f "$QUALIFY_OFFLINE_FILE" ;;
     *'uname -m'*) printf 'x86_64\n' ;;
     *'./ployz cloud enroll '*) : >"$QUALIFY_PAIRED" ;;
     *'ln -sfn'*'/target'*'/current'*) printf 'target\n' >"$QUALIFY_STATE" ;;
@@ -266,11 +267,13 @@ case "$PLOYZ_QUALIFICATION_PHASE" in
     seed) printf '%s\n' '{"version":1,"founderToken":"pmet_founder","joinToken":"pmet_join"}' >"$PLOYZ_QUALIFICATION_STATE" ;;
     runtime)
         if [ -n "${PLOYZ_QUALIFICATION_CONTEXT_OUT:-}" ]; then
-            printf '%s\n' '{"current_context":"qualify","contexts":{"qualify":{"connections":[{"tailcat":"tailcat://fixture-a","machine_id":"11111111111111111111111111111111"},{"tailcat":"tailcat://fixture-b","machine_id":"22222222222222222222222222222222"}]}}}' >"$PLOYZ_QUALIFICATION_CONTEXT_OUT"
+            printf '%s\n' '{"current_context":"qualify","contexts":{"qualify":{"connections":[{"management":"pmgt1fixture-a","machine_id":"11111111111111111111111111111111"},{"management":"pmgt1fixture-b","machine_id":"22222222222222222222222222222222"}]}}}' >"$PLOYZ_QUALIFICATION_CONTEXT_OUT"
             chmod 600 "$PLOYZ_QUALIFICATION_CONTEXT_OUT"
         fi
         ;;
-    fallback|revoke-offline|revoke-online) : ;;
+    fallback) [ "$(cat "$QUALIFY_OFFLINE_FILE")" = root@192.0.2.10 ] ;;
+    revoke-offline) [ "$(cat "$QUALIFY_OFFLINE_FILE")" = root@192.0.2.11 ] ;;
+    revoke-online) [ ! -e "$QUALIFY_OFFLINE_FILE" ] ;;
     *) exit 1 ;;
 esac
 chmod 600 "$PLOYZ_QUALIFICATION_STATE"

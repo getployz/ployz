@@ -211,6 +211,8 @@ fn start_daemon_with(
             data_dir.to_str().unwrap(),
             "--socket",
             socket.to_str().unwrap(),
+            // Parallel daemons must not contend for the fixed management port.
+            "--management-port=0",
         ])
         .args(extra_args)
         .env("NOTIFY_SOCKET", notify_socket)

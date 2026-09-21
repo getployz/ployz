@@ -3,7 +3,7 @@ import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Connection, MachineId } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   enrollmentAllocation,
@@ -67,7 +67,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         ));
         const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => ({
           machineId: candidate.machineId,
-          encryptedExpected: candidate.encryptedTailcat,
+          encryptedExpected: candidate.encryptedCapability,
           status: "pending",
         }))))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
@@ -110,39 +110,23 @@ const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
   },
 );
 
-const prepareEndpointRemoval = Effect.fn("PairingRemoval.prepareEndpoint")(
-  function* (attempt: RemovalAttempt, machineId: MachineId) {
-    const database = yield* Database;
-    const ployz = yield* Ployz;
-    const encryption = yield* SecretEncryption;
-    return yield* database.transaction(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const current = yield* loadCurrentAttempt(attempt);
-      const endpoint = current.removalEndpoints.find((entry) => entry.machineId === machineId);
-      if (!endpoint || endpoint.status === "unknown" || endpoint.status === "confirmed") return null;
-      const expected = yield* decrypt(endpoint.encryptedExpected);
-      const preparedNow = endpoint.status === "pending";
-      const successor = endpoint.status === "pending"
-        ? yield* ployz.prepareTailcatRemoval(expected)
-        : yield* decrypt(endpoint.encryptedSuccessor);
-      if (preparedNow) {
-        yield* drizzle.update(organizationPairing).set({
-          removalEndpoints: current.removalEndpoints.map((entry) => entry.machineId === machineId
-            ? { status: "prepared", machineId: endpoint.machineId, encryptedExpected: endpoint.encryptedExpected, encryptedSuccessor: encryption.encrypt(successor) } : entry),
-        }).where(eq(organizationPairing.organizationId, attempt.organizationId));
-      }
-      return { expected, successor, preparedNow };
-    }));
-  },
-);
+const PairingCleared = Schema.Struct({
+  code: Schema.Literal("unauthenticated"),
+  details: Schema.Struct({ management_pairing: Schema.Literal("cleared") }),
+});
 
-const confirmEndpointRemoval = Effect.fn("PairingRemoval.confirmEndpoint")(
-  function* (machineId: MachineId, successor: string) {
+/** Clear one Machine's Cloud pairing. Only a successful Clear or an authenticated no-pairing response confirms removal. */
+const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
+  function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
-      const session = yield* ployz.connect({ connections: [{ machine_id: machineId, tailcat: successor }], timeoutMs: 10_000 });
-      return (yield* session.inspect()).cloud_paired === false;
-    })).pipe(Effect.catch(() => Effect.succeed(false)));
+      const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
+      yield* session.removeCloudPairing();
+      return true;
+    })).pipe(Effect.catch((error) => Effect.succeed(
+      error._tag === "PloyzProviderError" && error.operation === "connect"
+        && Option.isSome(Schema.decodeUnknownOption(PairingCleared)(error.cause)),
+    )));
   },
 );
 
@@ -156,25 +140,10 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
         .from(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
       return { confirmed: candidates.length === 0, endpoints: candidates.map(({ machineId }) => ({ machineId, status: "unconfirmed" as const })) };
     }
-    const ployz = yield* Ployz;
-    const expectedPairing = yield* decrypt(attempt.encryptedPairingSecret);
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
-      const machineId = endpoint.machineId;
-      const removal = yield* prepareEndpointRemoval(attempt, endpoint.machineId);
-      if (removal === null) return;
-      let confirmed = !removal.preparedNow && (yield* confirmEndpointRemoval(machineId, removal.successor));
-      if (!confirmed) {
-        // One selected endpoint, one mutation dispatch. A lost response is not a fallback signal.
-        yield* Effect.scoped(Effect.gen(function* () {
-          const session = yield* ployz.connect({ connections: [{ machine_id: machineId, tailcat: removal.expected }], timeoutMs: 10_000 });
-          yield* session.removeCloudPairing({ expected: removal.expected, successor: removal.successor, expected_pairing: expectedPairing });
-        })).pipe(Effect.ignore);
-        for (let probe = 0; probe < 3 && !confirmed; probe += 1) {
-          if (probe > 0) yield* Effect.sleep(500);
-          confirmed = yield* confirmEndpointRemoval(machineId, removal.successor);
-        }
-      }
-      if (!confirmed) return;
+      if (endpoint.status !== "pending") return;
+      const management = yield* decrypt(endpoint.encryptedExpected);
+      if (!(yield* removeEndpointPairing(endpoint.machineId, management))) return;
       yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const current = yield* loadCurrentAttempt(attempt);
@@ -206,9 +175,9 @@ export const loadTeardownConnections = Effect.fn("PairingRemoval.teardownConnect
     const connections: Connection[] = [];
     const endpoints = yield* decodeEndpoints(pairing?.removalEndpoints ?? []);
     for (const endpoint of endpoints) {
-      if (endpoint.status === "pending" || endpoint.status === "prepared") connections.push({
+      if (endpoint.status === "pending") connections.push({
         machine_id: endpoint.machineId,
-        tailcat: yield* decrypt(endpoint.encryptedExpected),
+        management: yield* decrypt(endpoint.encryptedExpected),
       });
     }
     return connections;

@@ -8,10 +8,10 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CloudPairingSet, ContainerList, ContainerObservationMap,
-    ContractDescription, Domain, DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata,
-    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    CapabilityAdvertisement, ContainerList, ContainerObservationMap, ContractDescription, Domain,
+    DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
+    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -55,6 +55,11 @@ impl MachineService {
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
         }
+    }
+
+    pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+        self.local = self.local.with_management_client(remote);
+        self
     }
 
     #[must_use]
@@ -208,10 +213,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetCloudPairing>(request)?;
-        if let Err(error) = self.local.set_cloud_pairing(request).await {
-            return local_error(error);
-        }
-        respond(CloudPairingSet {})
+        finish(self.local.set_cloud_pairing(request).await)
     }
 
     async fn list_machines(
@@ -755,6 +757,7 @@ async fn read_container_observations(
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     match error {
         LocalMachineError::Store(error) => respond(store_error(error)),
+        LocalMachineError::ManagementRevoked => Err(Status::unauthenticated(error.to_string())),
         LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             respond(unavailable("Cluster store is not available"))

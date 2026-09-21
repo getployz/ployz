@@ -10,7 +10,7 @@ import {
 } from "#/modules/runtime/ployz.server";
 
 const options = {
-  connections: [{ tailcat: "tailcat://candidate" }] satisfies Connection[],
+  connections: [{ management: "ployz1:candidate" }] satisfies Connection[],
 };
 
 it.effect("scopes each connected Ployz session", () =>

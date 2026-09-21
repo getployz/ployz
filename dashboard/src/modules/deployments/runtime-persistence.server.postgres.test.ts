@@ -185,7 +185,7 @@ describe("deployment runtime persistence", () => {
     });
     const client = asTestDouble<Client>()({ preview: async () => prepared, close: async () => { closed = true; } });
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
-      kind: "ready", generation: "grant-1", connections: [{ tailcat: "tailcat://candidate" }],
+      kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }],
     })).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
       Effect.provide(runtime), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
@@ -233,7 +233,7 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, admitted.id));
     const confirm = vi.fn(() => { throw new Error("Cancelled work must not execute"); });
     const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), confirm }), close: async () => {} });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ tailcat: "tailcat://candidate" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }))
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
       Effect.provide(runtime), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),

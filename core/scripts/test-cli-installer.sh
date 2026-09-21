@@ -11,10 +11,9 @@ pack_release() {
     local version=$1
     # shellcheck disable=SC2016
     printf '#!/bin/sh\nif [ "${1:-}" = version ]; then echo %s; else echo installed; fi\n' "$version" > "$TMP/ployz"
-    printf '#!/bin/sh\necho %s\n' "$version" > "$TMP/ployz-tailcat"
-    chmod 0755 "$TMP/ployz" "$TMP/ployz-tailcat"
+    chmod 0755 "$TMP/ployz"
     for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
-        tar -czf "$TMP/release/$archive" -C "$TMP" ployz ployz-tailcat
+        tar -czf "$TMP/release/$archive" -C "$TMP" ployz
     done
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
 }
@@ -44,7 +43,7 @@ for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
         sh "$ROOT/install.sh" latest
     [ "$("$TMP/install/ployz")" = installed ]
-    [ "$("$TMP/install/ployz-tailcat" version)" = 1.2.3 ]
+    [ "$("$TMP/install/ployz" version)" = 1.2.3 ]
 done
 
 pack_release 9.9.9
@@ -71,25 +70,25 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/relea
     exit 1
 fi
 
-# Missing and mismatched helpers must fail before replacing either installed binary.
+# Missing and mismatched binaries must fail before replacing the installed one.
 for defect in missing wrong-version; do
     pack_release 1.2.3
     if [ "$defect" = missing ]; then
-        tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
+        touch "$TMP/README"
+        tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" README
     else
-        printf '#!/bin/sh\necho wrong\n' > "$TMP/ployz-tailcat"
-        tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz ployz-tailcat
+        printf '#!/bin/sh\necho wrong\n' > "$TMP/ployz"
+        tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
     fi
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
     if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
         sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
-        echo "accepted $defect helper" >&2
+        echo "accepted $defect binary" >&2
         exit 1
     fi
-    grep -Eq 'Release archive is incomplete|Release binary ployz-tailcat has version' "$TMP/error"
+    grep -Eq 'Release archive is incomplete|Release binary ployz has version' "$TMP/error"
     [ "$("$TMP/install/ployz" version)" = 8.8.8-beta.1 ]
-    [ "$("$TMP/install/ployz-tailcat" version)" = 8.8.8-beta.1 ]
 done
 pack_release 1.2.3
 printf corrupt >> "$TMP/release/ployz_linux_amd64.tar.gz"
@@ -100,4 +99,4 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/relea
 fi
 [ "$("$TMP/install/ployz")" = installed ]
 
-echo "CLI installer verifies checksums and both binaries before installing"
+echo "CLI installer verifies the checksum and binary before installing"

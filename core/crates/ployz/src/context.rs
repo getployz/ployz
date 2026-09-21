@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::{MachineId, TailcatCapability};
+use ployz_core::{MachineId, ManagementCapability};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -179,7 +179,7 @@ impl Config {
             context
                 .connections
                 .iter()
-                .any(|connection| matches!(connection.transport(), Transport::Tailcat(_)))
+                .any(|connection| matches!(connection.transport(), Transport::Management(_)))
         })
     }
 
@@ -228,6 +228,51 @@ impl Config {
         context_name: &str,
         connection: Connection,
     ) -> Result<(), ConfigError> {
+        self.update_saved(|latest| {
+            let context = latest.contexts.get_mut(context_name).ok_or_else(|| {
+                ContextError::ContextNotFound {
+                    name: context_name.to_owned(),
+                    path: self.path.clone(),
+                }
+            })?;
+            if !context.connections.contains(&connection) {
+                context.connections.push(connection);
+            }
+            Ok(())
+        })
+    }
+
+    /// Save a rotated capability in every local context naming its Management Identity.
+    ///
+    /// # Errors
+    /// Returns lock, load or atomic save failures. Call before publishing the secret.
+    pub fn save_management_capability(
+        &self,
+        capability: &ManagementCapability,
+    ) -> Result<(), ConfigError> {
+        self.update_saved(|latest| {
+            let mut replaced = false;
+            for context in latest.contexts.values_mut() {
+                for connection in &mut context.connections {
+                    if let Transport::Management(saved) = &mut connection.transport
+                        && saved.machine() == capability.machine()
+                    {
+                        *saved = capability.clone();
+                        replaced = true;
+                    }
+                }
+            }
+            if !replaced {
+                return Err(ConfigError::ManagementConnectionMissing);
+            }
+            Ok(())
+        })
+    }
+
+    fn update_saved(
+        &self,
+        update: impl FnOnce(&mut Self) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
         let write_error = |source| ConfigError::Write {
             path: self.path.clone(),
             source,
@@ -243,17 +288,7 @@ impl Config {
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
             .map_err(|error| write_error(error.into()))?;
         let mut latest = Self::load(&self.path)?;
-        let context =
-            latest
-                .contexts
-                .get_mut(context_name)
-                .ok_or_else(|| ContextError::ContextNotFound {
-                    name: context_name.to_owned(),
-                    path: self.path.clone(),
-                })?;
-        if !context.connections.contains(&connection) {
-            context.connections.push(connection);
-        }
+        update(&mut latest)?;
         latest.save()
     }
 
@@ -421,7 +456,7 @@ pub struct Connection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Transport {
-    Tailcat(TailcatCapability),
+    Management(ManagementCapability),
     Ssh {
         destination: SshDestination,
         key_file: Option<PathBuf>,
@@ -444,18 +479,22 @@ struct ConnectionFile {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TransportFile {
-    Tailcat(TailcatCapability),
+    Management(ManagementCapability),
     Ssh(String),
     Tcp(SocketAddr),
     Unix(PathBuf),
 }
 
 impl Connection {
-    pub fn tailcat(capability: impl Into<String>) -> Result<Self, ConnectionError> {
+    /// A Management Capability connection. The error never echoes the value.
+    ///
+    /// # Errors
+    /// Returns [`ConnectionError::ManagementCapability`] when the value is malformed.
+    pub fn management(capability: impl AsRef<str>) -> Result<Self, ConnectionError> {
         Ok(Self {
-            transport: Transport::Tailcat(
-                TailcatCapability::parse(capability)
-                    .map_err(|_| ConnectionError::TailcatCapability)?,
+            transport: Transport::Management(
+                ManagementCapability::parse(capability)
+                    .map_err(|_| ConnectionError::ManagementCapability)?,
             ),
             machine_id: None,
         })
@@ -514,7 +553,7 @@ impl Connection {
     pub fn ssh_key_file(&self) -> Option<&Path> {
         match &self.transport {
             Transport::Ssh { key_file, .. } => key_file.as_deref(),
-            Transport::Tailcat(_) | Transport::Tcp(_) | Transport::Unix(_) => None,
+            Transport::Management(_) | Transport::Tcp(_) | Transport::Unix(_) => None,
         }
     }
 
@@ -527,9 +566,9 @@ impl Connection {
 impl fmt::Display for Connection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.transport {
-            Transport::Tailcat(_) => match self.machine_id {
-                Some(machine_id) => write!(formatter, "tailcat:{machine_id}"),
-                None => formatter.write_str("tailcat:[redacted]"),
+            Transport::Management(_) => match self.machine_id {
+                Some(machine_id) => write!(formatter, "management:{machine_id}"),
+                None => formatter.write_str("management:[redacted]"),
             },
             Transport::Ssh { destination, .. } => write!(formatter, "ssh://{destination}"),
             Transport::Tcp(address) => write!(formatter, "tcp://{address}"),
@@ -538,18 +577,18 @@ impl fmt::Display for Connection {
     }
 }
 
-// Tailcat capabilities are opaque, `tc`-prefixed base64url, not SSH destinations.
+// Management Capabilities are `ployz1:`-prefixed secrets, not SSH destinations.
 // Recognize even malformed pastes here so parse errors never echo their secret.
-pub(crate) fn is_tailcat_address(value: &str) -> bool {
-    value.trim().starts_with("tc") && !value.contains('@') && !value.contains("://")
+pub(crate) fn is_management_capability(value: &str) -> bool {
+    value.trim().starts_with("ployz1:")
 }
 
 impl FromStr for Connection {
     type Err = ConnectionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.starts_with("tailcat:") || is_tailcat_address(value) {
-            return Err(ConnectionError::TailcatConfigOnly);
+        if value.starts_with("management:") || is_management_capability(value) {
+            return Err(ConnectionError::ManagementConfigOnly);
         }
         if let Some(address) = value.strip_prefix("tcp://") {
             return address
@@ -576,7 +615,7 @@ impl Serialize for Connection {
         S: Serializer,
     {
         let transport = match &self.transport {
-            Transport::Tailcat(capability) => TransportFile::Tailcat(capability.clone()),
+            Transport::Management(capability) => TransportFile::Management(capability.clone()),
             Transport::Ssh { destination, .. } => TransportFile::Ssh(destination.to_string()),
             Transport::Tcp(address) => TransportFile::Tcp(*address),
             Transport::Unix(path) => TransportFile::Unix(path.clone()),
@@ -601,14 +640,14 @@ impl<'de> Deserialize<'de> for Connection {
                 destination: SshDestination::parse(destination).map_err(de::Error::custom)?,
                 key_file,
             },
-            (TransportFile::Tailcat(capability), None) => Transport::Tailcat(capability),
+            (TransportFile::Management(capability), None) => Transport::Management(capability),
             (TransportFile::Tcp(address), None) => Transport::Tcp(address),
             (TransportFile::Unix(path), None) if path.is_absolute() => Transport::Unix(path),
             (TransportFile::Unix(path), None) => {
                 return Err(de::Error::custom(ConnectionError::UnixPath(path)));
             }
             (
-                TransportFile::Tailcat(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
+                TransportFile::Management(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
                 Some(_),
             ) => {
                 return Err(de::Error::custom(ConnectionError::SshKeyTransport));
@@ -632,8 +671,8 @@ pub struct SshDestination {
 impl SshDestination {
     pub fn parse(value: impl Into<String>) -> Result<Self, ConnectionError> {
         let value = value.into();
-        if is_tailcat_address(&value) {
-            return Err(ConnectionError::TailcatConfigOnly);
+        if is_management_capability(&value) {
+            return Err(ConnectionError::ManagementConfigOnly);
         }
         let Some((user, destination)) = value.split_once('@') else {
             return Err(ConnectionError::SshDestination(value));
@@ -748,6 +787,10 @@ impl fmt::Display for SshDestination {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error(
+        "the Management connection was removed from the config before its replacement could be saved"
+    )]
+    ManagementConnectionMissing,
     #[error(transparent)]
     Context(#[from] ContextError),
     #[error("could not read Ployz config {path}: {source}")]
@@ -770,12 +813,12 @@ pub enum ConfigError {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectionError {
-    #[error("invalid Tailcat capability")]
-    TailcatCapability,
+    #[error("invalid Management Capability")]
+    ManagementCapability,
     #[error(
-        "store Tailcat capabilities in a private context config; do not pass them as command arguments"
+        "store Management Capabilities in a private context config; do not pass them as command arguments"
     )]
-    TailcatConfigOnly,
+    ManagementConfigOnly,
     #[error("invalid SSH destination {0:?}")]
     SshDestination(String),
     #[error("invalid TCP address {0:?}")]
@@ -807,154 +850,4 @@ pub enum ContextError {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn connection_sources_are_plain_text() {
-        use super::ConnectionSource;
-        assert_eq!(
-            ConnectionSource::Direct.to_string(),
-            "the explicit connection"
-        );
-        assert_eq!(
-            ConnectionSource::LocalSocket.to_string(),
-            "the local socket"
-        );
-        assert_eq!(
-            ConnectionSource::Context("prod".into()).to_string(),
-            "context prod"
-        );
-    }
-
-    use std::{collections::BTreeMap, fs, path::PathBuf};
-
-    use super::{Config, Context, ContextError, RemovedContext};
-
-    #[test]
-    fn removing_a_non_current_context_leaves_current_and_the_other_entry() {
-        let mut config = Config::new(
-            "/tmp/config.yaml",
-            Some("prod".into()),
-            BTreeMap::from([
-                ("default".into(), Context::default()),
-                ("prod".into(), Context::default()),
-            ]),
-        );
-
-        assert_eq!(
-            config.remove_context("default").unwrap(),
-            RemovedContext::Other
-        );
-        assert_eq!(config.current_context(), Some("prod"));
-        assert!(config.contexts.contains_key("prod"));
-        assert!(!config.contexts.contains_key("default"));
-    }
-
-    #[test]
-    fn removing_the_current_context_unsets_current_and_drops_that_entry() {
-        let mut config = Config::new(
-            "/tmp/config.yaml",
-            Some("prod".into()),
-            BTreeMap::from([
-                ("default".into(), Context::default()),
-                ("prod".into(), Context::default()),
-            ]),
-        );
-
-        assert_eq!(
-            config.remove_context("prod").unwrap(),
-            RemovedContext::Current
-        );
-        assert_eq!(config.current_context(), None);
-        assert!(config.contexts.contains_key("default"));
-        assert!(!config.contexts.contains_key("prod"));
-    }
-
-    #[test]
-    fn removing_the_last_context_leaves_an_empty_map_and_no_current() {
-        let mut config = Config::new(
-            "/tmp/config.yaml",
-            Some("default".into()),
-            BTreeMap::from([("default".into(), Context::default())]),
-        );
-
-        assert_eq!(
-            config.remove_context("default").unwrap(),
-            RemovedContext::Current
-        );
-        assert!(config.contexts.is_empty());
-        assert_eq!(config.current_context(), None);
-    }
-
-    #[test]
-    fn removing_a_missing_context_is_context_not_found_and_does_not_mutate() {
-        let path = PathBuf::from("/tmp/config.yaml");
-        let mut config = Config::new(
-            &path,
-            Some("prod".into()),
-            BTreeMap::from([("prod".into(), Context::default())]),
-        );
-        let before = config.clone();
-
-        assert_eq!(
-            config.remove_context("gone"),
-            Err(ContextError::ContextNotFound {
-                name: "gone".into(),
-                path,
-            })
-        );
-        assert_eq!(config, before);
-    }
-
-    #[test]
-    fn new_config_with_a_dangling_current_name_stores_none() {
-        let config = Config::new(
-            "/tmp/config.yaml",
-            Some("gone".into()),
-            BTreeMap::from([("prod".into(), Context::default())]),
-        );
-
-        assert_eq!(config.current_context(), None);
-        assert!(config.contexts.contains_key("prod"));
-    }
-
-    #[test]
-    fn dangling_current_context_yaml_loads_as_none() {
-        let root = std::env::temp_dir().join(format!(
-            "ployz-dangling-current-yaml-{}",
-            std::process::id()
-        ));
-        let path = root.join("config.yaml");
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            &path,
-            "current_context: gone\ncontexts:\n  prod:\n    connections: []\n",
-        )
-        .unwrap();
-
-        let config = Config::load(&path).unwrap();
-        assert_eq!(config.current_context(), None);
-        assert!(config.contexts.contains_key("prod"));
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn set_current_context_rejects_an_unknown_name() {
-        let path = PathBuf::from("/tmp/config.yaml");
-        let mut config = Config::new(
-            &path,
-            Some("prod".into()),
-            BTreeMap::from([("prod".into(), Context::default())]),
-        );
-
-        assert_eq!(
-            config.set_current_context(Some("gone".into())),
-            Err(ContextError::ContextNotFound {
-                name: "gone".into(),
-                path,
-            })
-        );
-        assert_eq!(config.current_context(), Some("prod"));
-    }
-}
+mod tests;

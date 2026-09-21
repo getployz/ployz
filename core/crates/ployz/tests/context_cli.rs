@@ -660,19 +660,23 @@ fn ctx_rm_help_describes_local_removal() {
 }
 
 #[test]
-fn tailcat_context_selection_and_listing_never_print_capabilities() {
+fn management_context_selection_and_listing_never_print_capabilities() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
-    let secret = "tailcat-private-cli-capability";
+    let secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    )
+    .to_secret_string();
     Config::new(
         &path,
         Some("private".into()),
         BTreeMap::from([(
             "private".into(),
             Context {
-                connections: vec![Connection::tailcat(secret).unwrap()],
+                connections: vec![Connection::management(&secret).unwrap()],
             },
         )]),
     )
@@ -682,7 +686,7 @@ fn tailcat_context_selection_and_listing_never_print_capabilities() {
         vec!["ctx", "ls"],
         vec!["ctx", "show"],
         vec!["ctx", "connection"],
-        vec!["ctx", "connection", "tailcat:[redacted]"],
+        vec!["ctx", "connection", "management:[redacted]"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .arg("--ployz-config")
@@ -695,16 +699,16 @@ fn tailcat_context_selection_and_listing_never_print_capabilities() {
             "{args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
-        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(&secret));
         if args.get(1) == Some(&"connection") {
-            assert!(String::from_utf8_lossy(&output.stdout).contains("tailcat:[redacted]"));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("management:[redacted]"));
         }
     }
 }
 
 #[test]
-fn tailcat_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_context() {
+fn management_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_context() {
     use ployz::context::SshDestination;
     use ployz_core::MachineId;
     use std::os::unix::fs::PermissionsExt;
@@ -712,10 +716,20 @@ fn tailcat_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_context()
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
     let ssh = Connection::ssh(SshDestination::parse("root@example.com").unwrap());
-    let first = Connection::tailcat("private-first-capability")
+    let first_secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([3; 32]),
+        [4; 32],
+    )
+    .to_secret_string();
+    let second_secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([5; 32]),
+        [6; 32],
+    )
+    .to_secret_string();
+    let first = Connection::management(&first_secret)
         .unwrap()
         .with_machine_id(MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap());
-    let second = Connection::tailcat("private-second-capability")
+    let second = Connection::management(&second_secret)
         .unwrap()
         .with_machine_id(MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap());
     Config::new(
@@ -760,8 +774,8 @@ fn tailcat_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_context()
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!rendered.contains("private-first-capability"));
-        assert!(!rendered.contains("private-second-capability"));
+        assert!(!rendered.contains(&first_secret));
+        assert!(!rendered.contains(&second_secret));
         assert_eq!(
             Config::load(&path)
                 .unwrap()
@@ -775,13 +789,27 @@ fn tailcat_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_context()
 }
 
 #[test]
-fn ambiguous_tailcat_labels_fail_without_mutation_and_index_selects_the_second() {
+fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_second() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
-    let first = Connection::tailcat("first-private-capability").unwrap();
-    let second = Connection::tailcat("second-private-capability").unwrap();
+    let first = Connection::management(
+        ployz_core::ManagementCapability::new(
+            ployz_core::ManagementIdentity::from_bytes([1; 32]),
+            [2; 32],
+        )
+        .to_secret_string(),
+    )
+    .unwrap();
+    let second = Connection::management(
+        ployz_core::ManagementCapability::new(
+            ployz_core::ManagementIdentity::from_bytes([3; 32]),
+            [4; 32],
+        )
+        .to_secret_string(),
+    )
+    .unwrap();
     let config = Config::new(
         &path,
         Some("private".into()),
@@ -794,7 +822,7 @@ fn ambiguous_tailcat_labels_fail_without_mutation_and_index_selects_the_second()
     );
     config.save().unwrap();
     for (selector, message) in [
-        ("tailcat:[redacted]", "ambiguous"),
+        ("management:[redacted]", "ambiguous"),
         ("0", "out of range"),
         ("3", "out of range"),
     ] {

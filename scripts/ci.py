@@ -45,7 +45,7 @@ def select(paths):
                 selected |= {"cloud", "sdk-types"}
             if relative.startswith("compose-helper/"):
                 selected.add("compose")
-        elif path == "core/install.sh" or path.startswith("core/scripts/qualify-release/"):
+        elif path == "core/install.sh" or path.startswith(("core/scripts/qualify-release/", "core/relay/")):
             continue
         elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-browser.sh"}:
             selected.add("cloud")

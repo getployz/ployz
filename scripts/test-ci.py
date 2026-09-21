@@ -18,8 +18,9 @@ class CiTest(unittest.TestCase):
         cases = [
             (["core/DESIGN.md"], {"contracts"}),
             (["evidence/product-paths.tsv"], {"contracts"}),
+            (["core/relay/compose.yaml"], {"contracts"}),
             (["dashboard/src/app.tsx"], {"contracts", "cloud"}),
-            (["core/crates/ployz/tests/connect/tailcat.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
+            (["core/crates/ployz/tests/management_connect.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
             (["core/crates/ployzd/src/main.rs"], {"contracts", "rust-lint", "rust-tests"}),
             (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud", "sdk-types"}),
             (["core/scripts/build-cloud-sdk.sh"], {"contracts", "cloud"}),

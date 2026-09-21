@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, fs, process::Output};
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, TOKEN, founder_machine, ingress_on, registration,
+    EnrollListen, EventLog, JoinDaemon, PAIRING, TOKEN, founder_machine, ingress_on, registration,
     serve_machine,
 };
 use ployz::context::{Config, Connection, Context};
@@ -33,6 +33,16 @@ fn with_faults(daemon: JoinDaemon, target: Fault, ensure: Fault) -> JoinDaemon {
         Fault::Transient => daemon.transient_ensure_failures(1),
         Fault::Permanent => daemon.fail_ensure(),
     }
+}
+
+#[tokio::test]
+async fn cloud_join_finishes_rpc_work_before_publishing_the_rotated_capability() {
+    let (output, _) = cloud_join(Fault::Healthy, Fault::Healthy).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[tokio::test]
@@ -114,15 +124,21 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
     let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": registration,
-    }))
+    let events = EventLog::default();
+    let enroll = EnrollListen::script_recording(
+        [json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": pairing,
+            "registration": registration,
+        })],
+        events.clone(),
+    )
     .await;
     let daemon = with_faults(
-        JoinDaemon::new(registration).with_containers(globals_on(&founder)),
+        JoinDaemon::new(registration)
+            .with_containers(globals_on(&founder))
+            .revoked_on_publication(events),
         target_failures,
         ensure_failures,
     );
@@ -143,6 +159,11 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
         .output()
         .await
         .unwrap();
+    assert_eq!(
+        enroll.callbacks().len(),
+        1,
+        "a committed join must finish Cloud enrollment even when catch-up fails"
+    );
     (output, daemon)
 }
 

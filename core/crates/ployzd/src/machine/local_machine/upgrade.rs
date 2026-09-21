@@ -30,6 +30,7 @@ impl LocalMachine {
             .admission_lock()
             .try_lock_owned()
             .map_err(|_| crate::mutation::Error::Busy)?;
+        self.require_management_access()?;
         let installation = self.owner.mutation_gate().try_installation()?;
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;

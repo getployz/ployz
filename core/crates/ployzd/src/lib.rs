@@ -30,6 +30,7 @@ pub mod machine;
 pub mod machine_api;
 #[doc(hidden)]
 pub mod machine_pool;
+pub mod management;
 pub mod mutation;
 pub mod network;
 pub(crate) mod runtime_watch;

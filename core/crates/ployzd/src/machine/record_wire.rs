@@ -1,19 +1,21 @@
 //! Admit persisted Local Machine records before exposing lifecycle state.
 
-use super::{LocalMachineBody, LocalMachineRecord, StoreError, WireGuardPrivateKey};
-use ployz_core::{CloudPairing, MachineId, SelectedEndpoint};
+use super::{CloudAccess, LocalMachineBody, LocalMachineRecord, StoreError, WireGuardPrivateKey};
+use crate::management::ManagementSecret;
+use ployz_core::{MachineId, SelectedEndpoint};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
 /// Untrusted persisted input; only checked conversion admits a local record.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct LocalMachineRecordWire {
     body: LocalMachineBody,
     wireguard_private_key: WireGuardPrivateKey,
+    management_secret: ManagementSecret,
+    cloud_access: CloudAccess,
     #[serde(default)]
     wireguard_mtu: Option<u32>,
-    #[serde(default)]
-    cloud_pairing: Option<CloudPairing>,
     #[serde(default)]
     selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
 }
@@ -23,8 +25,9 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
 
     fn try_from(wire: LocalMachineRecordWire) -> Result<Self, Self::Error> {
         let mut record = Self::parse(wire.body, wire.wireguard_private_key)?;
+        record.management_secret = wire.management_secret;
+        record.cloud_access = wire.cloud_access;
         record.wireguard_mtu = wire.wireguard_mtu;
-        record.cloud_pairing = wire.cloud_pairing;
         record.selected_endpoints = wire.selected_endpoints;
         Ok(record)
     }

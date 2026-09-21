@@ -56,8 +56,6 @@ brew install getployz/ployz/ployz
 \`\`\`
 
 Homebrew tracks stable only. Beta: \`curl -fsSL https://ployz.sh | sh -s beta\`.
-
-This is a **clean break** with manual transition. There is no in-place compatibility promise, configuration converter, or stored-state migration.
 EOF
 }
 

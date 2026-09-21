@@ -41,8 +41,9 @@ fn ployz_owned_ports_use_the_fixed_ploy_range() {
             ployz_core::CORROSION_GOSSIP_PORT,
             ployz_core::CORROSION_API_PORT,
             ployz_core::UNREGISTRY_PORT,
+            ployz_core::MANAGEMENT_PORT,
         ],
-        [7569, 7570, 7571, 7572]
+        [7569, 7570, 7571, 7572, 7573]
     );
 }
 

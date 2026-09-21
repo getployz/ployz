@@ -6,16 +6,24 @@ use std::sync::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairingSet, ContainerChanged, ContainerCreated, ContainerDetails,
-    ContainerId, ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
+    AdvertisedEndpoint, ContainerChanged, ContainerCreated, ContainerDetails, ContainerId,
+    ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
     ContractDescription, CreateContainerRequest, CreateDomainRecordsRequest,
     DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords, HealthObservation, InitializeRequest,
     Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
-    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory,
-    WireGuardPublicKey,
+    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SetCloudPairingResponse,
+    VolumeInventory, WireGuardPublicKey,
 };
+
+/// The Management Capability the fake daemon mints for any Cloud Pairing.
+pub fn fixture_capability() -> ployz_core::ManagementCapability {
+    ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([0xa1; 32]),
+        [0xb2; 32],
+    )
+}
 use tonic::{Request, Response, Status, Streaming};
 
 #[path = "enroll_http.rs"]
@@ -72,6 +80,7 @@ struct JoinInner {
     cloud_pairing_attempts: AtomicUsize,
     transient_cloud_pairing_failures: AtomicUsize,
     events: Mutex<EventLog>,
+    revoked_on_publication: Mutex<Option<EventLog>>,
     resets: AtomicUsize,
     containers: Mutex<Vec<ContainerObservation>>,
     create_attempts: AtomicUsize,
@@ -116,6 +125,7 @@ impl JoinDaemon {
                 cloud_pairing_attempts: AtomicUsize::new(0),
                 transient_cloud_pairing_failures: AtomicUsize::new(0),
                 events: Mutex::new(EventLog::default()),
+                revoked_on_publication: Mutex::new(None),
                 resets: AtomicUsize::new(0),
                 containers: Mutex::new(Vec::new()),
                 create_attempts: AtomicUsize::new(0),
@@ -202,6 +212,11 @@ impl JoinDaemon {
 
     pub fn with_reserved_domain(self) -> Self {
         self.inner.domain_reserved.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn revoked_on_publication(self, events: EventLog) -> Self {
+        *self.inner.revoked_on_publication.lock().unwrap() = Some(events);
         self
     }
 
@@ -357,6 +372,18 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self
+            .inner
+            .revoked_on_publication
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|events| events.entries().contains(&"publish"))
+        {
+            return Err(Status::unauthenticated(
+                "original management key was revoked",
+            ));
+        }
         if consume_transient_failure(&self.inner.startup_inspect_failures) {
             return Err(Status::unavailable(
                 "first startup is still pulling Corrosion",
@@ -490,12 +517,14 @@ impl MachineRpc for JoinDaemon {
                 self.inner.cloud_paired.store(true, Ordering::SeqCst);
                 self.record("set_cloud_pairing");
             }
-            ployz_core::SetCloudPairingRequest::Clear {}
-            | ployz_core::SetCloudPairingRequest::Remove { .. } => {
+            ployz_core::SetCloudPairingRequest::Clear {} => {
                 self.inner.cloud_paired.store(false, Ordering::SeqCst);
+                return rpc_ok(SetCloudPairingResponse { capability: None });
             }
         }
-        rpc_ok(CloudPairingSet {})
+        rpc_ok(SetCloudPairingResponse {
+            capability: Some(fixture_capability()),
+        })
     }
 
     async fn request_machine_upgrade(

@@ -4,7 +4,7 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    PairingCredential, Registered, StorageChoice, TailcatCapability, WireGuardPublicKey,
+    ManagementCapability, PairingCredential, Registered, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -188,7 +188,7 @@ struct EnrollCallback<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     stage: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tailcat: Option<&'a TailcatCapability>,
+    capability: Option<&'a ManagementCapability>,
     machine_id: MachineId,
     pairing_credential: &'a PairingCredential,
 }
@@ -257,25 +257,25 @@ pub(crate) async fn publish(
     url: &str,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
-    tailcat: &TailcatCapability,
+    capability: &ManagementCapability,
 ) -> Result<(), Error> {
-    post_callback(url, machine_id, pairing_credential, Some(tailcat)).await
+    post_callback(url, machine_id, pairing_credential, Some(capability)).await
 }
 
 async fn post_callback(
     url: &str,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
-    tailcat: Option<&TailcatCapability>,
+    capability: Option<&ManagementCapability>,
 ) -> Result<(), Error> {
     let http = http_client()?;
     let body = EnrollCallback {
-        stage: tailcat.map(|_| "publish"),
-        tailcat,
+        stage: capability.map(|_| "publish"),
+        capability,
         machine_id,
         pairing_credential,
     };
-    let operation = if tailcat.is_some() {
+    let operation = if capability.is_some() {
         "candidate publication"
     } else {
         "enrollment completion"
@@ -752,7 +752,10 @@ mod tests {
                         &url,
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
-                        &TailcatCapability::parse("fixture-tailcat-capability").unwrap(),
+                        &ManagementCapability::new(
+                            ployz_core::ManagementIdentity::from_bytes([1; 32]),
+                            [2; 32],
+                        ),
                     )
                     .await
                     .unwrap();
@@ -776,14 +779,19 @@ mod tests {
     async fn callback_errors_redact_capability_and_pairing_credentials() {
         for publishing in [true, false] {
             let (listener, url) = listen().await;
-            let secret = "secret-tailcat-capability";
+            let capability = ManagementCapability::new(
+                ployz_core::ManagementIdentity::from_bytes([3; 32]),
+                [4; 32],
+            );
+            let secret = capability.to_secret_string();
             let pairing = "pairing-secret";
+            let echoed = format!("{secret} {pairing}");
             tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;
                 tokio::io::AsyncWriteExt::write_all(
                     &mut stream,
-                    &http_response(400, "Error", format!("{secret} {pairing}").as_bytes()),
+                    &http_response(400, "Error", echoed.as_bytes()),
                 )
                 .await
                 .unwrap();
@@ -791,13 +799,7 @@ mod tests {
             let credential = PairingCredential::parse(pairing).unwrap();
             let (result, operation) = if publishing {
                 (
-                    publish(
-                        &url,
-                        MachineId::random(),
-                        &credential,
-                        &TailcatCapability::parse(secret).unwrap(),
-                    )
-                    .await,
+                    publish(&url, MachineId::random(), &credential, &capability).await,
                     "candidate publication",
                 )
             } else {
@@ -808,7 +810,7 @@ mod tests {
             };
             let error = result.unwrap_err();
             for rendered in [error.to_string(), format!("{error:?}")] {
-                assert!(!rendered.contains(secret));
+                assert!(!rendered.contains(&secret));
                 assert!(!rendered.contains(pairing));
             }
             assert!(

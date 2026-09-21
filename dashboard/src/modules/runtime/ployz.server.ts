@@ -13,7 +13,6 @@ import type {
   DeployIntent,
   ExecutionError,
   MachineDetails,
-  TailcatRemoval,
   MachineTarget,
   ObservedDataLoss,
   PreparedDeploy,
@@ -32,7 +31,7 @@ import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { connect: connectSdk, prepareTailcatRemoval } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect" | "prepareTailcatRemoval">;
+const { connect: connectSdk } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect">;
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",
@@ -51,7 +50,7 @@ export type PloyzPreparedDeploy = Omit<PreparedDeploy, "confirm"> & {
 
 export interface PloyzSession {
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
-  readonly removeCloudPairing: (removal: TailcatRemoval) => Effect.Effect<void, PloyzSdkError>;
+  readonly removeCloudPairing: () => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
   readonly removeMachine: (
@@ -97,12 +96,10 @@ type SharedConnectOptions = Omit<
 >;
 
 type PloyzBindings = {
-  readonly prepareTailcatRemoval?: typeof PloyzSdk.prepareTailcatRemoval;
   readonly connect: (options: ConnectOptions) => Promise<Client>;
 };
 
 export interface PloyzService {
-  readonly prepareTailcatRemoval: (expected: string) => Effect.Effect<string, PloyzProviderError>;
   readonly connect: (
     options: SharedConnectOptions,
   ) => Effect.Effect<PloyzSession, PloyzProviderError, Scope.Scope>;
@@ -185,7 +182,7 @@ function wrapClient(client: Client): PloyzSession {
     });
   return {
     inspect: () => sdkPromise("inspect", () => client.inspect()),
-    removeCloudPairing: (removal) => sdkPromise("remove Cloud pairing", () => client.removeCloudPairing(removal)),
+    removeCloudPairing: () => sdkPromise("remove Cloud pairing", () => client.removeCloudPairing()),
     observeEnrollment: () => Effect.tryPromise({
       try: () => client.observeEnrollment(),
       catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),
@@ -265,10 +262,6 @@ function closeSession(session: Client) {
 
 export function makePloyzLayer(bindings: PloyzBindings) {
   return Layer.succeed(Ployz, {
-    prepareTailcatRemoval: (expected) => Effect.tryPromise({
-      try: () => (bindings.prepareTailcatRemoval ?? prepareTailcatRemoval)(expected),
-      catch: () => new PloyzProviderError({ operation: "prepare Tailcat removal", cause: "Capability preparation failed." }),
-    }),
     connect: (options) =>
       Effect.gen(function* () {
         const controller = yield* Effect.acquireRelease(
@@ -288,7 +281,6 @@ export function makePloyzLayer(bindings: PloyzBindings) {
           { interruptible: true },
         ).pipe(Effect.map(wrapClient));
       }),
-
   });
 }
 

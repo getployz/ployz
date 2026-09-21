@@ -92,7 +92,7 @@ async fn cloud_init_join_participates() {
             "stage": "publish",
             "machineId": machine_id.as_str(),
             "pairingCredential": PAIRING,
-            "tailcat": "fixture-tailcat-capability",
+            "capability": harness::fixture_capability().to_secret_string(),
         })]
     );
     assert_eq!(
@@ -246,11 +246,12 @@ async fn cloud_init_initialize_participates() {
             "stage": "publish",
             "machineId": machine_id.as_str(),
             "pairingCredential": PAIRING,
-            "tailcat": "fixture-tailcat-capability",
+            "capability": harness::fixture_capability().to_secret_string(),
         })]
     );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("fixture-tailcat-capability"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-tailcat-capability"));
+    let secret = harness::fixture_capability().to_secret_string();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(&secret));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&secret));
     assert_eq!(
         enroll.callbacks(),
         [json!({

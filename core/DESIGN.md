@@ -137,9 +137,10 @@ unreachable.
 ## 7. Cloud drives, never owns
 
 **The bet.** Cloud is the primary way users drive Ployz, but it is not a Cluster
-controller and holds no runtime truth. SSH and Tailcat use the same Machine RPC
-connection seam. Tailcat carries opaque streams through public DERP relays to a
-Machine-local helper; neither the helper nor the relay is a mesh peer.
+controller and holds no runtime truth. SSH and the Management Capability use the
+same Machine RPC connection seam. The daemon serves Machine RPC in-process on its
+Management Identity, an iroh key that is not a mesh peer; clients reach it through
+the self-hosted Ployz Relay, which sees ciphertext only, or a direct path.
 
 **Why.** Reusing transport primitives removes a hosted protocol to maintain.
 Cloud stores encrypted, Organization-scoped connection candidates associated with
@@ -149,7 +150,7 @@ The Cluster remains independently operable without Cloud.
 
 Removing Cloud access disables that pairing's connections immediately. Endpoint
 revocation is confirmed separately; an offline Machine remains unconfirmed.
-Tailcat capabilities grant shared administrative access: rotation affects every
+Management Capabilities grant shared administrative access: rotation affects every
 old holder, while Cloud logout does not revoke direct capabilities or SSH keys.
 
 **Red flags:** Cloud-held runtime truth, a connection catalog treated as membership,

@@ -14,4 +14,3 @@ export const Client = fail;
 export const RpcError = fail;
 
 export const allocateEnrollment = fail;
-export const prepareTailcatRemoval = fail;

@@ -47,7 +47,7 @@ describe("teardown provider outcomes", () => {
         },
         unexecuted: [],
       };
-      const connections = [{ tailcat: "tailcat://candidate" }];
+      const connections = [{ management: "ployz1:candidate" }];
       const client = asTestDouble<Client>()({
         destroyProject: async (
           ...args: Parameters<Client["destroyProject"]>

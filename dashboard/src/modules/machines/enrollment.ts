@@ -133,6 +133,9 @@ export function registerRequestFromEnrollmentIdentity(
 
 }
 
+/** `ployz1:` plus unpadded base64url of a 64-byte body. */
+export const MANAGEMENT_CAPABILITY_LENGTH = "ployz1:".length + 86;
+
 const enrollmentCallbackIdentity = {
   machineId: rustMachineIdSchema,
   pairingCredential: NonEmptyString,
@@ -143,7 +146,7 @@ export const enrollmentCallbackBodySchema = Schema.Union([
   Schema.Struct({
     ...enrollmentCallbackIdentity,
     stage: Schema.Literal("publish"),
-    tailcat: NonEmptyString.check(Schema.isMaxLength(16 * 1024)),
+    capability: NonEmptyString.check(Schema.isMaxLength(MANAGEMENT_CAPABILITY_LENGTH)),
   }),
 ]);
 

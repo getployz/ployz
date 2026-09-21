@@ -474,21 +474,25 @@ fn selecting_connections_with_a_missing_name_is_context_not_found() {
 }
 
 #[test]
-fn tailcat_context_preserves_order_identity_and_redacts_capability() {
+fn management_context_preserves_order_identity_and_redacts_capability() {
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
-    let secret = "tailcat-private-capability";
-    let connection = Connection::tailcat(secret)
+    let secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([7; 32]),
+        [8; 32],
+    )
+    .to_secret_string();
+    let connection = Connection::management(&secret)
         .unwrap()
         .with_machine_id(MachineId::parse("0123456789abcdef0123456789abcdef").unwrap());
     let ssh = Connection::ssh(SshDestination::parse("root@example.com").unwrap());
     let config = Config::new(
         &path,
-        Some("tailcat".into()),
+        Some("management".into()),
         BTreeMap::from([
             (
-                "tailcat".into(),
+                "management".into(),
                 Context {
                     connections: vec![connection.clone(), ssh.clone()],
                 },
@@ -504,8 +508,8 @@ fn tailcat_context_preserves_order_identity_and_redacts_capability() {
     config.save().unwrap();
     let loaded = Config::load(&path).unwrap();
     assert_eq!(loaded, config);
-    assert!(fs::read_to_string(&path).unwrap().contains(secret));
-    assert!(!format!("{loaded:?} {connection}").contains(secret));
+    assert!(fs::read_to_string(&path).unwrap().contains(&secret));
+    assert!(!format!("{loaded:?} {connection}").contains(&secret));
     assert_eq!(
         resolve_connections(&path, None, None, "/missing".as_ref())
             .unwrap()
@@ -537,7 +541,7 @@ fn tailcat_context_preserves_order_identity_and_redacts_capability() {
 }
 
 #[test]
-fn tailcat_config_rejects_other_selectors_ssh_options_and_secret_in_arguments() {
+fn management_config_rejects_other_selectors_ssh_options_and_secret_in_arguments() {
     let secret = "private-capability-never-in-errors";
     for extra in [
         "ssh: root@example.com",
@@ -545,13 +549,13 @@ fn tailcat_config_rejects_other_selectors_ssh_options_and_secret_in_arguments() 
         "tcp: 127.0.0.1:1234",
         "ssh_key_file: /tmp/key",
     ] {
-        let yaml = format!("tailcat: {secret}\n{extra}\n");
+        let yaml = format!("management: {secret}\n{extra}\n");
         assert!(serde_norway::from_str::<Connection>(&yaml).is_err());
     }
     for value in ["", "has\nnewline", "has space", "nul\0byte"] {
-        assert!(Connection::tailcat(value).is_err());
+        assert!(Connection::management(value).is_err());
     }
-    let error = format!("tailcat://{secret}")
+    let error = format!("management://{secret}")
         .parse::<Connection>()
         .unwrap_err();
     assert!(!format!("{error:?} {error}").contains(secret));
@@ -559,7 +563,9 @@ fn tailcat_config_rejects_other_selectors_ssh_options_and_secret_in_arguments() 
     let path = root.path().join("config.yaml");
     fs::write(
         &path,
-        format!("contexts:\n  prod:\n    connections:\n      - tailcat: {{ {secret}: invalid }}"),
+        format!(
+            "contexts:\n  prod:\n    connections:\n      - management: {{ {secret}: invalid }}"
+        ),
     )
     .unwrap();
     let error = Config::load(path).unwrap_err();

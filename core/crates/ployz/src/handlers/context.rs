@@ -5,7 +5,9 @@ use std::{
 
 use clap::ArgMatches;
 
-use crate::context::{Config, ConnectionError, RemovedContext, expand_home, is_tailcat_address};
+use crate::context::{
+    Config, ConnectionError, RemovedContext, expand_home, is_management_capability,
+};
 
 use super::{Error, leaf_matches, required};
 
@@ -122,8 +124,10 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
         );
         return Ok(());
     };
-    if is_tailcat_address(requested) {
-        return Err(Error::usage(ConnectionError::TailcatConfigOnly.to_string()));
+    if is_management_capability(requested) {
+        return Err(Error::usage(
+            ConnectionError::ManagementConfigOnly.to_string(),
+        ));
     }
     let index = if let Ok(index) = requested.parse::<usize>() {
         index
@@ -137,8 +141,8 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
             .enumerate()
             .filter(|(_, connection)| connection.to_string() == requested);
         let (index, _) = matches.next().ok_or_else(|| {
-            if requested.starts_with("tailcat:") {
-                Error::usage("Tailcat connection label not found; select its 1-based index")
+            if requested.starts_with("management:") {
+                Error::usage("management connection label not found; select its 1-based index")
             } else {
                 Error::usage(format!("connection {requested:?} not found"))
             }

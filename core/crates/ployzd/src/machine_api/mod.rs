@@ -5,7 +5,7 @@ mod routing;
 
 use std::{convert::Infallible, path::PathBuf, sync::Arc, task::Context};
 
-use ployz_core::{MachineId, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT};
+use ployz_core::{MachineId, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Rpc, op};
 use tonic::{
     body::Body,
     codec::CompressionEncoding,
@@ -29,6 +29,7 @@ pub(crate) use local::MachineService;
 pub struct MachineApi {
     proxy: MachineProxy,
     machine_id: MachineId,
+    service: local::MachineService,
 }
 
 /// Configure this Machine's Machine API before it becomes servable.
@@ -100,17 +101,20 @@ fn wrap(service: local::MachineService) -> MachineApi {
     let machine_id = local.record().id();
     let port = service.machine_api_port();
     let replicated = local.replicated().ok().cloned();
-    let proxy = MachineProxy::new(
-        Routes::new(
-            MachineRpcServer::new(service)
-                .send_compressed(CompressionEncoding::Gzip)
-                .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
-        ),
+    let proxy = MachineProxy::new(routes(service.clone()), machine_id, port, replicated);
+    MachineApi {
+        proxy,
         machine_id,
-        port,
-        replicated,
-    );
-    MachineApi { proxy, machine_id }
+        service,
+    }
+}
+
+fn routes(service: local::MachineService) -> Routes {
+    Routes::new(
+        MachineRpcServer::new(service)
+            .send_compressed(CompressionEncoding::Gzip)
+            .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
+    )
 }
 
 impl Service<http::Request<Body>> for MachineApi {
@@ -126,6 +130,41 @@ impl Service<http::Request<Body>> for MachineApi {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        self.proxy.call(request)
+        let Some(connection) = request
+            .extensions()
+            .get::<iroh::endpoint::WeakConnectionHandle>()
+        else {
+            return self.proxy.call(request);
+        };
+        let remote = connection
+            .upgrade()
+            .map(|connection| *connection.remote_id().as_bytes());
+        let service = self.service.clone();
+        let proxy = self.proxy.clone();
+        Box::pin(async move {
+            let Some(remote) = remote else {
+                return Ok(
+                    tonic::Status::unauthenticated("management connection closed").into_http(),
+                );
+            };
+            let local = service.local();
+            let verification = request.uri().path() == op::DescribeContract::PATH;
+            // Negotiation is read-only: Cloud must save a verified candidate before
+            // any operational RPC can activate it and retire the previous credential.
+            if !verification && let Err(error) = local.activate_management_client(remote).await {
+                return Ok(tonic::Status::unavailable(error.to_string()).into_http());
+            }
+            let record = local.record();
+            if record.accepted_client() != Some(remote)
+                && !(verification && record.pending_client() == Some(remote))
+            {
+                return Ok(
+                    tonic::Status::unauthenticated("management credential revoked").into_http(),
+                );
+            }
+            // Carry the authenticated key into detached/queued local work as well.
+            let mut proxy = proxy.with_local(routes(service.with_management_client(remote)));
+            proxy.call(request).await
+        })
     }
 }

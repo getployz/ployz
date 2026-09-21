@@ -161,11 +161,7 @@ pub(super) async fn install_binaries(
     progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
-    let helper = installed_release(&paths.bin_dir.join("ployzd-tailcat"))
-        .await
-        .ok()
-        .flatten();
-    let replace = replacement_required(source, installed.as_ref(), helper.as_ref(), target);
+    let replace = replacement_required(source, installed.as_ref(), target);
     if !replace {
         println!(
             "ployzd {} retained",
@@ -188,23 +184,20 @@ pub(super) async fn install_binaries(
     extract_archive(&archive_path, stage.path())?;
     let daemon = stage.path().join("ployzd");
     let uninstall = stage.path().join("ployz-uninstall");
-    let helper = stage.path().join("ployz-tailcat");
     verify_executable(&daemon, target).await?;
-    verify_executable(&helper, target).await?;
     verify_uninstall(&uninstall)?;
-    sync_staged_files(&daemon, &uninstall, &helper, stage.path())?;
+    sync_staged_files(&daemon, &uninstall, stage.path())?;
     progress(MachineUpgradeStage::Activating)?;
-    activate(&daemon, &uninstall, &helper, paths)?;
+    activate(&daemon, &uninstall, paths)?;
     Ok(true)
 }
 
 fn replacement_required(
     source: &ReleaseSource,
     installed: Option<&MachineVersion>,
-    helper: Option<&MachineVersion>,
     target: &MachineVersion,
 ) -> bool {
-    source.is_local() || installed != Some(target) || helper != Some(target)
+    source.is_local() || installed != Some(target)
 }
 
 pub(super) async fn installed_release(path: &Path) -> Result<Option<MachineVersion>, Error> {
@@ -332,13 +325,8 @@ fn verify_uninstall(path: &Path) -> Result<(), Error> {
     }
 }
 
-fn sync_staged_files(
-    daemon: &Path,
-    uninstall: &Path,
-    helper: &Path,
-    staging: &Path,
-) -> Result<(), Error> {
-    for path in [daemon, uninstall, helper] {
+fn sync_staged_files(daemon: &Path, uninstall: &Path, staging: &Path) -> Result<(), Error> {
+    for path in [daemon, uninstall] {
         File::open(path)
             .and_then(|file| file.sync_all())
             .map_err(|source| Error::Io {
@@ -381,12 +369,7 @@ pub(super) fn write_private(path: &Path, bytes: &[u8], stage: &'static str) -> R
         .map_err(|source| Error::Io { stage, source })
 }
 
-fn activate(
-    daemon: &Path,
-    uninstall: &Path,
-    helper: &Path,
-    paths: &InstallPaths,
-) -> Result<(), Error> {
+fn activate(daemon: &Path, uninstall: &Path, paths: &InstallPaths) -> Result<(), Error> {
     let installed = paths.bin_dir.join("ployzd");
     let previous = paths.bin_dir.join("ployzd.previous");
     let directory = File::open(&paths.bin_dir).map_err(|source| Error::Io {
@@ -423,12 +406,6 @@ fn activate(
         stage: "persist daemon activation",
         source,
     })?;
-    let installed_helper = paths.bin_dir.join("ployzd-tailcat");
-    fs::rename(helper, &installed_helper).map_err(|source| Error::Io {
-        stage: "activate Tailcat helper",
-        source,
-    })?;
-    root_ownership(&installed_helper, "secure activated Tailcat helper")?;
     let installed_uninstall = paths.bin_dir.join("ployz-uninstall");
     fs::rename(uninstall, &installed_uninstall).map_err(|source| Error::Io {
         stage: "activate uninstall command",
@@ -482,29 +459,23 @@ mod tests {
     #[test]
     fn resolved_channels_replace_the_exact_target_and_skip_only_the_same_target() {
         let target = MachineVersion::parse("1.2.3").unwrap();
-        for helper in [None, Some(MachineVersion::parse("1.2.2").unwrap())] {
-            assert!(replacement_required(
-                &ReleaseSource::Published,
-                Some(&target),
-                helper.as_ref(),
-                &target
-            ));
-        }
+        assert!(replacement_required(
+            &ReleaseSource::Published,
+            None,
+            &target
+        ));
         assert!(!replacement_required(
             &ReleaseSource::Published,
-            Some(&target),
             Some(&target),
             &target
         ));
         assert!(replacement_required(
             &ReleaseSource::Published,
             Some(&MachineVersion::parse("1.2.4").unwrap()),
-            Some(&target),
             &target
         ));
         assert!(replacement_required(
             &ReleaseSource::Local(PathBuf::from("qualification")),
-            Some(&target),
             Some(&target),
             &target
         ));

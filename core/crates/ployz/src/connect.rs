@@ -1,3 +1,8 @@
+mod management;
+
+pub use management::ManagementRelay;
+use management::connect_management;
+
 use std::{
     borrow::Cow,
     future::Future,
@@ -18,7 +23,7 @@ use ployz_core::{
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
@@ -73,8 +78,8 @@ pub trait Connector: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct SystemConnector {
     ssh_program: PathBuf,
-    tailcat_program: PathBuf,
     ssh_timeout: Duration,
+    relay: ManagementRelay,
 }
 
 impl Default for SystemConnector {
@@ -87,15 +92,15 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
-            tailcat_program: PathBuf::from("ployz-tailcat"),
             ssh_timeout: Duration::from_secs(5),
+            relay: ManagementRelay::default(),
         }
     }
 
-    /// Select the installed native helper (also used by packaged SDK hosts).
+    /// Dial the management transport through `relay` instead of the compiled default.
     #[must_use]
-    pub fn with_tailcat_program(mut self, program: impl Into<PathBuf>) -> Self {
-        self.tailcat_program = program.into();
+    pub fn with_management_relay(mut self, relay: ManagementRelay) -> Self {
+        self.relay = relay;
         self
     }
 
@@ -111,12 +116,14 @@ impl SystemConnector {
 impl Connector for SystemConnector {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
         match connection.transport() {
-            Transport::Tailcat(capability) => tokio::time::timeout(
+            Transport::Management(capability) => tokio::time::timeout(
                 Duration::from_secs(15),
-                connect_tailcat(capability, &self.tailcat_program),
+                connect_management(capability, &self.relay),
             )
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Tailcat connection timed out"))?,
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::TimedOut, "management connection timed out")
+            })?,
             Transport::Tcp(address) => connect_endpoint(format!("http://{address}")).await,
             Transport::Unix(path) => connect_endpoint(format!("unix:{}", path.display())).await,
             Transport::Ssh {
@@ -155,7 +162,7 @@ impl Connector for SystemConnector {
             return Err(ConnectError::UnsupportedNetwork(network.into()));
         }
         match connection.transport() {
-            Transport::Tailcat(_) | Transport::Tcp(_) => {
+            Transport::Management(_) | Transport::Tcp(_) => {
                 Err(ConnectError::ProxyUnsupported(connection.to_string()))
             }
             Transport::Unix(_) => TcpStream::connect(address)
@@ -181,17 +188,10 @@ impl Connector for SystemConnector {
     }
 }
 
-async fn connect_tailcat(
-    capability: &ployz_core::TailcatCapability,
-    program: &Path,
+async fn connect_stream(
+    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    timeout: Duration,
 ) -> Result<Channel, ConnectError> {
-    let mut stream = spawn_child(program, &["connect".into()])?;
-    stream.write_all(capability.as_str().as_bytes()).await?;
-    stream.write_all(b"\n").await?;
-    connect_child(stream, Duration::from_secs(15)).await
-}
-
-async fn connect_child(stream: ChildIo, timeout: Duration) -> Result<Channel, ConnectError> {
     let mut stream = Some(stream);
     Endpoint::from_static("http://[::]:50051")
         .connect_timeout(timeout)
@@ -244,7 +244,7 @@ async fn connect_ssh(
         });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
-    connect_child(spawn_child(program, &args)?, timeout).await
+    connect_stream(spawn_child(program, &args)?, timeout).await
 }
 
 fn ssh_args(
@@ -393,13 +393,31 @@ impl AsyncWrite for ChildIo {
 
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
+        ConnectError::AllFailed {
+            attempts: 1,
+            last: Some(error),
+            ..
+        } if matches!(
+            *error,
+            ConnectError::RefusedByIdentity | ConnectError::PairingCleared
+        ) =>
+        {
+            rpc_error(*error)
+        }
+        ConnectError::PairingCleared => RpcError {
+            code: RpcErrorCode::Unauthenticated,
+            message: "Machine confirmed its management pairing is cleared".into(),
+            details: json!({ "management_pairing": "cleared" }),
+        },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        error @ ConnectError::IdentityMismatch { .. } => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: error.to_string(),
-            details: Value::Null,
-        },
+        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::RefusedByIdentity) => {
+            RpcError {
+                code: RpcErrorCode::Unauthenticated,
+                message: error.to_string(),
+                details: Value::Null,
+            }
+        }
         error @ (ConnectError::Attempt(_)
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
@@ -605,6 +623,10 @@ pub enum ConnectError {
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
+    #[error("Machine refused this Management Capability")]
+    RefusedByIdentity,
+    #[error("Machine confirmed its management pairing is cleared")]
+    PairingCleared,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
@@ -674,6 +696,8 @@ impl ConnectError {
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
             | Self::IdentityMismatch { .. }
+            | Self::RefusedByIdentity
+            | Self::PairingCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)

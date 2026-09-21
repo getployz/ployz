@@ -56,15 +56,9 @@ class Ployz < Formula
   end
 
   def install
-    bin.install "ployz", "ployz-tailcat"
+    bin.install "ployz"
   end
 
-  def caveats
-    <<~EOS
-      This formula replaces the older getployz/ployz implementation as a clean break
-      with manual transition, not an in-place compatibility promise.
-    EOS
-  end
 end
 EOF
 }

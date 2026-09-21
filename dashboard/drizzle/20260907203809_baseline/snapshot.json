@@ -134,6 +134,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "environment_deployment_event",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "environment_deployment_secret",
       "entityType": "tables",
       "schema": "public"
@@ -2260,6 +2266,19 @@
       "table": "environment_deployment"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "runtime_progress",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -2375,6 +2394,58 @@
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment"
+    },
+    {
+      "type": "bigserial",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_event"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deployment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_event"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "progress",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_event"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_event"
     },
     {
       "type": "uuid",
@@ -4035,7 +4106,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "encrypted_tailcat",
+      "name": "encrypted_capability",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_machine"
@@ -6096,6 +6167,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "deployment_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "environment_deployment_event_cursor_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "environment_deployment_event"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "organization_id",
           "isExpression": false,
           "asc": true,
@@ -7955,6 +8054,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "deployment_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "environment_deployment",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "environment_deployment_event_nkhfxU66kCFO_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "environment_deployment_event"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "environment_deployment_id"
       ],
       "schemaTo": "public",
@@ -8817,6 +8933,16 @@
     },
     {
       "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "environment_deployment_event_pkey",
+      "schema": "public",
+      "table": "environment_deployment_event",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "environment_deployment_id"
       ],
       "nameExplicit": false,
@@ -9443,7 +9569,7 @@
       "table": "variable"
     },
     {
-      "value": "(\n        (\"status\" = 'cancelled' and \"cancellation_requested_at\" is not null and \"finished_at\" is not null)\n        or (\"status\" <> 'cancelled' and \"cancellation_requested_at\" is null)\n      )",
+      "value": "(\n        (\"status\" = 'cancelled' and \"cancellation_requested_at\" is not null and \"finished_at\" is not null)\n        or (\"status\" <> 'cancelled')\n      )",
       "name": "environment_deployment_cancellation_shape_check",
       "entityType": "checks",
       "schema": "public",

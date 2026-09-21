@@ -241,6 +241,7 @@ CREATE TABLE "environment_deployment" (
 	"variable_producers" jsonb,
 	"deploy_manifest" jsonb,
 	"deploy_preview" jsonb,
+	"runtime_progress" jsonb,
 	"failure_code" text,
 	"failure_message" text,
 	"message" text,
@@ -252,8 +253,15 @@ CREATE TABLE "environment_deployment" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_deployment_cancellation_shape_check" CHECK ((
         ("status" = 'cancelled' and "cancellation_requested_at" is not null and "finished_at" is not null)
-        or ("status" <> 'cancelled' and "cancellation_requested_at" is null)
+        or ("status" <> 'cancelled')
       ))
+);
+--> statement-breakpoint
+CREATE TABLE "environment_deployment_event" (
+	"id" bigserial PRIMARY KEY,
+	"deployment_id" uuid NOT NULL,
+	"progress" jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "environment_deployment_secret" (
@@ -553,7 +561,7 @@ CREATE TABLE "organization_machine" (
 	"organization_id" uuid,
 	"machine_id" text,
 	"cluster_key" text NOT NULL,
-	"encrypted_tailcat" jsonb NOT NULL,
+	"encrypted_capability" jsonb NOT NULL,
 	"is_dial_entry" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -827,6 +835,7 @@ CREATE UNIQUE INDEX "environment_deployment_one_queued_target_idx" ON "environme
 CREATE UNIQUE INDEX "environment_deployment_one_started_attempt_idx" ON "environment_deployment" ("environment_id") WHERE "status" in ('planning','deploying');--> statement-breakpoint
 CREATE INDEX "environment_deployment_inngest_run_id_idx" ON "environment_deployment" ("inngest_run_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_retry_of_idx" ON "environment_deployment" ("retry_of_deployment_id");--> statement-breakpoint
+CREATE INDEX "environment_deployment_event_cursor_idx" ON "environment_deployment_event" ("deployment_id","id");--> statement-breakpoint
 CREATE INDEX "environment_saved_state_snapshot_organization_id_idx" ON "environment_saved_state_snapshot" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_saved_state_snapshot_environment_created_at_idx" ON "environment_saved_state_snapshot" ("environment_id","created_at");--> statement-breakpoint
 CREATE INDEX "environment_node_config_snapshot_organization_id_idx" ON "environment_node_config_snapshot" ("organization_id");--> statement-breakpoint
@@ -926,6 +935,7 @@ ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_orga
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_Lofdv4M9OTIQ_fkey" FOREIGN KEY ("retry_of_deployment_id") REFERENCES "environment_deployment"("id");--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_92k6WdAbc3AZ_fkey" FOREIGN KEY ("environment_id","saved_state_snapshot_id") REFERENCES "environment_saved_state_snapshot"("environment_id","id") ON DELETE RESTRICT;--> statement-breakpoint
+ALTER TABLE "environment_deployment_event" ADD CONSTRAINT "environment_deployment_event_nkhfxU66kCFO_fkey" FOREIGN KEY ("deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment_secret" ADD CONSTRAINT "environment_deployment_secret_IIXCU5ibjYPq_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved_state_snapshot_QseWcaivJkoo_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved_state_snapshot_pYS3zmT4RKuQ_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint

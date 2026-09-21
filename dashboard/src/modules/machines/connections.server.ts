@@ -41,9 +41,9 @@ export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
       eq(organizationMachine.clusterKey, generation),
     )).orderBy(desc(organizationMachine.isDialEntry), asc(organizationMachine.createdAt), asc(organizationMachine.machineId));
     const connections: Connection[] = yield* Effect.forEach(candidates, (candidate) => Effect.gen(function* () {
-      const tailcat = yield* decryptPairingSecret(candidate.encryptedTailcat);
+      const management = yield* decryptPairingSecret(candidate.encryptedCapability);
       // SAFETY: the table constraint enforces the SDK Machine ID representation.
-      return { tailcat, machine_id: candidate.machineId as MachineId };
+      return { management, machine_id: candidate.machineId as MachineId };
     }));
     return { kind: "ready" as const, generation, connections };
   },

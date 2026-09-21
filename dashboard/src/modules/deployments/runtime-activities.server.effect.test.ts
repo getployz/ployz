@@ -32,7 +32,7 @@ const preview = {
   preserved_volumes: [],
 };
 
-const connections = [{ tailcat: "tailcat://candidate" }];
+const connections = [{ management: "ployz1:candidate" }];
 
 function context(deployPreview: typeof preview | null = null) {
   return {

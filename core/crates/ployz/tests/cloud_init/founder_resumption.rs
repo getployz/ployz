@@ -486,21 +486,6 @@ async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
     });
     let address = serve_machine(daemon.clone()).await;
     let connect = format!("ssh://root@{address}");
-    let unsupported = init_cloud(
-        &format!("tcp://{address}"),
-        &enroll.url,
-        "founder",
-        false,
-        true,
-    )
-    .await;
-    assert!(!unsupported.status.success());
-    assert!(
-        String::from_utf8_lossy(&unsupported.stderr)
-            .contains("requires local Unix, SSH, or Tailcat")
-    );
-    assert!(daemon.initialize_requests().is_empty());
-    assert!(enroll.publications().is_empty());
     enroll.set_publication_status(409);
     let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
     assert!(!output.status.success());

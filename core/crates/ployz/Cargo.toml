@@ -16,6 +16,7 @@ hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 ipnet = "2.12.1"
+iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 oci-client = "0.17.0"
 ployz-build.workspace = true
 ployz-core.workspace = true

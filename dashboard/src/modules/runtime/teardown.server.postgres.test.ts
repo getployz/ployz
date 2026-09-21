@@ -134,7 +134,7 @@ describe("teardown durable state", () => {
       },
       pairing_revoked: false,
     };
-    const retained = "tailcat://protected-removal";
+    const retained = "ployz1:protected-removal";
     await harness.pool.query(`
       insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id,
         founder_machine_id, removal_started_at, removal_endpoints)
@@ -145,7 +145,7 @@ describe("teardown durable state", () => {
     const calls: unknown[] = [];
     let closed = 0;
     const ployz = makePloyzLayer({ connect: async (options) => {
-      expect(options).toEqual(expect.objectContaining({ connections: [{ tailcat: retained, machine_id: machineId }] }));
+      expect(options).toEqual(expect.objectContaining({ connections: [{ management: retained, machine_id: machineId }] }));
       return asTestDouble<Client>()({
         destroyCluster: async (...args: Parameters<Client["destroyCluster"]>) => {
           calls.push(args);

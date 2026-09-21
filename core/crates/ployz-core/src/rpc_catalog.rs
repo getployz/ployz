@@ -41,7 +41,7 @@ macro_rules! rpc_catalog {
                 Initialize: (initialize, "Initialize", InitializeRequest, "initialize", Initialized, INITIALIZE_MACHINE_CAPABILITY, "ployz.machine.initialize.v1", Always),
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always),
                 Join: (join, "Join", JoinRequest, "join", JoinAccepted, JOIN_MACHINE_CAPABILITY, "ployz.machine.join.v1", Always),
-                SetCloudPairing: (set_cloud_pairing, "SetCloudPairing", SetCloudPairingRequest, "set_cloud_pairing", CloudPairingSet, SET_CLOUD_PAIRING_CAPABILITY, "ployz.machine.set-cloud-pairing.v1", Always),
+                SetCloudPairing: (set_cloud_pairing, "SetCloudPairing", SetCloudPairingRequest, "set_cloud_pairing", SetCloudPairingResponse, SET_CLOUD_PAIRING_CAPABILITY, "ployz.machine.set-cloud-pairing.v1", Always),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
                 RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always),

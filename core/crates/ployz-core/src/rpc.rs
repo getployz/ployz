@@ -18,8 +18,9 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
     ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
-    PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
+    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ManagementCapability,
+    ProjectName, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice,
+    WireGuardPublicKey,
 };
 
 mod docker;
@@ -302,29 +303,20 @@ pub struct CreateContainerRequest {
     pub resolved_spec: ResolvedServiceSpec,
 }
 
-/// Protected credentials for one bounded Tailcat revocation attempt.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct TailcatRemoval {
-    #[ts(type = "string")]
-    pub expected_pairing: crate::PairingCredential,
-    #[ts(type = "string")]
-    pub expected: crate::TailcatCapability,
-    #[ts(type = "string")]
-    pub successor: crate::TailcatCapability,
-}
-
-/// Exactly one admitted Cloud Pairing update or endpoint removal.
+/// Exactly one admitted Cloud Pairing update: set it or clear it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetCloudPairingRequest {
     Set { pairing: CloudPairing },
     Clear {},
-    Remove { removal: TailcatRemoval },
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CloudPairingSet {}
+/// Confirmation of a pairing update. `capability` is present after `Set` and absent after `Clear`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SetCloudPairingResponse {
+    #[ts(type = "string | null")]
+    pub capability: Option<ManagementCapability>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartContainerRequest {
@@ -887,7 +879,7 @@ define_responses! {
     Initialized(Initialized) => "initialized";
     Registered(Registered) => "registered";
     JoinAccepted(JoinAccepted) => "join_accepted";
-    CloudPairingSet(CloudPairingSet) => "cloud_pairing_set";
+    SetCloudPairingResponse(SetCloudPairingResponse) => "cloud_pairing_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1052,19 +1044,6 @@ mod set_cloud_pairing_wire {
                     ),
                 },
             ),
-            (
-                json!({ "kind": "remove", "removal": {
-                    "expected_pairing": "private-pairing", "expected": "private-old", "successor": "private-next",
-                }}),
-                SetCloudPairingRequest::Remove {
-                    removal: TailcatRemoval {
-                        expected_pairing: crate::PairingCredential::parse("private-pairing")
-                            .unwrap(),
-                        expected: crate::TailcatCapability::parse("private-old").unwrap(),
-                        successor: crate::TailcatCapability::parse("private-next").unwrap(),
-                    },
-                },
-            ),
         ] {
             let request = serde_json::from_value::<SetCloudPairingRequest>(value.clone()).unwrap();
             assert_eq!(request, expected);
@@ -1076,16 +1055,12 @@ mod set_cloud_pairing_wire {
     #[test]
     fn updates_reject_missing_and_contradictory_cases() {
         let pairing = json!({ "secret": "private-pairing" });
-        let removal = json!({ "expected_pairing": "private-pairing", "expected": "private-old", "successor": "private-next" });
         for value in [
             json!({}),
             json!({ "cloud_pairing": null }),
             json!({ "kind": "set" }),
-            json!({ "kind": "remove" }),
-            json!({ "kind": "set", "pairing": pairing, "removal": removal }),
+            json!({ "kind": "unknown", "pairing": pairing }),
             json!({ "kind": "clear", "pairing": pairing }),
-            json!({ "kind": "clear", "removal": removal }),
-            json!({ "kind": "remove", "pairing": pairing, "removal": removal }),
             json!({ "kind": "set", "pairing": pairing, "cloud_pairing": null }),
         ] {
             assert!(serde_json::from_value::<SetCloudPairingRequest>(value).is_err());
@@ -1100,21 +1075,31 @@ mod set_cloud_pairing_wire {
             }))
             .is_err()
         );
-        for field in ["expected", "successor"] {
-            for invalid in [
-                String::new(),
-                "private\ncommand".into(),
-                "private capability".into(),
-                "x".repeat(16 * 1024),
-            ] {
-                let mut removal = json!({ "expected_pairing": "private-pairing", "expected": "private-old", "successor": "private-next" });
-                *removal.get_mut(field).unwrap() = json!(invalid);
-                let error = serde_json::from_value::<SetCloudPairingRequest>(
-                    json!({ "kind": "remove", "removal": removal }),
-                )
-                .unwrap_err();
-                assert!(!error.to_string().contains("private"));
-            }
+    }
+
+    #[test]
+    fn pairing_response_carries_optional_capability_without_debug_disclosure() {
+        let capability =
+            ManagementCapability::new(crate::ManagementIdentity::from_bytes([1; 32]), [2; 32]);
+        let text = capability.to_secret_string();
+        for (response, expected) in [
+            (
+                SetCloudPairingResponse {
+                    capability: Some(capability),
+                },
+                json!({ "capability": text }),
+            ),
+            (
+                SetCloudPairingResponse { capability: None },
+                json!({ "capability": null }),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+            assert_eq!(
+                serde_json::from_value::<SetCloudPairingResponse>(expected).unwrap(),
+                response
+            );
+            assert!(!format!("{response:?}").contains(&text[8..]));
         }
     }
 }

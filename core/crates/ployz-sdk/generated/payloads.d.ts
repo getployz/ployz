@@ -780,6 +780,8 @@ export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeS
 
 export type ServiceVolumeReference = string;
 
+export type SetCloudPairingResponse = { capability: string | null, };
+
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 
 export type StopContainerPurpose = "lifecycle" | "free_host_ports";
@@ -838,8 +840,6 @@ message: string, } | { "code": "volume_size_conflict",
 name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
-
-export type TailcatRemoval = { expected_pairing: string, expected: string, successor: string, };
 
 export type TelemetryObservation = { "scope": "bridge_capacity",
 /**

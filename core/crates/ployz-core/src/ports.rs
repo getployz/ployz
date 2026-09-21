@@ -8,3 +8,5 @@ pub const CORROSION_GOSSIP_PORT: u16 = 7570;
 pub const CORROSION_API_PORT: u16 = 7571;
 /// Fixed TCP port for direct image transfer between Machines.
 pub const UNREGISTRY_PORT: u16 = 7572;
+/// Fixed UDP port for the iroh management transport.
+pub const MANAGEMENT_PORT: u16 = 7573;

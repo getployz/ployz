@@ -94,6 +94,11 @@ impl MachineProxy {
         }
     }
 
+    pub(super) fn with_local(mut self, local: Routes) -> Self {
+        self.local = local;
+        self
+    }
+
     pub async fn dispatch_with_snapshot(
         &self,
         request: http::Request<Body>,

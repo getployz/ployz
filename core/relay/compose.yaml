@@ -1,0 +1,18 @@
+# Ployz Relay: the self-hosted iroh relay for the management transport (relay.ployz.dev).
+# Uncloud publishes port 80 through Caddy, which terminates TLS. See README.md.
+services:
+  ployz-relay:
+    image: n0computer/iroh-relay:v1.2.0
+    command: ["--config-path", "/config/iroh-relay.toml"]
+    volumes:
+      - relay-data:/config
+    x-ports:
+      - relay.ployz.dev:80/https
+
+volumes:
+  relay-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /volumes/ployz-relay

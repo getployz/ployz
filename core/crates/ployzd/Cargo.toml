@@ -26,6 +26,7 @@ instant-acme = "0.8.5"
 listenfd = "1.0.2"
 nix = { version = "0.29.0", default-features = false, features = ["fs", "feature"] }
 ipnet = "2.12.1"
+iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 ployz-core.workspace = true
 ployz-build.workspace = true
 rcgen = "0.14.6"
@@ -48,6 +49,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 x509-parser = "0.18.1"
 
 [dev-dependencies]
+iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true
 tokio = { version = "1.53.1", features = ["test-util"] }

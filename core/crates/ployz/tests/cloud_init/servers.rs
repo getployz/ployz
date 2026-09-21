@@ -77,7 +77,7 @@ pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<At
     (format!("unix://{}", socket.display()), socket, connections)
 }
 
-// Exercise the real SSH export path without host installation or public relays.
+// A fake ssh that pipes `ployzd dial-stdio` to the fake daemon's TCP port.
 pub fn cli() -> tokio::process::Command {
     use std::os::unix::fs::PermissionsExt;
     static SSH: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
@@ -90,10 +90,6 @@ pub fn cli() -> tokio::process::Command {
 import os, socket, sys, threading
 args = sys.argv[1:]
 if args[-1] == 'true':
-    sys.exit(0)
-if 'ployzd-tailcat export' in args[-1]:
-    assert 'ployzd install --software-only --version' in args[-1]
-    print('fixture-tailcat-capability')
     sys.exit(0)
 assert args[-2:] == ['ployzd', 'dial-stdio'], args
 port = int(args[args.index('-p') + 1])
@@ -116,13 +112,6 @@ except (OSError, BrokenPipeError):
         )
         .unwrap();
         std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let export = directory.path().join("ployzd-tailcat");
-        std::fs::write(
-            &export,
-            "#!/bin/sh\n[ \"$1\" = export ] || exit 1\nprintf '%s\\n' fixture-tailcat-capability\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(export, std::fs::Permissions::from_mode(0o700)).unwrap();
         directory
     });
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));

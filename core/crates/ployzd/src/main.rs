@@ -20,6 +20,7 @@ use ployzd::{
         DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseRequest, ReleaseSource,
     },
     machine::DEFAULT_DATA_DIR,
+    management::ManagementConfig,
     network::NetworkError,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
@@ -39,6 +40,9 @@ struct Args {
     dns_upstreams: Vec<SocketAddr>,
     #[arg(long, hide = true)]
     machine_api_address: Option<SocketAddr>,
+    /// UDP port of the management transport; tests pass 0 to avoid the fixed port.
+    #[arg(long, hide = true, default_value_t = ployz_core::MANAGEMENT_PORT)]
+    management_port: u16,
     #[arg(long)]
     containerd_socket: Option<PathBuf>,
     /// Tracing filter. Overrides `PLOYZ_LOG`. Default: info.
@@ -186,6 +190,10 @@ async fn run(args: Args) -> Result<(), Error> {
         machine_api_address: args.machine_api_address,
         containerd_socket: args.containerd_socket,
         containers: ContainerMode::Auto,
+        management: ManagementConfig {
+            port: args.management_port,
+            ..ManagementConfig::default()
+        },
     })
     .await?;
     daemon.wait().await

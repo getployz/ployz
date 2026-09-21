@@ -18,7 +18,7 @@ ployz = { path = "../ployz" }
 ployz-core.workspace = true
 serde = "1.0.229"
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["io-util", "macros", "process", "sync"] }
+tokio = { version = "1.53.1", features = ["macros", "sync"] }
 tokio-util = "0.7.19"
 
 [build-dependencies]

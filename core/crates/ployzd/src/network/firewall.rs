@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use ployz_core::{MachineSubnet, ManagementAddress};
+use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress};
 
 use crate::dns;
 
@@ -34,6 +34,19 @@ pub fn apply_firewall_rules(
                 "udp",
                 "--dport",
                 &WIREGUARD_PORT.to_string(),
+                "-j",
+                "ACCEPT",
+            ],
+        )?;
+        ensure_rule(
+            program,
+            "filter",
+            INPUT_CHAIN,
+            &[
+                "-p",
+                "udp",
+                "--dport",
+                &MANAGEMENT_PORT.to_string(),
                 "-j",
                 "ACCEPT",
             ],

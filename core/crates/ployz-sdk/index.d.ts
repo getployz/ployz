@@ -8,7 +8,6 @@ import type {
   ExecutionError,
   MachineId,
   MachineDetails,
-  TailcatRemoval,
   MachineTarget,
   ObservedDataLoss,
   LocalMachineRemoved,
@@ -27,9 +26,9 @@ import type {
 } from "./generated/payloads";
 export * from "./generated/payloads";
 
-/** Same serialized descriptors as CLI contexts. Backend only: Tailcat is an admin capability. */
+/** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (
-  | { readonly tailcat: string }
+  | { readonly management: string }
   | { readonly ssh: string; readonly ssh_key_file?: string }
   | { readonly tcp: string }
   | { readonly unix: string }
@@ -66,8 +65,6 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function packageName(): "@ployz/sdk";
-/** Backend-only ephemeral successor; never save as an ordinary connection candidate. */
-export declare function prepareTailcatRemoval(expected: string): Promise<string>;
 export declare function connect(options: ConnectOptions): Promise<Client>;
 export declare function applyAll(
   project_name: ProjectName,
@@ -82,7 +79,7 @@ export declare function applyOne(
 ): DeployIntent;
 
 export declare class Client {
-  removeCloudPairing(removal: TailcatRemoval): Promise<void>;
+  removeCloudPairing(): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
   register(assignment: EnrollmentAssignment): Promise<Registered>;

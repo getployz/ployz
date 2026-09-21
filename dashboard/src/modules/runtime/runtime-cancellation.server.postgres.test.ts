@@ -26,9 +26,9 @@ it("cancels both Cloud workers only after commit and preserves replacement pairi
       encrypted_pairing_secret = excluded.encrypted_pairing_secret, removal_started_at = null, removal_endpoints = null
     `, [id, encryption.encrypt(secret), machineId]);
     await harness.pool.query(`
-      insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_tailcat)
+      insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability)
       values ($1,$2,$3,$4) on conflict (organization_id,machine_id) do update set cluster_key=excluded.cluster_key
-    `, [id, machineId, hashEnrollmentToken(secret), encryption.encrypt("tailcat://test")]);
+    `, [id, machineId, hashEnrollmentToken(secret), encryption.encrypt("ployz1:test")]);
   }
   function worker() {
     const sessions: Array<{ closed: boolean; finished: Promise<void>; close: () => void }> = [];

@@ -1,0 +1,15 @@
+# iroh-relay v1.2.0 configuration for relay.ployz.dev.
+# No [tls] section: the relay serves plain HTTP on port 80 and Caddy terminates TLS in front.
+access = "everyone"
+enable_metrics = false
+
+[limits]
+# New connections per second, and the burst allowed above that rate.
+accept_conn_limit = 100
+accept_conn_burst = 200
+
+# Token bucket for bytes received from each client. Management RPC is small;
+# raise these if legitimate replies (log streams, large manifests) get throttled.
+[limits.client.rx]
+bytes_per_second = 1048576
+max_burst_bytes = 4194304

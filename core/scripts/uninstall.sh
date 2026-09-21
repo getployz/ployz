@@ -55,7 +55,6 @@ main() {
     fi
     exec {installation_lock}<>"$lock_path"
     flock -n "$installation_lock" || error "Ployz mutation or installation is active; retry uninstall"
-    stop_loaded_units ployz-tailcat.service
     stop_loaded_units ployz.service
     # Catch an accepted worker launched during the first stop, now blocked on our lock.
     stop_loaded_units 'ployz-upgrade-*.service'
@@ -75,13 +74,12 @@ main() {
     fi
 
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    systemctl disable ployz-tailcat.service ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    rm -f "$INSTALL_SYSTEMD_DIR/ployz-tailcat.service" \
-        "$INSTALL_SYSTEMD_DIR/ployz.service" \
+    systemctl disable ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
     systemctl daemon-reload
-    rm -f "$INSTALL_BIN_DIR/ployzd" "$INSTALL_BIN_DIR/ployzd-tailcat"
+    rm -f "$INSTALL_BIN_DIR/ployzd"
 
     if command -v ip >/dev/null 2>&1 && ip link show ployz >/dev/null 2>&1; then
         ip link delete ployz

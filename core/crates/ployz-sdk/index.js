@@ -2,15 +2,12 @@
 
 // ponytail: specifiers are computed so bundlers cannot follow require into the
 // .node binary. Nitro/Vinxi emit this file as ESM without CJS module globals.
-const path = require("node:path");
 const localBinding = [".", "ployz-sdk.node"].join("/"); // tests
 const bindingPackage = `@ployz/sdk-${process.platform}-${process.arch}`;
 let native;
-let helper;
 for (const specifier of [localBinding, bindingPackage]) {
   try {
     native = require(specifier);
-    helper = path.join(path.dirname(require.resolve(specifier)), "ployz-tailcat");
     break;
   } catch (error) {
     if (error.code !== "MODULE_NOT_FOUND") {
@@ -71,8 +68,8 @@ class Client {
     return withRpcError(this._inner.register(assignment));
   }
 
-  removeCloudPairing(removal) {
-    return withRpcError(this._inner.removeCloudPairing(removal));
+  removeCloudPairing() {
+    return withRpcError(this._inner.removeCloudPairing());
   }
 
   inspect() {
@@ -249,7 +246,7 @@ async function connect(options) {
   }
   signal?.throwIfAborted();
   let attempt;
-  try { attempt = native.startConnections(options.connections, helper); } catch (error) { throwRpcError(error); }
+  try { attempt = native.startConnections(options.connections); } catch (error) { throwRpcError(error); }
   let client;
   let timer;
   let stopped = false;
@@ -267,7 +264,6 @@ async function connect(options) {
 }
 
 module.exports = {
-  prepareTailcatRemoval: (expected) => withRpcError(native.prepareTailcatRemoval(expected, helper)),
   configRequest: native.configRequest,
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
