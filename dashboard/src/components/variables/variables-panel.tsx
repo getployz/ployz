@@ -2,6 +2,13 @@ import { useState, type ReactNode } from "react";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "#/components/ui/dialog";
+import {
   Empty,
   EmptyHeader,
   EmptyTitle,
@@ -70,22 +77,11 @@ export function VariablesPanel({
   const supportsExport = onUpdateMetadata != null;
   const [isAdding, setIsAdding] = useState(false);
 
-  const showEmptyState = variables.length === 0 && !isAdding;
+  const showEmptyState = variables.length === 0;
 
   return (
     <div className="flex flex-col gap-6">
-      {isAdding ? (
-        <VariableAddForm
-          variables={variables}
-          collection={collection}
-          onCreateVariable={onCreateVariable}
-          onCancel={() => setIsAdding(false)}
-          allowSealOnCreate={allowSealOnCreate}
-          defaultExported={defaultExported}
-          supportsExport={supportsExport}
-          valueTargets={valueTargets}
-        />
-      ) : (
+      <Dialog open={isAdding} onOpenChange={setIsAdding}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="font-medium">
             {variables.length} {countNoun}
@@ -93,17 +89,30 @@ export function VariablesPanel({
           </h2>
           <div className="flex flex-wrap items-center gap-2">
             {headerActions}
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsAdding(true)}
+            <DialogTrigger
+              render={<Button type="button" variant="outline" />}
             >
               <PlusIcon data-icon="inline-start" />
               New Variable
-            </Button>
+            </DialogTrigger>
           </div>
         </div>
-      )}
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>New Variable</DialogTitle>
+          </DialogHeader>
+          <VariableAddForm
+            variables={variables}
+            collection={collection}
+            onCreateVariable={onCreateVariable}
+            onCancel={() => setIsAdding(false)}
+            allowSealOnCreate={allowSealOnCreate}
+            defaultExported={defaultExported}
+            supportsExport={supportsExport}
+            valueTargets={valueTargets}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Separator />
 

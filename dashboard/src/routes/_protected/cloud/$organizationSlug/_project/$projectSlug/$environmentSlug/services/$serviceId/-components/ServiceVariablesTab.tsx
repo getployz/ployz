@@ -7,20 +7,10 @@ import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useServerFn } from "@tanstack/react-start";
 import {
   BracesIcon,
-  ChevronRightIcon,
-  DatabaseZapIcon,
   Link2Icon,
-  InfoIcon,
-  XIcon,
 } from "lucide-react";
-import { Alert, AlertAction, AlertDescription } from "#/components/ui/alert";
 import { SecretValueDisplay } from "#/components/secret-value-display";
 import { Button } from "#/components/ui/button";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "#/components/ui/collapsible";
 import {
   Empty,
   EmptyDescription,
@@ -35,11 +25,6 @@ import {
   TableRow,
 } from "#/components/ui/table";
 import { TabsContent } from "#/components/ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "#/components/ui/tooltip";
 import {
   VariablesPanel,
   type VariableAddInput,
@@ -89,6 +74,7 @@ export function ServiceVariablesTab({
     serviceId: node.id, environmentId: state.service.environmentId })) ?? [];
   const { data: environmentResourceRows } =
     useLiveSuspenseQuery({
+    queryKey: ['service-variable-resources', environmentResourcesCollection.id, state.service.environmentId],
       query: (q) =>
         q
           .from({ resource: environmentResourcesCollection })
@@ -207,27 +193,7 @@ export function ServiceVariablesTab({
           </Button>
         }
         renderBeforeList={() => (
-          <>
-            <Alert>
-              <DatabaseZapIcon />
-              <AlertDescription>
-                Connecting a database?{" "}
-                <button
-                  type="button"
-                  className="font-medium underline underline-offset-4"
-                >
-                  Add variables
-                </button>
-              </AlertDescription>
-              <AlertAction>
-                <Button type="button" variant="ghost" size="icon-sm">
-                  <XIcon />
-                  <span className="sr-only">Dismiss</span>
-                </Button>
-              </AlertAction>
-            </Alert>
-            {variableGroupsEnabled && <ServiceVariableGroupAttachmentsPanel state={state} />}
-          </>
+          variableGroupsEnabled && <ServiceVariableGroupAttachmentsPanel state={state} />
         )}
         renderAfterList={() => (
           <>
@@ -236,69 +202,31 @@ export function ServiceVariablesTab({
               duplicateKeyCounts={inheritedKeyCounts}
             />}
             <Separator />
-            <Collapsible>
-              <CollapsibleTrigger
-                render={(props, collapsibleState) => (
-                  <Button type="button" variant="ghost" {...props}>
-                    <ChevronRightIcon
-                      data-icon="inline-start"
-                      className={collapsibleState.open ? "rotate-90" : undefined}
-                    />
-                    {ployzManagedVariables.length} Ployz variables
-                  </Button>
-                )}
-              />
-              <CollapsibleContent>
+            <section>
+              <h2 className="font-medium">
+                {ployzManagedVariables.length} Ployz variables
+              </h2>
                 <div className="pt-2">
                   <p className="text-sm text-muted-foreground">
                     Ployz adds these system variables to every build and deploy.
                   </p>
-                  <Table className="mt-4">
-                    <TableBody>
+                  <div className="mt-4">
                       {ployzManagedVariables.map((variable) => (
-                        <TableRow key={variable.key}>
-                          <TableCell>
-                            <div className="flex items-center gap-1.5">
-                              <div className="font-medium">{variable.key}</div>
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon-sm"
-                                    >
-                                      <InfoIcon />
-                                      <span className="sr-only">
-                                        {variable.key} description
-                                      </span>
-                                    </Button>
-                                  }
-                                />
-                                <TooltipContent>
-                                  {variable.description}
-                                </TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </TableCell>
-                          <TableCell>
+                        <div key={variable.key} className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">
+                          <div className="min-w-0 truncate font-mono text-sm" title={variable.key}>
+                            {variable.key}
+                          </div>
+                          <div className="flex min-w-0 items-center gap-1.5">
                             <SecretValueDisplay
                               value={variable.value}
-                              info={`${variable.key} is a Ployz-managed system variable.`}
                             />
-                          </TableCell>
-                          <TableCell>
-                            <Button type="button" variant="ghost" size="sm">
-                              Reference
-                            </Button>
-                          </TableCell>
-                        </TableRow>
+                            <span className="size-7 shrink-0" aria-hidden="true" />
+                          </div>
+                        </div>
                       ))}
-                    </TableBody>
-                  </Table>
+                  </div>
                 </div>
-              </CollapsibleContent>
-            </Collapsible>
+            </section>
           </>
         )}
         emptyState={
@@ -385,7 +313,6 @@ function InheritedVariableGroupVariablesSection({
                         ? item.variable.value.value
                         : undefined
                     }
-                    info={`${item.variable.key} comes from ${item.resourceName}.`}
                   />
                 </TableCell>
                 <TableCell className="text-right">

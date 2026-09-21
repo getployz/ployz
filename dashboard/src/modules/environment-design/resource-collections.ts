@@ -1,4 +1,4 @@
-import { createLiveQueryCollection, eq, toArray, type Collection, type UtilsRecord } from "@tanstack/react-db";
+import { BasicIndex, collectionOptions, liveQueryCollectionOptions, type DbClient, eq, toArray, type Collection, type UtilsRecord } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { variableGroupDocumentRecord, volumeDocumentRecord, volumeIsVisible, type VolumeHistory, type ResourceDocumentView } from "./resource-document";
 
@@ -18,14 +18,14 @@ type VolumeSources = ResourceSources & {
   removals: Source<ReturnType<typeof getVolumeRemoveAttemptsCollection>>;
 };
 
-function resourceDocumentRows(organizationSlug: string, type: "variable_group" | "volume", { resources, lineages, positions, documents }: ResourceSources) {
-  const resourcePositions = createLiveQueryCollection({
-    id: `collections:${organizationSlug}:${type}-positions`,
+function resourceDocumentRows(client: DbClient, type: "variable_group" | "volume", { resources, lineages, positions, documents }: ResourceSources) {
+  const resourcePositions = client.collection(collectionOptions({ ...liveQueryCollectionOptions({
+    id: `${positions.id}:${type}-positions`,
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.resourceType, type)),
     getKey: (position) => position.resourceId,
-  });
-  return createLiveQueryCollection({
-    id: `collections:${organizationSlug}:${type}-document-rows`,
+  }), autoIndex: "eager", defaultIndexType: BasicIndex }));
+  return client.collection(collectionOptions({ ...liveQueryCollectionOptions({
+    id: `${resources.id}:${type}-document-rows`,
     query: (q) => q.from({ resource: resources })
       .where(({ resource }) => eq(resource.implementationType, type))
       .innerJoin({ lineage: lineages }, ({ resource, lineage }) => eq(resource.lineageId, lineage.id))
@@ -33,7 +33,7 @@ function resourceDocumentRows(organizationSlug: string, type: "variable_group" |
       .leftJoin({ position: resourcePositions }, ({ resource, position }) => eq(resource.id, position.resourceId))
       .fn.select(({ resource, lineage, document, position }) => ({ resource, lineage, document, position })),
     getKey: (row) => row.resource.id,
-  });
+  }), autoIndex: "eager", defaultIndexType: BasicIndex }));
 }
 
 function documentView(row: ReturnType<typeof resourceDocumentRows> extends { values(): IterableIterator<infer R> } ? R : never) {
@@ -50,10 +50,11 @@ function documentView(row: ReturnType<typeof resourceDocumentRows> extends { val
     projectSlug: row.document.projectSlug, environmentSlug: row.document.namespace };
 }
 
-export function createEnvironmentResourcesCollection(input: { organizationSlug: string; sources: ResourceSources }) {
-  const rows = resourceDocumentRows(input.organizationSlug, "variable_group", input.sources);
-  return createLiveQueryCollection({
-    id: `collections:${input.organizationSlug}:variable-group-resources`,
+export function createEnvironmentResourcesCollection(input: { client: DbClient; sources: ResourceSources }) {
+  const client = input.client;
+  const rows = resourceDocumentRows(input.client, "variable_group", input.sources);
+  return client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${input.sources.resources.id}:variable-group-resources`,
     query: (q) => q.from({ row: rows })
       .fn.where(({ row }) => row.document.intent.variableGroups.some((node) => node.resourceId === row.resource.id))
       .fn.select(({ row }) => {
@@ -62,14 +63,15 @@ export function createEnvironmentResourcesCollection(input: { organizationSlug: 
         return record;
       }),
     getKey: (item) => item.resource.id,
-  });
+  })));
 }
 
-export function createVolumeResourcesCollection(input: { organizationSlug: string; sources: VolumeSources }) {
-  const resources = resourceDocumentRows(input.organizationSlug, "volume", input.sources);
+export function createVolumeResourcesCollection(input: { client: DbClient; sources: VolumeSources }) {
+  const client = input.client;
+  const resources = resourceDocumentRows(input.client, "volume", input.sources);
   const { snapshots, removals } = input.sources;
-  const rows = createLiveQueryCollection({
-    id: `collections:${input.organizationSlug}:volume-history`,
+  const rows = client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${input.sources.resources.id}:volume-history`,
     query: (q) => q.from({ resource: input.sources.resources })
       .where(({ resource }) => eq(resource.implementationType, "volume"))
       .select(({ resource }) => ({ resourceId: resource.id,
@@ -83,9 +85,9 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
         .where(({ removal }) => eq(removal.status, "completed"))
         .orderBy(({ removal }) => removal.terminalAt, "desc").findOne()),
     })),
-  });
-  const withHistory = createLiveQueryCollection({
-    id: `collections:${input.organizationSlug}:volume-document-history`,
+  })));
+  const withHistory = client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${input.sources.resources.id}:volume-document-history`,
     query: (q) => q.from({ history: rows }).fn.select(({ history }) => {
       // Correlated arrays can be null while a refreshed parent row is removed.
       const dates = (history.removals ?? []).flatMap((removal) =>
@@ -96,9 +98,9 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
         removedAt: dates.length ? new Date(Math.max(...dates.map((date) => date.getTime()))) : null,
       } satisfies VolumeHistory };
     }),
-  });
-  return createLiveQueryCollection({
-    id: `collections:${input.organizationSlug}:volume-resources`,
+  })));
+  return client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${input.sources.resources.id}:volume-resources`,
     query: (q) => q.from({ row: resources })
       .innerJoin({ history: withHistory }, ({ row, history }) => eq(row.resource.id, history.resourceId))
       .fn.where(({ row, history }) => volumeIsVisible(documentView(row), history.history))
@@ -108,5 +110,5 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
         return record;
       }),
     getKey: (item) => item.resource.id,
-  });
+  })));
 }

@@ -3,7 +3,7 @@ import { parseDashboardServiceConfig as parseServiceConfig } from "#/modules/env
 import { buildEnvironmentChangeSet, type EnvironmentNodeProjection } from "./environment-change-set";
 
 const service = parseServiceConfig({
-  version: 2, name: "API", privateDns: "api",
+  version: 2, privateDns: "api",
   source: { version: 1, type: "empty", rootDir: "/" },
   healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
 });
@@ -17,10 +17,10 @@ it.each([
   const entry = { node: { type, id: "node" }, config } as EnvironmentNodeProjection;
   const present = { token: "present", nodes: [entry] };
   for (const [working, applied, lifecycle] of [[present, empty, "create"], [empty, present, "delete"]] as const) {
-    const pending = buildEnvironmentChangeSet({ working, applied, submitted: null, nodeIntroductions: empty });
+    const pending = buildEnvironmentChangeSet({ working, applied, saved: null, submitted: null, nodeIntroductions: empty });
     expect(pending.groups).toMatchObject([{ node: entry.node, lifecycle }]);
     expect(pending.totalCount).toBe(1);
-    const submitted = buildEnvironmentChangeSet({ working, applied, submitted: working, nodeIntroductions: empty });
+    const submitted = buildEnvironmentChangeSet({ working, applied, saved: null, submitted: working, nodeIntroductions: empty });
     expect(submitted.groups).toEqual([]);
   }
 });
@@ -29,11 +29,25 @@ it("uses Introduction for new-node field resets without hiding the creation", ()
   const node = { type: "service" as const, id: "api" };
   const result = buildEnvironmentChangeSet({
     working: { token: "working", nodes: [{ node, config: { ...service, replicas: 7 } }] },
-    applied: empty, submitted: null,
+    applied: empty, saved: null, submitted: null,
     nodeIntroductions: { token: "introduced", nodes: [{ node, config: { ...service, replicas: 1 } }] },
   });
   expect(result.groups).toMatchObject([{ lifecycle: "create", comparison: "introduction", settings: [{ path: "replicas", before: 1, after: 7, canRestore: true }] }]);
   expect(result.totalCount).toBe(2);
+});
+
+it.each(["saved", "applied"] as const)("does not reset a %s node to Introduction when absent from Head", (state) => {
+  const node = { type: "service" as const, id: "api" };
+  const existing = { token: "existing", nodes: [{ node, config: { ...service, replicas: 5 } }] };
+  const result = buildEnvironmentChangeSet({
+    working: { token: "working", nodes: [{ node, config: { ...service, replicas: 7 } }] },
+    applied: state === "applied" ? existing : empty,
+    saved: state === "saved" ? existing : null,
+    submitted: state === "applied" ? empty : null,
+    nodeIntroductions: { token: "introduced", nodes: [{ node, config: { ...service, replicas: 1 } }] },
+  });
+  expect(result.groups).toEqual([{ node, lifecycle: "create", comparison: null, settings: [] }]);
+  expect(result.totalCount).toBe(1);
 });
 
 it("retains secret differences without exposing values or double-counting derived variables", () => {
@@ -43,7 +57,7 @@ it("retains secret differences without exposing values or double-counting derive
   const baseline = { token: "applied", nodes: [{ node, config: before }] };
   const input = {
     working: { token: "working", nodes: [{ node, config: after }] },
-    applied: baseline, submitted: null, nodeIntroductions: empty,
+    applied: baseline, saved: null, submitted: null, nodeIntroductions: empty,
   };
   const snapshot = structuredClone(input);
   const result = buildEnvironmentChangeSet(input);

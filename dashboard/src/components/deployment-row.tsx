@@ -26,6 +26,7 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
     organizationSlug ?? "", collectionScope,
   );
   const { data: resourceRows = [] } = useLiveQuery({
+    queryKey: ['deployment-resource-types', rawResources.id],
     query: (q) =>
       q
         .from({ resource: rawResources })

@@ -8,6 +8,18 @@ Ployz Cloud is the product and workflow context around creating, connecting, and
 A deployable element of an Environment whose desired configuration participates in reviewed snapshots. Services and Environment Resources are Environment Nodes, while retaining distinct storage and lifecycle behavior.
 _Avoid_: Canvas node when referring to deployment identity
 
+**Service Metadata**:
+The display name of a Service, stored on its stable identity and saved immediately. Renaming does not change Private DNS, the stable service slug, Working State, or any accepted deployment. References target IDs; managed `PLOYZ_SERVICE_NAME` exports the stable slug.
+_Avoid_: Deployable name, DNS alias
+
+**Deployment Policy**:
+Immediate Service preferences controlling automated admission: automatic Git deployment, waiting for CI, watch paths, and image update preference. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
+_Avoid_: Staged source settings, runtime configuration
+
+**Registry Credential**:
+Current encrypted authentication material owned by a Service identity, with a new revision on rotation. Deployable configuration contains only its stable credential reference. Connecting or disconnecting that reference is staged; rotating its contents is immediate. Admission freezes the credential revision and encrypted material with the deployment snapshots. Discard cannot undo a rotation.
+_Avoid_: Saved credential contents, credential revision as configuration
+
 **Environment Resource**:
 A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Variable Groups and Volumes are the current Environment Resource types; effects on a Service's container template remain Service-owned.
 _Avoid_: Generic canvas item, Service subtype
@@ -85,7 +97,7 @@ The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into run
 _Avoid_: Prepared snapshot, build workflow, Core Deploy
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity, Node Introduction, and canvas position when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Variable Group**:
@@ -129,7 +141,7 @@ The strictly versioned configuration an environment node had immediately after i
 _Avoid_: Initial diff, creation event log, default config
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets while a node is absent from Head (the submitted revision, or Applied State when no attempt is active). Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only while a node is absent from Head, Saved State, and Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Discard**:

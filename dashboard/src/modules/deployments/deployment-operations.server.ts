@@ -126,6 +126,7 @@ export const listLatestOrganizationEnvironmentChangeStates = Effect.fn(
   const projection = yield* loadEnvironmentSnapshotProjection({
       kind: "organization",
       organizationId: organization.id,
+      environmentSlug: input.environmentSlug,
     });
   return yield* projectEnvironmentChangeStateRecords(projection);
 });

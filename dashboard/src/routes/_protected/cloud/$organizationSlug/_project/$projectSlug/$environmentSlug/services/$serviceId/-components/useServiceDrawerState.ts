@@ -1,3 +1,4 @@
+import { useServiceMetadataEditor } from "#/modules/environment-design/service-metadata.collection";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
@@ -47,6 +48,7 @@ export type ServiceDrawerState = {
   environmentNodes: EnvironmentNodeNameIdentity[];
   diff: ServiceDeploymentDiffState;
   collection: ServiceWriter;
+  editMetadata: (input: Parameters<ReturnType<typeof useServiceMetadataEditor>>[0]) => { isPersisted: { promise: Promise<unknown> } };
   /** Managed-domain prefixes already claimed by other services in this
    * environment, for client-side uniqueness hints (server validates org-wide). */
   managedPrefixesInUse: string[];
@@ -80,6 +82,7 @@ function serviceNodes(
 export function useServiceDrawerState(
   params: ServiceRouteParams,
 ): ServiceDrawerState | null {
+  const editMetadata = useServiceMetadataEditor(params.organizationSlug);
   const collectionScope = useCollectionScope();
   const collection = useServicesCollection(params.organizationSlug);
   const serviceWriter = useServiceWriter(params.organizationSlug);
@@ -104,21 +107,15 @@ export function useServiceDrawerState(
     environmentId,
   });
   const { data: rawServices } = useLiveSuspenseQuery(
-    (q) =>
+    { queryKey: ['drawer-services', collection.id, canvasPositions.id, documents.id, params.projectSlug, params.environmentSlug], query: (q) =>
       buildEnvironmentServicesViewQuery(q, params, {
         services: collection,
         canvasPositions,
         documents,
-      }),
-    [
-      canvasPositions,
-      collection,
-      params.environmentSlug,
-      params.projectSlug,
-      documents,
-    ],
+      }) },
   );
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
+    queryKey: ['drawer-resources', environmentResourcesCollection.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: environmentResourcesCollection })
@@ -129,6 +126,7 @@ export function useServiceDrawerState(
         .select(({ resource }) => resource),
   });
   const { data: serviceIntroductionRows } = useLiveSuspenseQuery({
+    queryKey: ['service-introduction', nodeIntroductions.id, params.serviceId],
     query: (q) =>
       q
         .from({ introduction: nodeIntroductions })
@@ -181,6 +179,9 @@ export function useServiceDrawerState(
     ? buildEnvironmentNodeChange({
         working: { node, config: projectServiceDeploymentConfig(service) },
         applied: serviceNodes(environmentChangeState.applied.nodes, params.serviceId),
+        saved: environmentChangeState.saved
+          ? serviceNodes(environmentChangeState.saved.nodes, params.serviceId)
+          : null,
         submitted: environmentChangeState.deploymentEvidence
           ? serviceNodes(environmentChangeState.deploymentEvidence.nodes, params.serviceId)
           : null,
@@ -209,6 +210,7 @@ export function useServiceDrawerState(
     ],
     diff: getServiceDeploymentDiffState(change),
     collection: serviceWriter,
+    editMetadata,
     managedPrefixesInUse: services
       .filter((item) => item.service.id !== service.id)
       .flatMap((item) => item.service.managedHostnames.map((m) => m.prefix)),

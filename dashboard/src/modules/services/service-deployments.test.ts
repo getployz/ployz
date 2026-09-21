@@ -15,7 +15,6 @@ import {
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 
 const currentConfig = projectServiceDeploymentConfig({
-  name: "api",
   privateDns: "api",
   source: createGitServiceSource({
     repository: "acme/api",
@@ -23,7 +22,6 @@ const currentConfig = projectServiceDeploymentConfig({
     installationId: 7,
     rootDir: "/apps/api",
     branch: { type: "connected", name: "main" },
-    waitForCi: false,
   }),
   preDeployCommand: null,
   startCommand: null,
@@ -41,7 +39,6 @@ describe("service deployment state", () => {
         installationId: 7,
         rootDir: "/apps/api",
         branch: { type: "connected", name: "develop" },
-        waitForCi: true,
       }),
       preDeployCommand: "npm run migrate",
       startCommand: "npm start",
@@ -86,6 +83,7 @@ describe("service deployment state", () => {
         }),
       }) },
       applied: [{ node, config: projectServiceDeploymentConfig({ ...currentConfig, source: baselineSource }) }],
+      saved: null,
       submitted: null,
       introduction: null,
     }));

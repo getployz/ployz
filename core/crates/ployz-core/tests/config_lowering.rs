@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 #[test]
 fn lowering_owns_port_defaults_and_domain_overrides() {
-    let config = json!({"version":2,"name":"API","privateDns":"api",
-        "source":{"version":1,"type":"image","image":"nginx:stable","autoUpdate":{"type":"off"},"credentials":{"type":"none"}},
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
         "healthcheck":{"type":"http","path":"/health","timeoutSeconds":10},"restartPolicy":"on-failure",
         "routes":[{"id":"00000000-0000-4000-8000-000000000001","hostname":"app.example.com","targetPort":null}],
         "managedHostnames":[{"prefix":"api-production","targetPort":null}]
@@ -75,8 +75,8 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
 
 #[test]
 fn lowering_retains_commands_limits_restart_and_network_ownership() {
-    let config = json!({"version":2,"name":"API","privateDns":"api",
-        "source":{"version":1,"type":"image","image":"registry.test/api@sha256:captured","autoUpdate":{"type":"off"},"credentials":{"type":"none"}},
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"registry.test/api@sha256:captured","credentials":{"type":"none"}},
         "startCommand":"exec app","preDeployCommand":"migrate","healthcheck":{"type":"none"},
         "restartPolicy":"on-failure","maxRetries":7,"cpuLimit":0.5,"memLimit":2,"replicas":3,
         "routes":[{"id":"00000000-0000-4000-8000-000000000001","hostname":"app.example.com","targetPort":8080}],

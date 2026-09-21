@@ -6,9 +6,9 @@ use serde_json::json;
 fn intent() -> serde_json::Value {
     json!({"version":1,"environmentSlug":"production","services":[{
         "id":"00000000-0000-4000-8000-000000000002","lineageId":"00000000-0000-4000-8000-000000000003","slug":"web",
-        "config":{"version":2,"name":"Web","privateDns":"web","source":{"type":"image","version":1,"image":"nginx","autoUpdate":{"type":"off"},"credentials":{"type":"none"}},"preDeployCommand":null,"startCommand":null,"healthcheck":{"type":"none"},"restartPolicy":"unless-stopped"},
+        "config":{"version":2,"privateDns":"web","source":{"type":"image","version":1,"image":"nginx","credentials":{"type":"none"}},"preDeployCommand":null,"startCommand":null,"healthcheck":{"type":"none"},"restartPolicy":"unless-stopped"},
         "variables":[{"id":"00000000-0000-4000-8000-000000000004","key":"HOST","description":null,"exported":true,"valueFingerprint":"plain","value":{"kind":"literal","value":"db"}}],
-        "volumeAttachments":[{"volumeResourceId":"00000000-0000-4000-8000-000000000006","mountPath":"/data"}],"encryptedRegistryUsername":null,"encryptedRegistrySecret":null}],
+        "volumeAttachments":[{"volumeResourceId":"00000000-0000-4000-8000-000000000006","mountPath":"/data"}]}],
         "volumes":[{"resourceId":"00000000-0000-4000-8000-000000000006","resourceLineageId":"00000000-0000-4000-8000-000000000007","name":"Data"}]})
 }
 

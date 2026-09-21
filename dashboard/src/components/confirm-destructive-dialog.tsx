@@ -95,7 +95,7 @@ function ConfirmDestructiveDialogContent({
   }
 
   return (
-    <AlertDialogContent>
+    <AlertDialogContent render={<form onSubmit={(event) => { event.preventDefault(); void handleConfirm(); }} />}>
       <AlertDialogHeader>
         <AlertDialogMedia>
           <AlertTriangleIcon className="text-destructive" />
@@ -128,21 +128,15 @@ function ConfirmDestructiveDialogContent({
           onChange={(event) => setValue(event.target.value)}
           placeholder={confirmPhrase}
           disabled={pending}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && matches && !pending) {
-              event.preventDefault();
-              void handleConfirm();
-            }
-          }}
         />
       </div>
 
       <AlertDialogFooter>
-        <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+        <AlertDialogCancel type="button" disabled={pending}>Cancel</AlertDialogCancel>
         <AlertDialogAction
           variant="destructive"
           disabled={!matches || pending}
-          onClick={() => void handleConfirm()}
+          type="submit"
         >
           {pending ? <Spinner /> : null}
           {pending && pendingLabel ? pendingLabel : actionLabel}

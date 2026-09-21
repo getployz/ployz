@@ -44,14 +44,13 @@ const resourceLineageId = "00000000-0000-4000-8000-000000000807";
 const resourceId = "00000000-0000-4000-8000-000000000808";
 
 const serviceConfig = projectServiceDeploymentConfig({
-  name: "API",
   source: createEmptyServiceSource(),
   preDeployCommand: null,
   startCommand: null,
   healthcheck: createDefaultServiceHealthcheck(),
   restartPolicy: createDefaultServiceRestartPolicy(),
   privateDns: "api",
-  build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
+  build: { builder: "railpack", dockerfilePath: null, },
 });
 const {
   env: _serviceEnvironment,
@@ -74,8 +73,6 @@ const environmentIntent = {
       variableGroupAttachments: [],
       volumeAttachments: [],
       config: authoredServiceConfig,
-      encryptedRegistryUsername: null,
-      encryptedRegistrySecret: null,
     },
   ],
   variableGroups: [],
@@ -179,7 +176,7 @@ describe("teardown Data Loss observation", () => {
       rust: [projectVolume],
       cloud: [
         { kind: "environment", name: "acme/app/Production" },
-        { kind: "service", name: "acme/app/Production/API" },
+        { kind: "service", name: "acme/app/Production/api" },
         { kind: "volume", name: "Data" },
         { kind: "project", name: "acme/app" },
       ],

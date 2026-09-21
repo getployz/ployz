@@ -174,6 +174,12 @@ export function VariableAddForm({
 
   return (
     <>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleAdd();
+        }}
+      >
       <FieldGroup>
         <Field>
           <FieldLabel htmlFor="variable-key">Key</FieldLabel>
@@ -185,7 +191,7 @@ export function VariableAddForm({
             onChange={(event) =>
               dispatch({ type: "keyChanged", value: event.target.value })
             }
-            className="font-mono text-xs"
+            className="font-mono text-xs uppercase"
           />
         </Field>
         <Field>
@@ -256,9 +262,8 @@ export function VariableAddForm({
         ) : null}
         <div className="flex items-center gap-2">
           <Button
-            type="button"
+            type="submit"
             disabled={!state.key.trim() || state.isSubmitting}
-            onClick={() => void handleAdd()}
           >
             {state.isSubmitting ? (
               <Spinner data-icon="inline-start" />
@@ -277,6 +282,7 @@ export function VariableAddForm({
           </Button>
         </div>
       </FieldGroup>
+      </form>
 
       <ConfirmDialog
         open={state.overwriteCandidate !== null}

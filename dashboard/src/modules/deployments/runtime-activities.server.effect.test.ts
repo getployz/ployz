@@ -50,7 +50,6 @@ function context(deployPreview: typeof preview | null = null) {
         serviceId: "service-1",
         serviceSlug: "api",
         config: projectServiceDeploymentConfig({
-          name: "API",
           source: createImageServiceSource({ image: "nginx:1.27" }),
           preDeployCommand: null,
           startCommand: null,

@@ -14,9 +14,7 @@ When framework guidance is needed:
 
 ## Route Data Loading
 
-- Await only route-critical identity, redirect, and not-found work.
-- Return noncritical readiness promises from loaders without awaiting them.
-- Reveal consuming regions with `Await` or `Suspense`.
+- When changing loaders, collection readiness, or pending UI, follow [CODING_STANDARDS.md](CODING_STANDARDS.md). SSR awaits content readiness; client navigation returns readiness promises and gates only consuming regions.
 
 - **For dashboard code, build, or dependency changes, run `pnpm pr:check` as the final local gate.** Reuse passing results until relevant files change; documentation-only or PR metadata updates do not require a rerun. Keep the script aligned with the applicable PR CI checks when those change.
 - **Inngest workflows that own durable rows must not leave ambiguous active state.** If an Inngest function creates or manages a row with statuses like `pending`/`running`, persist the Inngest `runId` on that row and handle `inngest/function.cancelled` so manual cancellation marks the row `cancelled` or another terminal status. Runtime cancellation may not undo remote side effects, but the cloud row must not remain active forever.
@@ -35,8 +33,6 @@ We use react compiler - no need for memo/callback etc.
 
 TanStack DB adds `$synced`, `$origin`, `$key`, and `$collectionId` to every final live-query row, including rows built with `.select(...)`. Pass whole live rows through `parseLiveQueryRow(schema, row)` from `#/lib/tanstack-db`; use `withoutVirtualProps(row)` when no schema parse is needed. Keep schemas strict—these helpers remove only TanStack's four virtual keys. The type-aware boundary test rejects direct `parse`/`safeParse` calls on whole live rows.
 Never spread a live row into `insert` or `writeUpsert`; call `withoutVirtualProps(row)` first.
-
-- **Use `useLiveSuspenseQuery` only when the route starts the backing preload.** Await it for route-wide pending, or return its readiness promise and gate the exact consumer with `Await`/`Suspense`. Construct derived collections only after raw readiness resolves. Ungated nested helpers, badges, autocomplete, and form panels should use `useLiveQuery` with an explicit loading state.
 
 # Effect boundary conventions
 

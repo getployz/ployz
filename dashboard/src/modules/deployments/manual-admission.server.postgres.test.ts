@@ -90,10 +90,10 @@ describe("manual environment saved-state persistence", () => {
 
   beforeEach(async () => {
     vi.mocked(inngest.send).mockReset().mockResolvedValue({ ids: [] });
-    const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, name: "API", source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: "api" });
+    const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: "api" });
 
     const intent = { version: 1, environmentSlug: "production", variableGroups: [], volumes: [], services: [{
-      id: serviceId, lineageId, slug: "api", config, encryptedRegistryUsername: null, encryptedRegistrySecret: null,
+      id: serviceId, lineageId, slug: "api", config,
       variables: [{ id: variableId, key: "API_TOKEN", description: null, exported: false, valueFingerprint: "fingerprint", value: { kind: "secret", encryptedValue: null } }],
       variableGroupAttachments: [], volumeAttachments: [],
     }] };
@@ -106,8 +106,8 @@ describe("manual environment saved-state persistence", () => {
         values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'production', '${JSON.stringify(intent)}');
       insert into service_lineage (id, project_id, canonical_name, canonical_slug)
         values ('${lineageId}', '${projectId}', 'API', 'api');
-      insert into service (id, project_id, environment_id, organization_id, lineage_id)
-        values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}');
+      insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
+        values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}', 'API');
       insert into service_registry_credential (service_id, encrypted_registry_secret)
         values ('${serviceId}', '${JSON.stringify(encrypted)}');
       insert into variable (id, environment_id, service_id)
@@ -289,6 +289,21 @@ describe("manual environment saved-state persistence", () => {
     expect(row?.savedStateSnapshotId).not.toBe(basis.savedStateSnapshotId);
   });
 
+  it("freezes registry contents and revision across rotation and retry", async () => {
+    const revision = randomUUID();
+    const source = { version: 1, type: "image", image: "ghcr.io/acme/api:latest", credentials: { type: "configured", credentialId: serviceId } };
+    await harness.db.update(schema.environment).set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,source}', ${JSON.stringify(source)}::jsonb)` }).where(eq(schema.environment.id, environmentId));
+    await harness.db.insert(schema.serviceRegistryCredential).values({ serviceId, revision, encryptedRegistrySecret: encrypted }).onConflictDoUpdate({ target: schema.serviceRegistryCredential.serviceId, set: { revision, encryptedRegistrySecret: encrypted } });
+    const admitted = await deploy("Credential target");
+    await harness.db.update(schema.serviceRegistryCredential).set({ revision: randomUUID(), encryptedRegistrySecret: encryption.encrypt("rotated") }).where(eq(schema.serviceRegistryCredential.serviceId, serviceId));
+    await harness.db.update(schema.environmentDeployment).set({ status: "failed" }).where(eq(schema.environmentDeployment.id, admitted.environmentDeploymentId));
+    await harness.runEffect(createRetryAttempt({ environmentId, userId, failedDeploymentId: admitted.environmentDeploymentId }).pipe(Effect.provideService(InngestClient, inngest)));
+    const secrets = await harness.db.select().from(schema.environmentNodeConfigSnapshotSecret);
+    expect(secrets).toHaveLength(2);
+    expect(secrets.every(row => row.credentialRevision === revision)).toBe(true);
+    expect(secrets.map(row => row.encryptedRegistrySecret)).toEqual([encrypted, encrypted]);
+  });
+
   it("persists actor, message, and encrypted authoring intent", async () => {
     await save("Saved state");
     const [row] = await harness.db
@@ -314,8 +329,8 @@ describe("manual environment saved-state persistence", () => {
     );
     expect(intent.services[0]).toMatchObject({
       id: serviceId,
-      encryptedRegistrySecret: encrypted,
     });
+    expect(intent.services[0]).not.toHaveProperty("encryptedRegistrySecret");
     expect(
       await harness.db.select().from(schema.environmentDeployment),
     ).toEqual([]);
@@ -373,12 +388,12 @@ describe("manual environment saved-state persistence", () => {
     });
     expect(
       decodeStrict(savedEnvironmentIntentSchema, savedRows[0]?.intent).services[0],
-    ).toMatchObject({ id: serviceId, config: { name: "API" } });
+    ).toMatchObject({ id: serviceId, config: { privateDns: "api" } });
     expect(queuedNodes).toEqual([
       expect.objectContaining({
         nodeType: "service",
         nodeId: serviceId,
-        config: expect.objectContaining({ name: "API" }),
+        config: expect.objectContaining({ privateDns: "api" }),
       }),
     ]);
   });
@@ -412,7 +427,7 @@ describe("manual environment saved-state persistence", () => {
       expect.objectContaining({
         nodeType: "service",
         nodeId: serviceId,
-        config: expect.objectContaining({ name: "API" }),
+        config: expect.objectContaining({ privateDns: "api" }),
       }),
     ]);
 
@@ -426,6 +441,7 @@ describe("manual environment saved-state persistence", () => {
     const changeSet = buildEnvironmentChangeSet({
       working: { token: "working:unchanged", nodes },
       applied: { token: explicit.applied.token, nodes: [] },
+      saved: { token: "saved", nodes },
       nodeIntroductions: { token: "introductions:none", nodes: [] },
       submitted: null,
     });
@@ -493,7 +509,7 @@ describe("manual environment saved-state persistence", () => {
 
     await harness.db
       .update(schema.environment)
-      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed concurrently"}::text))`, revision: randomUUID() })
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', to_jsonb(${"Changed concurrently"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
 
     await expect(harness.runTransaction(() =>
@@ -528,7 +544,7 @@ describe("manual environment saved-state persistence", () => {
     const savedStateBasis = await currentSavedStateBasis();
     await harness.db
       .update(schema.environment)
-      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed after Save review"}::text))`, revision: randomUUID() })
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', to_jsonb(${"Changed after Save review"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
 
     const result = await harness.runTransaction(() =>
@@ -620,7 +636,7 @@ describe("manual environment saved-state persistence", () => {
                 Effect.catch((cause) =>
                 harness.database.drizzle
                     .update(schema.environment)
-      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed between retries"}::text))`, revision: randomUUID() })
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', to_jsonb(${"Changed between retries"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId))
                     .pipe(Effect.flatMap(() => Effect.fail(cause))),
                 ),
@@ -673,7 +689,7 @@ describe("manual environment saved-state persistence", () => {
 
     await harness.db
       .update(schema.environment)
-      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed target"}::text))`, revision: randomUUID() })
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', to_jsonb(${"Changed target"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
     await expect(deploy("Second target")).rejects.toMatchObject({ _tag: "Conflict" });
 
@@ -695,18 +711,18 @@ describe("manual environment saved-state persistence", () => {
         ),
       );
 
-    expect(firstNode?.config).toEqual(expect.objectContaining({ name: "API" }));
+    expect(firstNode?.config).toEqual(expect.objectContaining({ privateDns: "api" }));
     expect(savedRows).toHaveLength(1);
     expect(
       savedRows.map(
         (row) =>
           decodeStrict(savedEnvironmentIntentSchema, row.intent).services[0]?.config
-            .name,
+            .privateDns,
       ),
-    ).toEqual(["API"]);
+    ).toEqual(["api"]);
     expect(queuedNodes).toEqual([
       expect.objectContaining({
-        config: expect.objectContaining({ name: "API" }),
+        config: expect.objectContaining({ privateDns: "api" }),
       }),
     ]);
   });
@@ -721,7 +737,7 @@ describe("manual environment saved-state persistence", () => {
       );
     await harness.db
       .update(schema.environment)
-      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Later Working state"}::text))`, revision: randomUUID() })
+      .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', to_jsonb(${"Later Working state"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
 
     const queued = await deploy("Later target");
@@ -740,11 +756,11 @@ describe("manual environment saved-state persistence", () => {
       expect.arrayContaining([
         expect.objectContaining({
           deploymentId: running.environmentDeploymentId,
-          config: expect.objectContaining({ name: "API" }),
+          config: expect.objectContaining({ privateDns: "api" }),
         }),
         expect.objectContaining({
           deploymentId: queued.environmentDeploymentId,
-          config: expect.objectContaining({ name: "Later Working state" }),
+          config: expect.objectContaining({ startCommand: "Later Working state" }),
         }),
       ]),
     );

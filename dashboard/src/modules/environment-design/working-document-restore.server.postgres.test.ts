@@ -1,3 +1,4 @@
+import { getStoredServiceCredential } from "./service-repository.server";
 import { vi } from "vitest";
 vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
@@ -177,20 +178,42 @@ it.live(
           intent: baseline, volumeDeletionAuthorizations: [],
         }).returning({ id: environmentSavedStateSnapshot.id });
         if (!saved) return yield* Effect.die("Saved intent missing.");
+        const savedOnlyIntent = structuredClone(baseline);
+        const savedOnlyService = savedOnlyIntent.services[0];
+        if (!savedOnlyService) return yield* Effect.die("Saved Service missing.");
+        savedOnlyService.config.replicas = 5;
+        const [savedOnly] = yield* database.drizzle.insert(environmentSavedStateSnapshot).values({
+          organizationId: organizationRecord.id, environmentId: environmentRecord.id, actorId: actor.userId,
+          intent: savedOnlyIntent, volumeDeletionAuthorizations: [],
+        }).returning({ id: environmentSavedStateSnapshot.id });
+        if (!savedOnly) return yield* Effect.die("Saved revision missing.");
+        yield* updateService(actor, { ...scope, revision: yield* revision(), serviceId, replicas: 7 });
+        const invalidIntroductionReset = yield* Effect.flip(discardEnvironmentChanges(actor, {
+          ...scope, revision: yield* revision(), headToken: `applied:none:${scope.environmentId}`,
+          savedStateBasis: { kind: "saved_revision", savedStateSnapshotId: savedOnly.id },
+          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "replicas" },
+        }));
+        assert.strictEqual(invalidIntroductionReset._tag, "Conflict");
+        assert.strictEqual(invalidIntroductionReset.message, "This field has no discard baseline.");
+        const invalidLegacyReset = yield* Effect.flip(restoreWorkingDocument(actor, {
+          ...scope, revision: yield* revision(), snapshotSource: { kind: "introduction" },
+          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "replicas" },
+        }));
+        assert.strictEqual(invalidLegacyReset._tag, "Conflict");
+        assert.strictEqual(invalidLegacyReset.message, "Only unsaved, unapplied nodes can reset to their Introduction.");
+        assert.strictEqual((yield* loadEnvironmentDocument(scope.environmentId)).intent.services[0]?.config.replicas, 7);
+        assert.strictEqual((yield* loadLatestEnvironmentSavedState(scope.environmentId))?.intent.services[0]?.config.replicas, 5);
         const snapshotSource = { kind: "saved" as const, environmentSavedStateSnapshotId: saved.id };
         const oldRevision = yield* revision();
-        yield* updateService(actor, { ...scope, revision: oldRevision, serviceId, name: "Changed API", replicas: 3 });
+        yield* updateService(actor, { ...scope, revision: oldRevision, serviceId, startCommand: "changed-command", replicas: 3 });
         yield* updateServiceVariable(actor, { ...scope, revision: yield* revision(), serviceId, variableId,
           key: "TOKEN", description: null, exported: false, value: { type: "sealed", value: "new-secret" } });
         yield* setServiceRegistryCredential(actor, { ...scope, revision: yield* revision(), serviceId, username: "new-owner", secret: "new-registry-secret" });
-        yield* restoreWorkingDocument(actor, { ...scope, revision: yield* revision(), snapshotSource,
-          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "source.credentials" } });
-        const restoredCredential = (yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0];
+        const rotatedCredential = yield* getStoredServiceCredential(environmentRecord.id, serviceId);
         const credentialEncryption = yield* SecretEncryption;
-        if (!restoredCredential?.encryptedRegistrySecret) return yield* Effect.die("Restored credential missing.");
-        assert.strictEqual(credentialEncryption.decrypt(restoredCredential.encryptedRegistrySecret), "original-registry-secret");
-        assert.deepStrictEqual(restoredCredential.config.source, baseline.services[0]?.config.source);
-        assert.strictEqual(restoredCredential.config.name, "Changed API");
+        if (!rotatedCredential?.encryptedRegistrySecret) return yield* Effect.die("Rotated credential missing.");
+        assert.strictEqual(credentialEncryption.decrypt(rotatedCredential.encryptedRegistrySecret), "new-registry-secret");
+        assert.deepStrictEqual((yield* loadEnvironmentDocument(environmentRecord.id)).intent.services[0]?.config.source, baseline.services[0]?.config.source);
         yield* deleteVolumeResource(actor, { ...scope, revision: yield* revision(), resourceId: volume.data.resource.id });
         const current = yield* loadEnvironmentDocument(environmentRecord.id);
         const command = { kind: "all" as const };
@@ -210,14 +233,15 @@ it.live(
           yield* Effect.promise(() => fingerprintReviewedEnvironmentWorkingState(captured.projection)));
 
         const encryption = yield* SecretEncryption;
+        const afterDiscardCredential = yield* getStoredServiceCredential(environmentRecord.id, serviceId);
+        assert.deepStrictEqual(afterDiscardCredential, rotatedCredential);
         const restoredSecret = (yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.variables[0]?.value;
         if (restoredSecret?.kind !== "secret" || !restoredSecret.encryptedValue) return yield* Effect.die("Captured secret missing.");
         assert.strictEqual(encryption.decrypt(restoredSecret.encryptedValue), "original-secret");
         const written = yield* database.drizzle.execute<{ txid: string }>(sql`
           select xmin::text as txid from environment where id = ${environmentRecord.id}
-          union all select xmin::text as txid from variable_secret where variable_id = ${variableId}
-          union all select xmin::text as txid from service_registry_credential where service_id = ${serviceId}`, "objects");
-        assert.strictEqual(written.length, 3);
+          union all select xmin::text as txid from variable_secret where variable_id = ${variableId}`, "objects");
+        assert.strictEqual(written.length, 2);
         assert.strictEqual(new Set(written.map((row) => row.txid)).size, 1);
         // Identity validation is inside the single write boundary, including restores.
         const candidate = structuredClone(restored.data.intent);
@@ -262,7 +286,7 @@ it.live(
         });
         yield* recordAttempt(1, "applied");
         const active = yield* recordAttempt(5, "queued");
-        yield* updateService(actor, { ...scope, revision: yield* revision(), serviceId, replicas: 7, name: "Later edit" });
+        yield* updateService(actor, { ...scope, revision: yield* revision(), serviceId, replicas: 7, startCommand: "later-command" });
         const field = { kind: "node" as const, nodeType: "service" as const, nodeId: serviceId, path: "replicas" };
         const reviewed = yield* reviewDiscard(field);
         const denied = yield* Effect.flip(discardEnvironmentChanges({ userId: outsider.id }, reviewed));
@@ -270,7 +294,7 @@ it.live(
         yield* discardEnvironmentChanges(actor, reviewed);
         assert.strictEqual((yield* loadEnvironmentDocument(scope.environmentId)).intent.services[0]?.config.replicas, 5);
         assert.strictEqual((yield* loadLatestEnvironmentSavedState(scope.environmentId))?.intent.services[0]?.config.replicas, 5);
-        assert.strictEqual((yield* loadEnvironmentDocument(scope.environmentId)).intent.services[0]?.config.name, "Later edit");
+        assert.strictEqual((yield* loadEnvironmentDocument(scope.environmentId)).intent.services[0]?.config.startCommand, "later-command");
 
         yield* updateService(actor, { ...scope, revision: yield* revision(), serviceId, replicas: 7 });
         const staleDiscard = yield* Effect.flip(discardEnvironmentChanges(actor, reviewed));
@@ -285,7 +309,7 @@ it.live(
         const afterFailureSaved = yield* loadLatestEnvironmentSavedState(scope.environmentId);
         assert.strictEqual(afterFailure.intent.services[0]?.config.replicas, 1);
         assert.strictEqual(afterFailureSaved?.intent.services[0]?.config.replicas, 1);
-        assert.strictEqual(afterFailure.intent.services[0]?.config.name, "Later edit");
+        assert.strictEqual(afterFailure.intent.services[0]?.config.startCommand, "later-command");
         const discardWrites = yield* database.drizzle.execute<{ txid: string }>(sql`
           select xmin::text as txid from environment where id = ${scope.environmentId}
           union all select xmin::text as txid from environment_saved_state_snapshot where id = ${afterFailureSaved?.id}`, "objects");

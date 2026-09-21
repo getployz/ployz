@@ -159,9 +159,6 @@ impl ServiceSettingInput {
                     "build.dockerfilePath",
                     usize::MAX,
                 )?;
-                for path in &mut value.watch_paths {
-                    trimmed(path, "build.watchPaths", usize::MAX)?;
-                }
                 Ok(())
             }
         }
@@ -205,13 +202,16 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
         ServiceSource::Image {
             version,
             image,
-            auto_update,
-            ..
+            credentials,
         } => {
             range(*version == 1, "source.version", "Expected version 1")?;
             trimmed(image, "source.image", 500)?;
-            if let ServiceImageAutoUpdate::TrackTag { tag } = auto_update {
-                trimmed(tag, "source.autoUpdate", 255)?;
+            if let ServiceImageCredentials::Configured { credential_id } = credentials {
+                range(
+                    uuid::Uuid::parse_str(credential_id).is_ok(),
+                    "source.credentials",
+                    "Expected a credential ID",
+                )?;
             }
             Ok(())
         }

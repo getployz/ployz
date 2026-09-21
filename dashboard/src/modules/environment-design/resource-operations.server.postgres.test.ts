@@ -1,11 +1,13 @@
 import { vi } from "vitest";
 vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
-import { loadEnvironmentDocument } from "./working-state-repository.server";
+import { saveReviewedEnvironmentState } from "./saved-state-operations.server";
+import { fingerprintReviewedEnvironmentWorkingStateSync } from "./working-state-fingerprint.server";
+import { loadCurrentEnvironmentState, loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { environment, member, organization, project, user } from "#/db/schema";
+import { environment, member, organization, project, user, environmentSavedStateSnapshot } from "#/db/schema";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
@@ -243,7 +245,84 @@ it.live(
         assert.deepStrictEqual(deleted.data.intent.services[0]?.volumeAttachments, []);
         const deletedRows = yield* database.drizzle.execute<{ count: string }>(
           sql`select count(*)::text as count from environment_resource where id = ${volume.data.resource.id}`, "objects");
-        assert.strictEqual(deletedRows[0]?.count, "1");
+        assert.strictEqual(deletedRows[0]?.count, "0");
+        const metadata = yield* database.drizzle.execute<{ count: string }>(sql`
+          select count(*)::text as count from environment_node_introduction where node_id = ${volume.data.resource.id}
+          union all select count(*)::text from environment_canvas_node_position where resource_id = ${volume.data.resource.id}
+        `, "objects");
+        assert.deepStrictEqual(metadata.map((row) => row.count), ["0", "0"]);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const racing = yield* createVolumeResource(actor, {
+            organizationSlug: "acme", environmentId: environmentRecord.id,
+            name: `Concurrent ${attempt}`, x: 0, y: 0,
+          });
+          const input = { organizationSlug: "acme", environmentId: environmentRecord.id, resourceId: racing.data.resource.id };
+          const revision = (yield* loadEnvironmentDocument(environmentRecord.id)).revision;
+          yield* Effect.all([
+            deleteVolumeResource(actor, { ...input, revision }),
+            updateEnvironmentResourceCanvasPosition(actor, { ...input, x: 42, y: 42 }).pipe(
+              Effect.catchTag("NotFound", () => Effect.succeed(null)),
+            ),
+          ], { concurrency: "unbounded" });
+          const positions = yield* database.drizzle.execute<{ count: string }>(
+            sql`select count(*)::text as count from environment_canvas_node_position where resource_id = ${input.resourceId}`, "objects");
+          assert.strictEqual(positions[0]?.count, "0");
+        }
+
+        const published = yield* createVolumeResource(actor, {
+          organizationSlug: "acme", environmentId: environmentRecord.id,
+          name: "Concurrent publication", x: 0, y: 0,
+        });
+        const reviewed = yield* loadCurrentEnvironmentState(environmentRecord.id);
+        yield* Effect.all([
+          saveReviewedEnvironmentState({
+            environmentId: environmentRecord.id, actorId: author.id, message: null,
+            review: {
+              savedStateBasis: { kind: "no_saved_state" },
+              workingStateFingerprint: fingerprintReviewedEnvironmentWorkingStateSync(reviewed.projection),
+              destructiveServiceIds: [], destructiveVolumeReviews: [],
+            },
+          }).pipe(Effect.catchTag("Conflict", () => Effect.succeed(null))),
+          deleteVolumeResource(actor, {
+            organizationSlug: "acme", environmentId: environmentRecord.id,
+            resourceId: published.data.resource.id, revision: reviewed.document.revision,
+          }),
+        ], { concurrency: "unbounded" });
+        const dangling = yield* database.drizzle.execute<{ count: string }>(sql`
+          select count(*)::text as count from environment_saved_state_snapshot saved,
+            jsonb_array_elements(saved.intent->'volumes') volume
+          where saved.environment_id = ${environmentRecord.id}
+            and not exists (select 1 from environment_resource resource where resource.id::text = volume->>'resourceId')
+        `, "objects");
+        assert.strictEqual(dangling[0]?.count, "0");
+
+        // Saved history and other node introductions independently retain identity.
+        for (const retainedBy of ["saved", "introduction"] as const) {
+          const retained = yield* createVolumeResource(actor, {
+            organizationSlug: "acme", environmentId: environmentRecord.id,
+            name: `Retained ${retainedBy}`, x: 0, y: 0,
+          });
+          if (retainedBy === "saved") {
+            yield* database.drizzle.insert(environmentSavedStateSnapshot).values({
+              organizationId: organizationRecord.id, environmentId: environmentRecord.id,
+              actorId: author.id, intent: (yield* loadEnvironmentDocument(environmentRecord.id)).intent,
+              volumeDeletionAuthorizations: [],
+            });
+          } else {
+            yield* createVariableGroupResource(actor, {
+              organizationSlug: "acme", environmentId: environmentRecord.id,
+              name: "Retained introduction", x: 0, y: 0,
+            });
+          }
+          yield* deleteVolumeResource(actor, {
+            revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
+            organizationSlug: "acme", environmentId: environmentRecord.id, resourceId: retained.data.resource.id,
+          });
+          const rows = yield* database.drizzle.execute<{ count: string }>(
+            sql`select count(*)::text as count from environment_resource where id = ${retained.data.resource.id}`, "objects");
+          assert.strictEqual(rows[0]?.count, "1", retainedBy);
+        }
+
 
       }).pipe(Effect.provide(layer));
     }),

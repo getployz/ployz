@@ -3,11 +3,11 @@ import * as native from '../config.js';
 import * as browser from '../config-browser.mjs';
 
 const input = {
-  version: 2, name: 'API', privateDns: 'api',
+  version: 2, privateDns: 'api',
   source: {
     version: 2, type: 'git', repository: 'acme/api', repositoryId: 42,
     installationId: 7, rootDir: ' /apps/api/ ',
-    branch: { type: 'connected', name: 'main' }, autoDeploy: true, waitForCi: false,
+    branch: { type: 'connected', name: 'main' },
   },
   preDeployCommand: null, startCommand: null,
   healthcheck: { type: 'none' }, restartPolicy: 'unless-stopped',
@@ -49,12 +49,12 @@ for (const api of [native, browser]) {
   const intent = api.parseEnvironmentIntent({
     version: 1, environmentSlug: 'production',
     services: [{ id: id(1), lineageId: id(2), slug: 'api', config: settings,
-      variables: [], volumeAttachments: [],
-      encryptedRegistryUsername: null, encryptedRegistrySecret: null }],
+      variables: [], volumeAttachments: [] }],
     volumes: [],
   });
   const compiled = api.compileEnvironmentIntent(id(3), intent);
-  assert.equal(compiled.nodeSnapshots[0].config.name, 'API');
+  assert.equal(compiled.nodeSnapshots[0].config.privateDns, 'api');
+  assert.equal('name' in compiled.nodeSnapshots[0].config, false);
   assert.equal(compiled.variableProducers.find(v => v.key === 'PLOYZ_PRIVATE_DOMAIN').value.value, 'api-production.internal');
   const changed = structuredClone(intent);
   changed.services[0].config.startCommand = 'new command';
@@ -71,12 +71,22 @@ for (const api of [native, browser]) {
   const review = api.projectEnvironmentChanges({
     working: { token: 'working', nodes: nodes(api.compileEnvironmentIntent(id(3), changed)) },
     applied: { token: 'applied', nodes: nodes(compiled) },
+    saved: null,
     nodeIntroductions: { token: 'introductions', nodes: [] }, submitted: null,
   });
   const setting = review.groups[0].settings[0];
   assert.equal(setting.kind, 'add');
   assert.equal(setting.canRestore, true);
   assert.equal(review.totalCount, 1);
+  const savedCreation = api.projectEnvironmentChanges({
+    working: { token: 'working', nodes: nodes(api.compileEnvironmentIntent(id(3), changed)) },
+    applied: { token: 'applied:none', nodes: [] },
+    saved: { token: 'saved', nodes: nodes(compiled) },
+    nodeIntroductions: { token: 'introductions', nodes: nodes(compiled) }, submitted: null,
+  });
+  assert.equal(savedCreation.groups[0].comparison, null);
+  assert.deepEqual(savedCreation.groups[0].settings, []);
+  assert.equal(savedCreation.totalCount, 1);
   results.push({ baseline, changes, restored, redacted, resolved, intent, compiled, reverted, volumeRows, rendered, review });
 }
 assert.deepEqual(results[0], results[1]);

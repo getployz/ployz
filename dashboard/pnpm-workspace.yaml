@@ -21,3 +21,6 @@ ignoredBuiltDependencies:
 
 overrides:
   nf3: 0.3.17
+
+patchedDependencies:
+  '@tanstack/db@0.9.2': patches/@tanstack__db@0.9.2.patch

@@ -468,7 +468,7 @@ describe("deployment runtime persistence", () => {
     await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
     for (const [id, lineageId, name] of [[apiNodeId, apiLineageId, "api"], [workerNodeId, workerLineageId, "worker"]] as const) {
       await harness.db.insert(schema.serviceLineage).values({ id: lineageId, projectId, canonicalName: name, canonicalSlug: name });
-      await harness.db.insert(schema.service).values({ id, organizationId, projectId, environmentId, lineageId });
+      await harness.db.insert(schema.service).values({ id, organizationId, projectId, environmentId, lineageId, name });
       await harness.db.insert(schema.environmentNodeIntroduction).values({ organizationId, environmentId, nodeType: "service", nodeId: id, nodeLineageId: lineageId, config: {} });
     }
     await harness.db.update(schema.environmentDeployment).set({ inngestRunId: "owner" }).where(eq(schema.environmentDeployment.id, targetDeploymentId));

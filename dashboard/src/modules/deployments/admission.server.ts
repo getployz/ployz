@@ -1,3 +1,5 @@
+import { serviceRegistryCredential, service as serviceIdentity } from "#/modules/environment-design/tables";
+import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import "@tanstack/react-start/server-only";
 
 import { randomUUID } from "node:crypto";
@@ -64,6 +66,7 @@ export type PreparedEnvironmentNodeSnapshot = Pick<
   config:
     | ServiceDeploymentConfig
     | EnvironmentResourceNodeConfigByType[keyof EnvironmentResourceNodeConfigByType];
+  credentialRevision?: string | null;
   encryptedRegistryUsername?: EncryptedSecretValue | null;
   encryptedRegistrySecret?: EncryptedSecretValue | null;
 };
@@ -129,14 +132,41 @@ function insertNodeSnapshots(input: {
   environmentId: string;
   environmentDeploymentId: string;
   nodeSnapshots: readonly PreparedEnvironmentNodeSnapshot[];
+  retryOfDeploymentId?: string | null;
 }) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
     if (input.nodeSnapshots.length === 0) return;
-    const snapshots = input.nodeSnapshots.map((snapshot) => {
+    const credentials = yield* drizzle.select({ credential: serviceRegistryCredential })
+      .from(serviceRegistryCredential).innerJoin(serviceIdentity, eq(serviceIdentity.id, serviceRegistryCredential.serviceId))
+      .where(eq(serviceIdentity.environmentId, input.environmentId));
+    const frozen = input.retryOfDeploymentId
+      ? yield* drizzle.select({ nodeId: schemaEnvironmentNodeConfigSnapshot.nodeId, secret: schemaEnvironmentNodeConfigSnapshotSecret })
+          .from(schemaEnvironmentNodeConfigSnapshot)
+          .innerJoin(schemaEnvironmentNodeConfigSnapshotSecret, eq(schemaEnvironmentNodeConfigSnapshotSecret.snapshotId, schemaEnvironmentNodeConfigSnapshot.id))
+          .where(and(eq(schemaEnvironmentNodeConfigSnapshot.environmentDeploymentId, input.retryOfDeploymentId),
+            eq(schemaEnvironmentNodeConfigSnapshot.environmentId, input.environmentId)))
+      : [];
+    const prepared = [];
+    for (const snapshot of input.nodeSnapshots) {
+      if (snapshot.nodeType !== "service" || snapshot.encryptedRegistrySecret) { prepared.push(snapshot); continue; }
+      const source = parseDashboardServiceConfig(snapshot.config).source;
+      if (source.type !== "image" || source.credentials.type === "none") { prepared.push(snapshot); continue; }
+      const credentialId = source.credentials.credentialId;
+      const previous = frozen.find(row => row.nodeId === snapshot.nodeId)?.secret;
+      const credential = input.retryOfDeploymentId
+        ? previous && { ...previous, revision: previous.credentialRevision }
+        : credentials.find(row => row.credential.serviceId === credentialId)?.credential;
+      if (!credential?.encryptedRegistrySecret) return yield* new Conflict({ message: "Registry credentials are unavailable." });
+      prepared.push({ ...snapshot, credentialRevision: credential.revision,
+        encryptedRegistryUsername: credential.encryptedRegistryUsername,
+        encryptedRegistrySecret: credential.encryptedRegistrySecret });
+    }
+    const snapshots = prepared.map((snapshot) => {
       const {
         encryptedRegistryUsername,
         encryptedRegistrySecret,
+        credentialRevision,
         ...configSnapshot
       } = snapshot;
       const config = projectJsonObject(configSnapshot.config);
@@ -151,6 +181,7 @@ function insertNodeSnapshots(input: {
           organizationId: organizationIdForEnvironment(input.environmentId),
           environmentDeploymentId: input.environmentDeploymentId,
         },
+        credentialRevision: credentialRevision ?? null,
         encryptedRegistryUsername: encryptedRegistryUsername ?? null,
         encryptedRegistrySecret: encryptedRegistrySecret ?? null,
       };
@@ -163,6 +194,7 @@ function insertNodeSnapshots(input: {
         ? [
             {
               snapshotId: snapshot.configSnapshot.id,
+              credentialRevision: snapshot.credentialRevision,
               encryptedRegistryUsername: snapshot.encryptedRegistryUsername,
               encryptedRegistrySecret: snapshot.encryptedRegistrySecret,
             },
@@ -389,6 +421,7 @@ function writeQueuedSavedTarget(
       environmentId: input.environmentId,
       environmentDeploymentId: deployment.id,
       nodeSnapshots: target.nodeSnapshots,
+      retryOfDeploymentId: input.retryOfDeploymentId,
     });
     const authorizations = yield* actionableVolumeDeletionAuthorizations(
       input.environmentId,

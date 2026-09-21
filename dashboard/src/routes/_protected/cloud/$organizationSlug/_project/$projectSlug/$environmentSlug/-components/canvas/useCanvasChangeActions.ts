@@ -132,8 +132,10 @@ export function useCanvasChangeActions({
       await queryClient.invalidateQueries({
         queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(params.organizationSlug),
       });
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not discard changes.");
+      return false;
     }
   }
 

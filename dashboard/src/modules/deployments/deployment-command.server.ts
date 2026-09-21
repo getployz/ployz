@@ -95,7 +95,7 @@ const requirePullableManualSdkDeploy = Effect.fn(
   const document = yield* loadEnvironmentDocument(environmentId);
   const services = document.intent.services.map((node) => ({
     id: node.id,
-    name: node.config.name,
+    name: node.slug,
     source: node.config.source,
   }));
   return yield* requirePullableSdkDeployImagesEffect(services);

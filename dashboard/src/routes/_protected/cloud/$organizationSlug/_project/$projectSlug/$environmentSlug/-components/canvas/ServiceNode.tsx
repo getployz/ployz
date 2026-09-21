@@ -99,7 +99,8 @@ export function ServiceNode({
           environmentSlug: params.environmentSlug,
           serviceId: service.id,
         }}
-        search={(prev) => prev}
+        search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
+        data-canvas-node={service.id}
         preload="intent"
         draggable={false}
         className="block h-36 w-72"

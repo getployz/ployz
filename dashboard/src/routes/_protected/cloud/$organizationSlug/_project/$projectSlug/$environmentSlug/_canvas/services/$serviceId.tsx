@@ -6,13 +6,12 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { ServiceDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceDrawer";
 import { useServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
+import { serviceSearchSchema } from "../../services/$serviceId/-components/service-pages";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
 )({
-  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
-    tab: Schema.optional(Schema.Literals(["settings", "variables", "deployments"])),
-  })),
+  validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Service" />,
   component: RouteComponent,

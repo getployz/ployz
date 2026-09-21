@@ -21,7 +21,7 @@ import {
 
 const privateHeaders = { "cache-control": "private, no-store" } as const;
 
-function execute(request: Request, input: { table: string; userId: string; organizationSlug?: string; sql?: string }) {
+function execute(request: Request, input: { table: string; userId: string; organizationSlug?: string; environmentSlug?: string; sql?: string }) {
   return Effect.gen(function* () {
     const auth = yield* Auth;
     const actor = yield* auth.resolveActor(request.headers);
@@ -159,6 +159,21 @@ it.live(
             intent: { version: 1, environmentSlug: "production", services: [], volumes: [], variableGroups: [] },
           });
         }
+        const visibleProject = projects.find((row) => row.organizationId === organizationId);
+        if (!visibleProject) return yield* Effect.die("Missing visible project");
+        yield* database.drizzle.insert(environment).values({ organizationId, projectId: visibleProject.id,
+          name: "Staging", namespace: "staging",
+          intent: { version: 1, environmentSlug: "staging", services: [], volumes: [], variableGroups: [] },
+        });
+        for (const table of ["environment", "environment_summary"]) {
+          const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync", environmentSlug: "staging" });
+          const rows = yield* Effect.promise(() => response.json());
+          assert.strictEqual(rows.length, table === "environment" ? 1 : 2);
+          if (table === "environment") assert.strictEqual(rows[0].namespace, "staging");
+          else for (const row of rows) assert.ok(!("intent" in row));
+        }
+        const absent = yield* execute(request, { table: "environment", userId, organizationSlug: "acme-table-sync", environmentSlug: "missing" });
+        assert.deepStrictEqual(yield* Effect.promise(() => absent.json()), []);
         const environments = yield* database.drizzle.select().from(environment);
         const savedRows = yield* database.drizzle.insert(environmentSavedStateSnapshot).values(environments.map((row) => ({
           organizationId: row.organizationId, environmentId: row.id, actorId: userId,
@@ -176,7 +191,7 @@ it.live(
           const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync" });
           const rows = yield* Effect.promise(() => response.json());
           assert.strictEqual(response.status, 200);
-          assert.strictEqual(rows.length, 1);
+          assert.strictEqual(rows.length, table === "environment" ? 2 : 1);
           assert.strictEqual(rows[0].organizationId, organizationId);
           assert.strictEqual(rows[0].name, "Visible");
           assert.strictEqual(yield* Schema.decodeUnknownEffect(Schema.String)(rows[0].createdAt), rows[0].createdAt);

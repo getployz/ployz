@@ -10,7 +10,7 @@ export function serviceDocumentRecord(
 ): ServiceRecord {
   const { version: _version, ...settings } = node.config;
   return decodeStrict(serviceSelectSchema, {
-    ...settings, id: node.id, lineageId: node.lineageId, slug: node.slug,
+    ...settings, name: identity.name, policy: identity.policy, id: node.id, lineageId: node.lineageId, slug: node.slug,
     environmentId: identity.environmentId,
     registryCredentialUsername, hasStoredRegistryCredential: identity.hasRegistryCredential,
     firstDeployedAt: identity.firstDeployedAt, deletedAt: null,

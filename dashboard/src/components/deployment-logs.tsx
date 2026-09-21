@@ -9,7 +9,7 @@ import { cn } from "#/lib/utils";
 
 export function DeploymentLogs({ organizationSlug, deploymentId, serviceId }: { organizationSlug: string; deploymentId: string; serviceId?: string }) {
   const collection = getDeploymentLogsCollection(organizationSlug, deploymentId, useCollectionScope());
-  const { data: events = [], isLoading, isError } = useLiveQuery((q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc"));
+  const { data: events = [], isLoading, isError } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
   const [tab, setTab] = useState<"Build logs" | "Deploy logs">("Deploy logs");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);

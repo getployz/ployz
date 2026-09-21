@@ -61,8 +61,6 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
           variables: [],
           variableGroupAttachments: [],
           volumeAttachments: [],
-          encryptedRegistryUsername: null,
-          encryptedRegistrySecret: null,
         },
       ],
       variableGroups: [],
@@ -72,6 +70,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       truncate table github_environment_trigger, github_branch_projection,
         github_check_suite_projection, github_webhook_delivery restart identity;
       delete from environment;
+      delete from service_lineage;
       delete from project;
       delete from organization;
       insert into organization (id, name, slug)
@@ -96,6 +95,10 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
         'Production',
         'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
       );
+      insert into service_lineage (id, project_id, canonical_name, canonical_slug)
+      values ('${node.nodeLineageId}', '00000000-0000-4000-8000-000000000102', 'API', 'api');
+      insert into service (id, project_id, organization_id, environment_id, lineage_id, name)
+      values ('${node.nodeId}', '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000101', '${environmentId}', '${node.nodeLineageId}', 'API');
       insert into environment_saved_state_snapshot (
         id, organization_id, environment_id, actor_id, message,
         intent, volume_deletion_authorizations

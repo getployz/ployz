@@ -14,12 +14,13 @@ import { getAuthSession } from "../auth/auth";
 import {
   getServerThemeClassName,
   getTheme,
-  type UserTheme,
 } from "../utils/theme";
 import appCss from "../styles.css?url";
 import type { QueryClient } from "@tanstack/react-query";
+import type { DbClient } from "@tanstack/react-db";
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
+  dbClient: DbClient;
 }>()({
   loader: async () => {
     const theme = getTheme();
@@ -60,27 +61,25 @@ export const Route = createRootRouteWithContext<{
     ],
   }),
   component: RootComponent,
+  shellComponent: RootDocument,
 });
 
 function RootComponent() {
   const { theme } = Route.useLoaderData();
   return (
-    <RootDocument theme={theme}>
-      <ThemeProvider theme={theme}>
-        <Outlet />
-        <Toaster />
-      </ThemeProvider>
-    </RootDocument>
+    <ThemeProvider theme={theme}>
+      <Outlet />
+      <Toaster />
+    </ThemeProvider>
   );
 }
 
 function RootDocument({
   children,
-  theme,
 }: {
   children: React.ReactNode;
-  theme: UserTheme;
 }) {
+  const theme = Route.useLoaderData()?.theme ?? "system";
   return (
     <html
       lang="en"

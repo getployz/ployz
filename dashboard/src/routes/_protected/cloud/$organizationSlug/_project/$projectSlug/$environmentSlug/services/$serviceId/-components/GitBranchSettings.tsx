@@ -1,3 +1,4 @@
+import { ServiceWatchPathsField } from "./ServiceWatchPathsField";
 import { useState } from "react";
 import {
   ChevronDownIcon,
@@ -45,8 +46,7 @@ export function GitBranchSettings({
     ? branch.name
     : (branch.previousName ?? "Disconnected");
   const branchDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceBranch);
-  const waitForCiDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceWaitForCi);
-  const autoDeployEnabled = source.autoDeploy;
+  const autoDeployEnabled = service.policy.autoDeploy;
 
   return (
     <>
@@ -103,8 +103,6 @@ export function GitBranchSettings({
                               ? draft.source.branch.name
                               : draft.source.branch.previousName,
                         },
-                        autoDeploy: draft.source.autoDeploy,
-                        waitForCi: draft.source.waitForCi,
                       });
                     });
 
@@ -132,12 +130,9 @@ export function GitBranchSettings({
                   type="button"
                   variant="outline"
                   onClick={() => {
-                    const transaction = collection.update(service.id, (draft) => {
-                      if (draft.source.type !== "git") {
-                        return;
-                      }
-
-                      draft.source.autoDeploy = !draft.source.autoDeploy;
+                    const transaction = state.editMetadata({
+                      environmentId: service.environmentId, serviceId: service.id,
+                      edit: { kind: "policy", policy: { autoDeploy: !autoDeployEnabled } },
                     });
 
                     void transaction.isPersisted.promise;
@@ -168,17 +163,14 @@ export function GitBranchSettings({
               Wait for GitHub Actions to pass before deploying.
             </FieldDescription>
           </div>
-          <Item variant="muted" data-changed={waitForCiDiff.changed || undefined}>
+          <Item variant="muted">
             <ItemActions>
               <Switch
-                checked={source.waitForCi}
+                checked={service.policy.waitForCi}
                 onCheckedChange={(nextChecked) => {
-                  const transaction = collection.update(service.id, (draft) => {
-                    if (draft.source.type !== "git") {
-                      return;
-                    }
-
-                    draft.source.waitForCi = nextChecked;
+                  const transaction = state.editMetadata({
+                    environmentId: service.environmentId, serviceId: service.id,
+                    edit: { kind: "policy", policy: { waitForCi: nextChecked } },
                   });
 
                   void transaction.isPersisted.promise;
@@ -191,6 +183,8 @@ export function GitBranchSettings({
           </Item>
         </Field>
       ) : null}
+
+      <ServiceWatchPathsField state={state} />
 
       <GitBranchSelectorDialog
         open={isGitBranchSelectorOpen}
@@ -213,8 +207,6 @@ export function GitBranchSettings({
                 type: "connected",
                 name: branchName,
               },
-              autoDeploy: draft.source.autoDeploy,
-              waitForCi: draft.source.waitForCi,
             });
           });
 

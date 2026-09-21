@@ -16,9 +16,7 @@ import { runAppEffect } from "#/server/run.server";
 const RuntimeEventsSearch = Schema.Struct({
   organizationSlug: organizationSlugSchema,
 });
-const runtimeEventsSearchSchema = Schema.toStandardSchemaV1(RuntimeEventsSearch, {
-  parseOptions: { onExcessProperty: "error" },
-});
+const runtimeEventsSearchSchema = Schema.toStandardSchemaV1(RuntimeEventsSearch);
 const decodeRuntimeEventsSearch = Schema.decodeUnknownOption(RuntimeEventsSearch);
 
 function toHttpRuntimeWatch(watch: OpenedRuntimeWatch): RuntimeWatch {
@@ -44,7 +42,6 @@ export const Route = createFileRoute("/api/runtime/events")({
       GET: async ({ request }) => {
         const searchResult = decodeRuntimeEventsSearch(
           Object.fromEntries(new URL(request.url).searchParams),
-          { onExcessProperty: "error" },
         );
         if (Option.isNone(searchResult)) {
           return publicErrorResponse(runtimeEventsValidationError());

@@ -72,7 +72,7 @@ function compileRuntimeIntent(context: DeploymentContext) {
     const blocked = findUnpullableSdkDeployImages(
       context.snapshots.map((snapshot) => ({
         id: snapshot.serviceId,
-        name: snapshot.config.name,
+        name: snapshot.config.privateDns,
         source: snapshot.config.source,
       })),
     );

@@ -16,7 +16,9 @@ afterAll(async () => {
 });
 
 it("creates collection tables with default replication identity without the retired notification triggers", async () => {
-  const tables = [...collectionReadInput.fields.table.literals].sort();
+  const tables = [...new Set(collectionReadInput.fields.table.literals.map((table) =>
+    table === "environment_summary" ? "environment" : table === "project_preference" ? "user_project_preference" : table,
+  ))].sort();
   const replication = await harness.pool.query<{
     relname: string;
     relreplident: string;

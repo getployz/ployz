@@ -154,6 +154,12 @@ export function useCanvasFlowState({
     : null;
   const canvasChangeState = buildCanvasEnvironmentChangeState({
     working,
+    saved: environmentChangeState?.saved
+      ? {
+          token: environmentChangeState.saved.token,
+          nodes: environmentChangeState.saved.nodes.map(projectedNode),
+        }
+      : null,
     applied,
     nodeIntroductions: introductions,
     deploymentEvidence,
@@ -249,7 +255,7 @@ export function useCanvasFlowState({
     diffGroups,
     totalChanges: canvasChangeState.totalCount,
     canDeploy: true,
-    canSave: canvasChangeState.totalCount > 0,
+    canSave: canvasChangeState.canSave,
     diffRowCountByServiceId: countByNodeId,
     servicesById,
     selectedNodePositionKey,

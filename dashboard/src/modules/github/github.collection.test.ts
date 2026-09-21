@@ -1,3 +1,4 @@
+import { getDbClient } from "#/collections/scope";
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
@@ -16,7 +17,7 @@ it("updates the selector projection and isolates request and authenticated sessi
   let rows = [row];
   const raw = createApiCollection({ queryClient: client, queryKey: ["test"], queryFn: async () => rows, getKey: (row: typeof rows[number]) => row.repositoryId });
   await raw.preload();
-  const view = createGithubReposCollection(raw, "test-view");
+  const view = createGithubReposCollection(raw, "test-view", getDbClient(client));
   const subscription = view.subscribeChanges(() => {});
   await view.preload();
   expect(Array.from(view.values())).toMatchObject([{ id: 42, full_name: "acme/repo", repo_updated_at: "2026-01-01T00:00:00.000Z" }]);

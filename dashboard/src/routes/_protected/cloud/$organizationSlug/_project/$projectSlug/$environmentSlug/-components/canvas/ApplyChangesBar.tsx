@@ -1,12 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { cn } from "#/lib/utils";
+import { useEffect, useRef, useState } from "react";
+import { Button } from "#/components/ui/button";
 import type {
   CanvasEnvironmentChangeGroup,
 } from "#/modules/environment-design/canvas-environment-change-state";
-import { ApplyChangesDialog } from "./ApplyChangesDialog";
-import { ApplyChangesToolbar } from "./ApplyChangesToolbar";
+import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 
 type ApplyChangesBarProps = {
   groups: CanvasEnvironmentChangeGroup[];
@@ -14,11 +13,10 @@ type ApplyChangesBarProps = {
   canDeploy?: boolean;
   commitMessage: string;
   canSaveWithoutDeploying: boolean;
-  className?: string;
   onCommitMessageChange: (value: string) => void;
   onDeploy: () => void;
   onSaveWithoutDeploying: () => void;
-  onDiscardAll: () => void;
+  onDiscardAll: () => Promise<boolean>;
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
 };
@@ -29,7 +27,6 @@ export function ApplyChangesBar({
   canDeploy,
   commitMessage,
   canSaveWithoutDeploying,
-  className,
   onCommitMessageChange,
   onDeploy,
   onSaveWithoutDeploying,
@@ -38,47 +35,54 @@ export function ApplyChangesBar({
   onDiscardRow,
 }: ApplyChangesBarProps) {
   const [open, setOpen] = useState(false);
-  if (totalChanges <= 0) return null;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  const hasChanges = totalChanges > 0 || canSaveWithoutDeploying;
+
+  useEffect(() => {
+    if (wasOpen.current && !open) {
+      (triggerRef.current ?? workspaceRef.current)?.focus({ preventScroll: true });
+    }
+    wasOpen.current = open;
+  }, [open]);
+
+  if (!hasChanges && !open) return null;
 
   return (
     <>
-      <div className={cn("apply-changes-surface pointer-events-auto rounded-xl border bg-background p-2 shadow-md", className)}>
-        <ApplyChangesToolbar
-          canDiscardAll={groups.some(group => group.canDiscard)}
-          canSaveWithoutDeploying={canSaveWithoutDeploying}
-          canDeploy={canDeploy ?? true}
-          totalChanges={totalChanges}
-          onOpenDetails={() => setOpen(true)}
-          onDeploy={() => {
-            setOpen(false);
-            onDeploy();
+      <div className="canvas-change-controls">
+        <span className="text-sm text-muted-foreground tabular-nums">
+          {totalChanges > 0
+            ? `${totalChanges} ${totalChanges === 1 ? "change" : "changes"}`
+            : canSaveWithoutDeploying ? "Unpublished changes" : "No changes"}
+        </span>
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          aria-expanded={open}
+          onClick={() => {
+            workspaceRef.current = triggerRef.current?.closest<HTMLElement>(".environment-canvas-scene") ?? null;
+            setOpen(!open);
           }}
-          onSaveWithoutDeploying={() => {
-            setOpen(false);
-            onSaveWithoutDeploying();
-          }}
-          onDiscardAll={() => {
-            setOpen(false);
-            onDiscardAll();
-          }}
-        />
+        >
+          Review changes
+        </Button>
       </div>
-
-      <ApplyChangesDialog
-        open={open && totalChanges > 0}
+      {open ? <EnvironmentChangesReview
         groups={groups}
         totalChanges={totalChanges}
-        canDeploy={canDeploy ?? true}
+        canDeploy={(canDeploy ?? true) && totalChanges > 0}
+        canSave={canSaveWithoutDeploying}
         commitMessage={commitMessage}
-        onOpenChange={setOpen}
+        onClose={() => setOpen(false)}
         onCommitMessageChange={onCommitMessageChange}
-        onDeploy={() => {
-          setOpen(false);
-          onDeploy();
-        }}
+        onDeploy={() => { setOpen(false); onDeploy(); }}
+        onSave={() => { setOpen(false); onSaveWithoutDeploying(); }}
+        onDiscardAll={async () => { if (await onDiscardAll()) setOpen(false); }}
         onDiscardNode={onDiscardNode}
         onDiscardRow={onDiscardRow}
-      />
+      /> : null}
     </>
   );
 }

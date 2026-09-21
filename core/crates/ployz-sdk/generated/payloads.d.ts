@@ -3,7 +3,7 @@
 
 export type AdvertisedEndpoint = string;
 
-export type AuthoredServiceConfig = { version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
+export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
@@ -25,7 +25,7 @@ export type CertificateObservation = { hostname: IngressHost, status: Certificat
 
 export type ChangeKind = "add" | "update" | "remove";
 
-export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
+export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
 export type ClusterDomainLabel = string;
 
@@ -665,7 +665,7 @@ observed_at: string, };
 
 export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>, };
 
-export type SavedServiceIntent = { id: string, lineageId: string, slug: string, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>, config: AuthoredServiceConfig, encryptedRegistryUsername: EncryptedSecretValue | null, encryptedRegistrySecret: EncryptedSecretValue | null, };
+export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>, };
 
 export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean, valueFingerprint: string, value: SavedVariableValue, };
 
@@ -690,11 +690,11 @@ export type ServiceAttempt = {
  */
 name: ServiceName, };
 
-export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null, watchPaths: Array<string>, };
+export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null, };
 
 export type ServiceBuilder = "dockerfile" | "railpack";
 
-export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
+export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 
 export type ServiceContainer = ContainerObservation;
 
@@ -732,9 +732,7 @@ export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: st
 
 export type ServiceId = string & { readonly __brand: "ServiceId" };
 
-export type ServiceImageAutoUpdate = { "type": "off" } | { "type": "track-tag", tag: string, };
-
-export type ServiceImageCredentials = { "type": "none" } | { "type": "configured", revision?: string, };
+export type ServiceImageCredentials = { "type": "none" } | { "type": "configured", credentialId: string, };
 
 export type ServiceManagedHostname = { prefix: string, targetPort: number | null, };
 
@@ -774,7 +772,7 @@ export type ServiceSettingChange = { path: string, kind: ChangeKind, before: Jso
 
 export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "cron", "value": string | null } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig };
 
-export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, installationId: number, rootDir: string, branch: ServiceGitBranch, autoDeploy: boolean, waitForCi: boolean, } | { "type": "image", version: 1, image: string, autoUpdate: ServiceImageAutoUpdate, credentials: ServiceImageCredentials, };
+export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, installationId: number, rootDir: string, branch: ServiceGitBranch, } | { "type": "image", version: 1, image: string, credentials: ServiceImageCredentials, };
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 

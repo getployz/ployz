@@ -31,8 +31,10 @@ function getCanvasInspectorGeometryKey() {
   const paneWidth = Math.round(
     inspectorPane?.getBoundingClientRect().width ?? 0,
   );
+  const controls = wrapper?.closest(".environment-canvas-scene")
+    ?.querySelector<HTMLElement>(".canvas-change-controls");
 
-  return `${flowWidth}:${paneWidth}`;
+  return `${flowWidth}:${paneWidth}:${wrapper?.clientHeight ?? 0}:${controls?.offsetHeight ?? 0}`;
 }
 
 function useCanvasInspectorGeometryVersion(enabled: boolean) {
@@ -130,12 +132,14 @@ function centerOnNode(
 ) {
   const wrapper = document.querySelector<HTMLElement>(".react-flow");
   const pane = document.querySelector<HTMLElement>(CANVAS_INSPECTOR_PANE_SELECTOR);
-  if (!wrapper || !pane) return false;
+  if (!wrapper || !pane || pane.dataset["takeover"] === "true") return false;
   const width = wrapper.clientWidth - pane.offsetWidth;
   if (pane.offsetWidth / wrapper.clientWidth >= CANVAS_INSPECTOR_FULL_WIDTH_RATIO) {
     return false;
   }
   const viewport = flow.getViewport();
+  const controls = wrapper.closest(".environment-canvas-scene")
+    ?.querySelector<HTMLElement>(".canvas-change-controls");
   const dx = getNodePanDelta(
     node.position.x * viewport.zoom + viewport.x,
     (node.measured?.width ?? SERVICE_NODE_WIDTH) * viewport.zoom,
@@ -144,7 +148,7 @@ function centerOnNode(
   const dy = getNodePanDelta(
     node.position.y * viewport.zoom + viewport.y,
     (node.measured?.height ?? SERVICE_NODE_HEIGHT) * viewport.zoom,
-    wrapper.clientHeight - 72,
+    wrapper.clientHeight - (controls?.offsetHeight ?? 0),
   );
   if (dx !== 0 || dy !== 0) {
     void flow.setViewport(

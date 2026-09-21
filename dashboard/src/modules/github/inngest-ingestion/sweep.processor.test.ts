@@ -1,3 +1,4 @@
+import * as branchRepository from "../github-ingestion.branch.repository";
 import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
@@ -7,6 +8,7 @@ import * as repository from "#/modules/github/github-ingestion.repository";
 import { createSweepGithubIngestionOutboxes } from "./sweep";
 
 useServiceFreeEffectRunner();
+vi.spyOn(branchRepository, "resumeGithubWaitingTriggers").mockImplementation(() => Effect.void);
 
 vi.spyOn(
   repository,

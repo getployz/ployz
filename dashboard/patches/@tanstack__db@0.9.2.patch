@@ -1,0 +1,42 @@
+diff --git a/dist/cjs/client.cjs b/dist/cjs/client.cjs
+index eb4114a42e3fa9d02aa8d092e211621163475061..2904811fa4cd86029fe2beaaa57c1eeaadd6f0f7 100644
+--- a/dist/cjs/client.cjs
++++ b/dist/cjs/client.cjs
+@@ -339,7 +339,7 @@ class DbClient {
+         ...preloadedQueries.map(({ collection }) => collection),
+         ...materializedCollections.filter(
+           (collection) => collectionRegistry.getBuilderFromConfig(collection.config)
+-        )
++        ).reverse()
+       ]);
+       for (const { observer } of preloadedQueries) observer.dispose();
+       const cleanupResults = [
+diff --git a/dist/esm/client.js b/dist/esm/client.js
+index f977cef31ac3f056117bb9dba0eaaa672372d145..bb83ed9a810593ac62b5049f5f2ef348734fa950 100644
+--- a/dist/esm/client.js
++++ b/dist/esm/client.js
+@@ -337,7 +337,7 @@ class DbClient {
+         ...preloadedQueries.map(({ collection }) => collection),
+         ...materializedCollections.filter(
+           (collection) => getBuilderFromConfig(collection.config)
+-        )
++        ).reverse()
+       ]);
+       for (const { observer } of preloadedQueries) observer.dispose();
+       const cleanupResults = [
+diff --git a/src/client.ts b/src/client.ts
+index 6765b76dc11a606fdf854f7bebfd4b866dc834f5..74ac4c16610f67ca39e397ad56ea6464bc59b8d2 100644
+--- a/src/client.ts
++++ b/src/client.ts
+@@ -691,9 +691,10 @@ export class DbClient {
+       const preloadedQueries = Array.from(this.preloadedLiveQueries.values())
+       const liveQueryCollections = new Set([
+         ...preloadedQueries.map(({ collection }) => collection),
++        // Dependents are materialized after their sources; dispose them first.
+         ...materializedCollections.filter((collection) =>
+           getBuilderFromConfig(collection.config),
+-        ),
++        ).reverse(),
+       ])
+ 
+       for (const { observer } of preloadedQueries) observer.dispose()

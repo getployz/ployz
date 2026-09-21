@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import {
   resourceLineage,
   serviceLineage,
+  service,
   variableGroupLineage,
 } from "#/modules/environment-design/tables";
 import { environment, project } from "#/modules/project/tables";
@@ -116,8 +117,10 @@ export const listEnvironmentNodeNameIdentities = Effect.fn(
   "EnvironmentDesign.listEnvironmentNodeNameIdentities",
 )(function* (environmentId: string) {
   const { intent } = yield* loadEnvironmentDocument(environmentId);
+  const { drizzle } = yield* Database;
+  const identities = yield* drizzle.select({ id: service.id, name: service.name }).from(service).where(eq(service.environmentId, environmentId));
   return [
-    ...intent.services.map((node) => ({ type: "service" as const, id: node.id, name: node.config.name })),
+    ...identities.filter(identity => intent.services.some(node => node.id === identity.id)).map(identity => ({ type: "service" as const, ...identity })),
     ...intent.variableGroups.map((node) => ({ type: "variable_group" as const, id: node.resourceId, name: node.name })),
     ...intent.volumes.map((node) => ({ type: "volume" as const, id: node.resourceId, name: node.name })),
   ] satisfies EnvironmentNodeNameIdentity[];

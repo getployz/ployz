@@ -21,10 +21,11 @@ export type EnvironmentNodeIntroductionProjection = {
 }[EnvironmentNodeIdentity["type"]];
 export type EnvironmentStateProjection = { token: string; nodes: EnvironmentNodeProjection[] };
 export type EnvironmentNodeIntroductionsProjection = { token: string; nodes: EnvironmentNodeIntroductionProjection[] };
-/** Head is `submitted ?? applied`; a node absent from Head compares against its Introduction. */
+/** Head is `submitted ?? applied`; only unsaved, unapplied nodes can reset to Introduction. */
 export type EnvironmentChangeSetProjectionInput = {
   working: EnvironmentStateProjection;
   applied: EnvironmentStateProjection;
+  saved: EnvironmentStateProjection | null;
   submitted: EnvironmentStateProjection | null;
   nodeIntroductions: EnvironmentNodeIntroductionsProjection;
 };
@@ -48,8 +49,8 @@ function changes(type: EnvironmentNodeIdentity["type"], current: EnvironmentNode
   if (type === "volume") return compareResourceSettings("volume", parseResourceConfig("volume", current), parseResourceConfig("volume", baseline));
   return compareVariableGroupSettings(current, baseline);
 }
-function compare(baseline: EnvironmentStateProjection, working: EnvironmentStateProjection, introductions: EnvironmentStateProjection) {
-  const before = nodeMap(baseline); const after = nodeMap(working); const intro = nodeMap(introductions); const groups: DashboardReviewChangeSet["groups"] = [];
+function compare(baseline: EnvironmentStateProjection, working: EnvironmentStateProjection, intro: ReturnType<typeof nodeMap>) {
+  const before = nodeMap(baseline); const after = nodeMap(working); const groups: DashboardReviewChangeSet["groups"] = [];
   for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const previous = before.get(key)?.config ?? null; const next = after.get(key)?.config ?? null; const entry = after.get(key) ?? before.get(key);
     if (!entry) continue;
@@ -62,7 +63,11 @@ function compare(baseline: EnvironmentStateProjection, working: EnvironmentState
 }
 export function buildEnvironmentChangeSet(input: EnvironmentChangeSetProjectionInput): DashboardReviewChangeSet {
   const head = input.submitted ?? input.applied;
-  const groups = compare(head, input.working, input.nodeIntroductions);
+  const introductions = nodeMap(input.nodeIntroductions);
+  for (const entry of [...input.applied.nodes, ...input.saved?.nodes ?? []]) {
+    if (entry.config) introductions.delete(`${entry.node.type}:${entry.node.id}`);
+  }
+  const groups = compare(head, input.working, introductions);
   return {
     groups,
     totalCount: groups.reduce((n, group) => n + group.settings.length + (group.lifecycle === "update" ? 0 : 1), 0),
@@ -74,6 +79,7 @@ export function buildEnvironmentChangeSet(input: EnvironmentChangeSetProjectionI
 export function buildEnvironmentNodeChange(input: {
   working: EnvironmentNodeProjection;
   applied: EnvironmentNodeProjection[];
+  saved: EnvironmentNodeProjection[] | null;
   submitted: EnvironmentNodeProjection[] | null;
   introduction: EnvironmentNodeIntroductionProjection | null;
 }): DashboardReviewNodeChange | null {
@@ -82,6 +88,7 @@ export function buildEnvironmentNodeChange(input: {
   return buildEnvironmentChangeSet({
     working: { token: "working", nodes: [input.working] },
     applied: { token: "applied", nodes: only(input.applied) },
+    saved: input.saved ? { token: "saved", nodes: only(input.saved) } : null,
     submitted: input.submitted ? { token: "submitted", nodes: only(input.submitted) } : null,
     nodeIntroductions: { token: "introductions", nodes: input.introduction ? [input.introduction] : [] },
   }).groups[0] ?? null;

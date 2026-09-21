@@ -207,7 +207,7 @@ function OpenDataLossConfirmDialog({
 
   return (
     <AlertDialog open onOpenChange={onOpenChange}>
-      <AlertDialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <AlertDialogContent render={<form onSubmit={(event) => { event.preventDefault(); void confirmDataLoss(); }} />} className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <AlertDialogHeader>
           <AlertDialogMedia>
             <AlertTriangleIcon className="text-destructive" />
@@ -248,12 +248,6 @@ function OpenDataLossConfirmDialog({
               placeholder={confirmPhrase}
               disabled={state.status !== "ready" || pending}
               aria-invalid={state.status === "failed" || undefined}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && canConfirm) {
-                  event.preventDefault();
-                  void confirmDataLoss();
-                }
-              }}
             />
             <FieldDescription>
               The phrase must match exactly. Named Data Loss is what Inngest
@@ -266,11 +260,11 @@ function OpenDataLossConfirmDialog({
         </FieldGroup>
 
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel type="button" disabled={pending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             disabled={!canConfirm}
-            onClick={() => void confirmDataLoss()}
+            type="submit"
           >
             {pending ? <Spinner data-icon="inline-start" /> : null}
             {pending ? pendingLabel : actionLabel}

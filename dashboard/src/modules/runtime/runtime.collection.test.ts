@@ -1,3 +1,6 @@
+import { QueryClient } from "@tanstack/react-query";
+import { getDbClient } from "#/collections/scope";
+import { getRuntimeCollections } from "./runtime.collection";
 import { describe, expect, it } from "vitest";
 import {
   applyRuntimeSnapshot,
@@ -88,11 +91,27 @@ describe("projectRuntimeMachineRecord", () => {
 describe("applyRuntimeSnapshot", () => {
   it("fans one direct watch observation into the local collections", () => {
     const snapshot = observedSnapshot();
-    applyRuntimeSnapshot({ organizationSlug: "runtime-observation", snapshot });
+    const collections = getRuntimeCollections("runtime-observation", { queryClient: new QueryClient(), sessionId: "session", userId: "user" });
+    applyRuntimeSnapshot({ collections, snapshot });
 
     expect(
-      getCachedRuntimeSnapshot({ organizationSlug: "runtime-observation" }),
+      getCachedRuntimeSnapshot(collections),
     ).toEqual(snapshot);
+  });
+
+  it("isolates observations between requests and sessions in the same organization", async () => {
+    const firstQuery = new QueryClient();
+    const secondQuery = new QueryClient();
+    const scope = { queryClient: firstQuery, sessionId: "first", userId: "user" };
+    const first = getRuntimeCollections("organization", scope);
+    const second = getRuntimeCollections("organization", { ...scope, queryClient: secondQuery });
+    const nextSession = getRuntimeCollections("organization", { ...scope, sessionId: "second" });
+    applyRuntimeSnapshot({ collections: first, snapshot: observedSnapshot() });
+    expect(getCachedRuntimeSnapshot(first)?.status).toBe("observed");
+    expect(getCachedRuntimeSnapshot(second)?.status).toBe("connecting");
+    expect(getCachedRuntimeSnapshot(nextSession)?.status).toBe("connecting");
+    await Promise.all([getDbClient(firstQuery).cleanup(), getDbClient(secondQuery).cleanup()]);
+    firstQuery.clear(); secondQuery.clear();
   });
 });
 

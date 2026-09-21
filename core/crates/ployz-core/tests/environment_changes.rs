@@ -7,7 +7,7 @@ use ployz_core::config::config_request;
 use serde_json::{Value, json};
 
 fn service(replicas: u8) -> Value {
-    json!({"version":2,"name":"API","privateDns":"api","source":{"version":1,"type":"image","image":"nginx:stable","autoUpdate":{"type":"off"},"credentials":{"type":"none"}},"preDeployCommand":null,"startCommand":null,"healthcheck":{"type":"none"},"restartPolicy":"unless-stopped","replicas":replicas})
+    json!({"version":2,"privateDns":"api","source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},"preDeployCommand":null,"startCommand":null,"healthcheck":{"type":"none"},"restartPolicy":"unless-stopped","replicas":replicas})
 }
 
 fn input(

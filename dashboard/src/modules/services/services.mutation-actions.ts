@@ -5,7 +5,8 @@ import {
   restoreServiceRegistryCredentialServerFn,
   setServiceRegistryCredentialServerFn,
 } from "#/modules/environment-design/service-functions";
-import { getEnvironmentsCollection } from "#/collections/collections";
+import { reconcileCollection } from "#/collections/query-collection";
+import { getEnvironmentsCollection, getRawServicesCollection } from "#/collections/collections";
 
 type UseServiceRegistryCredentialActionsInput = {
   organizationSlug: string;
@@ -26,7 +27,7 @@ export function useServiceRegistryCredentialActions({
         const node = draft.intent.services.find((node) => node.id === serviceId);
         if (!node || node.config.source.type !== "image") throw new Error("Service does not use a container image.");
         node.config.source.credentials = action.kind === "clear"
-          ? { type: "none" } : { type: "configured", revision: new Date().toISOString() };
+          ? { type: "none" } : { type: "configured", credentialId: serviceId };
       });
     },
     mutationFn: async ({ action, revision }) => {
@@ -36,6 +37,7 @@ export function useServiceRegistryCredentialActions({
         : action.kind === "clear" ? clearServiceRegistryCredentialServerFn({ data })
           : restoreServiceRegistryCredentialServerFn({ data }));
       await environments.writeCommitted(result.data);
+      await reconcileCollection(getRawServicesCollection(organizationSlug, collectionScope));
       onSuccess?.();
     },
   });

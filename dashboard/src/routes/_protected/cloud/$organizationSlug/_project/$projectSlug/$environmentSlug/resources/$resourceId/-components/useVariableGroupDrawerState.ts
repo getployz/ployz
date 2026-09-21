@@ -31,6 +31,7 @@ export function useVariableGroupDrawerState(
   );
   const servicesCollection = useServicesCollection(params.organizationSlug);
   const { data: resourceRows } = useLiveSuspenseQuery({
+    queryKey: ['group-resources', environmentResources.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: environmentResources })
@@ -44,6 +45,7 @@ export function useVariableGroupDrawerState(
     parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
   const { data: services } = useLiveSuspenseQuery({
+    queryKey: ['group-services', servicesCollection.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ service: servicesCollection })

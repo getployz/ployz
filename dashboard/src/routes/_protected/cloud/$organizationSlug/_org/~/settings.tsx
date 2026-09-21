@@ -54,7 +54,7 @@ function RouteComponent() {
         scope="organization"
         confirmPhrase={organizationSlug}
         title="Tear down this organization"
-        description="Destroys every project’s Data Loss, removes machines, revokes pairing, then drops Cloud org rows. This cannot be undone."
+        description="Deletes all projects and their stored data, removes servers from the cluster, disconnects the cluster from Ployz, and deletes this organization. This cannot be undone."
         actionLabel="Tear down organization"
         headingId="organization-teardown-heading"
         onCompleted={() => {

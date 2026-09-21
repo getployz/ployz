@@ -78,7 +78,8 @@ function ServiceHealthcheckEditor({
   state: ServiceDrawerState;
 }) {
   const { service, collection, diff } = state;
-  const healthcheckDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.healthcheck);
+  const pathDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.healthcheckPath);
+  const timeoutDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.healthcheckTimeout);
   const healthcheck = service.healthcheck;
 
   const baselinePath = healthcheck.type === "http" ? healthcheck.path : null;
@@ -275,7 +276,7 @@ function ServiceHealthcheckEditor({
             aria-invalid={draft.pathError ? true : undefined}
             disabled={draft.isPathPending}
             error={draft.pathError}
-            isChanged={healthcheckDiff.changed}
+            isChanged={pathDiff.changed}
             isDirty={isPathDirty}
             isPending={draft.isPathPending}
             placeholder="/up"
@@ -295,6 +296,7 @@ function ServiceHealthcheckEditor({
           <Button
             type="button"
             variant="outline"
+            data-changed={pathDiff.changed || undefined}
             onClick={() => {
               dispatchDraft({ type: "patch", patch: { draftPath: "" } });
             }}
@@ -317,7 +319,7 @@ function ServiceHealthcheckEditor({
             disabled={healthcheck.type !== "http" || draft.isTimeoutPending}
             error={draft.timeoutError}
             inputMode="numeric"
-            isChanged={healthcheckDiff.changed}
+            isChanged={timeoutDiff.changed}
             isDirty={isTimeoutDirty}
             isPending={draft.isTimeoutPending}
             placeholder="300"

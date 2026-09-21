@@ -22,10 +22,12 @@ export type CanvasEnvironmentChangeState = {
   groups: CanvasEnvironmentChangeGroup[];
   totalCount: number;
   headToken: string;
+  canSave: boolean;
 };
 
 export function buildCanvasEnvironmentChangeState(input: {
   working: EnvironmentStateProjection;
+  saved: EnvironmentStateProjection | null;
   applied: EnvironmentStateProjection;
   nodeIntroductions: EnvironmentNodeIntroductionsProjection;
   deploymentEvidence: CanvasDeploymentEvidence | null;
@@ -35,8 +37,10 @@ export function buildCanvasEnvironmentChangeState(input: {
     ? input.deploymentEvidence : null;
   const visibleState = <T extends EnvironmentStateProjection>(state: T): T => variableGroupsEnabled ? state
     : { ...state, nodes: state.nodes.filter(entry => entry.node.type !== "variable_group") };
+  const saved = input.saved ? visibleState(input.saved) : null;
   const result = buildEnvironmentChangeSet({
     working: visibleState(input.working), applied: visibleState(input.applied),
+    saved,
     submitted: submitted ? visibleState({ token: submitted.token, nodes: submitted.nodes }) : null,
     nodeIntroductions: visibleState(input.nodeIntroductions),
   });
@@ -44,6 +48,14 @@ export function buildCanvasEnvironmentChangeState(input: {
   return {
     totalCount: result.totalCount,
     headToken: result.headToken,
+    // Publication compares Working with Saved independently of the runtime Head.
+    canSave: buildEnvironmentChangeSet({
+      working: visibleState(input.working),
+      applied: saved ?? { token: "saved:none", nodes: [] },
+      saved,
+      submitted: null,
+      nodeIntroductions: visibleState(input.nodeIntroductions),
+    }).totalCount > 0,
     groups: result.groups.map(group => {
       const key = `${group.node.type}:${group.node.id}`;
       const presentation = presentations.get(key);

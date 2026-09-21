@@ -183,7 +183,7 @@ pub fn compile_environment_intent(
     let mut node_snapshots = Vec::new();
     let mut variable_producers = Vec::new();
     for service in &intent.services {
-        let mut config = ServiceConfig::from(service.configuration.settings().clone());
+        let mut config = ServiceConfig::from(service.config.clone());
         config.env = service
             .variables
             .iter()
@@ -210,11 +210,8 @@ pub fn compile_environment_intent(
             node_id: service.id.clone(),
             node_lineage_id: service.lineage_id.clone(),
             snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Service(Box::new(config))),
-            encrypted_registry_username: service
-                .configuration
-                .encrypted_registry_username()
-                .cloned(),
-            encrypted_registry_secret: service.configuration.encrypted_registry_secret().cloned(),
+            encrypted_registry_username: None,
+            encrypted_registry_secret: None,
         });
         for (key, value) in [
             (
@@ -223,10 +220,7 @@ pub fn compile_environment_intent(
             ),
             ("PORT", "3000".into()),
             ("PLOYZ_ENVIRONMENT_NAME", intent.environment_slug.clone()),
-            (
-                "PLOYZ_SERVICE_NAME",
-                service.configuration.settings().name.clone(),
-            ),
+            ("PLOYZ_SERVICE_NAME", service.slug.clone()),
             ("PLOYZ_ENVIRONMENT_ID", environment_id.into()),
             ("PLOYZ_SERVICE_ID", service.id.clone()),
         ] {

@@ -14,7 +14,6 @@ use crate::{RestartPolicy, ServiceName};
 pub struct AuthoredServiceConfig {
     #[ts(type = "2")]
     pub version: u8,
-    pub name: String,
     pub source: ServiceSource,
     pub pre_deploy_command: Option<String>,
     pub start_command: Option<String>,
@@ -92,14 +91,11 @@ pub enum ServiceSource {
         installation_id: u64,
         root_dir: String,
         branch: ServiceGitBranch,
-        auto_deploy: bool,
-        wait_for_ci: bool,
     },
     Image {
         #[ts(type = "1")]
         version: u8,
         image: String,
-        auto_update: ServiceImageAutoUpdate,
         credentials: ServiceImageCredentials,
     },
 }
@@ -117,24 +113,17 @@ pub enum ServiceGitBranch {
     Disconnected { previous_name: Option<String> },
 }
 
-/// Explicit image-tag tracking policy.
+/// A stable credential reference. Private material is resolved by Cloud for each attempt.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ServiceImageAutoUpdate {
-    Off,
-    TrackTag { tag: String },
-}
-
-/// Public registry-credential availability and optional revision evidence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ServiceImageCredentials {
     None,
-    Configured {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        revision: Option<String>,
-    },
+    Configured { credential_id: String },
 }
 
 /// An authored HTTP readiness check or an explicitly disabled check.
@@ -213,7 +202,6 @@ pub enum ServiceBuilder {
 pub struct ServiceBuildConfig {
     pub builder: ServiceBuilder,
     pub dockerfile_path: Option<String>,
-    pub watch_paths: Vec<String>,
 }
 
 /// A compiled Volume relationship retaining its Cloud owner identity.

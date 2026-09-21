@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import type { RegisteredRouter } from "@tanstack/react-router";
+import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
   ActivityIcon,
   CreditCardIcon,
@@ -39,22 +39,17 @@ type RegisteredPath =
 type RegisteredRouteId =
   RegisteredRouter["routeTree"]["types"]["fileRouteTypes"]["id"];
 
-export type DashboardDestination = {
-  to: string;
-  params: Record<string, string>;
-};
+export type DashboardDestination = ReturnType<typeof getDashboardDestination>;
 
 export type DashboardNavItem = DashboardDestination & {
   section: DashboardSection;
   label: string;
   icon: LucideIcon;
-  group: "scope" | "organization";
 };
 
 interface DashboardSectionDefinition {
   label: string;
   icon: LucideIcon;
-  group: "scope" | "organization";
   allPath?: RegisteredPath;
   environmentPath?: RegisteredPath;
 }
@@ -63,7 +58,6 @@ const sectionDefinitions = {
   overview: {
     label: "Overview",
     icon: LayoutGridIcon,
-    group: "scope",
     allPath: "/cloud/$organizationSlug/~",
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
@@ -71,42 +65,34 @@ const sectionDefinitions = {
   deployments: {
     label: "Deployments",
     icon: RocketIcon,
-    group: "scope",
-    allPath: "/cloud/$organizationSlug/~/deployments",
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
   },
   logs: {
     label: "Logs",
     icon: ActivityIcon,
-    group: "scope",
-    allPath: "/cloud/$organizationSlug/~/logs",
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
   },
   "environment-settings": {
-    label: "Environment Settings",
+    label: "Settings",
     icon: Settings2Icon,
-    group: "scope",
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
   },
   servers: {
     label: "Servers",
     icon: ServerIcon,
-    group: "organization",
     allPath: "/cloud/$organizationSlug/~/servers",
   },
   "server-settings": {
     label: "Server Settings",
     icon: ServerCogIcon,
-    group: "organization",
     allPath: "/cloud/$organizationSlug/~/settings",
   },
   billing: {
     label: "Billing",
     icon: CreditCardIcon,
-    group: "organization",
     allPath: "/cloud/$organizationSlug/~/billing",
   },
 } satisfies Record<DashboardSection, DashboardSectionDefinition>;
@@ -114,50 +100,58 @@ const sectionDefinitions = {
 export function getDashboardDestination(
   scope: DashboardScope,
   section: DashboardSection,
-): DashboardDestination {
-  const definition: DashboardSectionDefinition = sectionDefinitions[section];
+) {
+  const definition = sectionDefinitions[section];
 
-  if (scope.kind === "all" || !definition.environmentPath) {
-    return {
-      to: definition.allPath ?? "/cloud/$organizationSlug/~",
+  if (scope.kind === "all") {
+    return linkOptions({
+      to: "allPath" in definition
+        ? definition.allPath
+        : sectionDefinitions.overview.allPath,
       params: { organizationSlug: scope.organizationSlug },
-    };
+      search: {},
+    });
   }
 
-  return {
-    to: definition.environmentPath,
+  return linkOptions({
+    to: "environmentPath" in definition
+      ? definition.environmentPath
+      : sectionDefinitions.overview.environmentPath,
     params: {
       organizationSlug: scope.organizationSlug,
       projectSlug: scope.projectSlug,
       environmentSlug: scope.environmentSlug,
     },
-  };
+    search: {},
+  });
 }
 
-export function getDashboardProjectDestination(
-  scope: Extract<DashboardScope, { kind: "environment" }>,
+export function getDashboardSectionLabel(
+  scope: DashboardScope,
   section: DashboardSection,
-): DashboardDestination {
-  const definition: DashboardSectionDefinition = sectionDefinitions[section];
-  const projectSection = definition.environmentPath ? section : "overview";
-
-  return getDashboardDestination(scope, projectSection);
+) {
+  return scope.kind === "environment" && section === "overview"
+    ? "Architecture"
+    : sectionDefinitions[section].label;
 }
 
 export function createDashboardNavItems(
   scope: DashboardScope,
 ): DashboardNavItem[] {
   return sectionOrder.flatMap((section) => {
-    const definition: DashboardSectionDefinition = sectionDefinitions[section];
+    const definition = sectionDefinitions[section];
 
-    return scope.kind === "all" && !definition.allPath
+    const available = scope.kind === "all"
+      ? "allPath" in definition
+      : "environmentPath" in definition;
+
+    return !available
       ? []
       : [
           {
             section,
-            label: definition.label,
+            label: getDashboardSectionLabel(scope, section),
             icon: definition.icon,
-            group: definition.group,
             ...getDashboardDestination(scope, section),
           },
         ];

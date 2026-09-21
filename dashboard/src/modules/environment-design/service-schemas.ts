@@ -1,10 +1,11 @@
+import { servicePolicySchema } from "./service-policy";
 import {
   createInsertSchema,
   createSelectSchema,
 } from "drizzle-orm/effect-schema";
 import { Effect, Schema } from "effect";
 import { serviceFieldSchema, sharedServiceConfigSchema, savedServiceConfigSchema, type DashboardServiceConfig } from "./service-config";
-import type { ServiceGitBranch as SharedServiceGitBranch, ServiceImageAutoUpdate as SharedServiceImageAutoUpdate, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
+import type { ServiceGitBranch as SharedServiceGitBranch, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
 import {
   environmentCanvasNodePosition,
   REGISTRY_CREDENTIAL_AUTH_MODES,
@@ -132,7 +133,7 @@ export const serviceManagedHostnameSchema = serviceFieldSchema("managedHostnameV
 export const serviceBuilderSchema = Schema.Literals(["dockerfile", "railpack"]);
 export const serviceBuildConfigSchema = serviceFieldSchema("build");
 export const DEFAULT_SERVICE_BUILD_CONFIG: ServiceBuildConfig = {
-  builder: "railpack", dockerfilePath: null, watchPaths: [],
+  builder: "railpack", dockerfilePath: null,
 };
 export const serviceSourceSchema = serviceFieldSchema("source");
 
@@ -157,6 +158,7 @@ export const serviceSelectSchema = Schema.Struct({
   environmentId: Uuid,
   lineageId: Uuid,
   name: serviceName,
+  policy: servicePolicySchema,
   slug: requiredTrimmedString,
   source: serviceSourceSchema,
   registryCredentialUsername: Schema.NullOr(registryCredentialUsernameSchema),
@@ -258,7 +260,6 @@ export const createServiceSchema = Schema.Struct({
 
 export const updateServiceSchema = Schema.Struct({
   ...serviceRegistryCredentialScopeFields,
-  name: Schema.optionalKey(serviceSelectSchema.fields.name),
   source: Schema.optionalKey(serviceSourceSchema),
   preDeployCommand: Schema.optionalKey(
     serviceSelectSchema.fields.preDeployCommand,
@@ -282,7 +283,6 @@ export const updateServiceSchema = Schema.Struct({
 
 export type ServiceSource = DeepMutable<typeof serviceSourceSchema.Type>;
 export type ServiceGitBranch = SharedServiceGitBranch;
-export type ServiceImageAutoUpdate = SharedServiceImageAutoUpdate;
 export type ServiceImageCredentials = SharedServiceImageCredentials;
 export type RegistryCredentialProvider =
   typeof registryCredentialProviderSchema.Type;

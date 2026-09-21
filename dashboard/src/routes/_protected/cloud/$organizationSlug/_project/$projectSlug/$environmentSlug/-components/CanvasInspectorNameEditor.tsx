@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PencilIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
@@ -100,6 +101,7 @@ export function CanvasInspectorNameEditor({
         }}
       >
         <span className="truncate">{value}</span>
+        <PencilIcon data-icon="inline-end" />
       </Button>
 
       <CommandDialog
@@ -118,6 +120,7 @@ export function CanvasInspectorNameEditor({
         surface="unstyled"
         showCloseButton={false}
       >
+        <form onSubmit={(event) => { event.preventDefault(); void handleSubmit(); }}>
         <SourcePickerLayout title={editTitle}>
           <SourcePickerInput onBack={handleClose} disabled={isPending}>
               <InputGroupInput
@@ -133,26 +136,14 @@ export function CanvasInspectorNameEditor({
                   setDraftValue(event.target.value);
                   setSaveError(null);
                 }}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.nativeEvent.stopImmediatePropagation();
-                    handleClose();
-                    return;
-                  }
 
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (!event.nativeEvent.isComposing && !event.repeat) void handleSubmit();
-                  }
-                }}
               />
               {isPending ? <InputGroupAddon align="inline-end"><Spinner /></InputGroupAddon> : null}
           </SourcePickerInput>
           {error || saveError ? <FieldError>{error ?? saveError}</FieldError> : null}
         </SourcePickerLayout>
+        <button type="submit" hidden disabled={Boolean(error) || !isDirty || isPending}>Save</button>
+        </form>
       </CommandDialog>
     </>
   );

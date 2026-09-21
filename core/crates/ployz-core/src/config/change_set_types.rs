@@ -31,12 +31,13 @@ pub struct ReviewStateProjection {
 }
 
 /// Head is `submitted` (the queued or running attempt's revision) when one exists, else `applied`.
-/// A node absent from Head compares against its Introduction. Saved State is never a comparison.
+/// Only nodes without Saved or Applied State may compare against their Introduction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangeSetInput {
     pub working: ReviewStateProjection,
     pub applied: ReviewStateProjection,
+    pub saved: Option<ReviewStateProjection>,
     pub submitted: Option<ReviewStateProjection>,
     pub node_introductions: ReviewStateProjection,
 }
@@ -47,7 +48,7 @@ pub struct ChangeSetInput {
 pub enum ReviewComparisonRole {
     /// Compare with the latest submitted revision, or the applied revision if none exists.
     Head,
-    /// Compare a node absent from the head with its initial authored configuration.
+    /// Compare an unsaved, unapplied node with its initial authored configuration.
     Introduction,
 }
 

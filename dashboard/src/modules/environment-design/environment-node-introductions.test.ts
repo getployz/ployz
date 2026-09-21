@@ -20,8 +20,7 @@ describe("environment node introductions", () => {
         nodeType: "service",
         config: {
           version: 2,
-          name: "api",
-          source: { version: 1, type: "image", image: "nginx", autoUpdate: { type: "off" }, credentials: { type: "none" } },
+          source: { version: 1, type: "image", image: "nginx", credentials: { type: "none" } },
           preDeployCommand: null,
           startCommand: null,
           healthcheck: { type: "none" },

@@ -1,3 +1,4 @@
+import { getDbClient } from "#/collections/scope";
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it } from "vitest";
@@ -25,7 +26,7 @@ it("reconciles an unobserved collection, updates joined documents, and isolates 
   const rawProjects = createApiCollection({ queryClient: client, queryKey: ["test", "projects"],
     queryFn: async () => projects, getKey: (row: typeof project) => row.id });
   await rawProjects.preload();
-  const documents = createEnvironmentDocumentsCollection("acme", { environments: raw, projects: rawProjects });
+  const documents = createEnvironmentDocumentsCollection(getDbClient(client), { environments: raw, projects: rawProjects });
   const subscription = documents.subscribeChanges(() => {});
   await documents.preload();
   expect(documents.get(environment.id)?.projectSlug).toBe("project");

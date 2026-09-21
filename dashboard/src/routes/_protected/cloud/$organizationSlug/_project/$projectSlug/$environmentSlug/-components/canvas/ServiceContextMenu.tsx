@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { BracesIcon, HistoryIcon, SettingsIcon, Trash2Icon } from "lucide-react";
+import { BracesIcon, SettingsIcon, Trash2Icon } from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -15,7 +15,6 @@ import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environ
 const tabs = [
   { tab: "settings", label: "View settings", icon: SettingsIcon },
   { tab: "variables", label: "View variables", icon: BracesIcon },
-  { tab: "deployments", label: "View deployments", icon: HistoryIcon },
 ] as const;
 
 export function ServiceContextMenu({

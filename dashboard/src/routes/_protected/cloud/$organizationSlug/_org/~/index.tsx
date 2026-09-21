@@ -1,15 +1,13 @@
 import { useDeferredValue, useState } from "react";
-import { useSuspenseQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { projectListQueryOptions } from "#/modules/environment-design/workspace-queries";
+import { preloadWorkspace, readWorkspace, useWorkspace } from "#/modules/environment-design/workspace-queries";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
-  CardContent,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -22,10 +20,8 @@ import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizatio
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
-    const projects = await context.queryClient.ensureQueryData(
-      projectListQueryOptions(params.organizationSlug),
-    );
-    // No projects means nothing to overview: go straight to "Add your app".
+    const projects = readWorkspace(await preloadWorkspace(params.organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }));
+    // No projects means nothing to overview: go straight to project creation.
     if (projects.length === 0) {
       throw redirect({
         to: NewProjectRoute.to,
@@ -47,15 +43,11 @@ function ProjectsPending() {
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {Array.from({ length: 3 }, (_, index) => (
-          <Card key={index} className="min-h-52">
+          <Card key={index}>
             <CardHeader>
               <Skeleton className="h-5 w-36" />
             </CardHeader>
-            <CardContent className="flex-1">
-              <Skeleton className="h-4 w-24" />
-            </CardContent>
-            <CardFooter className="gap-2">
-              <Skeleton className="size-2 rounded-full" />
+            <CardFooter>
               <Skeleton className="h-3 w-24" />
             </CardFooter>
           </Card>
@@ -88,7 +80,7 @@ function CreateProjectButton({
       className={buttonVariants({ size: "lg" })}
     >
       <PlusIcon data-icon="inline-start" />
-      Add app
+      New project
     </Link>
   );
 }
@@ -97,9 +89,7 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const { data: projects } = useSuspenseQuery(
-    projectListQueryOptions(organizationSlug),
-  );
+  const { projects } = useWorkspace(organizationSlug);
   const normalizedQuery = deferredQuery.trim().toLowerCase();
   const filteredProjects = normalizedQuery
     ? projects.filter((project) => {
@@ -135,12 +125,12 @@ function RouteComponent() {
           {filteredProjects.map((project) => {
             const resolvedEnvironment = project.resolvedEnvironment;
             const card = (
-              <Card className="flex min-h-52 flex-col">
+              <Card>
                 <CardHeader>
                   <CardTitle>{project.name}</CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1" />
-                <CardFooter className="gap-2">
+                <CardFooter>
+                  <div className="flex items-center gap-2">
                   {resolvedEnvironment ? (
                     <>
                       <span className="size-2 shrink-0 rounded-full bg-primary" />
@@ -156,6 +146,7 @@ function RouteComponent() {
                       </span>
                     </>
                   )}
+                  </div>
                 </CardFooter>
               </Card>
             );

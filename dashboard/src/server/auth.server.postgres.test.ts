@@ -67,6 +67,23 @@ it.live(
         assert.strictEqual(actor.userId.length, 36);
         assert.deepStrictEqual(Object.keys(actor), ["userId"]);
 
+        const preference = yield* auth.handler(new Request("http://localhost:3000/api/auth/update-session", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json", origin: "http://localhost:3000" },
+          body: JSON.stringify({ sidebarOpen: false }),
+        }));
+        assert.strictEqual(preference.status, 200);
+        const restored = yield* auth.getSession(new Headers({ cookie }));
+        assert.strictEqual(restored?.session.sidebarOpen, false);
+        assert.strictEqual(restored?.session.userId, actor.userId);
+
+        const invalidPreference = yield* auth.handler(new Request("http://localhost:3000/api/auth/update-session", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json", origin: "http://localhost:3000" },
+          body: JSON.stringify({ sidebarOpen: "false" }),
+        }));
+        assert.strictEqual(invalidPreference.status, 400);
+
         const anonymous = yield* Effect.exit(auth.resolveActor(new Headers()));
         assert.strictEqual(anonymous._tag, "Failure");
         if (anonymous._tag === "Failure") {

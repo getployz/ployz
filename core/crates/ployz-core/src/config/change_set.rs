@@ -61,7 +61,16 @@ fn compare(
 
 pub fn project_environment_changes(input: ChangeSetInput) -> Result<ReviewChangeSet, ConfigError> {
     let head = input.submitted.as_ref().unwrap_or(&input.applied);
-    let introductions = projections(&input.node_introductions);
+    let mut introductions = projections(&input.node_introductions);
+    for node in input
+        .applied
+        .nodes
+        .iter()
+        .chain(input.saved.iter().flat_map(|state| &state.nodes))
+        .filter(|node| node.config.is_some())
+    {
+        introductions.remove(&node.node.key());
+    }
     let groups = compare(head, &input.working, &introductions)?;
     let total_count = groups
         .iter()
@@ -92,7 +101,7 @@ mod tests {
                 config: replicas.map(|replicas| {
                     serde_json::to_value(
                         parse_service_config(json!({
-                            "version": 2, "name": "API", "privateDns": "api", "replicas": replicas,
+                            "version": 2, "privateDns": "api", "replicas": replicas,
                             "source": {"version": 1, "type": "empty", "rootDir": "/"},
                             "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped"
                         }))
@@ -117,6 +126,7 @@ mod tests {
             let review = project_environment_changes(ChangeSetInput {
                 working: state(Some(working)),
                 applied: state(Some(applied)),
+                saved: None,
                 submitted: submitted.map(|n| state(Some(n))),
                 node_introductions: state(None),
             })
@@ -137,10 +147,11 @@ mod tests {
     }
 
     #[test]
-    fn new_node_compares_against_its_introduction_until_head_has_it() {
+    fn unsaved_node_compares_against_its_introduction() {
         let review = project_environment_changes(ChangeSetInput {
             working: state(Some(7)),
             applied: state(None),
+            saved: None,
             submitted: None,
             node_introductions: state(Some(1)),
         })
@@ -157,5 +168,27 @@ mod tests {
             vec![(json!(1), json!(7))]
         );
         assert_eq!(review.total_count, 2);
+    }
+
+    #[test]
+    fn saved_or_applied_nodes_never_reset_to_introduction_when_absent_from_head() {
+        for (saved, applied, submitted) in [
+            (Some(state(Some(5))), state(None), None),
+            (None, state(Some(5)), Some(state(None))),
+        ] {
+            let review = project_environment_changes(ChangeSetInput {
+                working: state(Some(7)),
+                applied,
+                saved,
+                submitted,
+                node_introductions: state(Some(1)),
+            })
+            .unwrap();
+            let group = review.groups.first().expect("new node has a change group");
+            assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
+            assert_eq!(group.comparison, None);
+            assert!(group.settings.is_empty());
+            assert_eq!(review.total_count, 1);
+        }
     }
 }

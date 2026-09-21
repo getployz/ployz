@@ -7,19 +7,21 @@ import { useHydrated, useRouter } from "@tanstack/react-router";
 type AuthSessionValue = {
   data: AuthSession | null;
   isPending: false;
+  refetch: ReturnType<typeof authClient.useSession>["refetch"];
 };
 
 class SignOutError extends Data.TaggedError("SignOutError")<{
   readonly cause: unknown;
 }> {}
 
-function useAuthSession(): AuthSessionValue {
+export function useAuthSession(): AuthSessionValue {
   const serverSession = RootRoute.useLoaderData().session ?? null;
   const hydrated = useHydrated();
   const state = authClient.useSession();
   return {
-    data: hydrated ? state.data : serverSession,
+    data: hydrated && !state.isPending ? state.data : serverSession,
     isPending: false,
+    refetch: state.refetch,
   };
 }
 

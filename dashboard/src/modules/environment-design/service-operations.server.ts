@@ -1,5 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { Database } from "#/server/database.server";
+import { service, serviceRegistryCredential } from "./tables";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { captureEnvironmentNodeIntroduction } from "./environment-node-introduction.repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
@@ -24,8 +28,6 @@ import {
 } from "./authoring-repository.server";
 import { environmentDesignFields } from "./fields";
 import {
-  getDuplicateEnvironmentNodeNameMessage,
-  isEnvironmentNodeNameTaken,
   resolveUniqueEnvironmentNodeName,
 } from "./environment-node-names";
 import {
@@ -123,16 +125,27 @@ export const setServiceRegistryCredential = Effect.fn("EnvironmentDesign.setServ
     yield* requireEnvironmentForActorById(actor, input);
     const encryption = yield* SecretEncryption;
     return yield* withMutationResult(Effect.gen(function* () {
-      const { document, node } = yield* loadServiceEdit(input);
+      const document = yield* loadEnvironmentDocument(input.environmentId, true);
+      const node = document.intent.services.find(node => node.id === input.serviceId);
+      if (!node) return yield* new NotFound({ message: "Service not found." });
       if (node.config.source.type !== "image") return yield* new Conflict({ message: "Service does not use a container image." });
+      if (node.config.source.credentials.type === "none") yield* requireDocumentRevision(document, input.revision);
       const stored = yield* getStoredServiceCredential(input.environmentId, input.serviceId);
       const username = normalizeRegistryCredentialUsername({
         provider: detectRegistryCredentialProvider(node.config.source.image),
         username: input.username ?? (stored ? exposedRegistryCredentialUsername(stored, encryption) : null),
       });
-      node.encryptedRegistryUsername = username === null ? null : encryption.encrypt(username);
-      node.encryptedRegistrySecret = encryption.encrypt(input.secret.trim());
-      node.config.source.credentials = { type: "configured", revision: new Date().toISOString() };
+      const { drizzle } = yield* Database;
+      const credential = { serviceId: node.id, revision: randomUUID(),
+        encryptedRegistryUsername: username === null ? null : encryption.encrypt(username),
+        encryptedRegistrySecret: encryption.encrypt(input.secret.trim()),
+      };
+      yield* drizzle.insert(serviceRegistryCredential).values(credential).onConflictDoUpdate({
+        target: serviceRegistryCredential.serviceId, set: credential,
+      });
+      yield* drizzle.update(service).set({ hasRegistryCredential: true }).where(eq(service.id, node.id));
+      if (node.config.source.credentials.type === "configured") return document;
+      node.config.source.credentials = { type: "configured", credentialId: node.id };
       return yield* writeEnvironmentDocument(document, document.intent);
     }));
   },
@@ -157,7 +170,7 @@ export const restoreServiceRegistryCredential = Effect.fn("EnvironmentDesign.res
       if (node.config.source.type !== "image") return yield* new Conflict({ message: "Service does not use a container image." });
       const stored = yield* getStoredServiceCredential(input.environmentId, input.serviceId);
       if (!stored?.encryptedRegistrySecret) return yield* new Conflict({ message: "No saved registry credentials to restore." });
-      node.config.source.credentials = { type: "configured", revision: new Date().toISOString() };
+      node.config.source.credentials = { type: "configured", credentialId: node.id };
       return yield* writeEnvironmentDocument(document, document.intent);
     }));
   },
@@ -174,11 +187,11 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
       const slug = serviceBaseSlug(name);
       const lineage = yield* createServiceLineage({ projectId: context.project.id, name, slug });
       if (!lineage) return yield* new Conflict({ message: "Could not allocate a service lineage." });
-      const identity = yield* insertServiceIdentity({ projectId: context.project.id, environmentId: input.environmentId, lineageId: lineage.id });
-      const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, name, source: input.source,
+      const identity = yield* insertServiceIdentity({ projectId: context.project.id, environmentId: input.environmentId, lineageId: lineage.id, name });
+      const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, source: input.source,
         preDeployCommand: input.preDeployCommand, startCommand: input.startCommand,
         healthcheck: input.healthcheck, restartPolicy: input.restartPolicy, privateDns: slug });
-      const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], variableGroupAttachments: [], volumeAttachments: [], encryptedRegistryUsername: null, encryptedRegistrySecret: null };
+      const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], variableGroupAttachments: [], volumeAttachments: [] };
       document.intent.services.push(node);
       const environment = yield* writeEnvironmentDocument(document, document.intent);
       const introduction = yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: "service", nodeId: identity.id });
@@ -194,10 +207,6 @@ export const updateService = Effect.fn("EnvironmentDesign.updateService")(
     return yield* withMutationResult(Effect.gen(function* () {
       const { document, node } = yield* loadServiceEdit(input);
       // ponytail: custom domains are ungated for alpha; re-add getCustomDomainCapability when plans ship.
-      const name = input.name ?? node.config.name;
-      if (isEnvironmentNodeNameTaken(name, yield* listEnvironmentNodeNameIdentities(input.environmentId), { type: "service", id: node.id })) {
-        return yield* new Conflict({ message: getDuplicateEnvironmentNodeNameMessage(name) });
-      }
       const { organizationSlug: _organization, environmentId: _environment, serviceId: _service, revision: _revision, deletedAt, ...settings } = input;
       if (deletedAt) document.intent.services = document.intent.services.filter((candidate) => candidate.id !== node.id);
       else Object.assign(node.config, settings);

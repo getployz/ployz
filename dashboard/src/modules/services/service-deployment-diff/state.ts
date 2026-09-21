@@ -37,6 +37,7 @@ export function getServiceDeploymentDiffState(change: DashboardReviewNodeChange 
     field: (path) => {
       const row =
         rowsByPath.get(path) ??
+        (path.startsWith("healthcheck.") ? rowsByPath.get("healthcheck") : undefined) ??
         (path === SERVICE_DEPLOYMENT_DIFF_PATHS.routes
           ? rows.find((candidate) => candidate.path.startsWith("routes."))
           : undefined);

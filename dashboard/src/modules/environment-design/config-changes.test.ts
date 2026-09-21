@@ -3,7 +3,7 @@ import { compareDashboardServiceSettings } from "./config-changes";
 import { parseDashboardServiceConfig } from "./service-config";
 
 const template = (lineageId: string) => parseDashboardServiceConfig({
-  version: 2, name: "API", privateDns: "api",
+  version: 2, privateDns: "api",
   source: { version: 1, type: "empty", rootDir: "/" },
   healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
   env: { URL: { kind: "literal", value: "${{ shared.HOST }}/${{ api.PORT }}", parts: [

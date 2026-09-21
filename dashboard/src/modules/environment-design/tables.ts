@@ -1,3 +1,4 @@
+import { defaultServicePolicy, type ServicePolicy } from "./service-policy";
 import { createdAt, type EncryptedSecretValue, updatedAt } from "#/db/tables";
 
 import { type EnvironmentResourceType } from "#/modules/environment-design/environment-resource-types";
@@ -88,7 +89,7 @@ export const CONFIG_KEY_SCOPES = [
 export type ConfigKeyScope = (typeof CONFIG_KEY_SCOPES)[number];
 
 export type {
-  ServiceGitBranch, ServiceImageAutoUpdate, ServiceImageCredentials,
+  ServiceGitBranch, ServiceImageCredentials,
   ServiceSource, ServiceHealthcheck, ServiceRestartPolicy, ServiceRoute,
   ServiceManagedHostname, ServiceBuilder, ServiceBuildConfig,
 } from "@ployz/sdk/config";
@@ -185,6 +186,8 @@ export const service = pgTable(
     lineageId: uuid("lineage_id")
       .notNull()
       .references(() => serviceLineage.id, { onDelete: "restrict" }),
+    name: text("name").notNull(),
+    policy: jsonb("policy").$type<ServicePolicy>().notNull().default(defaultServicePolicy),
     hasRegistryCredential: boolean("has_registry_credential").default(false).notNull(),
     firstDeployedAt: timestamp("first_deployed_at", {
       mode: "date",
@@ -215,6 +218,7 @@ export const service = pgTable(
 export const serviceRegistryCredential = pgTable(
   "service_registry_credential",
   {
+    revision: uuid("revision").defaultRandom().notNull(),
     serviceId: uuid("service_id")
       .primaryKey()
       .references(() => service.id, { onDelete: "cascade" }),

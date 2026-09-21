@@ -4,8 +4,9 @@ import { getEnvironmentsCollection, getRawServicesCollection, getRawEnvironmentR
 import type { createServiceServerFn } from "./service-functions";
 import type { createVolumeResourceServerFn } from "./resource-functions";
 
-export async function applyCreatedService(organizationSlug: string, scope: CollectionScope,
+export async function applyCreatedService(organizationSlug: string, sourceScope: CollectionScope,
   result: Awaited<ReturnType<typeof createServiceServerFn>>["data"]) {
+  const scope = { ...sourceScope, environmentSlug: result.environment.namespace };
   await Promise.all([
     getEnvironmentsCollection(organizationSlug, scope).writeCommitted(result.environment),
     getRawServicesCollection(organizationSlug, scope).writeCommitted(result.identity),
@@ -14,8 +15,9 @@ export async function applyCreatedService(organizationSlug: string, scope: Colle
   ]);
 }
 
-export async function applyCreatedResource(organizationSlug: string, scope: CollectionScope,
+export async function applyCreatedResource(organizationSlug: string, sourceScope: CollectionScope,
   result: Omit<Awaited<ReturnType<typeof createVolumeResourceServerFn>>, "data">) {
+  const scope = { ...sourceScope, environmentSlug: result.environment.namespace };
   await Promise.all([
     getEnvironmentsCollection(organizationSlug, scope).writeCommitted(result.environment),
     getRawEnvironmentResourcesCollection(organizationSlug, scope).writeCommitted(result.resource),

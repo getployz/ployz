@@ -304,9 +304,14 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
         baseline = yield* loadAppliedIntent(input.environmentId, document.namespace, projection);
       }
       const command = input.command;
-      // Same rule as the Environment Change Set: a node absent from Head compares against its Introduction.
-      const introduction = command.kind === "node" && command.path !== undefined && !(head?.nodes ?? [])
-        .some(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId && node.config !== null);
+      const nodeAt = (nodes: Array<{ nodeType: string; nodeId: string; config: unknown }> = []) => command.kind === "node"
+        ? nodes.find(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId)?.config ?? null : null;
+      const savedNode = nodeAt(state?.saved?.nodes);
+      const headNode = nodeAt(head?.nodes);
+      const introduction = command.kind === "node" && command.path !== undefined && headNode === null;
+      if (introduction && (savedNode !== null || nodeAt(state?.applied.nodes) !== null)) {
+        return yield* new Conflict({ message: "This field has no discard baseline." });
+      }
       if (introduction) {
         baseline = yield* loadEnvironmentNodeIntroductionIntent({
           environmentId: input.environmentId, nodeType: command.nodeType, nodeId: command.nodeId,
@@ -319,10 +324,6 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
       });
       const working = yield* restore(document.intent);
       // Saved follows so a non-manual trigger ships the discarded state.
-      const nodeAt = (nodes: Array<{ nodeType: string; nodeId: string; config: unknown }> = []) => command.kind === "node"
-        ? nodes.find(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId)?.config ?? null : null;
-      const savedNode = nodeAt(state?.saved?.nodes);
-      const headNode = nodeAt(head?.nodes);
       const savedNeedsRestore = command.kind === "all" || !command.path ||
         (savedNode != null && headNode != null &&
           compareDashboardServiceSettings(parseDashboardServiceConfig(savedNode), parseDashboardServiceConfig(headNode))

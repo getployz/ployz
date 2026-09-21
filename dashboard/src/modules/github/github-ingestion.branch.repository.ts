@@ -1,3 +1,8 @@
+import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { githubCheckSuiteProjection } from "./tables";
+import { service as serviceIdentity } from "#/modules/environment-design/tables";
+import { servicePolicySchema, type ServicePolicy } from "#/modules/environment-design/service-policy";
 import { strictParseOptions } from "#/modules/environment-design/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { Cause, Effect, Exit, Option, Result as EffectResult, Schema } from "effect";
@@ -6,6 +11,7 @@ import {
   githubEnvironmentTrigger as schemaGithubEnvironmentTrigger,
 } from "#/modules/github/tables";
 import {
+  githubEnvironmentTriggerSelectionSchema,
   isValidGithubBranchRef,
   isValidGithubEnvironmentTriggerSelection,
   isValidGithubExactSha,
@@ -113,6 +119,7 @@ function decodeCandidate(
     id: string;
     environmentId: string;
     config: ServiceDeploymentConfig;
+    policy: ServicePolicy;
   },
   identity: GithubBranchIdentity,
 ): GithubServiceCandidate | null | undefined {
@@ -123,7 +130,7 @@ function decodeCandidate(
     source.version !== 2 ||
     source.installationId !== identity.installationId ||
     source.repositoryId !== identity.repositoryId ||
-    source.autoDeploy !== true ||
+    row.policy.autoDeploy !== true ||
     branch?.type !== "connected" ||
     branch.name !== identity.ref.slice("refs/heads/".length)
   ) {
@@ -132,7 +139,7 @@ function decodeCandidate(
   const candidate = {
     serviceId: row.id,
     environmentId: row.environmentId,
-    watchPaths: row.config.build.watchPaths,
+    watchPaths: row.policy.watchPaths,
   };
   return isValidGithubServiceCandidate(candidate) ? candidate : null;
 }
@@ -149,10 +156,18 @@ const savedStateCandidates = Effect.fn("Github.savedStateCandidates")(
     },
     identity: GithubBranchIdentity,
   ) {
+    const { drizzle } = yield* Database;
+    const identities = yield* drizzle.select({ id: serviceIdentity.id, policy: serviceIdentity.policy })
+      .from(serviceIdentity).where(eq(serviceIdentity.environmentId, saved.environmentId));
+    const policies = new Map(identities.map(identity => [identity.id, identity.policy]));
     const decoded = yield* Effect.forEach(
       saved.nodeSnapshots.filter((node) => node.nodeType === "service"),
       (node) =>
         Effect.gen(function* () {
+          const storedPolicy = policies.get(node.nodeId);
+          if (!storedPolicy) return undefined;
+          const policy = yield* Schema.decodeUnknownEffect(servicePolicySchema)(storedPolicy, strictParseOptions)
+            .pipe(Effect.mapError(() => repositoryError("invalid_stored_service", false)));
           const config = yield* Schema.decodeUnknownEffect(
             serviceDeploymentConfigSchema,
           )(node.config, strictParseOptions).pipe(
@@ -161,7 +176,7 @@ const savedStateCandidates = Effect.fn("Github.savedStateCandidates")(
             ),
           );
           const candidate = decodeCandidate(
-            { id: node.nodeId, environmentId: saved.environmentId, config },
+            { id: node.nodeId, environmentId: saved.environmentId, config, policy },
             identity,
           );
           if (candidate === null) {
@@ -181,22 +196,10 @@ function mapSavedStateError(cause: unknown) {
   return repositoryError("invalid_stored_service", false);
 }
 
-function isSqlFailure(cause: unknown) {
-  return sqlErrorFrom(cause) !== undefined;
-}
-
-const compileLatestGithubTargets = Effect.fn("Github.compileLatestTargets")(
+const selectLatestGithubTriggers = Effect.fn("Github.selectLatestTriggers")(
   function* (
     input: Extract<ApplyGithubBranchEvaluationInput["plan"], { kind: "active" }> &
-      GithubBranchIdentity & {
-        triggerOrigin: {
-          origin: "github";
-          deliveryId: string;
-          branchEvaluationRevision: number;
-          installationId: number;
-          repositoryId: number;
-        };
-      },
+      GithubBranchIdentity,
   ) {
     const savedStates = yield* listLatestEnvironmentSavedStates();
     const candidates = (
@@ -212,42 +215,7 @@ const compileLatestGithubTargets = Effect.fn("Github.compileLatestTargets")(
     if (EffectResult.isFailure(selectedResult)) {
       return yield* repositoryError("invalid_stored_service", false);
     }
-    const selected = selectedResult.success;
-    const compiled = yield* Effect.forEach(selected, (trigger) =>
-      Effect.gen(function* () {
-        const target = yield* loadLatestSavedDeploymentTarget(
-          trigger.environmentId,
-        ).pipe(
-          Effect.catchIf(
-            (error) => !isSqlFailure(error),
-            () => repositoryError("snapshot_not_admitted", false),
-          ),
-        );
-        const environmentTarget = {
-          ...target,
-          environmentId: trigger.environmentId,
-        };
-        const latestCandidates = yield* savedStateCandidates(
-          environmentTarget,
-          input,
-        );
-        const latestSelectionResult = selectGithubEnvironmentTriggers({
-          candidates: latestCandidates,
-          selection: input.selection,
-          changedPaths: input.changedPaths,
-        });
-        if (EffectResult.isFailure(latestSelectionResult)) {
-          return yield* repositoryError("invalid_stored_service", false);
-        }
-        const latestTrigger = latestSelectionResult.success.find(
-          ({ environmentId }) => environmentId === trigger.environmentId,
-        );
-        return latestTrigger
-          ? { target: environmentTarget, trigger: latestTrigger }
-          : null;
-      }),
-    );
-    return compiled.filter((row) => row !== null);
+    return selectedResult.success;
   },
   Effect.mapError(mapSavedStateError),
 );
@@ -345,21 +313,13 @@ const admitActiveGithubDeployments = Effect.fn(
   const { drizzle } = yield* Database;
   const headSha = input.plan.branch.headSha;
   const branch = input.plan.branch;
-  const triggerOrigin = {
-    origin: "github" as const,
-    deliveryId: input.deliveryId,
-    branchEvaluationRevision: branch.evaluationRevision,
-    installationId: input.installationId,
-    repositoryId: input.repositoryId,
-  };
-  const compiled = yield* compileLatestGithubTargets({
+  const selected = yield* selectLatestGithubTriggers({
     ...input.plan,
     ...input,
-    triggerOrigin,
   });
   const admitted = yield* Effect.forEach(
-    compiled,
-    ({ target, trigger }) =>
+    selected,
+    (trigger) =>
       Effect.gen(function* () {
         const [inserted] = yield* drizzle
           .insert(schemaGithubEnvironmentTrigger)
@@ -376,28 +336,79 @@ const admitActiveGithubDeployments = Effect.fn(
             sourceReceiptSequence: input.receiptSequence,
             branchEvaluationRevision: branch.evaluationRevision,
             triggerRevision: branch.evaluationRevision,
+            changedPaths: input.plan.changedPaths,
           })
           .onConflictDoNothing()
-          .returning({ id: schemaGithubEnvironmentTrigger.id });
+          .returning();
         if (!inserted) return null;
-        const deployment = yield* admitEnvironmentDeployment({
-          environmentId: target.environmentId,
-          savedStateSnapshotId: target.savedStateSnapshotId,
-          triggerOrigin,
-          message: null,
-        }).pipe(
-          Effect.catchIf(
-            (error) => !isSqlFailure(error),
-            () => repositoryError("snapshot_not_admitted", false),
-          ),
-        );
-        return {
-          environmentDeploymentId: deployment.id,
-          environmentId: trigger.environmentId,
-        };
+        return yield* admitGithubTrigger(inserted);
       }),
   );
   return admitted.filter((row) => row !== null);
+});
+
+const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
+  function* (trigger: typeof schemaGithubEnvironmentTrigger.$inferSelect) {
+    const { drizzle } = yield* Database;
+    yield* lockEnvironmentDeploymentQueue(trigger.environmentId);
+    yield* loadEnvironmentDocument(trigger.environmentId, true);
+    const [branch] = yield* drizzle.select().from(schemaGithubBranchProjection).where(and(
+      eq(schemaGithubBranchProjection.installationId, trigger.installationId),
+      eq(schemaGithubBranchProjection.repositoryId, trigger.repositoryId),
+      eq(schemaGithubBranchProjection.ref, trigger.ref),
+    ));
+    const supersede = () => drizzle.update(schemaGithubEnvironmentTrigger).set({ admissionState: "superseded" })
+      .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
+    if (branch?.evaluatedHeadSha !== trigger.headSha) { yield* supersede(); return null; }
+    const target = yield* loadLatestSavedDeploymentTarget(trigger.environmentId);
+    const candidates = yield* savedStateCandidates({ ...target, environmentId: trigger.environmentId }, trigger);
+    const triggerSelection = yield* Schema.decodeUnknownEffect(githubEnvironmentTriggerSelectionSchema)({ mode: trigger.selectionMode, reason: trigger.reason })
+      .pipe(Effect.mapError(() => repositoryError("invalid_stored_service", false)));
+    const selection = selectGithubEnvironmentTriggers({ candidates,
+      selection: triggerSelection, changedPaths: trigger.changedPaths });
+    if (EffectResult.isFailure(selection)) return yield* repositoryError("invalid_stored_service", false);
+    const selected = selection.success.find(row => row.environmentId === trigger.environmentId);
+    if (!selected) { yield* supersede(); return null; }
+    yield* drizzle.update(schemaGithubEnvironmentTrigger).set({ serviceIds: [...selected.serviceIds] })
+      .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
+    const identities = yield* drizzle.select({ id: serviceIdentity.id, policy: serviceIdentity.policy })
+      .from(serviceIdentity).where(eq(serviceIdentity.environmentId, trigger.environmentId));
+    if (identities.some(row => selected.serviceIds.includes(row.id) && row.policy.waitForCi)) {
+      const suites = yield* drizzle.select().from(githubCheckSuiteProjection).where(and(
+        eq(githubCheckSuiteProjection.installationId, trigger.installationId),
+        eq(githubCheckSuiteProjection.repositoryId, trigger.repositoryId),
+        eq(githubCheckSuiteProjection.headSha, trigger.headSha),
+      ));
+      if (!suites.length || suites.some(suite => suite.status !== "completed" ||
+        !["success", "neutral", "skipped"].includes(suite.conclusion ?? ""))) return null;
+    }
+    const deployment = yield* admitEnvironmentDeployment({
+      environmentId: trigger.environmentId, savedStateSnapshotId: target.savedStateSnapshotId,
+      triggerOrigin: { origin: "github", deliveryId: trigger.sourceDeliveryId,
+        branchEvaluationRevision: trigger.branchEvaluationRevision,
+        installationId: trigger.installationId, repositoryId: trigger.repositoryId }, message: null,
+    });
+    yield* drizzle.update(schemaGithubEnvironmentTrigger).set({ admissionState: "admitted" })
+      .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
+    return { environmentDeploymentId: deployment.id, environmentId: trigger.environmentId };
+  },
+);
+
+/** Durable waiting triggers survive restarts; check-suite events and the sweep retry them. */
+export const resumeGithubWaitingTriggers = Effect.fn("Github.resumeWaitingTriggers")(function* () {
+  const { drizzle } = yield* Database;
+  const waiting = yield* drizzle.select({ id: schemaGithubEnvironmentTrigger.id }).from(schemaGithubEnvironmentTrigger)
+    .where(eq(schemaGithubEnvironmentTrigger.admissionState, "waiting"));
+  for (const { id } of waiting) {
+    const deployment = yield* withGithubTransaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [trigger] = yield* drizzle.select().from(schemaGithubEnvironmentTrigger)
+        .where(and(eq(schemaGithubEnvironmentTrigger.id, id), eq(schemaGithubEnvironmentTrigger.admissionState, "waiting")))
+        .for("update");
+      return trigger ? yield* admitGithubTrigger(trigger) : null;
+    }), "read committed");
+    if (deployment) yield* dispatchEnvironmentDeployment(deployment);
+  }
 });
 
 export const applyGithubBranchEvaluation = Effect.fn(

@@ -113,9 +113,9 @@ function RuntimeMachineRow({
 
   return (
     <Card size="sm">
-      <CardHeader>
-        <CardTitle>{machine.name}</CardTitle>
-        <CardDescription>{description || machine.id}</CardDescription>
+      <CardHeader className="flex flex-col gap-2 sm:grid">
+        <CardTitle className="min-w-0 max-w-full break-words">{machine.name}</CardTitle>
+        <CardDescription className="min-w-0 max-w-full break-words">{description || machine.id}</CardDescription>
         <CardAction>
           <div className="flex items-center gap-2">
             <Badge variant="outline">

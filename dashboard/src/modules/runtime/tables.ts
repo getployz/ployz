@@ -296,6 +296,7 @@ export const environmentNodeConfigSnapshot = pgTable(
 export const environmentNodeConfigSnapshotSecret = pgTable(
   "environment_node_config_snapshot_secret",
   {
+    credentialRevision: uuid("credential_revision"),
     snapshotId: uuid("snapshot_id")
       .primaryKey()
       .references(() => environmentNodeConfigSnapshot.id, {

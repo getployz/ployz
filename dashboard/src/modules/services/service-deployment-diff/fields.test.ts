@@ -11,7 +11,6 @@ import {
 function config(mounts: ServiceDeployMount[]) {
   return decodeStrict(serviceDeploymentConfigSchema, {
     version: 2,
-    name: "web",
     privateDns: "web",
     source: { version: 1, type: "empty", rootDir: "/" },
     preDeployCommand: null,

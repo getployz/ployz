@@ -33,7 +33,6 @@ export function savedGithubServiceNode(input: {
     nodeLineageId: input.lineageId,
     configVersion: 1,
     config: projectServiceDeploymentConfig({
-      name: "API",
       source: createGitServiceSource({
         repository: "acme/api",
         installationId: input.installationId ?? 17,
@@ -44,7 +43,7 @@ export function savedGithubServiceNode(input: {
       healthcheck: createDefaultServiceHealthcheck(),
       restartPolicy: createDefaultServiceRestartPolicy(),
       privateDns: "api",
-      build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
+      build: { builder: "railpack", dockerfilePath: null, },
     }),
     encryptedRegistryUsername: null,
     encryptedRegistrySecret: null,

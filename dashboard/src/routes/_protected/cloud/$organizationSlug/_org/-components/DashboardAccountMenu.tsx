@@ -9,6 +9,7 @@ import {
   SunMoonIcon,
   UserIcon,
 } from "lucide-react";
+import { Button } from "#/components/ui/button";
 import { Link } from "@tanstack/react-router";
 import {
   getSignOutErrorMessage,
@@ -160,9 +161,11 @@ export default function DashboardAccountMenu({
         <SidebarMenuItem>
           <DropdownMenu>
             <DropdownMenuTrigger
+              openOnHover={collapsed}
               render={
                 <SidebarMenuButton
-                  size="lg"
+                  size={collapsed ? "default" : "lg"}
+                  aria-label="Open account menu"
                   className={collapsed ? "justify-center" : undefined}
                 />
               }
@@ -194,7 +197,7 @@ export default function DashboardAccountMenu({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label="Open account menu"
-        className="ml-auto outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
+        render={<Button variant="ghost" size="icon-lg" className="ml-auto" />}
       >
         <Avatar size="lg">
           <AvatarImage src={userImage} alt={userName} />

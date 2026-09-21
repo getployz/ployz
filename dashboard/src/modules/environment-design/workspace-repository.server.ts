@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -12,7 +12,6 @@ import { emptyEnvironmentIntent } from "./saved-intent";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
 import {
   projectBaseSlug,
-  type Environment,
   personalOrganizationBaseSlug,
   personalOrganizationName,
   type PersonalOrganizationUser,
@@ -39,13 +38,6 @@ const environmentColumns = {
   organizationId: environment.organizationId,
   name: environment.name,
   namespace: environment.namespace,
-};
-
-const preferenceColumns = {
-  id: userProjectPreference.id,
-  userId: userProjectPreference.userId,
-  projectId: userProjectPreference.projectId,
-  environmentId: userProjectPreference.environmentId,
 };
 
 export const getOrganizationSlugById = Effect.fn(
@@ -172,16 +164,6 @@ export const getProjectForOrganizationBySlug = Effect.fn(
   return rows[0] ?? null;
 });
 
-export const listProjectsForOrganization = Effect.fn(
-  "EnvironmentDesign.listProjectsForOrganization",
-)(function* (organizationId: string) {
-  const database = yield* Database;
-  return yield* database.drizzle
-    .select(projectColumns)
-    .from(project)
-    .where(eq(project.organizationId, organizationId));
-});
-
 export const createProject = Effect.fn("EnvironmentDesign.createProject")(
   function* (input: { readonly organizationId: string; readonly name: string }) {
     const database = yield* Database;
@@ -245,29 +227,6 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
   return rows[0] ?? null;
 });
 
-export const listEnvironmentsForProject = Effect.fn(
-  "EnvironmentDesign.listEnvironmentsForProject",
-)(function* (projectId: string) {
-  const database = yield* Database;
-  return yield* database.drizzle
-    .select(environmentColumns)
-    .from(environment)
-    .where(eq(environment.projectId, projectId))
-    .orderBy(asc(environment.createdAt));
-});
-
-export const listEnvironmentsForProjects = Effect.fn(
-  "EnvironmentDesign.listEnvironmentsForProjects",
-)(function* (projectIds: readonly string[]) {
-  if (projectIds.length === 0) return [] satisfies Environment[];
-  const database = yield* Database;
-  return yield* database.drizzle
-    .select(environmentColumns)
-    .from(environment)
-    .where(inArray(environment.projectId, [...projectIds]))
-    .orderBy(asc(environment.projectId), asc(environment.createdAt));
-});
-
 export const getEnvironmentByIdForProject = Effect.fn(
   "EnvironmentDesign.getEnvironmentByIdForProject",
 )(function* (projectId: string, environmentId: string) {
@@ -278,39 +237,6 @@ export const getEnvironmentByIdForProject = Effect.fn(
     .where(and(eq(environment.projectId, projectId), eq(environment.id, environmentId)))
     .limit(1);
   return rows[0] ?? null;
-});
-
-export const getPreferenceForUserAndProject = Effect.fn(
-  "EnvironmentDesign.getPreferenceForUserAndProject",
-)(function* (userId: string, projectId: string) {
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .select(preferenceColumns)
-    .from(userProjectPreference)
-    .where(
-      and(
-        eq(userProjectPreference.userId, userId),
-        eq(userProjectPreference.projectId, projectId),
-      ),
-    )
-    .limit(1);
-  return rows[0] ?? null;
-});
-
-export const listPreferencesForUserAndProjects = Effect.fn(
-  "EnvironmentDesign.listPreferencesForUserAndProjects",
-)(function* (userId: string, projectIds: readonly string[]) {
-  if (projectIds.length === 0) return [];
-  const database = yield* Database;
-  return yield* database.drizzle
-    .select(preferenceColumns)
-    .from(userProjectPreference)
-    .where(
-      and(
-        eq(userProjectPreference.userId, userId),
-        inArray(userProjectPreference.projectId, [...projectIds]),
-      ),
-    );
 });
 
 export const upsertUserProjectPreference = Effect.fn(
@@ -333,7 +259,10 @@ export const upsertUserProjectPreference = Effect.fn(
       target: [userProjectPreference.userId, userProjectPreference.projectId],
       set: { environmentId: input.environmentId, updatedAt: new Date() },
     })
-    .returning(preferenceColumns);
+    .returning({
+      id: userProjectPreference.id, userId: userProjectPreference.userId,
+      projectId: userProjectPreference.projectId, environmentId: userProjectPreference.environmentId,
+    });
   const preference = rows[0];
   if (preference === undefined) {
     return yield* Effect.die("PostgreSQL did not return the project preference.");

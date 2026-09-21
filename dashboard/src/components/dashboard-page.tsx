@@ -25,9 +25,9 @@ export function DashboardPage({
   density,
   width,
   ...props
-}: React.ComponentProps<"main"> & VariantProps<typeof dashboardPageVariants>) {
+}: React.ComponentProps<"div"> & VariantProps<typeof dashboardPageVariants>) {
   return (
-    <main
+    <div
       className={cn(dashboardPageVariants({ density, width }), className)}
       {...props}
     />

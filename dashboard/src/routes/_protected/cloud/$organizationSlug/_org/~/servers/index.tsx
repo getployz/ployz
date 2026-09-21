@@ -24,9 +24,11 @@ import {
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
-  loader: async ({ params }) => {
-    await preloadRuntimeCollections({
-      organizationSlug: params.organizationSlug,
+  loader: async ({ params, context }) => {
+    await preloadRuntimeCollections(params.organizationSlug, {
+      queryClient: context.queryClient,
+      sessionId: context.session.session.id,
+      userId: context.session.user.id,
     });
   },
   pendingComponent: ServersSkeleton,

@@ -17,7 +17,7 @@ describe("PendingEnrollmentResetSection", () => {
   });
 
   it.each([
-    ["unclaimed", "Organization enrollment unclaimed"],
+    ["unclaimed", "Server setup not started"],
     ["ready", "Organization enrollment ready"],
   ] as const)(
     "shows %s enrollment without offering reset",

@@ -62,7 +62,6 @@ function imageSnapshot(input?: {
     serviceId: "service-api",
     serviceSlug: privateDns,
     config: projectServiceDeploymentConfig({
-      name: privateDns,
       privateDns,
       source: createImageServiceSource({
         image: input?.image ?? "nginx:1.27",
@@ -160,7 +159,6 @@ describe("compileSdkDeployIntent", () => {
           serviceId: "service-empty",
           serviceSlug: "placeholder",
           config: projectServiceDeploymentConfig({
-            name: "placeholder",
             privateDns: "placeholder",
             source: createEmptyServiceSource(),
             preDeployCommand: null,
@@ -193,7 +191,6 @@ describe("compileSdkDeployIntent", () => {
             serviceId: "service-git",
             serviceSlug: "api",
             config: projectServiceDeploymentConfig({
-              name: "api",
               privateDns: "api",
               source: createGitServiceSource({
                 repository: "acme/api",

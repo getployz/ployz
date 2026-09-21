@@ -62,6 +62,7 @@ function createState(overrides?: Partial<ServiceDrawerState>) {
         baselineValue: undefined,
       }),
     }),
+    editMetadata: updateMock,
     collection: {
       update: updateMock,
     },

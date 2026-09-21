@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { createContext, use, useEffect } from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Option, Schema } from "effect";
@@ -31,7 +32,7 @@ export function RuntimeProvider({
   organizationSlug: string;
   children: React.ReactNode;
 }) {
-  const collections = getRuntimeCollections({ organizationSlug });
+  const collections = getRuntimeCollections(organizationSlug, useCollectionScope());
 
   useEffect(() => {
     const eventSource = new EventSource(buildRuntimeEventsUrl(organizationSlug));
@@ -41,10 +42,10 @@ export function RuntimeProvider({
     // A later Runtime Watch event replaces it atomically.
     const applyUnavailable = (error: string) => {
       const snapshot = unavailableRuntimeSnapshot(
-        getCachedRuntimeSnapshot({ organizationSlug }),
+        getCachedRuntimeSnapshot(collections),
         error,
       );
-      applyRuntimeSnapshot({ organizationSlug, snapshot });
+      applyRuntimeSnapshot({ collections, snapshot });
     };
 
     const handleWatch = (event: MessageEvent) => {
@@ -62,7 +63,7 @@ export function RuntimeProvider({
       }
       const snapshot = runtimeSnapshotFromWatchFrame(parsed.value);
       expectIntentionalClose = false;
-      applyRuntimeSnapshot({ organizationSlug, snapshot });
+      applyRuntimeSnapshot({ collections, snapshot });
     };
 
     const handleStatus = (event: MessageEvent) => {
@@ -75,7 +76,7 @@ export function RuntimeProvider({
       }
       const parsed = Schema.decodeUnknownOption(
         runtimeConnectionStatusEventSchema,
-      )(raw, { onExcessProperty: "error" });
+      )(raw);
       if (Option.isNone(parsed)) {
         applyUnavailable("Runtime connection state could not be read.");
         return;
@@ -88,7 +89,7 @@ export function RuntimeProvider({
               parsed.value.error ?? CLUSTER_UNREACHABLE_ERROR,
             );
       expectIntentionalClose = true;
-      applyRuntimeSnapshot({ organizationSlug, snapshot });
+      applyRuntimeSnapshot({ collections, snapshot });
     };
 
     // EventSource reconnects itself. Its error event only changes the
@@ -111,7 +112,7 @@ export function RuntimeProvider({
       eventSource.removeEventListener("error", handleError);
       eventSource.close();
     };
-  }, [organizationSlug]);
+  }, [organizationSlug, collections]);
 
   return (
     <RuntimeContext.Provider value={{ collections }}>
@@ -128,10 +129,7 @@ function useRuntimeContext() {
 
 export function useRuntimeStatus() {
   const { collections } = useRuntimeContext();
-  const { data: rows = [] } = useLiveQuery({
-    query: (q) =>
-      q.from({ status: collections.status }).select(({ status }) => status),
-  }, [collections]);
+  const { data: rows = [] } = useLiveQuery(collections.status);
   const row = rows[0];
   const lensStatus = row?.status ?? "connecting";
 
@@ -150,12 +148,13 @@ export function useRuntimeStatus() {
 export function useRuntimeService(identity: string) {
   const { collections } = useRuntimeContext();
   const { data: rows = [] } = useLiveQuery({
+    queryKey: ['runtime-service', collections.services.id, identity],
     query: (q) =>
       q
         .from({ service: collections.services })
         .where(({ service }) => eq(service.identity, identity))
         .select(({ service }) => service),
-  }, [collections, identity]);
+  });
 
   return {
     runtime: rows[0] ? projectRuntimeServiceRecord(rows[0]) : null,

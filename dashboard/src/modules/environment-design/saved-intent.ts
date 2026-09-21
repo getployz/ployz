@@ -50,8 +50,6 @@ const documentSchema = Schema.Struct({
   version: Schema.Literal(1), environmentSlug: Schema.NonEmptyString,
   services: Schema.Array(Schema.Struct({
     id: Uuid, lineageId: Uuid, slug: Schema.NonEmptyString, config: Schema.Unknown,
-    encryptedRegistryUsername: Schema.optionalKey(Schema.NullOr(encryptedSecretValueSchema)),
-    encryptedRegistrySecret: Schema.optionalKey(Schema.NullOr(encryptedSecretValueSchema)),
     variables: Schema.Array(savedVariableSchema),
     variableGroupAttachments: Schema.Array(attachmentSchema),
     volumeAttachments: Schema.Array(Schema.Struct({ volumeResourceId: Uuid, mountPath: Schema.NonEmptyString })),
@@ -204,7 +202,6 @@ export function canonicalizeSavedEnvironmentIntent(intent: SavedEnvironmentInten
 }
 export function redactSavedEnvironmentIntent(intent: SavedEnvironmentIntent): SavedEnvironmentIntent {
   const next = structuredClone(intent);
-  for (const service of next.services) { service.encryptedRegistryUsername = null; service.encryptedRegistrySecret = null; }
   for (const owner of [...next.services, ...next.variableGroups]) for (const variable of owner.variables) if (variable.value.kind === "secret") variable.value.encryptedValue = null;
   return next;
 }

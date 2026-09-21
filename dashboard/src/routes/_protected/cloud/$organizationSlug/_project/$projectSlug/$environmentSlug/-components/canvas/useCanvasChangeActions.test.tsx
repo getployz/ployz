@@ -43,7 +43,7 @@ function renderActions(destructiveServiceIds = ["removed-service"]) {
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory({ initialEntries: ["/"] }) });
   const hook = renderHook(({ savedId, destructiveServiceIds }) => useCanvasChangeActions({
     environmentId: "env", params: { organizationSlug: "org", projectSlug: "project", environmentSlug: "production" },
-    changeState: { headToken: "applied:none", groups: [], totalCount: 0 },
+    changeState: { headToken: "applied:none", groups: [], totalCount: 0, canSave: true },
     savedSnapshotSource: { kind: "saved", environmentSavedStateSnapshotId: savedId },
     destructiveServiceIds, deletedDeployedVolumeIds: [], commitMessage: "Reviewed",
     setCommitMessage: mocks.clearMessage, setDestructiveConfirmationOpen: mocks.open,

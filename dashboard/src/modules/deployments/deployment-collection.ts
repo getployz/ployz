@@ -1,10 +1,9 @@
 import { reconcileCollection } from "#/collections/query-collection";
-import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
+import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import {
-  createLiveQueryCollection,
+  collectionOptions, liveQueryCollectionOptions,
   eq,
   toArray,
-  type Collection,
 } from "@tanstack/react-db";
 import {
   getEnvironmentDeploymentsCollection,
@@ -14,7 +13,6 @@ import {
   getProjectsCollection,
   getVolumeRemoveAttemptsCollection,
 } from "#/collections/collections";
-import { plainRowCollection } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import {
   environmentDeploymentSummarySchema,
@@ -23,6 +21,7 @@ import {
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
+  const client = getDbClient(scope.queryClient);
   const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   const projects = getProjectsCollection(organizationSlug, scope);
@@ -30,8 +29,8 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
     getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
   const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
-  const rows = createLiveQueryCollection({
-    id: `collections:${organizationSlug}:deployment-relationships`,
+  const rows = client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${deployments.id}:deployment-relationships`,
     query: (q) => q
       .from({ deployment: deployments })
       .innerJoin({ environment: environments }, ({ deployment, environment }) =>
@@ -59,12 +58,11 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             ),
         ),
       })),
-  });
+  })));
 
-  const collection: Collection<EnvironmentDeploymentSummary> =
-    plainRowCollection(
-      createLiveQueryCollection({
-        id: `collections:${organizationSlug}:deployment-summaries`,
+  const collection =
+    client.collection(collectionOptions(liveQueryCollectionOptions({
+        id: `${deployments.id}:deployment-summaries`,
     query: (q) =>
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
         const deployment = deploymentRelationships.deployment;
@@ -123,8 +121,7 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
         } satisfies EnvironmentDeploymentSummary;
       }),
         getKey: (item) => item.id,
-      }),
-    );
+      })));
 
   return collection;
 });

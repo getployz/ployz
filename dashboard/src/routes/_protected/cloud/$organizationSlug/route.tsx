@@ -1,10 +1,11 @@
-import { syncOrganizationSlugServerFn } from "#/modules/environment-design/workspace-functions";
+import { environmentManager } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { rememberSelectedOrganization } from "#/modules/environment-design/workspace-queries";
 import {
   organizationStateQueryOptions,
-  projectListQueryOptions,
+  preloadWorkspace,
 } from "#/modules/environment-design/workspace-queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import { hasPublicErrorCode } from "#/lib/public-error";
 import {
   createFileRoute,
   notFound,
@@ -13,37 +14,27 @@ import {
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   loader: async ({ params, context }) => {
-    const session = context.session;
+    const organization = await context.queryClient.ensureQueryData(
+      organizationStateQueryOptions(params.organizationSlug),
+    );
+    if (organization.activeOrganization?.slug !== params.organizationSlug) throw notFound();
 
-    if (session.session.activeOrganizationSlug !== params.organizationSlug) {
-      try {
-        await syncOrganizationSlugServerFn({
-          data: { organizationSlug: params.organizationSlug },
-        });
-      } catch (error) {
-        if (hasPublicErrorCode(error, "NOT_FOUND")) {
-          throw notFound();
-        }
-        throw error;
-      }
-    }
+    const navigationReady = preloadWorkspace(params.organizationSlug, {
+      queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id,
+    });
 
-    const navigationReady = Promise.all([
-      context.queryClient.prefetchQuery(
-        organizationStateQueryOptions(params.organizationSlug),
-      ),
-      context.queryClient.prefetchQuery(
-        projectListQueryOptions(params.organizationSlug),
-      ),
-    ]);
-
-    return { navigationReady };
+    if (environmentManager.isServer()) await navigationReady;
+    return { navigationReady: navigationReady.then(() => undefined) };
   },
   component: RouteComponent,
 });
 
 function RouteComponent() {
   const params = Route.useParams();
+  const { queryClient, session } = Route.useRouteContext();
+  useEffect(() => {
+    void rememberSelectedOrganization(queryClient, params.organizationSlug, session.session.activeOrganizationSlug);
+  }, [queryClient, params.organizationSlug, session.session.activeOrganizationSlug]);
 
   return (
     <RuntimeProvider organizationSlug={params.organizationSlug}>

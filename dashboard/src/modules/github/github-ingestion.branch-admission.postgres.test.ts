@@ -1,3 +1,4 @@
+import { resumeGithubWaitingTriggers } from "./github-ingestion.branch.repository";
 import { randomUUID } from "node:crypto";
 import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,16 +47,15 @@ const gitSource = createGitServiceSource({
   installationId,
 });
 
-function savedServiceConfig(name = "Saved API") {
+function savedServiceConfig(command = "Saved API") {
   return projectServiceDeploymentConfig({
-    name,
     source: gitSource,
     preDeployCommand: null,
-    startCommand: null,
+    startCommand: command,
     healthcheck: createDefaultServiceHealthcheck(),
     restartPolicy: createDefaultServiceRestartPolicy(),
     privateDns: "api",
-    build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
+    build: { builder: "railpack", dockerfilePath: null, },
     env: {
       SAVED_ONLY: { kind: "literal", value: "published" },
     },
@@ -107,8 +107,6 @@ function savedIntent(
         }),
         variableGroupAttachments: [],
         volumeAttachments: [],
-        encryptedRegistryUsername: null,
-        encryptedRegistrySecret: null,
       };
     }),
     variableGroups: [],
@@ -153,8 +151,8 @@ describe("GitHub branch deployment admission", () => {
       insert into environment (id, project_id, organization_id, name, namespace, intent)
         values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'production', '${JSON.stringify(working)}');
       insert into service_lineage (id, project_id, canonical_name, canonical_slug) values ('${lineageId}', '${projectId}', 'API', 'api');
-      insert into service (id, project_id, environment_id, organization_id, lineage_id)
-        values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}');
+      insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
+        values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}', 'API');
       insert into variable (id, environment_id, service_id) values ('${variableId}', '${environmentId}', '${serviceId}');
     `);
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({
@@ -231,6 +229,34 @@ describe("GitHub branch deployment admission", () => {
     );
   }
 
+  it("waits durably for CI and admits once after successful testimony", async () => {
+    const headSha = "c".repeat(40);
+    await harness.db.update(schema.service).set({ policy: { autoDeploy: true, waitForCi: true, watchPaths: [], imageUpdate: { type: "off" } } }).where(eq(schema.service.id, serviceId));
+    await admitPush({ deliveryId: "wait-ci", headSha, cursor: null });
+    expect(await harness.db.select().from(schema.environmentDeployment)).toEqual([]);
+    const [trigger] = await harness.db.select().from(schema.githubEnvironmentTrigger);
+    expect(trigger?.admissionState).toBe("waiting");
+    if (!trigger) throw new Error("Missing waiting trigger");
+    await harness.db.insert(schema.githubCheckSuiteProjection).values({
+      installationId, repositoryId, checkSuiteId: 123, headSha, status: "completed", conclusion: "success",
+      sourceUpdatedAt: new Date(), lastDeliveryId: trigger.sourceDeliveryId, lastReceiptSequence: trigger.sourceReceiptSequence,
+    });
+    await runGithubRepositoryResult(resumeGithubWaitingTriggers());
+    await runGithubRepositoryResult(resumeGithubWaitingTriggers());
+    expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(1);
+    expect((await harness.db.select().from(schema.githubEnvironmentTrigger))[0]?.admissionState).toBe("admitted");
+  });
+
+  it("rechecks immediate policy before admitting a previously selected service", async () => {
+    const result = await admitPush({ deliveryId: "disabled-policy", headSha: "a".repeat(40), cursor: null,
+      beforeApply: async () => {
+        await harness.db.update(schema.service).set({ policy: { autoDeploy: false, waitForCi: false, watchPaths: [], imageUpdate: { type: "off" } } }).where(eq(schema.service.id, serviceId));
+      },
+    });
+    expect(EffectResult.isSuccess(result) && result.success.triggersCreated).toBe(0);
+    expect(await harness.db.select().from(schema.environmentDeployment)).toEqual([]);
+  });
+
   it("save then Git compiles the queued target from Saved, excluding later Working edits", async () => {
     const headSha = "a".repeat(40);
     const admitted = await admitPush({
@@ -240,7 +266,7 @@ describe("GitHub branch deployment admission", () => {
       beforeApply: async () => {
         await harness.db
           .update(schema.environment)
-          .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', '"Unsaved after candidate selection"')`, revision: randomUUID() })
+          .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', '"Unsaved after candidate selection"')`, revision: randomUUID() })
           .where(eq(schema.environment.id, environmentId));
       },
     });
@@ -268,22 +294,20 @@ describe("GitHub branch deployment admission", () => {
       },
     });
     expect(node?.config).toMatchObject({
-      name: "Saved API",
+      startCommand: "Saved API",
       env: {
         SAVED_ONLY: { kind: "literal", value: "published" },
       },
     });
     expect(node?.config).not.toMatchObject({
-      name: "Unsaved after candidate selection",
+      startCommand: "Unsaved after candidate selection",
     });
     expect(node?.config).not.toHaveProperty("env.WORKING_ONLY");
     expect(trigger).toMatchObject({ headSha, serviceIds: [serviceId] });
   });
 
   it("discovers Git candidates from the latest Saved snapshot without Working rows", async () => {
-    await harness.db
-      .delete(schema.service)
-      .where(eq(schema.service.id, serviceId));
+    await harness.db.update(schema.environment).set({ intent: emptyEnvironmentIntent("production") }).where(eq(schema.environment.id, environmentId));
 
     const candidates = await runGithubRepositoryResult(
       repository.listGithubServiceCandidates({
@@ -305,6 +329,8 @@ describe("GitHub branch deployment admission", () => {
       headSha: "e".repeat(40),
       cursor: null,
       beforeApply: async () => {
+        await harness.db.insert(schema.serviceLineage).values({ id: replacementLineageId, projectId, canonicalName: "Replacement API", canonicalSlug: "replacement-api" });
+        await harness.db.insert(schema.service).values({ id: replacementServiceId, projectId, organizationId, environmentId, lineageId: replacementLineageId, name: "Replacement API" });
         await harness.db.insert(schema.environmentSavedStateSnapshot).values({
           id: latestSavedStateSnapshotId,
           organizationId,
@@ -313,7 +339,7 @@ describe("GitHub branch deployment admission", () => {
           volumeDeletionAuthorizations: [],
           message: "Saved between candidate selection and apply",
           createdAt: new Date("2099-01-05T00:00:00.000Z"),
-          intent: savedIntent([
+          intent: { ...savedIntent([
             {
               id: serviceId,
               lineageId,
@@ -323,7 +349,6 @@ describe("GitHub branch deployment admission", () => {
                   version: 1,
                   type: "image",
                   image: "ghcr.io/acme/api:stable",
-                  autoUpdate: { type: "off" },
                   credentials: { type: "none" },
                 },
               },
@@ -336,7 +361,7 @@ describe("GitHub branch deployment admission", () => {
                 privateDns: "replacement-api",
               },
             },
-          ]),
+          ]), environmentSlug: "staging" },
         });
       },
     });
@@ -369,6 +394,8 @@ describe("GitHub branch deployment admission", () => {
           namespace: "staging",
           intent: emptyEnvironmentIntent("staging"),
         });
+        await harness.db.insert(schema.serviceLineage).values({ id: laterLineageId, projectId, canonicalName: "Staging API", canonicalSlug: "staging-api" });
+        await harness.db.insert(schema.service).values({ id: laterServiceId, projectId, organizationId, environmentId: laterEnvironmentId, lineageId: laterLineageId, name: "Staging API" });
         await harness.db.insert(schema.environmentSavedStateSnapshot).values({
           organizationId,
           environmentId: laterEnvironmentId,
@@ -459,7 +486,7 @@ describe("GitHub branch deployment admission", () => {
       .select()
       .from(schema.environmentNodeConfigSnapshot);
     expect(deployment?.savedStateSnapshotId).toBe(latestSavedStateSnapshotId);
-    expect(node?.config).toMatchObject({ name: "Concurrent Saved API" });
+    expect(node?.config).toMatchObject({ startCommand: "Concurrent Saved API" });
   });
 
   it("keeps a previously Saved pending removal eligible for a later Git target", async () => {
@@ -653,7 +680,7 @@ describe("GitHub branch deployment admission", () => {
     expect(nodes).toHaveLength(1);
     expect(nodes[0]).toMatchObject({
       nodeType: "service",
-      config: expect.objectContaining({ name: "Saved API v2" }),
+      config: expect.objectContaining({ startCommand: "Saved API v2" }),
     });
     expect(triggers.map(({ headSha }) => headSha)).toEqual([
       "a".repeat(40),
@@ -729,12 +756,12 @@ describe("GitHub branch deployment admission", () => {
         ({ environmentDeploymentId, nodeType }) =>
           environmentDeploymentId === running.id && nodeType === "service",
       )?.config,
-    ).toMatchObject({ name: "Saved API" });
+    ).toMatchObject({ startCommand: "Saved API" });
     expect(
       nodes.find(
         ({ environmentDeploymentId, nodeType }) =>
           environmentDeploymentId === queued?.id && nodeType === "service",
       )?.config,
-    ).toMatchObject({ name: "Queued after running" });
+    ).toMatchObject({ startCommand: "Queued after running" });
   });
 });

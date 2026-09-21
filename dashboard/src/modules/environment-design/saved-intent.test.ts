@@ -39,7 +39,6 @@ function intent(value: string): DeepMutable<SavedEnvironmentIntent> {
         slug: "web",
         config: {
           version: 2,
-          name: "Web",
           privateDns: "web",
           source: { version: 1, type: "empty", rootDir: "/" },
           preDeployCommand: null,
@@ -50,8 +49,6 @@ function intent(value: string): DeepMutable<SavedEnvironmentIntent> {
         variables: [],
         variableGroupAttachments: [{ variableGroupId: groupId, sortOrder: 0 }],
         volumeAttachments: [],
-        encryptedRegistryUsername: null,
-        encryptedRegistrySecret: null,
       },
     ],
     variableGroups: [
@@ -124,8 +121,8 @@ describe("Saved Environment intent boundary", () => {
     const service = current.services[0];
     const baselineService = baseline.services[0];
     if (!service || !baselineService) throw new Error("missing service");
-    service.config.name = "New name";
-    baselineService.config.name = "Applied name";
+    service.config.startCommand = "new-command";
+    baselineService.config.startCommand = "applied-command";
 
     expect(() =>
       Effect.runSync(

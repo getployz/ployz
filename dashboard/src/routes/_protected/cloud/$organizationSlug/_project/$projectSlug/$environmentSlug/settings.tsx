@@ -1,22 +1,13 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Separator } from "#/components/ui/separator";
-import {
-  environmentBySlugQueryOptions,
-  projectBySlugQueryOptions,
-} from "#/modules/environment-design/workspace-queries";
+import { useWorkspace } from "#/modules/environment-design/workspace-queries";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
 )({
-  loader: async ({ params, context }) => {
-    await context.queryClient.ensureQueryData(
-      projectBySlugQueryOptions(params.organizationSlug, params.projectSlug),
-    );
-  },
   component: RouteComponent,
 });
 
@@ -24,16 +15,9 @@ function RouteComponent() {
   const { organizationSlug, projectSlug, environmentSlug } = Route.useParams();
   const { environmentId } = EnvironmentLayoutRoute.useLoaderData();
   const navigate = useNavigate();
-  const project = useSuspenseQuery(
-    projectBySlugQueryOptions(organizationSlug, projectSlug),
-  );
-  const environment = useSuspenseQuery(
-    environmentBySlugQueryOptions(
-      organizationSlug,
-      projectSlug,
-      environmentSlug,
-    ),
-  );
+  const { projects, environments } = useWorkspace(organizationSlug);
+  const project = projects.find((row) => row.slug === projectSlug);
+  const environment = environments.find((row) => row.id === environmentId);
 
   function leaveDeletedTree() {
     void navigate({
@@ -51,9 +35,9 @@ function RouteComponent() {
           organizationSlug={organizationSlug}
           scope="environment"
           environmentId={environmentId}
-          confirmPhrase={environment.data.name}
+          confirmPhrase={environment?.name ?? environmentSlug}
           title="Tear down this environment"
-          description="Destroys this environment’s services and volumes, then drops its Cloud rows. This cannot be undone."
+          description="Deletes this environment and all of its services and volumes. This cannot be undone."
           actionLabel="Tear down environment"
           headingId="environment-teardown-heading"
           onCompleted={leaveDeletedTree}
@@ -63,9 +47,9 @@ function RouteComponent() {
           organizationSlug={organizationSlug}
           scope="project"
           projectSlug={projectSlug}
-          confirmPhrase={project.data.name}
+          confirmPhrase={project?.name ?? projectSlug}
           title="Tear down this project"
-          description="Unions Data Loss across every environment in this project, then destroys them through Inngest. This cannot be undone."
+          description="Deletes this project and all of its environments, services, and volumes. This cannot be undone."
           actionLabel="Tear down project"
           headingId="project-teardown-heading"
           showHeading={false}

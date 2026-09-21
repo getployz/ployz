@@ -1,5 +1,4 @@
 import { AlertTriangleIcon } from "lucide-react";
-import { Badge } from "#/components/ui/badge";
 
 export function VariableRowHeading({
   variableKey,
@@ -14,12 +13,12 @@ export function VariableRowHeading({
 }) {
   return (
     <div className="min-w-0">
-      <div className="truncate font-mono text-sm">{variableKey}</div>
-      {showMetadata ? (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {exported ? <Badge variant="secondary">Exported</Badge> : null}
-        </div>
-      ) : null}
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate font-mono text-sm" title={variableKey}>{variableKey}</span>
+        {showMetadata && exported ? (
+          <span className="shrink-0 text-xs text-muted-foreground">Exported</span>
+        ) : null}
+      </div>
       {warnings.map((message) =>
         message ? (
           <div

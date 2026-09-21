@@ -1,5 +1,6 @@
 import { variableGroupsEnabled } from "#/lib/feature-flags";
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "../../-components/environment-route-paths";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -32,5 +33,5 @@ function RouteComponent() {
     return <VariableGroupDrawer params={params} state={variableGroupState} />;
   }
 
-  return null;
+  throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {}, replace: true });
 }

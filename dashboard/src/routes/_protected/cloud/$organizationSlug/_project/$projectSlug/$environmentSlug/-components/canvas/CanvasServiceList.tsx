@@ -1,4 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
+import { DatabaseIcon, HardDriveIcon } from "lucide-react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
@@ -11,7 +12,11 @@ import {
 } from "#/components/ui/card";
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import type { CanvasServiceState } from "./CanvasServicesContext";
+import type {
+  CanvasEnvironmentResourceState,
+  CanvasServiceState,
+  CanvasVolumeResourceState,
+} from "./CanvasServicesContext";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import {
   getServiceIcon,
@@ -21,6 +26,7 @@ import {
 import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
+  ENVIRONMENT_RESOURCE_ROUTE_TO,
 } from "../environment-route-paths";
 import { cn } from "#/lib/utils";
 
@@ -61,7 +67,9 @@ function ServiceListItem({
           environmentSlug: params.environmentSlug,
           serviceId: service.id,
         }}
-        search={(prev) => prev}
+        search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
+        data-canvas-node={service.id}
+        aria-current={selected ? "page" : undefined}
         className="block"
       >
         <Card
@@ -104,23 +112,24 @@ function ServiceListItem({
   );
 }
 
-export function CanvasServiceList({
+export function CanvasNodeList({
   services,
-  selectedServiceId,
+  selectedNodeId,
   servicesById,
-  hasChanges,
+  environmentResourcesById,
+  volumeResourcesById,
 }: {
   services: EnvironmentServiceViewRecord[];
-  selectedServiceId: string | null;
+  selectedNodeId: string | null;
   servicesById: Map<string, CanvasServiceState>;
-  hasChanges: boolean;
+  environmentResourcesById: Map<string, CanvasEnvironmentResourceState>;
+  volumeResourcesById: Map<string, CanvasVolumeResourceState>;
 }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const resources = [...volumeResourcesById.values(), ...environmentResourcesById.values()];
   return (
     <div
-      className={cn(
-        "absolute inset-0 overflow-y-auto px-4 pb-24 sm:hidden",
-        hasChanges ? "pt-24" : "pt-4",
-      )}
+      className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
     >
       <div className="flex flex-col gap-3">
         {services.map((serviceView) => {
@@ -130,9 +139,40 @@ export function CanvasServiceList({
               key={serviceView.service.id}
               serviceView={serviceView}
               serviceState={serviceState}
-              selected={serviceView.service.id === selectedServiceId}
+              selected={serviceView.service.id === selectedNodeId}
             />
           ) : null;
+        })}
+        {resources.map(({ resource, diffRowCount }) => {
+          const isVolume = "attachments" in resource;
+          const removed = "isAuthored" in resource && !resource.isAuthored;
+          const summary = isVolume
+            ? resource.attachments.map((attachment) => attachment.mountPath).join(", ") || "No mounts"
+            : resource.exports.map((entry) => entry.key).join(", ") || "No exports";
+          const selected = resource.resource.id === selectedNodeId;
+          return <Link
+            key={resource.resource.id}
+            to={ENVIRONMENT_RESOURCE_ROUTE_TO}
+            params={{ ...params, resourceId: resource.resource.id }}
+            search={(previous) => ({ ...previous, tab: selected ? previous.tab : undefined })}
+            className="block"
+            data-canvas-node={resource.resource.id}
+            aria-current={selected ? "page" : undefined}
+          >
+            <Card state={removed ? "destructive" : diffRowCount > 0 ? "changed" : undefined} data-selected={selected}>
+              <CardHeader>
+                <div className="flex items-start gap-3">
+                  <Avatar><AvatarFallback>{isVolume ? <HardDriveIcon /> : <DatabaseIcon />}</AvatarFallback></Avatar>
+                  <div className="min-w-0 flex-1">
+                    <CardTitle className="truncate" title={resource.resource.name}>{resource.resource.name}</CardTitle>
+                    <CardDescription>{isVolume ? "Volume" : "Variable group"}</CardDescription>
+                  </div>
+                  {removed ? <Badge variant="destructive">Removing</Badge> : diffRowCount > 0 ? <Badge variant="changed">{diffRowCount}</Badge> : null}
+                </div>
+              </CardHeader>
+              <CardContent><p className="truncate text-muted-foreground" title={summary}>{summary}</p></CardContent>
+            </Card>
+          </Link>;
         })}
       </div>
     </div>

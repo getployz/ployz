@@ -1,5 +1,6 @@
+import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import {
-  createCollection,
+  collectionOptions,
   localOnlyCollectionOptions,
   type Collection,
   type VirtualRowProps,
@@ -203,12 +204,10 @@ export function unreachableRuntimeSnapshot(error: string): RuntimeSnapshot {
 }
 
 export function applyRuntimeSnapshot(input: {
-  organizationSlug: string;
+  collections: RuntimeCollections;
   snapshot: RuntimeSnapshot;
 }) {
-  const collections = getRuntimeCollections({
-    organizationSlug: input.organizationSlug,
-  });
+  const { collections } = input;
   replaceRuntimeRows(collections.machines, input.snapshot.machines);
   replaceRuntimeRows(collections.services, input.snapshot.services);
   replaceRuntimeRows(collections.status, [
@@ -224,10 +223,7 @@ export function applyRuntimeSnapshot(input: {
   ]);
 }
 
-export function getCachedRuntimeSnapshot(input: {
-  organizationSlug: string;
-}) {
-  const collections = getRuntimeCollections(input);
+export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
   const status = collections.status.get("runtime");
   if (!status) return null;
   return Schema.decodeUnknownSync(runtimeSnapshotSchema)({
@@ -248,24 +244,24 @@ export function getCachedRuntimeSnapshot(input: {
   });
 }
 
-const runtimeCollections = new Map<string, RuntimeCollections>();
-
-function createRuntimeCollections(organizationSlug: string) {
+function createRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
+  const client = getDbClient(scope.queryClient);
+  const prefix = `runtime:${scope.sessionId}:${scope.userId}:${organizationSlug}`;
   const snapshot = connectingSnapshot();
   return {
-    machines: createCollection(
+    machines: client.collection(collectionOptions(
       localOnlyCollectionOptions({
-        id: `runtime:${organizationSlug}:machines`,
+        id: `${prefix}:machines`,
         getKey: (item: RuntimeMachineRecord) => item.id,
         schema: Schema.toStandardSchemaV1(runtimeMachineRecordSchema, {
           parseOptions: strictParseOptions,
         }),
         initialData: [...snapshot.machines],
       }),
-    ),
-    status: createCollection(
+    )),
+    status: client.collection(collectionOptions(
       localOnlyCollectionOptions({
-        id: `runtime:${organizationSlug}:status`,
+        id: `${prefix}:status`,
         getKey: (item: RuntimeStatusRecord) => item.id,
         schema: Schema.toStandardSchemaV1(runtimeStatusRecordSchema, {
           parseOptions: strictParseOptions,
@@ -282,17 +278,17 @@ function createRuntimeCollections(organizationSlug: string) {
           },
         ],
       }),
-    ),
-    services: createCollection(
+    )),
+    services: client.collection(collectionOptions(
       localOnlyCollectionOptions({
-        id: `runtime:${organizationSlug}:services`,
+        id: `${prefix}:services`,
         getKey: (item: RuntimeServiceRecord) => item.id,
         schema: Schema.toStandardSchemaV1(runtimeServiceRecordSchema, {
           parseOptions: strictParseOptions,
         }),
         initialData: [...snapshot.services],
       }),
-    ),
+    )),
   };
 }
 
@@ -300,20 +296,14 @@ export type RuntimeCollections = ReturnType<
   typeof createRuntimeCollections
 >;
 
-export function getRuntimeCollections(input: { organizationSlug: string }) {
-  const existing = runtimeCollections.get(input.organizationSlug);
-  if (existing) return existing;
-
-  const collections = createRuntimeCollections(input.organizationSlug);
-  runtimeCollections.set(input.organizationSlug, collections);
-  return collections;
+const scopedRuntimeCollections = cachedByCollectionScope(createRuntimeCollections);
+export function getRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
+  return scopedRuntimeCollections(organizationSlug, { ...scope, environmentSlug: undefined });
 }
 
-export async function preloadRuntimeCollections(input: {
-  organizationSlug: string;
-}) {
-  const collections = getRuntimeCollections(input);
-  await Promise.allSettled([
+export async function preloadRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
+  const collections = getRuntimeCollections(organizationSlug, scope);
+  await Promise.all([
     collections.machines.preload(),
     collections.status.preload(),
     collections.services.preload(),

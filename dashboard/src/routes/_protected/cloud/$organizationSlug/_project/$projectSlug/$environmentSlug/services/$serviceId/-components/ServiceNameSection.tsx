@@ -1,4 +1,4 @@
-import { CollectionFieldInput } from "#/components/stageable/collection-field-input";
+import { SchemaFieldInput } from "#/components/stageable/schema-field-input";
 import {
   createEnvironmentNodeNameSchema,
 } from "#/modules/environment-design/environment-node-names";
@@ -15,7 +15,7 @@ export function ServiceNameSection({
 }: {
   state: ServiceDrawerState;
 }) {
-  const { service, collection } = state;
+  const { service } = state;
   const nameSchema = createEnvironmentNodeNameSchema({
     schema: environmentDesignFields.service.name,
     nodes: state.environmentNodes,
@@ -29,12 +29,10 @@ export function ServiceNameSection({
     <FieldGroup>
       <Field>
         <FieldLabel htmlFor="service-name">Name</FieldLabel>
-        <CollectionFieldInput
-          resource="service"
-          collection={collection}
-          entity={service}
-          entityId={service.id}
-          path="name"
+        <SchemaFieldInput
+          value={service.name}
+          isChanged={false}
+          onCommit={(name) => state.editMetadata({ environmentId: service.environmentId, serviceId: service.id, edit: { kind: "rename", name } })}
           label="Name"
           schema={nameSchema}
         />

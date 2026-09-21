@@ -94,6 +94,7 @@ export function ServiceVariableGroupAttachmentsPanel({
   const attachments = document?.intent.services.find((node) => node.id === state.service.id)?.variableGroupAttachments
     .map((attachment) => ({ ...attachment, serviceId: state.service.id, environmentId: state.service.environmentId })) ?? [];
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
+    queryKey: ['service-attachment-resources', environmentResourcesCollection.id, state.service.environmentId],
     query: (q) =>
       q
         .from({ resource: environmentResourcesCollection })

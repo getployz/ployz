@@ -4,9 +4,11 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { environment } from "#/modules/project/tables";
-import { service, serviceRegistryCredential, variable, variableSecret, environmentResource, environmentVariableGroup } from "./tables";
+import { service, variable, variableSecret, environmentResource, environmentVariableGroup, environmentCanvasNodePosition } from "./tables";
 import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent, parseDashboardEnvironmentIntent, redactSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import { Database } from "#/server/database.server";
+import { environmentNodeIntroduction, environmentNodeIntroductionSecret, environmentNodeConfigSnapshot, volumeRemoveAttempt } from "#/modules/runtime/tables";
+import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { Conflict, NotFound } from "#/server/public-error";
 
 export type EnvironmentDocument = typeof environment.$inferSelect;
@@ -56,6 +58,10 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
     if (intent.services.some((node) => !identities.some((identity) => identity.id === node.id && identity.lineageId === node.lineageId))) {
       return yield* new Conflict({ message: "A service does not belong to this Environment." });
     }
+    if (intent.services.some(node => node.config.source.type === "image" &&
+      node.config.source.credentials.type === "configured" && node.config.source.credentials.credentialId !== node.id)) {
+      return yield* new Conflict({ message: "Registry credentials do not belong to this service." });
+    }
     const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, document.id));
     const groups = yield* drizzle.select().from(environmentVariableGroup).where(eq(environmentVariableGroup.environmentId, document.id));
     if (intent.volumes.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "volume")) ||
@@ -82,21 +88,11 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
       set: { encryptedValue: sql`excluded.encrypted_value` },
       setWhere: eq(variableSecret.environmentId, document.id),
     });
-    const credentials = intent.services.flatMap((node) => node.encryptedRegistrySecret
-      ? [{ serviceId: node.id, encryptedRegistryUsername: node.encryptedRegistryUsername, encryptedRegistrySecret: node.encryptedRegistrySecret }]
-      : []);
-    if (credentials.length) {
-      yield* drizzle.insert(serviceRegistryCredential).values(credentials).onConflictDoUpdate({
-        target: serviceRegistryCredential.serviceId,
-        set: { encryptedRegistryUsername: sql`excluded.encrypted_registry_username`, encryptedRegistrySecret: sql`excluded.encrypted_registry_secret` },
-      });
-      yield* drizzle.update(service).set({ hasRegistryCredential: true })
-        .where(and(eq(service.environmentId, document.id), inArray(service.id, credentials.map((credential) => credential.serviceId))));
-    }
     const [written] = yield* drizzle.update(environment).set({
       intent: redactSavedEnvironmentIntent(intent), revision: randomUUID(), updatedAt: new Date(),
     }).where(and(eq(environment.id, document.id), eq(environment.revision, document.revision))).returning();
     if (!written) return yield* new Conflict({ message: "Working State changed while this edit was being saved." });
+    yield* pruneDraftVolumes(written);
     return written;
   },
 );
@@ -118,14 +114,6 @@ export const loadCurrentEnvironmentState = Effect.fn("EnvironmentDesign.loadCurr
       if (!encryptedValue) return yield* new Conflict({ message: "A sealed variable has no private value." });
       variable.value.encryptedValue = encryptedValue;
     }
-    const credentials = intent.services.length ? yield* drizzle.select({ credential: serviceRegistryCredential }).from(serviceRegistryCredential)
-      .innerJoin(service, eq(service.id, serviceRegistryCredential.serviceId))
-      .where(and(eq(service.environmentId, environmentId), inArray(service.id, intent.services.map((node) => node.id)))) : [];
-    for (const node of intent.services) {
-      const credential = credentials.find((row) => row.credential.serviceId === node.id)?.credential;
-      node.encryptedRegistryUsername = credential?.encryptedRegistryUsername ?? null;
-      node.encryptedRegistrySecret = credential?.encryptedRegistrySecret ?? null;
-    }
     return {
       document,
       intent,
@@ -139,4 +127,41 @@ export const loadCurrentEnvironmentState = Effect.fn("EnvironmentDesign.loadCurr
 
 export const loadCurrentEnvironmentSnapshotProjection = Effect.fn("EnvironmentDesign.loadCurrentEnvironmentSnapshotProjection")(
   function* (environmentId: string) { return (yield* loadCurrentEnvironmentState(environmentId)).projection; },
+);
+
+/** The Environment write lock serializes this with publication. Retained JSON
+ * history has no identity FK, so it must be checked before deleting identities. */
+const pruneDraftVolumes = Effect.fn("EnvironmentDesign.pruneDraftVolumes")(
+  function* (document: EnvironmentDocument) {
+    const { drizzle } = yield* Database;
+    const deleted = yield* drizzle.delete(environmentResource).where(and(
+      eq(environmentResource.environmentId, document.id),
+      eq(environmentResource.implementationType, "volume"),
+      sql`not exists (select 1 from jsonb_array_elements(${JSON.stringify(document.intent.volumes)}::jsonb) node
+        where node->>'resourceId' = ${environmentResource.id}::text)`,
+      sql`not exists (select 1 from ${environmentSavedStateSnapshot} saved
+        where saved.environment_id = ${document.id}
+          and saved.intent->'volumes' @> jsonb_build_array(jsonb_build_object('resourceId', ${environmentResource.id}::text)))`,
+      sql`not exists (select 1 from ${environmentNodeConfigSnapshot} snapshot
+        where snapshot.environment_id = ${document.id} and snapshot.node_type = 'volume'
+          and snapshot.node_id = ${environmentResource.id})`,
+      sql`not exists (select 1 from ${volumeRemoveAttempt} removal
+        where removal.environment_resource_id = ${environmentResource.id})`,
+      sql`not exists (select 1 from ${environmentNodeIntroductionSecret} introduction
+        where introduction.environment_id = ${document.id}
+          and not (introduction.node_type = 'volume' and introduction.node_id = ${environmentResource.id})
+          and introduction.authored_intent->'volumes' @> jsonb_build_array(jsonb_build_object('resourceId', ${environmentResource.id}::text)))`,
+    )).returning({ id: environmentResource.id });
+    if (!deleted.length) return;
+    const ids = deleted.map((row) => row.id);
+    // Introduction secrets cascade from their public introduction; lineage is shared.
+    yield* drizzle.delete(environmentNodeIntroduction).where(and(
+      eq(environmentNodeIntroduction.environmentId, document.id),
+      eq(environmentNodeIntroduction.nodeType, "volume"), inArray(environmentNodeIntroduction.nodeId, ids),
+    ));
+    yield* drizzle.delete(environmentCanvasNodePosition).where(and(
+      eq(environmentCanvasNodePosition.environmentId, document.id),
+      eq(environmentCanvasNodePosition.resourceType, "volume"), inArray(environmentCanvasNodePosition.resourceId, ids),
+    ));
+  },
 );

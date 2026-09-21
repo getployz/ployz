@@ -1,11 +1,11 @@
+import { getDbClient } from "#/collections/scope";
 import {
   type Collection,
-  createLiveQueryCollection,
+  collectionOptions, liveQueryCollectionOptions, type DbClient,
 } from "@tanstack/react-db";
 import type { QueryClient } from "@tanstack/react-query";
 import { createApiCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
-import { plainRowCollection } from "#/lib/tanstack-db";
 import type { GithubRepositorySelection } from "#/modules/github/github";
 import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
 
@@ -65,9 +65,8 @@ export function getRawGithubReposCollection(scope: GithubCollectionScope) {
   return getScope(scope).raw;
 }
 
-export function createGithubReposCollection(raw: Collection<GithubRepositoryRow>, id: string): Collection<GithubRepositoryView> {
-  return plainRowCollection(
-    createLiveQueryCollection({
+export function createGithubReposCollection(raw: Collection<GithubRepositoryRow>, id: string, client: DbClient): Collection<GithubRepositoryView> {
+  return client.collection(collectionOptions(liveQueryCollectionOptions({
       id,
       query: (q) =>
         q.from({ repository: raw }).fn.select(
@@ -86,12 +85,11 @@ export function createGithubReposCollection(raw: Collection<GithubRepositoryRow>
         ),
       getKey: (row: GithubRepositoryView) =>
         `${row.installation_id}:${row.id}`,
-    }),
-  );
+    })));
 }
 
 export function getGithubReposCollection(scope: GithubCollectionScope) {
   const entry = getScope(scope);
-  entry.view ??= createGithubReposCollection(entry.raw, `api:${scope.sessionId}:github-repositories`);
+  entry.view ??= createGithubReposCollection(entry.raw, `${entry.raw.id}:view`, getDbClient(scope.queryClient));
   return entry.view;
 }

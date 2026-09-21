@@ -218,7 +218,7 @@ function OpenDestructiveConfirmationDialog({
 
   return (
     <AlertDialog open onOpenChange={onOpenChange}>
-      <AlertDialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <AlertDialogContent render={<form onSubmit={(event) => { event.preventDefault(); void confirmDestruction(); }} />} className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <AlertDialogHeader>
           <AlertDialogMedia>
             <AlertTriangleIcon />
@@ -289,12 +289,6 @@ function OpenDestructiveConfirmationDialog({
             placeholder={confirmPhrase}
             disabled={state.status !== "ready" || isSubmitting}
             aria-invalid={state.status === "failed" || undefined}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && canConfirm) {
-                event.preventDefault();
-                void confirmDestruction();
-              }
-            }}
           />
           <FieldDescription>
             The phrase must exactly match the environment namespace.
@@ -305,10 +299,11 @@ function OpenDestructiveConfirmationDialog({
         </Field>
 
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={isSubmitting}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel type="button" disabled={isSubmitting}>Cancel</AlertDialogCancel>
           <Button
             variant="outline"
             disabled={state.status === "gathering" || isSubmitting}
+            type="button"
             onClick={() => void reloadEvidence()}
           >
             <RefreshCwIcon data-icon="inline-start" />
@@ -317,7 +312,7 @@ function OpenDestructiveConfirmationDialog({
           <AlertDialogAction
             variant="destructive"
             disabled={!canConfirm}
-            onClick={() => void confirmDestruction()}
+            type="submit"
           >
             {isSubmitting ? <Spinner /> : null}
             {isSubmitting ? pendingActionLabel : actionLabel}

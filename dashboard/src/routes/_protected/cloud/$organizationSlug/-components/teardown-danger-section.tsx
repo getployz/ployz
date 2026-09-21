@@ -144,10 +144,10 @@ export function TeardownDangerSection({
           ) : null}
           <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
             <div className="min-w-0">
-              <div className="text-sm font-semibold text-destructive">
+              <div className="text-sm font-semibold text-foreground">
                 {resolvedTitle}
               </div>
-              <p className="mt-1 text-sm text-destructive/85">
+              <p className="mt-1 text-sm text-foreground">
                 {resolvedDescription}
               </p>
             </div>

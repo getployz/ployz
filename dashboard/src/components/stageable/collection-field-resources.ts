@@ -1,6 +1,4 @@
-import {
-  type ServiceWithContextRecord,
-} from "#/modules/environment-design/services";
+import type { ServiceConfigurationRecord } from "#/modules/services/services.collection";
 import {
   setDraftValueAtPath,
   type DeepPath,
@@ -32,19 +30,19 @@ export type CollectionResourceConfig<TEntity, TKey> = {
 
 export const collectionFieldResources = {
   service: {
-    getKey: (entity: ServiceWithContextRecord) => entity.id,
+    getKey: (entity: ServiceConfigurationRecord) => entity.id,
     commit: ({
       collection,
       entityId,
       path,
       value,
     }: {
-      collection: CollectionLike<ServiceWithContextRecord, string>;
+      collection: CollectionLike<ServiceConfigurationRecord, string>;
       entityId: string;
-      path: DeepPath<ServiceWithContextRecord>;
+      path: DeepPath<ServiceConfigurationRecord>;
       value: DeepPathValue<
-        ServiceWithContextRecord,
-        DeepPath<ServiceWithContextRecord>
+        ServiceConfigurationRecord,
+        DeepPath<ServiceConfigurationRecord>
       >;
     }) => {
       return collection.update(entityId, (draft) => {
@@ -52,7 +50,7 @@ export const collectionFieldResources = {
       });
     },
   } satisfies CollectionResourceConfig<
-    ServiceWithContextRecord,
+    ServiceConfigurationRecord,
     string
   >,
 };

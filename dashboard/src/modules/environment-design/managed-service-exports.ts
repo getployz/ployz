@@ -45,8 +45,8 @@ export function getManagedServiceExports(
     },
     {
       key: "PLOYZ_SERVICE_NAME",
-      description: "The service name.",
-      value: service.name,
+      description: "The stable service slug.",
+      value: service.slug,
     },
     {
       key: "PLOYZ_ENVIRONMENT_ID",

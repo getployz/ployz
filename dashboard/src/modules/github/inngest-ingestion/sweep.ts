@@ -1,3 +1,4 @@
+import { resumeGithubWaitingTriggers } from "../github-ingestion.branch.repository";
 import {
   drainGithubCheckSuiteTransitionOutbox,
   drainGithubEnvironmentTriggerOutbox,
@@ -11,6 +12,7 @@ export async function executeSweepGithubIngestionOutboxes(
   step: GithubIngestionStepTools,
   runEffect: GithubIngestionEffectRunner,
 ) {
+  await step.run("resume-waiting-github-triggers", () => runEffect(resumeGithubWaitingTriggers()));
   const environmentTriggers = await drainGithubEnvironmentTriggerOutbox(
     step,
     "sweep",

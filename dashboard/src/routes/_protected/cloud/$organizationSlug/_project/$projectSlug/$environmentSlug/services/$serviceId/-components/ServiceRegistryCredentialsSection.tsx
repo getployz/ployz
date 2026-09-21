@@ -36,6 +36,7 @@ function RegistryCredentialSummary({
   registryHost,
   username,
   title,
+  changed,
   onEdit,
   onDelete,
 }: {
@@ -43,11 +44,12 @@ function RegistryCredentialSummary({
   registryHost: string;
   username: string | null;
   title?: string;
+  changed: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   return (
-    <Item variant="muted" title={title}>
+    <Item variant="muted" title={title} data-changed={changed || undefined}>
       <ItemMedia variant="icon">
         <KeyRoundIcon />
       </ItemMedia>
@@ -64,7 +66,7 @@ function RegistryCredentialSummary({
           <span className="sr-only">Edit registry credentials</span>
         </Button>
         <Button type="button" variant="outline" onClick={onDelete}>
-          Delete
+          Disconnect
         </Button>
       </ItemActions>
     </Item>
@@ -73,15 +75,17 @@ function RegistryCredentialSummary({
 
 function RegistryCredentialEmptyState({
   description,
+  changed,
   actionLabel,
   onAction,
 }: {
   description: string;
+  changed: boolean;
   actionLabel: string;
   onAction: () => void;
 }) {
   return (
-    <Item state="info">
+    <Item state="info" data-changed={changed || undefined}>
       <ItemMedia variant="icon">
         <InfoIcon />
       </ItemMedia>
@@ -162,6 +166,7 @@ export function ServiceRegistryCredentialsSection({
         {mode == null ? (
           hasConfiguredCredential ? (
             <RegistryCredentialSummary
+              changed={credentialsDiff.changed}
               providerLabel={providerLabel}
               registryHost={registryHost}
               username={credentialUsername}
@@ -177,7 +182,8 @@ export function ServiceRegistryCredentialsSection({
             />
           ) : (
             <RegistryCredentialEmptyState
-              description={`If you are trying to deploy a private Docker image, please add your ${providerLabel} credentials.`}
+              changed={credentialsDiff.changed}
+              description={`Private image? Add your ${providerLabel} credentials.`}
               actionLabel="Add credentials"
               onAction={() => {
                 setMode("create");

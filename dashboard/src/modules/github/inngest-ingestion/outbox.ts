@@ -1,3 +1,4 @@
+import { resumeGithubWaitingTriggers } from "../github-ingestion.branch.repository";
 import {
   createGithubCheckSuiteTransitionEvent,
   createGithubEnvironmentTriggerPersistedEvent,
@@ -73,6 +74,8 @@ export async function drainGithubCheckSuiteTransitionOutbox(
   );
   for (const transition of pending) {
     await publishGithubCheckSuiteTransition(step, transition, runEffect);
+    await step.run(`resume-github-triggers-${transition.checkSuiteId}-${transition.transitionRevision}`,
+      () => runEffect(resumeGithubWaitingTriggers()));
   }
   return pending.length;
 }

@@ -44,6 +44,7 @@ export function useVolumeDrawerState(
   );
   const servicesCollection = useServicesCollection(params.organizationSlug);
   const { data: volumeRows } = useLiveSuspenseQuery({
+    queryKey: ['volume-resources', volumeResources.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: volumeResources })
@@ -54,6 +55,7 @@ export function useVolumeDrawerState(
         .select(({ resource }) => resource),
   });
   const { data: variableGroupResourceRows } = useLiveSuspenseQuery({
+    queryKey: ['volume-variable-groups', environmentResources.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: environmentResources })
@@ -64,6 +66,7 @@ export function useVolumeDrawerState(
         .select(({ resource }) => resource),
   });
   const { data: services } = useLiveSuspenseQuery({
+    queryKey: ['volume-services', servicesCollection.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ service: servicesCollection })

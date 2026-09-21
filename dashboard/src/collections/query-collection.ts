@@ -1,6 +1,7 @@
 import { queryCollectionOptions, type QueryCollectionUtils } from "@tanstack/query-db-collection";
-import { BasicIndex, createCollection } from "@tanstack/react-db";
+import { BasicIndex, collectionOptions } from "@tanstack/react-db";
 import type { QueryClient } from "@tanstack/react-query";
+import { getDbClient } from "./scope";
 
 /** Each owner supplies its request-local QueryClient and authenticated scope. */
 export function createApiCollection<T extends object>(input: {
@@ -23,14 +24,14 @@ export function createApiCollection<T extends object>(input: {
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
   });
-  const collection = createCollection(options);
+  const collection = getDbClient(input.queryClient).collection(collectionOptions(options));
   return Object.assign(collection, {
     async writeCommitted(rows: T | T[]): Promise<void> {
       const subscription = collection.subscribeChanges(() => {});
       try {
         // A read started before the POST must not overwrite its committed response.
         await input.queryClient.cancelQueries({ queryKey: input.queryKey, exact: true });
-        options.utils.writeUpsert(rows);
+        collection.utils.writeUpsert(rows);
       } finally {
         subscription.unsubscribe();
       }

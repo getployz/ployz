@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
+import type { ReactNode } from "react";
+import { getDbClient } from "#/collections/scope";
 import type { ContainerId } from "@ployz/sdk";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +24,7 @@ import {
 type RuntimeEventListener = (event: MessageEvent) => void;
 
 const eventSources: FakeEventSource[] = [];
+const clients: QueryClient[] = [];
 
 class FakeEventSource {
   private readonly listeners = new Map<string, RuntimeEventListener>();
@@ -45,8 +50,9 @@ class FakeEventSource {
 
 vi.stubGlobal("EventSource", FakeEventSource);
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  for (const client of clients.splice(0)) { await getDbClient(client).cleanup(); client.clear(); }
   eventSources.length = 0;
 });
 
@@ -77,8 +83,27 @@ function LensProbe({ organizationSlug }: { organizationSlug: string }) {
   return <output data-testid="lens">{runtime.status}:{runtime.machines.length}</output>;
 }
 
-function renderProvider(organizationSlug: string) {
-  render(
+async function renderRuntime(children: ReactNode) {
+  const client = new QueryClient();
+  clients.push(client);
+  const root = createRootRoute();
+  const protectedRoute = createRoute({
+    getParentRoute: () => root, id: "_protected",
+    beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }),
+  });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({
+    routeTree: root.addChildren([protectedRoute.addChildren([index])]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  return render(children, {
+    wrapper: ({ children }) => <QueryClientProvider client={client}><RouterContextProvider router={router}>{children}</RouterContextProvider></QueryClientProvider>,
+  });
+}
+
+async function renderProvider(organizationSlug: string) {
+  await renderRuntime(
     <RuntimeProvider organizationSlug={organizationSlug}>
       <Probe />
     </RuntimeProvider>,
@@ -116,7 +141,7 @@ function watchFrame() {
 
 describe("RuntimeProvider", () => {
   it("decodes a direct Runtime Watch event and clears it for an unreachable status", async () => {
-    const eventSource = renderProvider("runtime-provider-observed");
+    const eventSource = await renderProvider("runtime-provider-observed");
 
     act(() => {
       eventSource.emit("runtime.watch", JSON.stringify(watchFrame()));
@@ -145,7 +170,7 @@ describe("RuntimeProvider", () => {
   });
 
   it.each(["runtime.watch", "error"])("retains the last observation when %s fails", async (eventType) => {
-    const eventSource = renderProvider(`runtime-provider-failure-${eventType}`);
+    const eventSource = await renderProvider(`runtime-provider-failure-${eventType}`);
 
     act(() => {
       eventSource.emit("runtime.watch", JSON.stringify(watchFrame()));
@@ -174,7 +199,7 @@ describe("RuntimeProvider", () => {
         <LensProbe organizationSlug={organizationSlug} />
       </RuntimeProvider>
     );
-    const { rerender } = render(view("runtime-switch-a"));
+    const { rerender } = await renderRuntime(view("runtime-switch-a"));
     const firstSource = latestEventSource();
     act(() => firstSource.emit("runtime.watch", JSON.stringify(watchFrame())));
     await waitFor(() => {
@@ -207,7 +232,7 @@ describe("RuntimeProvider", () => {
         <Probe identity={identity} />
       </RuntimeProvider>
     );
-    const { rerender } = render(view("production/api"));
+    const { rerender } = await renderRuntime(view("production/api"));
     act(() => latestEventSource().emit("runtime.watch", JSON.stringify(watchFrame())));
     await waitFor(() => {
       expect(screen.getByTestId("runtime").getAttribute("data-containers")).toBe("1");

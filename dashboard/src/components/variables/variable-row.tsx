@@ -108,7 +108,7 @@ export function VariableRow({
   }
 
   return (
-    <div className="grid grid-cols-[minmax(8rem,14rem)_1fr_auto] items-center gap-3 border-b py-2 last:border-b-0">
+    <div className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">
       <VariableRowHeading
         variableKey={variable.key}
         exported={variable.exported}
@@ -116,6 +116,7 @@ export function VariableRow({
         warnings={[warning, brokenRefWarning]}
       />
 
+      <div className="flex min-w-0 items-center gap-1.5">
       <VariableRowValue
         editing={state.editing}
         editValue={state.editValue}
@@ -152,6 +153,8 @@ export function VariableRow({
         onSave={() => void handleSave()}
         onUpdateMetadata={(patch) => void handleUpdateMetadata(patch)}
       />
+
+      </div>
 
       <VariableRowDialogs
         variableKey={variable.key}

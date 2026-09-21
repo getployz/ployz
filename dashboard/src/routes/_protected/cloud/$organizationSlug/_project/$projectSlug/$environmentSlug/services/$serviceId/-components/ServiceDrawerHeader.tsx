@@ -1,4 +1,3 @@
-import { collectionFieldResources } from "#/components/stageable/collection-field-resources";
 import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
 import { createEnvironmentNodeNameSchema } from "#/modules/environment-design/environment-node-names";
@@ -36,11 +35,10 @@ export function ServiceDrawerHeader({
         editDescription="Rename this service."
         placeholder="Service name"
         onRename={async (value) => {
-          await collectionFieldResources.service.commit({
-            collection: state.collection,
-            entityId: service.id,
-            path: "name",
-            value,
+          await state.editMetadata({
+            environmentId: service.environmentId,
+            serviceId: service.id,
+            edit: { kind: "rename", name: value },
           }).isPersisted.promise;
         }}
       />

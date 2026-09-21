@@ -33,7 +33,7 @@ const ACTIVE_DEPLOYMENT_STATUSES = [
 
 type SnapshotScope =
   | { kind: "environment"; environmentId: string }
-  | { kind: "organization"; organizationId: string };
+  | { kind: "organization"; organizationId: string; environmentSlug?: string };
 
 export type EnvironmentExplicitStateProjectionNode = {
   nodeType: "service" | "variable_group" | "volume";
@@ -74,6 +74,7 @@ export type EnvironmentSnapshotProjection = {
       nodeLineageId: string;
       configVersion: number;
       config: JsonObject;
+      credentialRevision: string | null;
       encryptedRegistryUsername: EncryptedSecretValue | null;
       encryptedRegistrySecret: EncryptedSecretValue | null;
       sourceSavedStateSnapshotId: string;
@@ -90,6 +91,7 @@ type LoadedNode = {
   nodeLineageId: string;
   configVersion: number;
   config: unknown;
+  credentialRevision: string | null;
   encryptedRegistryUsername: EncryptedSecretValue | null;
   encryptedRegistrySecret: EncryptedSecretValue | null;
   snapshotCreatedAt: Date;
@@ -170,6 +172,7 @@ function loadDeploymentHeads(
         .where(
           and(
             eq(schemaProject.organizationId, scope.organizationId),
+            scope.environmentSlug ? eq(schemaEnvironment.namespace, scope.environmentSlug) : undefined,
             statusFilter,
           ),
         )
@@ -193,6 +196,7 @@ function loadDeploymentHeads(
       .where(
         and(
           eq(schemaProject.organizationId, scope.organizationId),
+            scope.environmentSlug ? eq(schemaEnvironment.namespace, scope.environmentSlug) : undefined,
           statusFilter,
         ),
       )
@@ -266,7 +270,7 @@ function loadSavedHeads(scope: SnapshotScope) {
         schemaProject,
         eq(schemaEnvironment.projectId, schemaProject.id),
       )
-      .where(eq(schemaProject.organizationId, scope.organizationId))
+      .where(and(eq(schemaProject.organizationId, scope.organizationId), scope.environmentSlug ? eq(schemaEnvironment.namespace, scope.environmentSlug) : undefined))
       .orderBy(
         asc(schemaEnvironmentSavedStateSnapshot.environmentId),
         desc(schemaEnvironmentSavedStateSnapshot.createdAt),
@@ -289,6 +293,7 @@ function loadNodeConfigSnapshots(ids: readonly string[]) {
         nodeLineageId: schemaEnvironmentNodeConfigSnapshot.nodeLineageId,
         configVersion: schemaEnvironmentNodeConfigSnapshot.configVersion,
         config: schemaEnvironmentNodeConfigSnapshot.config,
+        credentialRevision: schemaEnvironmentNodeConfigSnapshotSecret.credentialRevision,
         encryptedRegistryUsername:
           schemaEnvironmentNodeConfigSnapshotSecret.encryptedRegistryUsername,
         encryptedRegistrySecret:
@@ -542,6 +547,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
             node.config,
             "Applied node config is not a JSON object.",
           ),
+          credentialRevision: node.credentialRevision,
           encryptedRegistryUsername: node.encryptedRegistryUsername,
           encryptedRegistrySecret: node.encryptedRegistrySecret,
           sourceSavedStateSnapshotId: requiredMapValue(

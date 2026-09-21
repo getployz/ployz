@@ -99,8 +99,6 @@ describe("service schemas", () => {
           type: "connected",
           name: "main",
         },
-        autoDeploy: true,
-        waitForCi: true,
       })
     ).toEqual({
       version: 2,
@@ -113,8 +111,6 @@ describe("service schemas", () => {
         type: "connected",
         name: "main",
       },
-      autoDeploy: true,
-      waitForCi: true,
     });
     expect(isValid(serviceRootDirSchema, "/apps/api")).toBe(true);
     expect(isValid(serviceRootDirSchema, "/apps/api two")).toBe(false);
@@ -143,6 +139,7 @@ describe("service schemas", () => {
 
   it("service insert schema accepts the intended db payload", () => {
     const result = isValid(serviceInsertSchema, {
+      name: "API",
       organizationId: crypto.randomUUID(),
       projectId: crypto.randomUUID(),
       environmentId: crypto.randomUUID(),
@@ -171,8 +168,6 @@ describe("service schemas", () => {
           type: "disconnected",
           previousName: "main",
         },
-        autoDeploy: true,
-        waitForCi: false,
       },
     });
 
@@ -205,7 +200,6 @@ describe("service schemas", () => {
 
   it("defaults optional deployment fields omitted by historical projections", () => {
     const config = projectServiceDeploymentConfig({
-      name: "api",
       source: createEmptyServiceSource(),
       preDeployCommand: null,
       startCommand: null,
@@ -226,7 +220,6 @@ describe("service schemas", () => {
       build: {
         builder: "railpack",
         dockerfilePath: null,
-        watchPaths: [],
       },
     });
   });

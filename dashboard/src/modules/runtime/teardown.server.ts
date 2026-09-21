@@ -206,7 +206,7 @@ const loadCatalog = Effect.fn("Teardown.loadCatalog")(function* (
   const database = yield* Database;
   const documents = yield* database.drizzle.select({ id: schemaEnvironment.id, intent: schemaEnvironment.intent })
     .from(schemaEnvironment).where(inArray(schemaEnvironment.id, [...environmentIds]));
-  const services = documents.flatMap((document) => document.intent.services.map((node) => ({ environmentId: document.id, name: node.config.name })));
+  const services = documents.flatMap((document) => document.intent.services.map((node) => ({ environmentId: document.id, name: node.config.privateDns })));
   const volumes = documents.flatMap((document) => document.intent.volumes.map((node) => ({ environmentId: document.id, name: node.name })));
   return { services, volumes };
 });

@@ -37,8 +37,8 @@ export type VolumeHistory = {
 
 export function volumeIsVisible(row: ResourceDocumentView, history: VolumeHistory) {
   return row.document.intent.volumes.some((node) => node.resourceId === row.resource.id)
-    || history.removedAt === null
-    || (history.snapshot?.createdAt ?? row.resource.createdAt) > history.removedAt;
+    || (history.snapshot !== null
+      && (history.removedAt === null || history.snapshot.createdAt > history.removedAt));
 }
 
 export function volumeDocumentRecord(row: ResourceDocumentView, history: VolumeHistory) {

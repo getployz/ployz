@@ -15,6 +15,7 @@ it("keeps pending volume removal visible without making history editable", () =>
     lineage: { id: lineageId, projectId, canonicalName: "Original name", canonicalSlug: "original-name", createdAt: before, updatedAt: before },
     canvasPosition: null, projectSlug: "test", environmentSlug: "production",
   };
+  expect(volumeDocumentRecord(row, { snapshot: null, removedAt: null })).toBeNull();
   const snapshot = { config: { version: 2, name: "Last deployed name" }, createdAt: before };
   expect(volumeDocumentRecord(row, { snapshot, removedAt: null })).toMatchObject({ resource: { name: "Last deployed name" }, isAuthored: false });
   expect(volumeDocumentRecord(row, { snapshot, removedAt: removed })).toBeNull();

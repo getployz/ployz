@@ -1,4 +1,4 @@
-import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
+import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
@@ -6,7 +6,7 @@ import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/
 import { serviceDocumentRecord } from "#/modules/environment-design/service-document";
 import {
   createOptimisticAction,
-  createLiveQueryCollection,
+  collectionOptions, liveQueryCollectionOptions,
   eq,
   toArray,
   type ExtractContext,
@@ -51,10 +51,11 @@ export type EnvironmentParams = {
 };
 
 function createServicesCollection(organizationSlug: string, scope: CollectionScope) {
+  const client = getDbClient(scope.queryClient);
   const identities = getRawServicesCollection(organizationSlug, scope);
   const documents = getEnvironmentDocumentsCollection(organizationSlug, scope);
-  return createLiveQueryCollection({
-    id: `collections:${organizationSlug}:services-with-context`,
+  return client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${identities.id}:services-with-context`,
     query: (q) => q.from({ identity: identities })
       .innerJoin({ document: documents }, ({ identity, document }) => eq(identity.environmentId, document.id))
       .fn.where(({ identity, document }) => document.intent.services.some((node) => node.id === identity.id))
@@ -65,13 +66,16 @@ function createServicesCollection(organizationSlug: string, scope: CollectionSco
           environmentSlug: document.namespace };
       }),
     getKey: (item) => item.id,
-  });
+  })));
 }
+
+export type ServiceConfigurationRecord = Pick<ServiceWithContextRecord,
+  Extract<keyof ServiceDeploymentFieldSelection, keyof ServiceWithContextRecord> | "id">;
 
 export type ServiceWriter = {
   update(
     serviceId: string,
-    updater: (draft: ServiceWithContextRecord) => void,
+    updater: (draft: ServiceConfigurationRecord) => void,
   ): { isPersisted: { promise: Promise<unknown> } };
 };
 
@@ -117,7 +121,7 @@ function createServiceWriter(
       const modified = structuredClone(current);
       updater(modified);
       const settings: ServiceDeploymentFieldSelection = {
-        name: modified.name, source: modified.source,
+        source: modified.source,
         preDeployCommand: modified.preDeployCommand, startCommand: modified.startCommand,
         healthcheck: modified.healthcheck, restartPolicy: modified.restartPolicy,
         maxRetries: modified.maxRetries, cron: modified.cron, replicas: modified.replicas,
@@ -160,7 +164,7 @@ function resourceSources(organizationSlug: string, scope: CollectionScope) {
 export const getEnvironmentResourcesCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createEnvironmentResourcesCollection({
-      organizationSlug,
+      client: getDbClient(scope.queryClient),
       sources: resourceSources(organizationSlug, scope),
     }),
 );
@@ -168,7 +172,7 @@ export const getEnvironmentResourcesCollection = cachedByCollectionScope(
 export const getVolumeResourcesCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createVolumeResourcesCollection({
-      organizationSlug,
+      client: getDbClient(scope.queryClient),
       sources: {
         ...resourceSources(organizationSlug, scope),
         snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope),

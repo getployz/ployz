@@ -14,7 +14,6 @@ import {
   type ServiceDeployMount,
   type ServiceDeploymentConfig,
   type ServiceGitBranch,
-  type ServiceImageAutoUpdate,
   type ServiceImageCredentials,
   type ServiceRecord,
   type ServiceSource,
@@ -23,7 +22,6 @@ import {
 export * from "#/modules/environment-design/service-schemas";
 
 const SERVICE_DEPLOYMENT_FIELD_KEYS = [
-  "name",
   "source",
   "preDeployCommand",
   "startCommand",
@@ -97,8 +95,6 @@ export function createGitServiceSource(input: {
   installationId: number;
   rootDir?: string;
   branch?: ServiceGitBranch;
-  autoDeploy?: boolean;
-  waitForCi?: boolean;
 }): ServiceSource {
   return decodeStrict(serviceSourceSchema, {
     version: 2,
@@ -111,21 +107,17 @@ export function createGitServiceSource(input: {
       type: "connected",
       name: "main",
     },
-    autoDeploy: input.autoDeploy ?? true,
-    waitForCi: input.waitForCi ?? false,
   });
 }
 
 export function createImageServiceSource(input: {
   image: string;
-  autoUpdate?: ServiceImageAutoUpdate;
   credentials?: ServiceImageCredentials;
 }): ServiceSource {
   return decodeStrict(serviceSourceSchema, {
     version: 1,
     type: "image",
     image: input.image,
-    autoUpdate: input.autoUpdate ?? { type: "off" },
     credentials: input.credentials ?? { type: "none" },
   });
 }
@@ -316,7 +308,6 @@ export function projectServiceDeploymentConfig(
 ): ServiceDeploymentConfig {
   const config: ServiceDeploymentConfigProjection = {
     version: 2,
-    name: service.name,
     source: service.source,
     preDeployCommand: service.preDeployCommand,
     startCommand: service.startCommand,

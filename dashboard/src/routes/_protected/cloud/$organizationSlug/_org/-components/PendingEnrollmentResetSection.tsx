@@ -5,7 +5,6 @@ import { RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
   Alert,
-  AlertAction,
   AlertDescription,
   AlertTitle,
 } from "#/components/ui/alert";
@@ -73,25 +72,23 @@ export function PendingEnrollmentResetSection({
       <Alert variant={status === "pending" ? "destructive" : "default"}>
         <AlertTitle>
           {status === "unclaimed"
-            ? "Organization enrollment unclaimed"
+            ? "Server setup not started"
             : status === "pending"
               ? "Founding attempt pending"
               : "Organization enrollment ready"}
         </AlertTitle>
         <AlertDescription>
           {status === "unclaimed"
-            ? "No Server has claimed founding for this Organization."
+            ? "Connect your first server when you’re ready to deploy this organization’s projects."
             : status === "pending"
               ? "Another Server cannot found this Organization until the current attempt finishes or is safely reset."
               : "This Organization has an enrolled Cluster."}
         </AlertDescription>
         {status === "pending" ? (
-          <AlertAction>
-            <Button variant="destructive" onClick={() => setOpen(true)}>
-              <RotateCcwIcon data-icon="inline-start" />
-              Reset founding attempt
-            </Button>
-          </AlertAction>
+          <Button className="mt-3 w-fit" variant="destructive" onClick={() => setOpen(true)}>
+            <RotateCcwIcon data-icon="inline-start" />
+            Reset founding attempt
+          </Button>
         ) : null}
       </Alert>
 

@@ -8,11 +8,10 @@ use serde_json::{Value, json};
 
 fn config() -> Value {
     json!({
-        "version": 2, "name": "API", "privateDns": "api",
+        "version": 2, "privateDns": "api",
         "source": {"version": 2, "type": "git", "repository": "acme/api",
             "repositoryId": 42, "installationId": 7, "rootDir": "/apps/api",
-            "branch": {"type": "connected", "name": "main"},
-            "autoDeploy": true, "waitForCi": false},
+            "branch": {"type": "connected", "name": "main"}},
         "preDeployCommand": null, "startCommand": null,
         "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped"
     })
@@ -48,7 +47,7 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
 
     let mut image = config();
     image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
-        "autoUpdate": {"type": "off"}, "credentials": {"type": "configured", "revision": "opaque-revision"}});
+        "credentials": {"type": "configured", "credentialId": "00000000-0000-4000-8000-000000000002"}});
     let image = parse_service_config(image).unwrap();
     assert_eq!(
         compare_service_settings(&image, Some(&baseline))[0].path,
@@ -60,6 +59,26 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     );
     assert!(compare_service_settings(&image, Some(&image)).is_empty());
     assert!(restore_service_setting(current, &baseline, "unrecognized.setting").is_err());
+}
+
+#[test]
+fn compound_settings_compare_and_restore_the_edited_field() {
+    let mut input = config();
+    input["build"] = json!({"builder":"dockerfile", "dockerfilePath":"Dockerfile"});
+    input["healthcheck"] = json!({"type":"http", "path":"/up", "timeoutSeconds":30});
+    let baseline = parse_service_config(input.clone()).unwrap();
+    input["build"]["dockerfilePath"] = json!("deploy/Dockerfile");
+    input["healthcheck"]["timeoutSeconds"] = json!(60);
+    let current = parse_service_config(input).unwrap();
+    let rows = compare_service_settings(&current, Some(&baseline));
+    assert_eq!(
+        rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+        ["healthcheck.timeoutSeconds", "build.dockerfilePath"]
+    );
+    let restored =
+        restore_service_setting(current.clone(), &baseline, "build.dockerfilePath").unwrap();
+    assert_eq!(restored.settings.build, baseline.settings.build);
+    assert_eq!(restored.settings.healthcheck, current.settings.healthcheck);
 }
 
 #[test]

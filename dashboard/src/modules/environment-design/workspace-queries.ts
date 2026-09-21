@@ -1,25 +1,14 @@
 import { toast } from "sonner";
+import { environmentManager, queryOptions, type QueryClient } from "@tanstack/react-query";
+import { useLiveQuery } from "@tanstack/react-db";
+import { useSyncExternalStore } from "react";
+import { notFound } from "@tanstack/react-router";
+import { getProjectsCollection, getEnvironmentSummariesCollection, getProjectPreferencesCollection, type EnvironmentSummary } from "#/collections/collections";
+import { preloadCollection } from "#/collections/query-collection";
+import type { CollectionScope } from "#/collections/scope";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { EnvironmentBySlug } from "./workspace-schemas";
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
-import { hasPublicErrorCode } from "#/lib/public-error";
-import {
-  getEnvironmentBySlugServerFn,
-  getOrganizationStateServerFn,
-  getProjectBySlugServerFn,
-  listEnvironmentsServerFn,
-  listProjectsServerFn,
-  resolvePreferredEnvironmentServerFn,
-  selectEnvironmentServerFn,
-} from "./workspace-functions";
-
-const DEFAULT_CLIENT_QUERY_RETRY_COUNT = 3;
-
-function retryWorkspaceQuery(failureCount: number, cause: unknown) {
-  return (
-    !hasPublicErrorCode(cause, "NOT_FOUND") &&
-    failureCount < DEFAULT_CLIENT_QUERY_RETRY_COUNT
-  );
-}
+import { getOrganizationStateServerFn, selectEnvironmentServerFn, syncOrganizationSlugServerFn } from "./workspace-functions";
 
 export const organizationKeys = {
   all: ["organization"] as const,
@@ -40,135 +29,103 @@ export function organizationStateQueryOptions(organizationSlug?: string | null) 
   });
 }
 
-export const projectKeys = {
-  all: ["projects"] as const,
-  org: (organizationSlug: string) =>
-    [...projectKeys.all, organizationSlug] as const,
-  list: (organizationSlug: string) =>
-    [...projectKeys.org(organizationSlug), "list"] as const,
-  detail: (organizationSlug: string, projectSlug: string) =>
-    [...projectKeys.org(organizationSlug), "detail", projectSlug] as const,
-};
 
-export function projectListQueryOptions(organizationSlug: string) {
-  return queryOptions({
-    queryKey: projectKeys.list(organizationSlug),
-    queryFn: ({ signal }) =>
-      listProjectsServerFn({ data: { organizationSlug }, signal }),
-  });
+export function workspaceCollections(organizationSlug: string, scope: CollectionScope) {
+  return {
+    projects: getProjectsCollection(organizationSlug, scope),
+    environments: getEnvironmentSummariesCollection(organizationSlug, scope),
+    preferences: getProjectPreferencesCollection(organizationSlug, scope),
+  };
 }
 
-export function projectBySlugQueryOptions(
-  organizationSlug: string,
-  projectSlug: string,
+export async function preloadWorkspace(organizationSlug: string, scope: CollectionScope) {
+  const collections = workspaceCollections(organizationSlug, scope);
+  await Promise.all(Object.values(collections).map(preloadCollection));
+  return collections;
+}
+
+function resolveProjects(
+  projects: Array<{ id: string; organizationId: string; name: string; slug: string }>,
+  environments: EnvironmentSummary[],
+  preferences: Array<{ id: string; environmentId: string }>,
 ) {
-  return queryOptions({
-    queryKey: projectKeys.detail(organizationSlug, projectSlug),
-    queryFn: ({ signal }) =>
-      getProjectBySlugServerFn({
-        data: { organizationSlug, projectSlug },
-        signal,
-      }),
-    retry: retryWorkspaceQuery,
+  const ordered = [...environments].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  return projects.map((project) => {
+    const preferredId = preferences.find((preference) => preference.id === project.id)?.environmentId;
+    const projectEnvironments = ordered.filter((environment) => environment.projectId === project.id);
+    return { ...project, resolvedEnvironment: projectEnvironments.find((environment) => environment.id === preferredId) ?? projectEnvironments[0] ?? null };
   });
 }
 
-export const environmentKeys = {
-  all: ["environments"] as const,
-  project: (organizationSlug: string, projectSlug: string) =>
-    [...environmentKeys.all, organizationSlug, projectSlug] as const,
-  list: (organizationSlug: string, projectSlug: string) =>
-    [...environmentKeys.project(organizationSlug, projectSlug), "list"] as const,
-  detail: (
-    organizationSlug: string,
-    projectSlug: string,
-    environmentSlug: string,
-  ) =>
-    [
-      ...environmentKeys.project(organizationSlug, projectSlug),
-      "detail",
-      environmentSlug,
-    ] as const,
-  preferred: (organizationSlug: string, projectSlug: string) =>
-    [...environmentKeys.project(organizationSlug, projectSlug), "preferred"] as const,
-};
-
-export function environmentListQueryOptions(
-  organizationSlug: string,
-  projectSlug: string,
-) {
-  return queryOptions({
-    queryKey: environmentKeys.list(organizationSlug, projectSlug),
-    queryFn: ({ signal }) =>
-      listEnvironmentsServerFn({
-        data: { organizationSlug, projectSlug },
-        signal,
-      }),
-  });
+export function readWorkspace(collections: ReturnType<typeof workspaceCollections>) {
+  return resolveProjects([...collections.projects.values()], [...collections.environments.values()], [...collections.preferences.values()]);
 }
 
-export function environmentBySlugQueryOptions(
-  organizationSlug: string,
-  projectSlug: string,
-  environmentSlug: string,
-) {
-  return queryOptions({
-    queryKey: environmentKeys.detail(
-      organizationSlug,
-      projectSlug,
-      environmentSlug,
-    ),
-    queryFn: ({ signal }) =>
-      getEnvironmentBySlugServerFn({
-        data: { organizationSlug, projectSlug, environmentSlug },
-        signal,
-      }),
-    retry: retryWorkspaceQuery,
-  });
+export async function loadWorkspaceEnvironment(input: EnvironmentBySlug, scope: CollectionScope) {
+  const collections = workspaceCollections(input.organizationSlug, scope);
+  await Promise.all([preloadCollection(collections.projects), preloadCollection(collections.environments)]);
+  const project = [...collections.projects.values()].find((row) => row.slug === input.projectSlug);
+  const environment = [...collections.environments.values()].find((row) => row.projectId === project?.id && row.namespace === input.environmentSlug);
+  if (!environment) throw notFound();
+  return environment;
 }
 
-export function preferredEnvironmentQueryOptions(
-  organizationSlug: string,
-  projectSlug: string,
-) {
-  return queryOptions({
-    queryKey: environmentKeys.preferred(organizationSlug, projectSlug),
-    queryFn: ({ signal }) =>
-      resolvePreferredEnvironmentServerFn({
-        data: { organizationSlug, projectSlug },
-        signal,
-      }),
-    retry: retryWorkspaceQuery,
-  });
-}
-
-/** Called by Router only when an environment route is entered or retained, never by preload. */
-export async function rememberSelectedEnvironment(queryClient: QueryClient, input: EnvironmentBySlug, selectEnvironment = selectEnvironmentServerFn) {
-  const { organizationSlug, projectSlug, environmentSlug } = input;
-  const environment = queryClient.getQueryData(
-    environmentBySlugQueryOptions(organizationSlug, projectSlug, environmentSlug).queryKey,
+export function useWorkspace(organizationSlug: string) {
+  const scope = useCollectionScope();
+  const collections = workspaceCollections(organizationSlug, scope);
+  const projects = useLiveQuery(collections.projects);
+  const environments = useLiveQuery(collections.environments);
+  const preferences = useLiveQuery(collections.preferences);
+  const isError = useSyncExternalStore(
+    (onChange) => scope.queryClient.getQueryCache().subscribe(onChange),
+    () => Object.values(collections).some((collection) => collection.utils.isError),
+    () => false,
   );
+  const environmentRows = environments.data;
+  return {
+    projects: resolveProjects(projects.data, environmentRows, preferences.data),
+    environments: environmentRows,
+    isPending: projects.isLoading || environments.isLoading || preferences.isLoading,
+    isError,
+    refetch: () => Promise.all(Object.values(collections).map((collection) => collection.utils.refetch())),
+  };
+}
+
+/** Selection is already represented by the URL. Only confirmed writes change the saved preference. */
+export async function rememberSelectedEnvironment(scope: CollectionScope, input: EnvironmentBySlug, selectEnvironment = selectEnvironmentServerFn) {
+  const { queryClient } = scope;
+  const collections = workspaceCollections(input.organizationSlug, scope);
+  const environment = [...collections.environments.values()].find((row) => row.namespace === input.environmentSlug);
   if (!environment) return;
-  const preferredKey = environmentKeys.preferred(organizationSlug, projectSlug);
-  if (queryClient.getQueryData<{ id: string }>(preferredKey)?.id === environment.id) return;
-  const projectsKey = projectListQueryOptions(organizationSlug).queryKey;
-  await Promise.all([
-    queryClient.cancelQueries({ queryKey: preferredKey, exact: true }),
-    queryClient.cancelQueries({ queryKey: projectsKey, exact: true }),
-  ]);
-  queryClient.setQueryData(preferredKey, environment);
-  queryClient.setQueryData(projectsKey, (projects) => projects?.map((project) =>
-    project.id === environment.projectId
-      ? { ...project, userDefaultEnvironmentId: environment.id, resolvedEnvironment: environment }
-      : project,
-  ));
   try {
-    // TanStack serializes writes for this project so rapid switching persists the final selection last.
     await queryClient.getMutationCache().build(queryClient, {
       scope: { id: `environment-preference:${environment.projectId}` },
-      mutationFn: () => selectEnvironment({ data: input }),
+      mutationFn: async () => {
+        // Check inside the serialized mutation: an earlier selection may still be in flight.
+        if (collections.preferences.get(environment.projectId)?.environmentId === environment.id) return;
+        const saved = await selectEnvironment({ data: input });
+        await collections.preferences.writeCommitted({ id: saved.projectId, environmentId: saved.id });
+      },
     }).execute(undefined);
   } catch {
     toast.error("Could not remember your selected environment.");
+  }
+}
+
+/** Route lifecycle runs on the server too. Only committed browser navigation stores preferences. */
+export async function rememberSelectedOrganization(client: QueryClient, slug: string, initialSlug: string | null, selectOrganization = syncOrganizationSlugServerFn) {
+  if (environmentManager.isServer()) return;
+  const key = ["organization-preference"];
+  try {
+    await client.getMutationCache().build(client, {
+      scope: { id: "organization-preference" },
+      mutationFn: async () => {
+        if ((client.getQueryData<string>(key) ?? initialSlug) === slug) return;
+        await selectOrganization({ data: { organizationSlug: slug } });
+        client.setQueryData(key, slug);
+      },
+    }).execute(undefined);
+  } catch {
+    toast.error("Could not remember your selected organization.");
   }
 }

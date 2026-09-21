@@ -1,3 +1,4 @@
+import { editServiceMetadata } from "./service-metadata.server";
 import { loadEnvironmentDocument, loadCurrentEnvironmentState } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
@@ -138,11 +139,20 @@ it.live(
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
           serviceId: created.data.service.id,
-          name: "Registry API",
           managedHostnames: [{ prefix: "public-api", targetPort: 4000 }],
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
         });
-        assert.strictEqual(updated.data.intent.services[0]?.config.name, "Registry API");
+        const metadata = yield* editServiceMetadata(actor, {
+          organizationSlug: "acme", environmentId: environmentRecord.id, serviceId: created.data.service.id,
+          edit: { kind: "rename", name: "Registry API" },
+        });
+        assert.strictEqual(metadata.data.name, "Registry API");
+        assert.strictEqual((yield* loadEnvironmentDocument(environmentRecord.id)).revision, updated.data.revision);
+        assert.strictEqual((yield* loadEnvironmentDocument(environmentRecord.id)).intent.services[0]?.config.privateDns, created.data.service.privateDns);
+        const beforePolicy = yield* loadEnvironmentDocument(environmentRecord.id);
+        yield* editServiceMetadata(actor, { organizationSlug: "acme", environmentId: environmentRecord.id, serviceId: created.data.service.id,
+          edit: { kind: "policy", policy: { autoDeploy: false, watchPaths: ["src/**"] } } });
+        assert.deepStrictEqual(yield* loadEnvironmentDocument(environmentRecord.id), beforePolicy);
         assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.config.managedHostnames, [{ prefix: "public-api", targetPort: 4000 }]);
 
         yield* updateServiceCanvasPosition(actor, {

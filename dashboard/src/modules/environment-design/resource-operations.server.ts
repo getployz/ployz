@@ -97,20 +97,13 @@ export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   input: UpdateEnvironmentResourceCanvasPositionInput,
 ) {
   yield* requireEnvironmentForActorById(actor, input);
-  const resource = yield* getResourceIdentity(
-    input.environmentId,
-    input.resourceId,
-  );
-  if (resource === null) {
-    return yield* new NotFound({ message: "Resource not found." });
-  }
-  if (resource.implementationType === "variable_group" && !variableGroupsEnabled) {
-    return yield* new Conflict({ message: "Variable Groups are disabled." });
-  }
-  return yield* withMutationResult(
-    upsertResourceCanvasPosition({
-      ...input,
-      resourceType: resource.implementationType,
-    }),
-  );
+  return yield* withMutationResult(Effect.gen(function* () {
+    yield* loadEnvironmentDocument(input.environmentId, true);
+    const resource = yield* getResourceIdentity(input.environmentId, input.resourceId);
+    if (resource === null) return yield* new NotFound({ message: "Resource not found." });
+    if (resource.implementationType === "variable_group" && !variableGroupsEnabled) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
+    return yield* upsertResourceCanvasPosition({ ...input, resourceType: resource.implementationType });
+  }));
 });

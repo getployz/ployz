@@ -61,8 +61,6 @@ function createServiceRecord(
         repositoryId: 42,
         installationId: 7,
         rootDir: ".",
-        autoDeploy: true,
-        waitForCi: false,
         branch: {
           type: "connected",
           name: "main",

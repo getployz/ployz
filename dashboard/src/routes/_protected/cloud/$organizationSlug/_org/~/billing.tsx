@@ -58,11 +58,11 @@ export const Route = createFileRoute(
 
 function BillingPending() {
   return (
-    <DashboardPage density="spacious" width="wide">
+    <DashboardPage width="wide">
       <div className="flex max-w-2xl flex-col gap-3">
-        <Skeleton className="h-10 w-64 max-w-full" />
-        <Skeleton className="h-6 w-full" />
-        <Skeleton className="h-6 w-4/5" />
+        <Skeleton className="h-6 w-40 max-w-full" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-4/5" />
       </div>
       <section className="grid gap-6 xl:grid-cols-3">
         {Array.from({ length: 3 }, (_, index) => (
@@ -90,7 +90,7 @@ function BillingPending() {
 
 function BillingError() {
   return (
-    <DashboardPage density="spacious" width="wide">
+    <DashboardPage width="wide">
       <RouteErrorAlert
         title="Billing couldn’t load"
         description="Plan and subscription details are unavailable right now. Try loading them again."
@@ -141,7 +141,7 @@ function RouteComponent() {
 
   if (billingState.billingMode === "self_hosted") {
     return (
-      <DashboardPage density="spacious" width="wide">
+      <DashboardPage width="wide">
         <Empty variant="first-run">
           <EmptyHeader>
             <EmptyTitle>
@@ -263,12 +263,12 @@ function RouteComponent() {
 
   return (
     <>
-      <DashboardPage density="spacious" width="wide">
+      <DashboardPage width="wide">
         <div className="flex max-w-2xl flex-col gap-3">
-          <h1 className="text-4xl font-semibold tracking-tight text-balance">
+          <h2 className="text-lg font-semibold">
             Choose a plan
-          </h1>
-          <p className="text-lg text-muted-foreground text-balance">
+          </h2>
+          <p className="text-sm text-muted-foreground">
             Every plan includes unlimited servers. Upgrade for retention,
             backups, and production features.
           </p>

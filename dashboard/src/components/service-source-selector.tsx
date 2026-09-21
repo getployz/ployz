@@ -321,27 +321,32 @@ function GitRepoSelectorResults({
   const normalizedQuery = deferredQuery.trim();
 
   const { data: repoCountRows } =
-    useLiveQuery((q) => githubRepos
-      ? { gcTime: 1, query: q.from({ repo: githubRepos }).select(({ repo }) => ({ count: count(repo.id) })) }
-      : undefined, [githubRepos]);
+    useLiveQuery({
+      queryKey: ["github-repo-count", raw.id, githubRepos?.id ?? null],
+      gcTime: 1,
+      query: (q) => githubRepos
+        ? q.from({ repo: githubRepos }).select(({ repo }) => ({ count: count(repo.id) }))
+        : undefined,
+    });
 
-  const { data: repos = [], isLoading } = useLiveQuery(
-    (q) => {
+  const { data: repos = [], isLoading } = useLiveQuery({
+    queryKey: ["github-repo-search", raw.id, githubRepos?.id ?? null, normalizedQuery],
+    gcTime: 1,
+    query: (q) => {
       if (!githubRepos) return undefined;
       const repoQuery = q
         .from({ repo: githubRepos })
         .orderBy(({ repo }) => repo.repo_updated_at, "desc");
 
       if (normalizedQuery) {
-        return { gcTime: 1, query: repoQuery
+        return repoQuery
           .where(({ repo }) => ilike(repo.full_name, `%${normalizedQuery}%`))
-          .limit(FILTERED_GITHUB_REPO_LIMIT) };
+          .limit(FILTERED_GITHUB_REPO_LIMIT);
       }
 
-      return { gcTime: 1, query: repoQuery.limit(INITIAL_GITHUB_REPO_LIMIT) };
+      return repoQuery.limit(INITIAL_GITHUB_REPO_LIMIT);
     },
-    [githubRepos, normalizedQuery],
-  );
+  });
   const repoCount = repoCountRows?.[0]?.count ?? 0;
   const selectorState = getGitRepoSelectorState({
     configured: accessState.configured,

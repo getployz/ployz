@@ -9,18 +9,16 @@ export type ServiceDeploymentDiffPath = ServiceSettingChange["path"];
 
 export const SERVICE_DEPLOYMENT_DIFF_PATHS = {
   source: "source",
-  name: "name",
   sourceRepository: "source.repository",
   sourceBranch: "source.branch",
   sourceRootDir: "source.rootDir",
-  sourceAutoDeploy: "source.autoDeploy",
-  sourceWaitForCi: "source.waitForCi",
   sourceImage: "source.image",
-  sourceAutoUpdate: "source.autoUpdate",
   sourceCredentials: "source.credentials",
   preDeployCommand: "preDeployCommand",
   startCommand: "startCommand",
   healthcheck: "healthcheck",
+  healthcheckPath: "healthcheck.path",
+  healthcheckTimeout: "healthcheck.timeoutSeconds",
   restartPolicy: "restartPolicy",
   maxRetries: "maxRetries",
   cron: "cron",
@@ -30,20 +28,20 @@ export const SERVICE_DEPLOYMENT_DIFF_PATHS = {
   privateDns: "privateDns",
   routes: "routes",
   managedHostnames: "managedHostnames",
-  build: "build",
+  buildBuilder: "build.builder",
+  buildDockerfilePath: "build.dockerfilePath",
 } as const;
 
 
 const labels = new Map(Object.entries({
-  name: "Name", source: "Source", "source.repository": "Repository",
+  source: "Source", "source.repository": "Repository",
   "source.branch": "Branch", "source.rootDir": "Root directory",
-  "source.autoDeploy": "Auto-deploy", "source.waitForCi": "Deploy after CI passes",
-  "source.image": "Container image", "source.autoUpdate": "Auto-update",
+  "source.image": "Container image",
   "source.credentials": "Credentials", preDeployCommand: "Pre-deploy command",
-  startCommand: "Start command", healthcheck: "Healthcheck", restartPolicy: "Restart policy",
+  startCommand: "Start command", healthcheck: "Healthcheck", "healthcheck.path": "Healthcheck path", "healthcheck.timeoutSeconds": "Healthcheck timeout", restartPolicy: "Restart policy",
   maxRetries: "Max retries", cron: "Cron schedule", replicas: "Replicas",
   cpuLimit: "CPU limit", memLimit: "Memory limit", privateDns: "Private DNS",
-  managedHostnames: "Managed domains", build: "Build",
+  managedHostnames: "Managed domains", "build.builder": "Builder", "build.dockerfilePath": "Dockerfile path",
   variableGroupAttachments: "Variable Group attachments (in precedence order)",
 }));
 
@@ -61,14 +59,13 @@ function displaySetting(path: string, value: ServiceSettingChange["before"]): st
   switch (path) {
     case "source": return asString(record?.["type"]) ?? "";
     case "source.branch": return asString(record?.["name"] ?? record?.["previousName"]) ?? "Disconnected";
-    case "source.autoUpdate": return record?.["type"] === "off" ? "Off" : asString(record?.["tag"]) ?? "";
     case "source.credentials": return record?.["type"] === "none" ? "None" : "Configured";
     case "healthcheck": return record?.["type"] === "none" ? "Disabled" : `${asString(record?.["path"])} (${asFiniteNumber(record?.["timeoutSeconds"])}s timeout)`;
     case "restartPolicy": return ({ always: "Always", "on-failure": "On Failure", no: "Never", "unless-stopped": "Unless stopped" })[asString(value) ?? ""] ?? "";
     case "managedHostnames": return Array.isArray(value) && value.length
       ? value.map((item) => { const row = asRecord(item); return `${asString(row?.["prefix"])} (port ${asFiniteNumber(row?.["targetPort"]) ?? "PORT"})`; }).join(", ")
       : "None";
-    case "build": return record?.["builder"] === "dockerfile" ? (record["dockerfilePath"] ? `Dockerfile (${asString(record["dockerfilePath"])})` : "Dockerfile") : "Railpack";
+    case "build.builder": return value === "dockerfile" ? "Dockerfile" : "Railpack";
     case "cpuLimit": return `${asFiniteNumber(value)} vCPU`;
     case "memLimit": return `${asFiniteNumber(value)} GB`;
     default: {

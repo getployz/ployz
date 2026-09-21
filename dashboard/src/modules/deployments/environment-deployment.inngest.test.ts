@@ -211,7 +211,6 @@ function createDeploymentContext(
         serviceId: "service-1",
         serviceSlug: "api",
         config: projectServiceDeploymentConfig({
-          name: "API",
           privateDns: "api",
           source: createImageServiceSource({
             image: "nginx:1.27",

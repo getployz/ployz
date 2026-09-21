@@ -69,7 +69,8 @@ export function VolumeNode({
         environmentSlug: params.environmentSlug,
         resourceId: data.resourceId,
       }}
-      search={(prev) => prev}
+      search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
+      data-canvas-node={data.resourceId}
       preload="intent"
       draggable={false}
       className="block h-36 w-72"

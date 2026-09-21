@@ -28,18 +28,15 @@ pub struct ServiceSettingChange {
 }
 
 const FIELDS: &[&str] = &[
-    "name",
     "source.repository",
     "source.branch",
     "source.rootDir",
-    "source.autoDeploy",
-    "source.waitForCi",
     "source.image",
-    "source.autoUpdate",
     "source.credentials",
     "preDeployCommand",
     "startCommand",
-    "healthcheck",
+    "healthcheck.path",
+    "healthcheck.timeoutSeconds",
     "restartPolicy",
     "maxRetries",
     "cron",
@@ -48,7 +45,8 @@ const FIELDS: &[&str] = &[
     "memLimit",
     "privateDns",
     "managedHostnames",
-    "build",
+    "build.builder",
+    "build.dockerfilePath",
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
@@ -70,7 +68,19 @@ pub fn compare_service_settings(
             true,
         ));
     }
+    let healthcheck_changed = at(&current, "healthcheck.type") != at(&baseline, "healthcheck.type");
+    if healthcheck_changed && (!baseline.is_null() || at(&current, "healthcheck.type") != "none") {
+        changes.push(change(
+            "healthcheck",
+            at(&baseline, "healthcheck").clone(),
+            at(&current, "healthcheck").clone(),
+            !baseline.is_null(),
+        ));
+    }
     for path in FIELDS {
+        if healthcheck_changed && path.starts_with("healthcheck.") {
+            continue;
+        }
         if source_changed && path.starts_with("source.") {
             continue;
         }
@@ -115,7 +125,7 @@ pub fn restore_service_setting(
         }
         return parse_service_config(json!(current));
     }
-    if path != "source" && !FIELDS.contains(&path) {
+    if path != "source" && path != "healthcheck" && !FIELDS.contains(&path) {
         return Err(ConfigError::at(
             "path",
             "Setting has no authored restore operation",
@@ -123,7 +133,15 @@ pub fn restore_service_setting(
     }
     let mut current = json!(current);
     let baseline = json!(baseline);
-    if path == "source"
+    if path == "healthcheck"
+        || (path.starts_with("healthcheck.")
+            && at(&current, "healthcheck.type") != at(&baseline, "healthcheck.type"))
+    {
+        current
+            .as_object_mut()
+            .expect("serialized service")
+            .insert("healthcheck".into(), at(&baseline, "healthcheck").clone());
+    } else if path == "source"
         || (path.starts_with("source.")
             && at(&current, "source.type") != at(&baseline, "source.type"))
     {
@@ -170,14 +188,12 @@ pub(super) fn at<'a>(value: &'a Value, path: &str) -> &'a Value {
 
 fn default_value(path: &str) -> Value {
     match path {
-        "source.waitForCi" => json!(false),
-        "source.autoUpdate" => json!({"type": "off"}),
         "source.credentials" => json!({"type": "none"}),
         "healthcheck" => json!({"type": "none"}),
         "restartPolicy" => json!("unless-stopped"),
         "maxRetries" => json!(10),
         "replicas" => json!(1),
-        "build" => json!({"builder": "railpack", "dockerfilePath": null, "watchPaths": []}),
+        "build.builder" => json!("railpack"),
         _ => Value::Null,
     }
 }

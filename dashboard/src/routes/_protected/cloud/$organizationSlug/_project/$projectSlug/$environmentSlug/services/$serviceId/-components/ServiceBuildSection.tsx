@@ -2,17 +2,13 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
-import { PlusIcon, XIcon } from "lucide-react";
 import type { ServiceBuildConfig } from "#/modules/environment-design/tables";
-import { Badge } from "#/components/ui/badge";
-import { Button } from "#/components/ui/button";
 import {
   Field,
   FieldDescription,
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
-import { Input } from "#/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
@@ -70,9 +66,9 @@ export function ServiceBuildSection({
   state: ServiceDrawerState;
 }) {
   const { service, collection, diff } = state;
-  const buildDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.build);
+  const builderDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildBuilder);
+  const dockerfileDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildDockerfilePath);
   const build = service.build;
-  const [watchInput, setWatchInput] = useState("");
   const source = service.source;
   const gitRef =
     source.type === "git" && source.branch.type === "connected"
@@ -99,14 +95,6 @@ export function ServiceBuildSection({
     });
   }
 
-  function addWatchPath() {
-    const next = watchInput.trim();
-    if (next.length === 0 || build.watchPaths.includes(next)) {
-      return;
-    }
-    updateBuild({ watchPaths: [...build.watchPaths, next] });
-    setWatchInput("");
-  }
 
   return (
     <FieldGroup>
@@ -125,8 +113,8 @@ export function ServiceBuildSection({
             }
           }}
         >
-          <ToggleGroupItem value="railpack">Railpack</ToggleGroupItem>
-          <ToggleGroupItem value="dockerfile">Dockerfile</ToggleGroupItem>
+          <ToggleGroupItem data-changed={builderDiff.changed || undefined} value="railpack">Railpack</ToggleGroupItem>
+          <ToggleGroupItem data-changed={builderDiff.changed || undefined} value="dockerfile">Dockerfile</ToggleGroupItem>
         </ToggleGroup>
       </Field>
 
@@ -140,7 +128,7 @@ export function ServiceBuildSection({
             <DockerfilePathInput
               gitRef={gitRef}
               value={build.dockerfilePath ?? ""}
-              isChanged={buildDiff.changed}
+              isChanged={dockerfileDiff.changed}
               onCommit={commitDockerfilePath}
             />
           ) : (
@@ -148,59 +136,13 @@ export function ServiceBuildSection({
               ariaLabel="Dockerfile path"
               placeholder="Dockerfile"
               value={build.dockerfilePath ?? ""}
-              isChanged={buildDiff.changed}
+              isChanged={dockerfileDiff.changed}
               onCommit={commitDockerfilePath}
             />
           )}
         </Field>
       ) : null}
 
-      <Field>
-        <FieldLabel>Watch paths</FieldLabel>
-        <FieldDescription>
-          Gitignore-style paths that trigger a new deployment when they change.
-        </FieldDescription>
-        {build.watchPaths.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {build.watchPaths.map((path) => (
-              <Badge key={path} variant="secondary" className="font-mono">
-                {path}
-                <button
-                  type="button"
-                  aria-label={`Remove ${path}`}
-                  className="ml-1 -mr-0.5 rounded-sm opacity-70 hover:opacity-100"
-                  onClick={() =>
-                    updateBuild({
-                      watchPaths: build.watchPaths.filter((item) => item !== path),
-                    })
-                  }
-                >
-                  <XIcon className="size-3" />
-                </button>
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-        <div className="flex items-center gap-2">
-          <Input
-            aria-label="New watch path"
-            placeholder="/src/**"
-            className="flex-1 font-mono"
-            value={watchInput}
-            onChange={(event) => setWatchInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                addWatchPath();
-              }
-            }}
-          />
-          <Button type="button" variant="outline" onClick={addWatchPath}>
-            <PlusIcon data-icon="inline-start" />
-            Add pattern
-          </Button>
-        </div>
-      </Field>
     </FieldGroup>
   );
 }

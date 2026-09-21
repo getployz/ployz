@@ -8,7 +8,7 @@ import { environment } from "#/modules/project/tables";
 
 import { sql } from "drizzle-orm";
 
-import { bigint, bigserial, boolean, check, foreignKey, index, integer, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, check, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -404,6 +404,8 @@ export const githubEnvironmentTrigger = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environment.id, { onDelete: "cascade" }),
+    admissionState: text("admission_state").$type<"waiting" | "admitted" | "superseded">().notNull().default("waiting"),
+    changedPaths: jsonb("changed_paths").$type<string[]>().notNull().default([]),
     serviceIds: text("service_ids").array().notNull(),
     selectionMode: text("selection_mode")
       .notNull()

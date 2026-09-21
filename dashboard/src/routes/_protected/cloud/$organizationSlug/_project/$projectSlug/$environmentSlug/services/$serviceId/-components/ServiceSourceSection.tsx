@@ -205,8 +205,6 @@ function GitServiceSourceSection({
                 type: "connected",
                 name: defaultBranch,
               },
-              autoDeploy: draft.source.autoDeploy,
-              waitForCi: draft.source.waitForCi,
             });
           });
 
@@ -421,7 +419,6 @@ function ImageServiceSourceSection({ state }: { state: ServiceDrawerState }) {
 
             draft.source = createImageServiceSource({
               image,
-              autoUpdate: draft.source.autoUpdate,
               credentials: draft.source.credentials,
             });
           });

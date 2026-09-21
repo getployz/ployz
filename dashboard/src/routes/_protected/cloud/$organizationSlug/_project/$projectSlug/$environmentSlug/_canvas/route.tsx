@@ -1,26 +1,12 @@
-import { preloadCollection } from "#/collections/query-collection";
+import { environmentManager, useSuspenseQuery } from "@tanstack/react-query";
+import { Suspense } from "react";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { environmentCanvasOptions } from "#/modules/environment-design/environment-data";
 import {
   createFileRoute,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import {
-  getCanvasPositionsCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
-  getEnvironmentNodeIntroductionsCollection,
-  getVolumeRemoveAttemptsCollection,
-  getEnvironmentsCollection,
-  getProjectsCollection,
-  getRawEnvironmentResourcesCollection,
-  getRawServicesCollection,
-  getResourceLineagesCollection,
-} from "#/collections/collections";
-import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
-import {
-  getEnvironmentResourcesCollection,
-  getServicesCollection,
-  getVolumeResourcesCollection,
-} from "#/modules/services/services.collection";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
@@ -30,29 +16,13 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
   loader: async ({ params, context }) => {
-    const organizationSlug = params.organizationSlug;
-    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    await Promise.all([
-      preloadCollection(getProjectsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
-      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
-      preloadCollection(getRawServicesCollection(organizationSlug, scope)),
-      preloadCollection(getCanvasPositionsCollection(organizationSlug, scope)),
-      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
-      preloadCollection(getResourceLineagesCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentNodeIntroductionsCollection(organizationSlug, scope)),
-      preloadOrganizationEnvironmentChangeStateProjections(
-        scope,
-        organizationSlug,
-      ),
-    ]);
-    // Derived live queries are ready before render, so the scene never suspends on a warm loader.
-    await Promise.all([
-      getServicesCollection(organizationSlug, scope).preload(),
-      getEnvironmentResourcesCollection(organizationSlug, scope).preload(),
-      getVolumeResourcesCollection(organizationSlug, scope).preload(),
-    ]);
+    const scope = { environmentSlug: params.environmentSlug, queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
+    const options = environmentCanvasOptions(params, scope);
+    if (environmentManager.isServer()) {
+      await context.queryClient.ensureQueryData(options);
+    } else {
+      void context.queryClient.prefetchQuery(options);
+    }
   },
   pendingComponent: CanvasPending,
   errorComponent: CanvasError,
@@ -62,9 +32,16 @@ export const Route = createFileRoute(
 function CanvasLayout() {
   return (
     <div className="h-full overflow-hidden">
-      <EnvironmentCanvasScene />
+      <Suspense fallback={<PendingCanvas />}>
+        <CanvasContent />
+      </Suspense>
     </div>
   );
+}
+
+function CanvasContent() {
+  useSuspenseQuery(environmentCanvasOptions(Route.useParams(), useCollectionScope()));
+  return <EnvironmentCanvasScene />;
 }
 
 function CanvasPending() {

@@ -50,9 +50,12 @@ pub fn restore_environment_node(
         let prior = baseline
             .and_then(|b| b.services.iter().find(|s| s.id == node_id))
             .ok_or_else(|| ConfigError::at("service", "Authored baseline is unavailable"))?;
-        service
-            .configuration
-            .restore_setting(&prior.configuration, path)?;
+        service.config = restore_service_setting(
+            ServiceConfig::from(service.config.clone()),
+            &ServiceConfig::from(prior.config.clone()),
+            path,
+        )?
+        .settings;
     } else {
         match node_type {
             EnvironmentNodeType::Service => {

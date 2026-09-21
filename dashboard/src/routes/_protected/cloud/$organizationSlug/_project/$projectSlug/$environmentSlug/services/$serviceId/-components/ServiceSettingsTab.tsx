@@ -38,7 +38,9 @@ export function ServiceSettingsTab({ state }: { state: ServiceDrawerState }) {
     <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
       <div className="h-full overflow-y-auto pr-1 pb-8">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 **:data-[slot=field-group]:gap-4">
-          {SERVICE_SETTINGS_SECTIONS.map((section) => (
+          {SERVICE_SETTINGS_SECTIONS.filter(
+            (section) => section.id !== "build" || state.service.source.type === "git",
+          ).map((section) => (
             <ServiceSettingsSection
               key={section.id}
               id={section.id}
@@ -54,4 +56,3 @@ export function ServiceSettingsTab({ state }: { state: ServiceDrawerState }) {
     </TabsContent>
   );
 }
-

@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { environmentDeployment } from "#/modules/deployments/tables";
+import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { Database } from "#/server/database.server";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -27,6 +28,13 @@ export const restoreWorkingDocument = Effect.fn("EnvironmentDesign.restoreWorkin
       let baseline: SavedEnvironmentIntent | null = null;
       if (input.snapshotSource?.kind === "introduction") {
         if (input.command.kind !== "node") return yield* new Conflict({ message: "An introduction can restore only its node." });
+        const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: input.environmentId });
+        const state = projection.explicitStates.find(state => state.environmentId === input.environmentId);
+        const command = input.command;
+        if ([...(state?.saved?.nodes ?? []), ...(state?.applied.nodes ?? [])].some(node =>
+          node.nodeType === command.nodeType && node.nodeId === command.nodeId && node.config !== null)) {
+          return yield* new Conflict({ message: "Only unsaved, unapplied nodes can reset to their Introduction." });
+        }
         baseline = yield* loadEnvironmentNodeIntroductionIntent({ environmentId: input.environmentId,
           nodeType: input.command.nodeType, nodeId: input.command.nodeId });
       } else if (input.snapshotSource) {

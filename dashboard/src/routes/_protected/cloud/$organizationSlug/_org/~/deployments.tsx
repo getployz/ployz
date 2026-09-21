@@ -53,10 +53,7 @@ function DeploymentHistory() {
   const { organizationSlug } = Route.useParams();
   const deployments = useDeploymentsCollection(organizationSlug);
 
-  const { data: rows } = useLiveSuspenseQuery({
-    query: (q) =>
-      q.from({ deployment: deployments }).select(({ deployment }) => deployment),
-  });
+  const { data: rows } = useLiveSuspenseQuery(deployments);
 
   const sorted = [...rows].sort(
     (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),

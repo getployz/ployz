@@ -3,7 +3,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -19,10 +19,8 @@ import {
   CommandShortcut,
 } from "#/components/ui/command";
 import {
-  GitBranchSelector,
   GitRepoSelector,
   ImageSelector,
-  type GitRepoSelection,
 } from "#/components/service-source-selector";
 import {
   type CreateMenuItemId,
@@ -34,7 +32,7 @@ import {
   createVolumeResourceServerFn,
 } from "#/modules/environment-design/resource-functions";
 import {
-  environmentBySlugQueryOptions,
+  loadWorkspaceEnvironment,
 } from "#/modules/environment-design/workspace-queries";
 import { createEmptyProjectServerFn } from "#/modules/environment-design/workspace-functions";
 import {
@@ -44,7 +42,7 @@ import {
   type ServiceSource,
 } from "#/modules/environment-design/services";
 import {
-  getEnvironmentsCollection,
+  getEnvironmentsCollection, getEnvironmentSummariesCollection, environmentSummary,
   getProjectsCollection,
 } from "#/collections/collections";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
@@ -55,19 +53,10 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 
 type InitialPanel = "root" | "git" | "image";
-type Panel =
-  | { kind: InitialPanel }
-  | { kind: "branch"; repository: GitRepoSelection };
+type Panel = { kind: InitialPanel };
 type CreateMode = "project" | "service";
 
 function pickerPresentation(panel: Panel, mode: CreateMode) {
-  if (panel.kind === "branch") {
-    return {
-      title: "GitHub Branch",
-      ariaLabel: "Search GitHub branches",
-      placeholder: `Search branches in ${panel.repository.fullName}…`,
-    };
-  }
   if (panel.kind === "git") {
     return {
       title: "GitHub Repository",
@@ -186,7 +175,6 @@ function useServiceCreateActions({
 }) {
   const collectionScope = useCollectionScope();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const createEmptyProject = useServerFn(createEmptyProjectServerFn);
   const createService = useServerFn(createServiceServerFn);
   const createVariableGroupResource = useServerFn(
@@ -204,7 +192,8 @@ function useServiceCreateActions({
     onSuccess: async (receipt) => {
       await Promise.all([
         getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
-        getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
+        getEnvironmentsCollection(props.organizationSlug, { ...collectionScope, environmentSlug: receipt.data.environment.namespace }).writeCommitted(receipt.data.environment),
+        getEnvironmentSummariesCollection(props.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data.environment)),
       ]);
       if (props.mode !== "service") {
         await props.onCreated?.(receipt.data);
@@ -295,13 +284,7 @@ function useServiceCreateActions({
       throw new Error("Service mode environment is unavailable in project mode");
     }
 
-    const environment = await queryClient.ensureQueryData(
-      environmentBySlugQueryOptions(
-        props.organizationSlug,
-        props.projectSlug,
-        props.environmentSlug,
-      ),
-    );
+    const environment = await loadWorkspaceEnvironment(props, collectionScope);
     if (!environment) {
       throw new Error("Environment not found");
     }
@@ -474,7 +457,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
 
         event.preventDefault();
         event.stopPropagation();
-        setActivePanel(panel.kind === "branch" ? "git" : "root");
+        setActivePanel("root");
       }}
     >
       {error ? (
@@ -504,15 +487,13 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
         />
       ) : (
       <SourcePickerLayout title={presentation.title}>
-      <Command key={panel.kind} shouldFilter={panel.kind === "root"} className="gap-3 p-0">
+      <Command key={panel.kind} shouldFilter={panel.kind === "root"}>
         {panel.kind !== "git" || githubAccess?.hasInstallations ? (
           <SourcePickerInput
             onBack={
               panel.kind === "git"
                 ? () => setActivePanel("root")
-                : panel.kind === "branch"
-                  ? () => setActivePanel("git")
-                  : undefined
+                : undefined
             }
             disabled={isPending}
           >
@@ -549,33 +530,12 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
                 installationId,
                 defaultBranch,
               }) => {
-                setQuery("");
-                setPanel({
-                  kind: "branch",
-                  repository: {
-                    fullName,
-                    repositoryId,
-                    installationId,
-                    defaultBranch,
-                  },
-                });
-              }}
-            />
-          ) : null}
-          {panel.kind === "branch" ? (
-            <GitBranchSelector
-              repositoryId={panel.repository.repositoryId}
-              installationId={panel.repository.installationId}
-              query={query}
-              defaultBranch={panel.repository.defaultBranch}
-              disabled={isPending}
-              onSelectBranch={(branch) => {
                 void createServiceFromSource(
                   createGitServiceSource({
-                    repository: panel.repository.fullName,
-                    repositoryId: panel.repository.repositoryId,
-                    installationId: panel.repository.installationId,
-                    branch: { type: "connected", name: branch },
+                    repository: fullName,
+                    repositoryId,
+                    installationId,
+                    branch: { type: "connected", name: defaultBranch },
                   }),
                 );
               }}

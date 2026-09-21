@@ -6,6 +6,7 @@ import { betterAuth } from "better-auth";
 import { organization as organizationPlugin } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
+import { sessionAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
   account,
@@ -51,6 +52,7 @@ const AuthSession = Schema.Struct({
     userId: Schema.String,
     activeOrganizationId: Schema.optionalKey(Schema.NullOr(Schema.String)),
     activeOrganizationSlug: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    sidebarOpen: Schema.optionalKey(Schema.Boolean),
   }),
   user: Schema.Struct({
     id: Schema.String,
@@ -192,9 +194,7 @@ const makeAuth = Effect.gen(function* () {
       },
     },
     session: {
-      additionalFields: {
-        activeOrganizationSlug: { type: "string", required: false },
-      },
+      additionalFields: sessionAdditionalFields,
     },
     advanced: { database: { generateId: "uuid" } },
     databaseHooks: {

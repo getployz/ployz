@@ -10,7 +10,6 @@ import {
 } from "#/test/postgres";
 import {
   createEmptyProject,
-  listProjects,
 } from "./workspace-operations.server";
 
 it.live(
@@ -93,7 +92,7 @@ it.live(
         assert.strictEqual(new Set(committedRows.map((row) => row.txid)).size, 1);
 
         const unauthorized = yield* Effect.flip(
-          listProjects(
+          createEmptyProject(
             { userId: stranger.id },
             { organizationSlug: "acme" },
           ),

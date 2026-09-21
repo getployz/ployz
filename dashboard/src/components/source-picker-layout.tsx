@@ -22,7 +22,7 @@ export function SourcePickerInput({ children, onBack, disabled }: {
     <InputGroup>
       {onBack ? (
         <InputGroupAddon>
-          <InputGroupButton aria-label="Back" size="icon-sm" onClick={onBack} disabled={disabled}>
+          <InputGroupButton type="button" aria-label="Back" size="icon-sm" onClick={onBack} disabled={disabled}>
             <ArrowLeftIcon />
           </InputGroupButton>
         </InputGroupAddon>
