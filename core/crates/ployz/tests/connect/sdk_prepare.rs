@@ -184,3 +184,39 @@ async fn node_preparation_reports_no_eligible_builder_as_known_failure() {
     assert_eq!(recorder.uploads.load(Ordering::SeqCst), 0);
     assert!(recorder.routes.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn node_preparation_cancels_an_in_flight_image_transfer_without_creating_containers() {
+    let session = UnixSession::start().await;
+    let marker_directory = tempfile::tempdir().unwrap();
+    let marker = marker_directory.path().join("transfer-started");
+    let mut description = support::test_description();
+    description.machine_id = support::machine_id('a');
+    description
+        .capabilities
+        .insert(BUILD_CAPABILITY.parse().unwrap());
+    let recorder = Arc::new(support::BuildRecorder {
+        retain_images: true,
+        blocked_transfer_marker: Some(marker.clone()),
+        ..Default::default()
+    });
+    let mut service = support::DiscoveryService::new(description.clone());
+    let mut machine = support::machine('a', "builder");
+    machine.machine.runtime.architecture = "x86_64".into();
+    service.machines = vec![machine];
+    service.builds = Some(recorder.clone());
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    session
+        .assert_sdk_script(
+            "node_prepare.js",
+            description.machine_id,
+            &[
+                ("PLOYZ_PREPARATION_OUTCOME", "cancel-transfer"),
+                ("PLOYZ_TRANSFER_STARTED", marker.to_str().unwrap()),
+            ],
+        )
+        .await;
+    assert_eq!(recorder.deliveries.lock().unwrap().len(), 1);
+    assert!(!recorder.delivered.load(Ordering::SeqCst));
+    assert!(!recorder.created.load(Ordering::SeqCst));
+}

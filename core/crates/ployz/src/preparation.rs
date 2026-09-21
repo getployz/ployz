@@ -232,14 +232,14 @@ pub async fn prepare(
             machine_id: image.machine_id,
         });
     }
+    if cancellation.is_cancelled() {
+        return Err(PreparationError::Cancelled);
+    }
     if !outcome.failures.is_empty() {
         return Err(PreparationError::Delivery(format!(
             "image push failed: {}",
             outcome.failures.join("; ")
         )));
-    }
-    if cancellation.is_cancelled() {
-        return Err(PreparationError::Cancelled);
     }
     Ok(Prepared { plan, builds })
 }

@@ -65,6 +65,16 @@ const sdk = require(dir);
         assert.match(error.message, /cleanup complete/);
         return true;
       });
+    } else if (process.env.PLOYZ_PREPARATION_OUTCOME === "cancel-transfer") {
+      while (!fs.existsSync(process.env.PLOYZ_TRANSFER_STARTED)) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      preparation.abort();
+      await assert.rejects(preparation.finished, error => {
+        assert.ok(error instanceof sdk.RpcError);
+        assert.equal(error.details.preparation.kind, "cancelled");
+        return true;
+      });
     } else if (process.env.PLOYZ_PREPARATION_OUTCOME === "selection") {
       await assert.rejects(preparation.finished, error => {
         assert.equal(error.details.preparation.kind, "failed");

@@ -1102,6 +1102,10 @@ impl MachineRpc for DiscoveryService {
             panic!("expected direct peer pull");
         };
         builds.deliveries.lock().unwrap().push((route, pull));
+        if let Some(marker) = &builds.blocked_transfer_marker {
+            std::fs::write(marker, []).unwrap();
+            std::future::pending::<()>().await;
+        }
         builds.delivered.store(true, Ordering::SeqCst);
         Ok(Response::new(
             RpcResponse::from(ployz_core::ImagePulled {})
@@ -1389,6 +1393,7 @@ pub(super) struct BuildRecorder {
     pub(super) queued: bool,
     pub(super) retain_images: bool,
     pub(super) quiet_until_cancel: bool,
+    pub(super) blocked_transfer_marker: Option<std::path::PathBuf>,
     pub(super) cancelled: AtomicBool,
     pub(super) deliveries: Mutex<
         Vec<(
