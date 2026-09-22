@@ -36,10 +36,10 @@ export const loadBuildReceipts = Effect.fn("Deployments.loadBuildReceipts")(func
     )).orderBy(desc(environmentDeployment.createdAt), desc(environmentDeployment.id)).limit(1);
   const encrypted = previous?.receipts;
   if (!encrypted) return {};
-  return yield* Effect.try({
-    try: () => Schema.decodeUnknownSync(buildReceiptsSchema)(JSON.parse(encryption.decrypt(encrypted)), { onExcessProperty: "error" }),
-    catch: () => new DeploymentExecutionError({ failureCode: "build_receipts_invalid", message: "Completed build evidence could not be read." }),
-  });
+  // Receipts are optional evidence; unreadable cache entries must allow a fresh build.
+  return yield* Effect.try(() =>
+    Schema.decodeUnknownSync(buildReceiptsSchema)(JSON.parse(encryption.decrypt(encrypted)), { onExcessProperty: "error" }),
+  ).pipe(Effect.catch(() => Effect.succeed({})));
 });
 
 /** Build evidence is private: fingerprints include effective secret build variables. */

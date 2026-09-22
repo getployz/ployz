@@ -162,7 +162,8 @@ describe("deployment runtime persistence", () => {
     ]);
   });
 
-  it("retains private build receipts and supplies them on the next Git deployment", async () => {
+  it.each(["valid", "corrupt ciphertext", "invalid JSON", "incompatible schema", "rotated key"])(
+    "recovers and retains private build receipts across Git deployments: %s", async (evidence) => {
     const receipt = { api: {
       fingerprint: "b".repeat(64), machine_id: runtimeWatchMachineFixture("a".repeat(32), "builder").id,
       image: { reference: `sha256:${"c".repeat(64)}`, tags: [], platforms: ["linux/amd64"], location: "unix:///var/run/docker.sock" },
@@ -182,7 +183,7 @@ describe("deployment runtime persistence", () => {
     const client = asTestDouble<Client>()({
       prepare: (input: Parameters<Client["prepare"]>[0]) => {
         expect(input.source_commits).toEqual({ api: "a".repeat(40) });
-        expect(input.build_receipts).toEqual(attempt === 0 ? {} : receipt);
+        expect(input.build_receipts).toEqual(attempt === 0 || (attempt === 1 && evidence !== "valid") ? {} : receipt);
         const prepared = asTestDouble<PreparedDeploy>()({
           ...preview(), buildReceipts: receipt, close: () => undefined,
           confirm: () => {
@@ -197,7 +198,7 @@ describe("deployment runtime persistence", () => {
     });
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
-    for (const image of ["redis:7", "redis:8"]) {
+    for (const image of ["redis:7", "redis:8", "redis:9"]) {
       const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
         environmentId, savedStateSnapshotId: targetSavedId,
         triggerOrigin: { origin: "manual", actorId: userId }, message: null,
@@ -224,9 +225,18 @@ describe("deployment runtime persistence", () => {
       await expect(harness.runEffect(persistBuildReceipts(context, receipt).pipe(Effect.provideService(SecretEncryption, encryption))))
         .rejects.toMatchObject({ failureCode: "build_receipts_not_owned" });
       expect(await harness.runEffect(loadBuildReceipts({ ...context, organization: { id: userId, slug: "other" } }).pipe(Effect.provideService(SecretEncryption, encryption)))).toEqual({});
+      if (attempt === 0 && evidence !== "valid") {
+        const unreadable = evidence === "invalid JSON" ? encryption.encrypt("{")
+          : evidence === "incompatible schema" ? encryption.encrypt(JSON.stringify({ api: { ...receipt.api, version: 2 } }))
+          : evidence === "rotated key" ? makeSecretEncryption("previous-encryption-secret").encrypt(JSON.stringify(receipt))
+          : { ...secret.encryptedBuildReceipts, ciphertext: "corrupt" };
+        await harness.db.update(schema.environmentDeploymentSecret)
+          .set({ encryptedBuildReceipts: unreadable })
+          .where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, admitted.id));
+      }
       attempt++;
     }
-    expect(confirmed).toBe(2);
+    expect(confirmed).toBe(3);
   });
 
   it("scopes log discovery by organization and stable service identity", async () => {
