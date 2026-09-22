@@ -14,7 +14,7 @@ export const acquireDeploymentSources = Effect.fn("Deployments.acquireSources")(
     const source = snapshot.config.source;
     if (source.type !== "git") continue;
     yield* onSource(snapshot.serviceId);
-    const identity = { organizationId: context.organization.id, installationId: source.installationId, repositoryId: source.repositoryId };
+    const identity = { organizationId: context.organization.id, installationId: source.access.type === "public" ? null : source.access.installationId, repositoryId: source.repositoryId };
     let sha = context.deployment.sourcePins?.[snapshot.serviceId]?.commitSha;
     if (!sha) {
       if (source.branch.type !== "connected") return yield* new GithubSourceError({ message: "Reconnect the source branch before deploying." });

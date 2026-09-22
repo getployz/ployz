@@ -196,7 +196,7 @@ describe("compileSdkDeployIntent", () => {
               source: createGitServiceSource({
                 repository: "acme/api",
                 repositoryId: 42,
-                installationId: 7,
+                access: { type: "github-installation", installationId: 7 },
               }),
               preDeployCommand: null,
               startCommand: null,

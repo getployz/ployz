@@ -31,7 +31,7 @@ describe("service schemas", () => {
         createGitServiceSource({
           repository: "acme/api",
           repositoryId: 42,
-          installationId: 7,
+          access: { type: "github-installation", installationId: 7 },
         })
       )
     ).toBe("api");
@@ -69,7 +69,7 @@ describe("service schemas", () => {
       source: createGitServiceSource({
         repository: "acme/api",
         repositoryId: 42,
-        installationId: 7,
+        access: { type: "github-installation", installationId: 7 },
       }),
       preDeployCommand: null,
       startCommand: null,
@@ -93,7 +93,7 @@ describe("service schemas", () => {
         type: "git",
         repository: "acme/api",
         repositoryId: 42,
-        installationId: 7,
+        access: { type: "github-installation", installationId: 7 },
         rootDir: "/apps/api/",
         branch: {
           type: "connected",
@@ -105,7 +105,7 @@ describe("service schemas", () => {
       type: "git",
       repository: "acme/api",
       repositoryId: 42,
-      installationId: 7,
+      access: { type: "github-installation", installationId: 7 },
       rootDir: "/apps/api",
       branch: {
         type: "connected",
@@ -162,7 +162,7 @@ describe("service schemas", () => {
         type: "git",
         repository: "acme/api",
         repositoryId: 42,
-        installationId: 7,
+        access: { type: "github-installation", installationId: 7 },
         rootDir: "/",
         branch: {
           type: "disconnected",

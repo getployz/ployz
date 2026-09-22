@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { Database } from "#/server/database.server";
+import { defaultServicePolicy } from "./service-policy";
 import { service, serviceRegistryCredential } from "./tables";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { captureEnvironmentNodeIntroduction } from "./environment-node-introduction.repository.server";
@@ -187,7 +188,7 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
       const slug = serviceBaseSlug(name);
       const lineage = yield* createServiceLineage({ projectId: context.project.id, name, slug });
       if (!lineage) return yield* new Conflict({ message: "Could not allocate a service lineage." });
-      const identity = yield* insertServiceIdentity({ projectId: context.project.id, environmentId: input.environmentId, lineageId: lineage.id, name });
+      const identity = yield* insertServiceIdentity({ projectId: context.project.id, environmentId: input.environmentId, lineageId: lineage.id, name, policy: { ...defaultServicePolicy, autoDeploy: input.source.type !== "git" || input.source.access.type !== "public" } });
       const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, source: input.source,
         preDeployCommand: input.preDeployCommand, startCommand: input.startCommand,
         healthcheck: input.healthcheck, restartPolicy: input.restartPolicy, privateDns: slug });

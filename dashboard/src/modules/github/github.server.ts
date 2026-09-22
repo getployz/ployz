@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { Data, Effect } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { Minimatch } from "minimatch";
 import {
   createGithubRepositoriesSyncRequestedEvent,
@@ -8,7 +8,7 @@ import {
   type GithubInstallationWebhookEventData,
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { listInstallationFiles, listInstallationRepoBranches } from "#/modules/github/github.api";
+import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
   deleteCachedGithubRepositories,
   deleteCachedGithubRepositoriesById,
@@ -21,12 +21,14 @@ import {
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
 import type {
-  GithubBranch,
   GithubRepository,
 } from "#/modules/github/github";
 import type { Actor } from "#/modules/identity/actor";
+import { GithubApi, resolveGithubRepository } from "./github-observation.api";
+import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
+import { normalizePublicGithubRepository } from "./public-repository";
 import { AppConfig } from "#/server/config.server";
-import { NotFound } from "#/server/public-error";
+import { Validation, NotFound } from "#/server/public-error";
 
 export class GithubAccountNotLinked extends Data.TaggedError(
   "GithubAccountNotLinked",
@@ -229,35 +231,21 @@ export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
 export const listGithubBranches = Effect.fn("Github.listBranches")(
   function* (
     actor: Actor,
-    input: { readonly repositoryId: number; readonly installationId: number },
+    input: { readonly repositoryId: number; readonly installationId: number | null },
   ) {
-    const config = yield* AppConfig;
-    if (!isGithubAppConfigured(config)) {
-      const branches: GithubBranch[] = [];
-      return {
-        branches,
-        hasInstallations: false,
-        configured: false as const,
-      };
-    }
-    const repository = yield* getCachedGithubRepositoryForUser({
-      userId: actor.userId,
-      ...input,
-    });
+    const repository = input.installationId === null
+      ? yield* resolveGithubRepository(null, input.repositoryId)
+      : yield* getCachedGithubRepositoryForUser({ userId: actor.userId, repositoryId: input.repositoryId, installationId: input.installationId });
     if (repository === null) {
       return yield* new NotFound({
         message: "The GitHub repository installation was not found.",
       });
     }
-    const branches = yield* listInstallationRepoBranches(
+    const branches = yield* listGithubRepositoryBranches(
       input.installationId,
       repository.fullName,
     );
-    return {
-      branches,
-      hasInstallations: true,
-      configured: true as const,
-    };
+    return { branches };
   },
 );
 
@@ -266,19 +254,17 @@ export { verifyWebhookSignature } from "#/modules/github/github.api";
 export const searchGithubFiles = Effect.fn("Github.searchFiles")(
   function* (actor: Actor, input: {
     repositoryId: number;
-    installationId: number;
+    installationId: number | null;
     ref: string;
     pattern: string;
   }) {
-    const repository = yield* getCachedGithubRepositoryForUser({
-      userId: actor.userId,
-      repositoryId: input.repositoryId,
-      installationId: input.installationId,
-    });
+    const repository = input.installationId === null
+      ? yield* resolveGithubRepository(null, input.repositoryId)
+      : yield* getCachedGithubRepositoryForUser({ userId: actor.userId, repositoryId: input.repositoryId, installationId: input.installationId });
     if (repository === null) {
       return yield* new NotFound({ message: "The GitHub repository installation was not found." });
     }
-    const files = yield* listInstallationFiles(input.installationId, repository.fullName, input.ref);
+    const files = yield* listGithubRepositoryFiles(input.installationId, repository.fullName, input.ref);
     // Basic globs only: avoid unbounded brace expansion for user-supplied patterns.
     const matcher = new Minimatch(input.pattern, {
       dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true,
@@ -290,3 +276,12 @@ export const searchGithubFiles = Effect.fn("Github.searchFiles")(
     };
   },
 );
+
+export const resolvePublicGithubRepository = Effect.fn("Github.resolvePublicRepository")(function* (input: string) {
+  const name = normalizePublicGithubRepository(input);
+  if (!name) return yield* new Validation({ message: "Enter owner/repo or a GitHub repository URL. Select the branch separately." });
+  const api = yield* GithubApi;
+  const repo = yield* api.json({ installationId: null, url: `https://api.github.com/repos/${name}`, operation: "resolve_repository",
+    schema: Schema.Struct({ id: githubIdSchema, full_name: githubRepositoryFullNameSchema, private: Schema.Literal(false), default_branch: Schema.NonEmptyString }) });
+  return { fullName: repo.full_name, repositoryId: repo.id, access: { type: "public" as const }, defaultBranch: repo.default_branch };
+});

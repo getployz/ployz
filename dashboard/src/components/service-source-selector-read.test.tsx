@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { getDbClient } from "#/collections/scope";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -60,5 +61,28 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
     cleanup();
     await raw.cleanup();
     queryClient.clear();
+  }
+});
+
+it("offers a public URL without a GitHub installation", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("scrollTo", () => {});
+  Element.prototype.scrollIntoView ??= () => {};
+  const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const scope = { queryClient, userId: "public-user", sessionId: "public-session" };
+  getRawGithubReposCollection(scope);
+  queryClient.setQueryData(githubReposQueryKey(scope), []);
+  queryClient.setQueryData(githubKeys.access(), { configured: false, hasInstallations: false });
+  queryClient.setQueryData(githubKeys.installUrl(), { url: null });
+  const rootRoute = createRootRoute({
+    loader: () => ({ session: { user: { id: scope.userId }, session: { id: scope.sessionId } } }),
+    component: () => <Command><CommandList><GitRepoSelector query="http://github.com/owner/repo.git" onSelectRepo={() => {}} /></CommandList></Command>,
+  });
+  const router = createRouter({ routeTree: rootRoute, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  try {
+    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
+    expect(await screen.findByRole("option", { name: "Deploy owner/repo" })).toBeTruthy();
+  } finally {
+    cleanup(); await getDbClient(queryClient).cleanup(); queryClient.clear();
   }
 });

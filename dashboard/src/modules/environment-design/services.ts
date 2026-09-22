@@ -92,7 +92,7 @@ export function createEmptyServiceSource(rootDir = "/"): ServiceSource {
 export function createGitServiceSource(input: {
   repository: string;
   repositoryId: number;
-  installationId: number;
+  access: Extract<ServiceSource, { type: "git" }>["access"];
   rootDir?: string;
   branch?: ServiceGitBranch;
 }): ServiceSource {
@@ -101,7 +101,7 @@ export function createGitServiceSource(input: {
     type: "git",
     repository: input.repository,
     repositoryId: input.repositoryId,
-    installationId: input.installationId,
+    access: input.access,
     rootDir: input.rootDir ?? "/",
     branch: input.branch ?? {
       type: "connected",

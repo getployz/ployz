@@ -172,3 +172,5 @@ _Avoid_: Organization Cluster architecture, global build platform, builder archi
 **Deployment Logs**:
 The user-facing output for a Cloud Deployment Attempt: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
 _Avoid_: Deploy Progress alone, Build Logs
+
+Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Cloud Deployment Attempt and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.

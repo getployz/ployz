@@ -27,7 +27,7 @@ import {
   updateService,
   updateServiceCanvasPosition,
 } from "./service-operations.server";
-import { createImageServiceSource } from "./services";
+import { createGitServiceSource, createImageServiceSource } from "./services";
 
 it.live(
   "keeps service, credential, and canvas authoring authorized and atomic",
@@ -183,6 +183,20 @@ it.live(
           serviceId: created.data.service.id,
         });
 
+
+        const publicService = yield* createService(actor, {
+          organizationSlug: "acme", environmentId: environmentRecord.id, name: "Public",
+          source: createGitServiceSource({ repository: "owner/public", repositoryId: 42, access: { type: "public" } }),
+          x: 0, y: 0, preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
+        });
+        assert.strictEqual(publicService.data.identity.policy.autoDeploy, false);
+        for (const policy of [{ autoDeploy: true }, { waitForCi: true }]) {
+          const rejected = yield* editServiceMetadata(actor, {
+            organizationSlug: "acme", environmentId: environmentRecord.id, serviceId: publicService.data.service.id,
+            edit: { kind: "policy", policy },
+          }).pipe(Effect.flip);
+          assert.strictEqual(rejected._tag, "Validation");
+        }
       }).pipe(Effect.provide(layer));
     }),
   60_000,

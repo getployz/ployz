@@ -10,7 +10,7 @@ fn config() -> Value {
     json!({
         "version": 2, "privateDns": "api",
         "source": {"version": 2, "type": "git", "repository": "acme/api",
-            "repositoryId": 42, "installationId": 7, "rootDir": "/apps/api",
+            "repositoryId": 42, "access": { "type": "github-installation", "installationId": 7 }, "rootDir": "/apps/api",
             "branch": {"type": "connected", "name": "main"}},
         "preDeployCommand": null, "startCommand": null,
         "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped"
@@ -21,7 +21,7 @@ fn config() -> Value {
 fn service_comparison_and_restore_preserve_authored_source_identity() {
     let baseline = parse_service_config(config()).unwrap();
     let mut edited = config();
-    edited["source"]["installationId"] = json!(9);
+    edited["source"]["access"]["installationId"] = json!(9);
     edited["source"]["branch"] = json!({"type": "disconnected", "previousName": "main"});
     edited["startCommand"] = json!("npm start");
     let current = parse_service_config(edited).unwrap();
@@ -33,7 +33,7 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     let restored =
         restore_service_setting(current.clone(), &baseline, "source.repository").unwrap();
     assert_eq!(
-        serde_json::to_value(&restored).unwrap()["source"]["installationId"],
+        serde_json::to_value(&restored).unwrap()["source"]["access"]["installationId"],
         7
     );
     assert_eq!(
@@ -176,4 +176,15 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     let removed = compare_service_settings(&baseline, Some(&mounted));
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].kind, ployz_core::config::ChangeKind::Remove);
+}
+
+#[test]
+fn git_access_is_explicit_and_changes_with_repository_identity() {
+    let original = parse_service_config(config()).unwrap();
+    let mut public = config();
+    public["source"]["access"] = json!({"type": "public"});
+    let public_config = parse_service_config(public.clone()).unwrap();
+    assert!(!compare_service_settings(&public_config, Some(&original)).is_empty());
+    public["source"]["access"] = json!({"type": "github-installation", "installationId": 0});
+    assert!(parse_service_config(public).is_err());
 }

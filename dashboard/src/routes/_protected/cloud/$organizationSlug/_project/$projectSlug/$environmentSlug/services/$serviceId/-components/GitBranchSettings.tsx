@@ -46,7 +46,8 @@ export function GitBranchSettings({
     ? branch.name
     : (branch.previousName ?? "Disconnected");
   const branchDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceBranch);
-  const autoDeployEnabled = service.policy.autoDeploy;
+  const connectedAccess = source.access.type === "github-installation";
+  const autoDeployEnabled = connectedAccess && service.policy.autoDeploy;
 
   return (
     <>
@@ -94,7 +95,7 @@ export function GitBranchSettings({
                       draft.source = createGitServiceSource({
                         repository: draft.source.repository,
                         repositoryId: draft.source.repositoryId,
-                        installationId: draft.source.installationId,
+                        access: draft.source.access,
                         rootDir: draft.source.rootDir,
                         branch: {
                           type: "disconnected",
@@ -129,6 +130,7 @@ export function GitBranchSettings({
                 <Button
                   type="button"
                   variant="outline"
+                  disabled={!connectedAccess}
                   onClick={() => {
                     const transaction = state.editMetadata({
                       environmentId: service.environmentId, serviceId: service.id,
@@ -155,6 +157,7 @@ export function GitBranchSettings({
         )}
       </Field>
 
+      {!connectedAccess ? <FieldDescription>Connect this repository through the GitHub App to enable automatic deployments and CI checks.</FieldDescription> : null}
       {isBranchConnected ? (
         <Field>
           <div className="flex flex-col gap-2">
@@ -166,7 +169,8 @@ export function GitBranchSettings({
           <Item variant="muted">
             <ItemActions>
               <Switch
-                checked={service.policy.waitForCi}
+                disabled={!connectedAccess}
+                checked={connectedAccess && service.policy.waitForCi}
                 onCheckedChange={(nextChecked) => {
                   const transaction = state.editMetadata({
                     environmentId: service.environmentId, serviceId: service.id,
@@ -191,7 +195,7 @@ export function GitBranchSettings({
         onOpenChange={setIsGitBranchSelectorOpen}
         repositoryFullName={source.repository}
         repositoryId={source.repositoryId}
-        installationId={source.installationId}
+        installationId={source.access.type === "public" ? null : source.access.installationId}
         onSelectBranch={async (branchName) => {
           const transaction = collection.update(service.id, (draft) => {
             if (draft.source.type !== "git") {
@@ -201,7 +205,7 @@ export function GitBranchSettings({
             draft.source = createGitServiceSource({
               repository: draft.source.repository,
               repositoryId: draft.source.repositoryId,
-              installationId: draft.source.installationId,
+              access: draft.source.access,
               rootDir: draft.source.rootDir,
               branch: {
                 type: "connected",

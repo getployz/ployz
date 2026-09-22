@@ -128,7 +128,8 @@ function decodeCandidate(
   if (
     source.type !== "git" ||
     source.version !== 2 ||
-    source.installationId !== identity.installationId ||
+    source.access.type !== "github-installation" ||
+    source.access.installationId !== identity.installationId ||
     source.repositoryId !== identity.repositoryId ||
     row.policy.autoDeploy !== true ||
     branch?.type !== "connected" ||

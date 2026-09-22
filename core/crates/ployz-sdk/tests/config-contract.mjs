@@ -6,7 +6,7 @@ const input = {
   version: 2, privateDns: 'api',
   source: {
     version: 2, type: 'git', repository: 'acme/api', repositoryId: 42,
-    installationId: 7, rootDir: ' /apps/api/ ',
+    access: { type: "github-installation", installationId: 7 }, rootDir: ' /apps/api/ ',
     branch: { type: 'connected', name: 'main' },
   },
   preDeployCommand: null, startCommand: null,
@@ -17,12 +17,12 @@ for (const api of [native, browser]) {
   const baseline = api.parseServiceConfig(input);
   assert.equal(baseline.source.rootDir, '/apps/api');
   const current = structuredClone(baseline);
-  current.source.installationId = 9;
+  current.source.access.installationId = 9;
   current.startCommand = 'npm start';
   const changes = api.compareServiceSettings(current, baseline);
   assert.deepEqual(changes.map(row => row.path), ['source.repository', 'startCommand']);
   const restored = api.restoreServiceSetting(current, baseline, 'source.repository');
-  assert.equal(restored.source.installationId, 7);
+  assert.equal(restored.source.access.installationId, 7);
   assert.equal(restored.startCommand, 'npm start');
   assert.throws(() => api.parseServiceSetting('replicas', 51));
   assert.throws(() => api.parseServiceSetting('privateDns', 'Invalid_DNS'));

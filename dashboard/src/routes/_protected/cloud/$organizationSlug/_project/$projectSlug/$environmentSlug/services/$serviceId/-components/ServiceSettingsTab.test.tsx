@@ -96,7 +96,7 @@ it("restores saved build controls when changing to Git, including a disconnected
   const image = createImageServiceSource({ image: "nginx:alpine" });
   const { state, update, changeSource } = await show(image);
   const savedBuild = structuredClone(state.service.build);
-  const git = createGitServiceSource({ repository: "acme/api", repositoryId: 1, installationId: 2 });
+  const git = createGitServiceSource({ repository: "acme/api", repositoryId: 1, access: { type: "github-installation", installationId: 2  }});
   changeSource(git);
   expect(screen.getByRole("heading", { name: "Build" })).toBeTruthy();
   expect(screen.getByLabelText<HTMLInputElement>("Dockerfile path").value).toBe("docker/Dockerfile");
@@ -104,7 +104,7 @@ it("restores saved build controls when changing to Git, including a disconnected
   changeSource(image);
   expect(screen.queryByRole("heading", { name: "Build" })).toBeNull();
   changeSource(createGitServiceSource({
-    repository: "acme/api", repositoryId: 1, installationId: 2,
+    repository: "acme/api", repositoryId: 1, access: { type: "github-installation", installationId: 2 },
     branch: { type: "disconnected", previousName: "main" },
   }));
   expect(screen.getByLabelText<HTMLInputElement>("Dockerfile path").value).toBe("docker/Dockerfile");

@@ -29,6 +29,7 @@ import {
 import { AppConfig } from "#/server/config.server";
 
 const GITHUB_API_VERSION = "2022-11-28";
+type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
 export { GITHUB_CHECK_SUITE_CONCLUSIONS as GITHUB_API_CHECK_SUITE_CONCLUSIONS };
 export { GITHUB_CHECK_SUITE_STATUSES as GITHUB_API_CHECK_SUITE_STATUSES };
 export { GITHUB_COMPARE_STATUSES };
@@ -144,14 +145,14 @@ const installationTokenResponseSchema = Schema.Struct({
 });
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
-  installationId: number;
+  installationId: number | null;
   url: string;
   operation: GithubObservationOperation;
   schema: S;
 };
 
 export interface GithubApiService {
-  readonly archive: (input: { installationId: number; repository: GithubResolvedRepository; sha: string }) => Effect.Effect<Response, GithubObservationError>;
+  readonly archive: (input: { installationId: number | null; repository: GithubResolvedRepository; sha: string }) => Effect.Effect<Response, GithubObservationError>;
   readonly json: <S extends Schema.ConstraintDecoder<unknown>>(
     input: GithubJsonRequest<S>,
   ) => Effect.Effect<S["Type"], GithubObservationError>;
@@ -177,9 +178,9 @@ function isRetriableGithubResponse(response: Response): boolean {
   );
 }
 
-export const resolveInstallationRepository = Effect.fn(
-  "Github.resolveInstallationRepository",
-)(function* (installationId: number, repositoryId: number) {
+export const resolveGithubRepository = Effect.fn(
+  "Github.resolveGithubRepository",
+)(function* (installationId: number | null, repositoryId: number) {
   const operation = "resolve_repository";
   if (!isValidGithubId(repositoryId)) {
     return yield* githubObservationError({
@@ -209,10 +210,10 @@ export const resolveInstallationRepository = Effect.fn(
   };
 });
 
-export const resolveInstallationBranchHead = Effect.fn(
-  "Github.resolveInstallationBranchHead",
+export const resolveGithubBranchHead = Effect.fn(
+  "Github.resolveGithubBranchHead",
 )(function* (
-  installationId: number,
+  installationId: number | null,
   repository: GithubResolvedRepository,
   ref: string,
 ) {
@@ -510,7 +511,7 @@ export const GithubApiLive = Layer.effect(
       function* <S extends Schema.ConstraintDecoder<unknown>>(
         input: GithubJsonRequest<S>,
       ) {
-        if (!isValidGithubId(input.installationId)) {
+        if (input.installationId !== null && !isValidGithubId(input.installationId)) {
           return yield* githubObservationError({
             code: "invalid_input",
             operation: input.operation,
@@ -518,17 +519,11 @@ export const GithubApiLive = Layer.effect(
           });
         }
 
-        const token = yield* installationToken(input.installationId);
+        const token = input.installationId === null ? null : yield* installationToken(input.installationId);
+        const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
+        if (token !== null) headers.Authorization = `Bearer ${token}`;
         const response = yield* Effect.tryPromise({
-          try: (signal) =>
-            fetch(input.url, {
-              signal,
-              headers: {
-                Authorization: `Bearer ${token}`,
-                Accept: "application/vnd.github+json",
-                "X-GitHub-Api-Version": GITHUB_API_VERSION,
-              },
-            }),
+          try: (signal) => fetch(input.url, { signal, headers }),
           catch: () =>
             githubObservationError({
               code: "request_failed",
@@ -572,18 +567,20 @@ export const GithubApiLive = Layer.effect(
     );
 
     const archive = Effect.fn("GithubApi.archive")(function* (input: {
-      installationId: number; repository: GithubResolvedRepository; sha: string;
+      installationId: number | null; repository: GithubResolvedRepository; sha: string;
     }) {
       const repository = resolvedRepositoryPath(input.repository);
       if (!repository || !isValidGithubExactSha(input.sha)) {
         return yield* githubObservationError({ code: "invalid_input", operation: "download_source", retriable: false });
       }
-      const token = yield* installationToken(input.installationId);
+      const token = input.installationId === null ? null : yield* installationToken(input.installationId);
+      const headers: GithubRequestHeaders = { "X-GitHub-Api-Version": GITHUB_API_VERSION };
+      if (token !== null) headers.Authorization = `Bearer ${token}`;
       return yield* Effect.tryPromise({
         try: async (signal) => {
           // Never forward installation credentials across the archive redirect.
           const redirect = await fetch(`https://api.github.com/repos/${repository}/tarball/${input.sha}`, {
-            signal, redirect: "manual", headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": GITHUB_API_VERSION },
+            signal, redirect: "manual", headers,
           });
           const location = redirect.headers.get("location");
           await redirect.body?.cancel();

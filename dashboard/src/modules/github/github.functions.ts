@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import {
+  resolvePublicGithubRepository,
   getGithubInstallUrl,
   getGithubRepoAccessState,
   listGithubBranches,
@@ -18,7 +19,7 @@ import {
 const authenticated = [publicErrorMiddleware, actorMiddleware] as const;
 const RepositoryIdentity = Schema.Struct({
   repositoryId: githubIdSchema,
-  installationId: githubIdSchema,
+  installationId: Schema.NullOr(githubIdSchema),
 });
 
 export const searchGithubFilesServerFn = createServerFn({ method: "GET" })
@@ -52,3 +53,8 @@ export const listGithubBranchesServerFn = createServerFn({ method: "GET" })
   .handler(({ context, data }) =>
     runActor(context, listGithubBranches(context.actor, data)),
   );
+
+export const resolvePublicGithubRepositoryServerFn = createServerFn({ method: "GET" })
+  .middleware(authenticated)
+  .validator(strictValidator(Schema.Struct({ repository: Schema.String.check(Schema.isMaxLength(500)) })))
+  .handler(({ context, data }) => runActor(context, resolvePublicGithubRepository(data.repository)));

@@ -11,8 +11,8 @@ import {
   fetchInstallationCheckSuite,
   GithubApi,
   isGithubObservationNotFound,
-  resolveInstallationBranchHead,
-  resolveInstallationRepository,
+  resolveGithubBranchHead,
+  resolveGithubRepository,
   type GithubResolvedRepository,
 } from "#/modules/github/github-observation.api";
 import {
@@ -136,7 +136,7 @@ async function processPushAttempt(input: {
   } = input;
   const liveBranch = await step.run(`resolve-live-branch-head-${attempt}`, () =>
     runEffect(
-      resolveInstallationBranchHead(
+      resolveGithubBranchHead(
         payload.installationId,
         repository,
         payload.ref,
@@ -291,7 +291,7 @@ export async function executeProcessGithubPushReceived(
   if (receipt.disposition === "owned_elsewhere") return receipt;
   const repository = await input.step.run("resolve-repository", () =>
     runEffect(
-      resolveInstallationRepository(
+      resolveGithubRepository(
         payload.installationId,
         payload.repositoryId,
       ),
@@ -353,7 +353,7 @@ export async function executeProcessGithubCheckSuiteReceived(
   if (receipt.disposition === "owned_elsewhere") return receipt;
   const repository = await input.step.run("resolve-repository", () =>
     runEffect(
-      resolveInstallationRepository(
+      resolveGithubRepository(
         payload.installationId,
         payload.repositoryId,
       ),

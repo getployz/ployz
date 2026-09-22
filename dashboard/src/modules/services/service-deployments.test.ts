@@ -19,7 +19,7 @@ const currentConfig = projectServiceDeploymentConfig({
   source: createGitServiceSource({
     repository: "acme/api",
     repositoryId: 42,
-    installationId: 7,
+    access: { type: "github-installation", installationId: 7 },
     rootDir: "/apps/api",
     branch: { type: "connected", name: "main" },
   }),
@@ -36,7 +36,7 @@ describe("service deployment state", () => {
       source: createGitServiceSource({
         repository: "acme/api",
         repositoryId: 42,
-        installationId: 7,
+        access: { type: "github-installation", installationId: 7 },
         rootDir: "/apps/api",
         branch: { type: "connected", name: "develop" },
       }),
@@ -63,7 +63,7 @@ describe("service deployment state", () => {
     const baselineSource = createGitServiceSource({
       repository: "acme/api",
       repositoryId: 42,
-      installationId: 7,
+      access: { type: "github-installation", installationId: 7 },
       rootDir: "/apps/api",
       branch: { type: "connected", name: "main" },
     });
@@ -77,7 +77,7 @@ describe("service deployment state", () => {
         source: createGitServiceSource({
           repository: "acme/api",
           repositoryId: 42,
-          installationId: 7,
+          access: { type: "github-installation", installationId: 7 },
           rootDir: "/apps/api",
           branch: { type: "connected", name: "main" },
         }),

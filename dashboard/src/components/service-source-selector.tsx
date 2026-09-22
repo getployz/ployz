@@ -1,3 +1,6 @@
+import { normalizePublicGithubRepository } from "#/modules/github/public-repository";
+import { resolvePublicGithubRepositoryServerFn } from "#/modules/github/github.functions";
+import type { ServiceGitAccess } from "@ployz/sdk";
 import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
@@ -10,7 +13,6 @@ import {
 } from "react";
 import {
   ChevronRightIcon,
-  ArrowLeftIcon,
   InfoIcon,
   TriangleAlertIcon,
   RefreshCwIcon,
@@ -72,7 +74,7 @@ const FILTERED_GITHUB_REPO_LIMIT = 200;
 export type GitRepoSelection = {
   fullName: string;
   repositoryId: number;
-  installationId: number;
+  access: ServiceGitAccess;
   defaultBranch: string;
 };
 
@@ -102,7 +104,7 @@ type ImageSelectorDialogProps = {
 
 type GitBranchSelectorProps = {
   repositoryId: number;
-  installationId: number;
+  installationId: number | null;
   query: string;
   defaultBranch?: string;
   disabled?: boolean;
@@ -114,7 +116,7 @@ type GitBranchSelectorDialogProps = {
   onOpenChange: (open: boolean) => void;
   repositoryFullName: string;
   repositoryId: number;
-  installationId: number;
+  installationId: number | null;
   onSelectBranch: (branchName: string) => void | Promise<void>;
 };
 
@@ -394,7 +396,7 @@ function GitRepoSelectorResults({
                 void onSelectRepo({
                   fullName: repo.full_name,
                   repositoryId: repo.id,
-                  installationId: repo.installation_id,
+                  access: { type: "github-installation", installationId: repo.installation_id },
                   defaultBranch: repo.default_branch,
                 });
               }}
@@ -427,8 +429,21 @@ function GitRepoSelectorResults({
 }
 
 export function GitRepoSelector(props: GitRepoSelectorProps) {
+  const publicName = normalizePublicGithubRepository(props.query);
+  const connectPublic = useMutation({
+    mutationFn: async () => {
+      const repository = await resolvePublicGithubRepositoryServerFn({ data: { repository: props.query } });
+      await props.onSelectRepo(repository);
+    },
+  });
   return (
     <>
+      {publicName ? <CommandGroup heading="Public repository">
+        <CommandItem disabled={props.disabled || connectPublic.isPending} onSelect={() => connectPublic.mutate()}>
+          <GitHubMarkIcon /> {connectPublic.isPending ? "Connecting…" : `Deploy ${publicName}`}
+        </CommandItem>
+      </CommandGroup> : props.query.includes("/") ? <SelectorEmpty>Enter owner/repo or a GitHub repository URL. Choose the branch separately.</SelectorEmpty> : null}
+      {connectPublic.isError ? <Alert variant="destructive"><AlertDescription>Could not read this public repository. Check its address and visibility, then try again.</AlertDescription></Alert> : null}
       <Suspense>
         <GitRepoSelectorActions />
       </Suspense>
@@ -460,14 +475,6 @@ function GitBranchSelectorResults({
         branch.name.toLowerCase().includes(normalizedQuery)
       )
     : branchesData.branches;
-
-  if (!branchesData.configured) {
-    return <SelectorEmpty>GitHub isn’t set up</SelectorEmpty>;
-  }
-
-  if (!branchesData.hasInstallations) {
-    return <SelectorEmpty>No GitHub installations found</SelectorEmpty>;
-  }
 
   if (branchesData.branches.length === 0) {
     return <SelectorEmpty>No branches found</SelectorEmpty>;
@@ -668,7 +675,6 @@ function OpenGitRepoSelectorDialog({
   onOpenChange,
   onSelectRepo,
 }: GitRepoSelectorDialogProps) {
-  const { data: githubAccess } = useQuery(githubRepoAccessQueryOptions());
   const dialog = useSelectorDialogState<GitRepoSelection>({
     onOpenChange,
     onSelect: onSelectRepo,
@@ -686,21 +692,15 @@ function OpenGitRepoSelectorDialog({
     >
       <SourcePickerLayout title="GitHub Repository">
       <Command shouldFilter={false} className="gap-3 p-0">
-        {githubAccess?.hasInstallations ? (
-          <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
+        <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
             <CommandPrimitive.Input
               asChild
               value={dialog.query}
               onValueChange={dialog.setQuery}
             >
-              <InputGroupInput autoFocus aria-label="Search GitHub repositories" placeholder="Search GitHub repositories…" disabled={dialog.isPending} />
+              <InputGroupInput autoFocus aria-label="Search GitHub repositories" placeholder="Search repositories or paste a GitHub URL…" disabled={dialog.isPending} />
             </CommandPrimitive.Input>
-          </SourcePickerInput>
-        ) : (
-          <Button variant="ghost" size="sm" className="self-start" onClick={() => onOpenChange(false)}>
-            <ArrowLeftIcon /> Back
-          </Button>
-        )}
+        </SourcePickerInput>
         <CommandList>
           <GitRepoSelector
             query={dialog.query}

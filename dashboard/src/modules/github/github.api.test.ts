@@ -1,14 +1,15 @@
+import { resolvePublicGithubRepository } from "./github.server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Effect, Layer, Result } from "effect";
 import {
-  listInstallationRepoBranches as listInstallationRepoBranchesEffect,
+  listGithubRepositoryBranches as listGithubRepositoryBranchesEffect,
   listInstallationReposPage as listInstallationReposPageEffect,
 } from "#/modules/github/github.api";
 import {
   compareInstallationRepositoryCommits as compareInstallationRepositoryCommitsEffect,
   fetchInstallationCheckSuite as fetchInstallationCheckSuiteEffect,
-  resolveInstallationBranchHead as resolveInstallationBranchHeadEffect,
-  resolveInstallationRepository as resolveInstallationRepositoryEffect,
+  resolveGithubBranchHead as resolveGithubBranchHeadEffect,
+  resolveGithubRepository as resolveGithubRepositoryEffect,
   GithubApiLive,
   GithubApi,
 } from "#/modules/github/github-observation.api";
@@ -16,21 +17,21 @@ import { AppConfig } from "#/server/config.server";
 
 const GithubTestLive = GithubApiLive.pipe(Layer.provideMerge(AppConfig.layer));
 
-async function resolveInstallationRepository(
-  ...args: Parameters<typeof resolveInstallationRepositoryEffect>
+async function resolveGithubRepository(
+  ...args: Parameters<typeof resolveGithubRepositoryEffect>
 ) {
   return Effect.runPromise(
-    Effect.result(resolveInstallationRepositoryEffect(...args)).pipe(
+    Effect.result(resolveGithubRepositoryEffect(...args)).pipe(
       Effect.provide(GithubTestLive),
     ),
   );
 }
 
-async function resolveInstallationBranchHead(
-  ...args: Parameters<typeof resolveInstallationBranchHeadEffect>
+async function resolveGithubBranchHead(
+  ...args: Parameters<typeof resolveGithubBranchHeadEffect>
 ) {
   return Effect.runPromise(
-    Effect.result(resolveInstallationBranchHeadEffect(...args)).pipe(
+    Effect.result(resolveGithubBranchHeadEffect(...args)).pipe(
       Effect.provide(GithubTestLive),
     ),
   );
@@ -66,11 +67,11 @@ async function listInstallationReposPage(
   );
 }
 
-async function listInstallationRepoBranches(
-  ...args: Parameters<typeof listInstallationRepoBranchesEffect>
+async function listGithubRepositoryBranches(
+  ...args: Parameters<typeof listGithubRepositoryBranchesEffect>
 ) {
   return Effect.runPromise(
-    Effect.result(listInstallationRepoBranchesEffect(...args)).pipe(
+    Effect.result(listGithubRepositoryBranchesEffect(...args)).pipe(
       Effect.provide(GithubTestLive),
     ),
   );
@@ -107,14 +108,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("resolveInstallationRepository", () => {
+describe("resolveGithubRepository", () => {
   it("resolves a repository through its stable installation-scoped id", async () => {
     const fetchMock = mockFetchSequence(
       installationTokenResponse(),
       jsonResponse({ id: 9_001, full_name: "ployz/example-renamed" }),
     );
 
-    const result = await resolveInstallationRepository(4_001, 9_001);
+    const result = await resolveGithubRepository(4_001, 9_001);
 
     expect(Result.isSuccess(result)).toBe(true);
     if (Result.isFailure(result)) return;
@@ -136,7 +137,7 @@ describe("resolveInstallationRepository", () => {
       jsonResponse({ id: 9_002, full_name: "ployz/wrong" }),
     );
 
-    const result = await resolveInstallationRepository(4_002, 9_001);
+    const result = await resolveGithubRepository(4_002, 9_001);
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
@@ -154,7 +155,7 @@ describe("resolveInstallationRepository", () => {
       jsonResponse({ id: 9_001, full_name: "../repository" }),
     );
 
-    const result = await resolveInstallationRepository(4_003, 9_001);
+    const result = await resolveGithubRepository(4_003, 9_001);
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
@@ -173,8 +174,8 @@ describe("resolveInstallationRepository", () => {
       ),
     );
 
-    const forbidden = await resolveInstallationRepository(4_004, 9_001);
-    const rateLimited = await resolveInstallationRepository(4_005, 9_001);
+    const forbidden = await resolveGithubRepository(4_004, 9_001);
+    const rateLimited = await resolveGithubRepository(4_005, 9_001);
 
     expect(Result.isFailure(forbidden)).toBe(true);
     if (Result.isFailure(forbidden)) expect(forbidden.failure.retriable).toBe(false);
@@ -190,7 +191,7 @@ describe("resolveInstallationRepository", () => {
   });
 });
 
-describe("resolveInstallationBranchHead", () => {
+describe("resolveGithubBranchHead", () => {
   const repository = { id: 9_001, fullName: "ployz/example-renamed" };
 
   it("resolves a slash-containing full branch ref to its exact commit", async () => {
@@ -205,7 +206,7 @@ describe("resolveInstallationBranchHead", () => {
       }),
     );
 
-    const result = await resolveInstallationBranchHead(
+    const result = await resolveGithubBranchHead(
       4_101,
       repository,
       "refs/heads/feature/storage/alarms",
@@ -228,7 +229,7 @@ describe("resolveInstallationBranchHead", () => {
   it("returns an absent observation only for a ref endpoint 404", async () => {
     mockFetchSequence(installationTokenResponse(), jsonResponse({}, 404));
 
-    const result = await resolveInstallationBranchHead(
+    const result = await resolveGithubBranchHead(
       4_102,
       repository,
       "refs/heads/deleted",
@@ -248,7 +249,7 @@ describe("resolveInstallationBranchHead", () => {
       jsonResponse({ message: "temporary" }, 500),
     );
 
-    const result = await resolveInstallationBranchHead(
+    const result = await resolveGithubBranchHead(
       4_103,
       repository,
       "refs/heads/main",
@@ -269,7 +270,7 @@ describe("resolveInstallationBranchHead", () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await resolveInstallationBranchHead(
+    const result = await resolveGithubBranchHead(
       4_104,
       repository,
       "refs/heads/release/../main",
@@ -671,7 +672,7 @@ describe("GitHub repository synchronization provider", () => {
       jsonResponse([{ name: "main", provider_only: "removed" }]),
     );
 
-    const result = await listInstallationRepoBranches(8_102, "acme/api");
+    const result = await listGithubRepositoryBranches(8_102, "acme/api");
 
     expect(Result.isSuccess(result)).toBe(true);
     if (Result.isFailure(result)) return;
@@ -726,4 +727,43 @@ describe("source archives", () => {
     expect(JSON.stringify(result)).not.toContain("private");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+});
+
+it("public repository reads never request or attach installation credentials", async () => {
+  const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+    expect(new Headers(init.headers).has("Authorization")).toBe(false);
+    return Response.json({ id: 42, full_name: "owner/repo" });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await resolveGithubRepository(null, 42);
+  expect(Result.isSuccess(result)).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/repositories/42");
+});
+
+it("resolves pasted HTTP URLs through HTTPS without GitHub App access", async () => {
+  const fetchMock = mockFetchSequence(Response.json({ id: 42, full_name: "Owner/Repo", private: false, default_branch: "trunk" }));
+  const selected = await Effect.runPromise(resolvePublicGithubRepository(" http://github.com/owner/repo.git/ ").pipe(Effect.provide(GithubTestLive)));
+  expect(selected).toEqual({ repositoryId: 42, fullName: "Owner/Repo", access: { type: "public" }, defaultBranch: "trunk" });
+  expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/repos/owner/repo");
+  expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has("Authorization")).toBe(false);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it("does not fall back to installation credentials when a public repository disappears", async () => {
+  const fetchMock = mockFetchSequence(new Response(null, { status: 404 }));
+  const result = await resolveGithubRepository(null, 42);
+  expect(Result.isFailure(result)).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it("downloads public archives at the pinned SHA without credentials", async () => {
+  const sha = "a".repeat(40);
+  const fetchMock = mockFetchSequence(new Response(null, { status: 302, headers: { location: `https://codeload.github.com/owner/repo/tar.gz/${sha}` } }), new Response("archive"));
+  const response = await Effect.runPromise(Effect.gen(function* () {
+    const api = yield* GithubApi;
+    return yield* api.archive({ installationId: null, repository: { id: 42, fullName: "owner/repo" }, sha });
+  }).pipe(Effect.provide(GithubTestLive)));
+  expect(await response.text()).toBe("archive");
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.github.com/repos/owner/repo/tarball/${sha}`);
+  expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has("Authorization")).toBe(false);
+  expect(fetchMock.mock.calls[1]?.[1]?.headers).toBeUndefined();
 });

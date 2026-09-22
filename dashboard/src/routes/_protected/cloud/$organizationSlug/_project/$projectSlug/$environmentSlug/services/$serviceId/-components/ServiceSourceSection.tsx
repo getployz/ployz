@@ -188,7 +188,7 @@ function GitServiceSourceSection({
         onSelectRepo={async ({
           fullName,
           repositoryId,
-          installationId,
+          access,
           defaultBranch,
         }) => {
           const transaction = collection.update(service.id, (draft) => {
@@ -199,7 +199,7 @@ function GitServiceSourceSection({
             draft.source = createGitServiceSource({
               repository: fullName,
               repositoryId,
-              installationId,
+              access,
               rootDir: draft.source.rootDir,
               branch: {
                 type: "connected",
@@ -301,7 +301,7 @@ function EmptyServiceSourceSection({ state }: { state: ServiceDrawerState }) {
         onSelectRepo={async ({
           fullName,
           repositoryId,
-          installationId,
+          access,
           defaultBranch,
         }) => {
           const transaction = collection.update(service.id, (draft) => {
@@ -312,7 +312,7 @@ function EmptyServiceSourceSection({ state }: { state: ServiceDrawerState }) {
             draft.source = createGitServiceSource({
               repository: fullName,
               repositoryId,
-              installationId,
+              access,
               rootDir: draft.source.rootDir,
               branch: {
                 type: "connected",

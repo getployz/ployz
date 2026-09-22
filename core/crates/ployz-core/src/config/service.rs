@@ -88,7 +88,7 @@ pub enum ServiceSource {
         version: u8,
         repository: String,
         repository_id: u64,
-        installation_id: u64,
+        access: ServiceGitAccess,
         root_dir: String,
         branch: ServiceGitBranch,
     },
@@ -98,6 +98,19 @@ pub enum ServiceSource {
         image: String,
         credentials: ServiceImageCredentials,
     },
+}
+
+/// How Cloud reads a GitHub repository; public access never borrows credentials.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServiceGitAccess {
+    Public,
+    GithubInstallation { installation_id: u64 },
 }
 
 /// An attached repository branch or evidence of a disconnected selection.

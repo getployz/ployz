@@ -73,7 +73,7 @@ export const getStoredServiceCredential = Effect.fn("EnvironmentDesign.getStored
 );
 
 export const insertServiceIdentity = Effect.fn("EnvironmentDesign.insertServiceIdentity")(
-  function* (input: { projectId: string; environmentId: string; lineageId: string; name: string }) {
+  function* (input: { projectId: string; environmentId: string; lineageId: string; name: string; policy?: typeof service.$inferInsert.policy }) {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(service).values({ ...input, organizationId: organizationIdForProject(input.projectId) }).returning();
     if (!row) return yield* Effect.die("PostgreSQL did not return the service identity.");

@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { requireEnvironmentForActorById, listEnvironmentNodeNameIdentities } from "./authoring-repository.server";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
@@ -21,6 +21,11 @@ export const editServiceMetadata = Effect.fn("EnvironmentDesign.editServiceMetad
         return yield* new NotFound({ message: "Service not found." });
       }
       const { edit } = input;
+      const source = document.intent.services.find(node => node.id === input.serviceId)?.config.source;
+      if (edit.kind === "policy" && (edit.policy.autoDeploy === true || edit.policy.waitForCi === true)
+        && source?.type === "git" && source.access.type === "public") {
+        return yield* new Validation({ message: "Connect the GitHub App to enable automatic deployments or CI checks." });
+      }
       if (edit.kind === "rename" && isEnvironmentNodeNameTaken(edit.name,
         yield* listEnvironmentNodeNameIdentities(input.environmentId), { type: "service", id: input.serviceId })) {
         return yield* new Conflict({ message: getDuplicateEnvironmentNodeNameMessage(edit.name) });

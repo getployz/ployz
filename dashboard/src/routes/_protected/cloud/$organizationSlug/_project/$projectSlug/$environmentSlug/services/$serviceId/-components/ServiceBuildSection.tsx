@@ -16,7 +16,7 @@ import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organization
 
 type GitRef = {
   repositoryId: number;
-  installationId: number;
+  installationId: number | null;
   ref: string;
 };
 
@@ -74,7 +74,7 @@ export function ServiceBuildSection({
     source.type === "git" && source.branch.type === "connected"
       ? {
           repositoryId: source.repositoryId,
-          installationId: source.installationId,
+          installationId: source.access.type === "public" ? null : source.access.installationId,
           ref: source.branch.name,
         }
       : null;

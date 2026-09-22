@@ -47,7 +47,7 @@ const repositoryId = 42;
 const gitSource = createGitServiceSource({
   repository: "acme/api",
   repositoryId,
-  installationId,
+  access: { type: "github-installation", installationId },
 });
 
 function savedServiceConfig(command = "Saved API") {
@@ -202,7 +202,7 @@ describe("GitHub branch deployment admission", () => {
     // The working branch/config can change without mutating the attempt's Saved revision.
     await harness.db.update(schema.environment).set({ intent: savedIntent([{ id: serviceId, lineageId,
       config: { ...savedServiceConfig("Changed command"), source: createGitServiceSource({ repository: "acme/api", repositoryId,
-        installationId, branch: { type: "connected", name: "new-branch" } }) } }]) }).where(eq(schema.environment.id, environmentId));
+        access: { type: "github-installation", installationId }, branch: { type: "connected", name: "new-branch" } }) } }]) }).where(eq(schema.environment.id, environmentId));
     await harness.db.update(schema.environmentDeployment).set({ status: "failed" }).where(eq(schema.environmentDeployment.id, admitted.id));
     const retry = await harness.runEffect(createRetryAttempt({ environmentId, userId, failedDeploymentId: admitted.id })
       .pipe(Effect.provideService(InngestClient, inngest)));

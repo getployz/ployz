@@ -2,13 +2,11 @@ import { applyCreatedService, applyCreatedResource } from "#/modules/environment
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
-import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
+import { ChevronRightIcon } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
-import { Button } from "#/components/ui/button";
 import { InputGroupInput } from "#/components/ui/input-group";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
 import {
@@ -61,7 +59,7 @@ function pickerPresentation(panel: Panel, mode: CreateMode) {
     return {
       title: "GitHub Repository",
       ariaLabel: "Search GitHub repositories",
-      placeholder: "Search GitHub repositories…",
+      placeholder: "Search repositories or paste a GitHub URL…",
     };
   }
   return {
@@ -120,7 +118,7 @@ type GitPanelReposProps = {
   onSelectRepo: (repo: {
     fullName: string;
     repositoryId: number;
-    installationId: number;
+    access: import("@ployz/sdk").ServiceGitAccess;
     defaultBranch: string;
   }) => void;
 };
@@ -435,10 +433,6 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
   const [panel, setPanel] = useState<Panel>({ kind: props.initialPanel ?? "root" });
   const [query, setQuery] = useState("");
   const presentation = pickerPresentation(panel, mode);
-  const { data: githubAccess } = useQuery({
-    ...githubRepoAccessQueryOptions(),
-    enabled: panel.kind === "git",
-  });
   const {
     error,
     isPending,
@@ -488,8 +482,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
       ) : (
       <SourcePickerLayout title={presentation.title}>
       <Command key={panel.kind} shouldFilter={panel.kind === "root"}>
-        {panel.kind !== "git" || githubAccess?.hasInstallations ? (
-          <SourcePickerInput
+        <SourcePickerInput
             onBack={
               panel.kind === "git"
                 ? () => setActivePanel("root")
@@ -505,12 +498,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
                 disabled={isPending}
               />
             </CommandPrimitive.Input>
-          </SourcePickerInput>
-        ) : (
-          <Button variant="ghost" size="sm" className="self-start" disabled={isPending} onClick={() => setActivePanel("root")}>
-            <ArrowLeftIcon /> Back
-          </Button>
-        )}
+        </SourcePickerInput>
         <CommandList>
           {panel.kind === "root" ? (
             <RootPanel
@@ -527,14 +515,14 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
               onSelectRepo={({
                 fullName,
                 repositoryId,
-                installationId,
+                access,
                 defaultBranch,
               }) => {
                 void createServiceFromSource(
                   createGitServiceSource({
                     repository: fullName,
                     repositoryId,
-                    installationId,
+                    access,
                     branch: { type: "connected", name: defaultBranch },
                   }),
                 );

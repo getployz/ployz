@@ -178,7 +178,7 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
             version,
             repository,
             repository_id,
-            installation_id,
+            access,
             root_dir: path,
             branch,
             ..
@@ -186,11 +186,18 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
             range(*version == 2, "source.version", "Expected version 2")?;
             trimmed(repository, "source.repository", 300)?;
             range(
-                (1..=9_007_199_254_740_991).contains(repository_id)
-                    && (1..=9_007_199_254_740_991).contains(installation_id),
+                (1..=9_007_199_254_740_991).contains(repository_id),
                 "source.repository",
                 "Expected positive safe GitHub IDs",
             )?;
+            if let super::service::ServiceGitAccess::GithubInstallation { installation_id } = access
+            {
+                range(
+                    (1..=9_007_199_254_740_991).contains(installation_id),
+                    "source.access",
+                    "Expected a positive safe GitHub installation ID",
+                )?;
+            }
             root_dir(path)?;
             match branch {
                 ServiceGitBranch::Connected { name } => trimmed(name, "source.branch", 255),

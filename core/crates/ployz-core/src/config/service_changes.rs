@@ -90,7 +90,7 @@ pub fn compare_service_settings(
             && !before.is_null()
             && !after.is_null()
             && (at(&baseline, "source.repositoryId") != at(&current, "source.repositoryId")
-                || at(&baseline, "source.installationId") != at(&current, "source.installationId"));
+                || at(&baseline, "source.access") != at(&current, "source.access"));
         if before == after && !repository_changed {
             continue;
         }
@@ -154,7 +154,7 @@ pub fn restore_service_setting(
             .get_mut("source")
             .and_then(Value::as_object_mut)
             .expect("serialized source");
-        for field in ["repository", "repositoryId", "installationId"] {
+        for field in ["repository", "repositoryId", "access"] {
             source.insert(
                 field.into(),
                 at(&baseline, "source")

@@ -35,7 +35,7 @@ export function savedGithubServiceNode(input: {
     config: projectServiceDeploymentConfig({
       source: createGitServiceSource({
         repository: "acme/api",
-        installationId: input.installationId ?? 17,
+        access: { type: "github-installation", installationId: input.installationId ?? 17 },
         repositoryId: input.repositoryId ?? 42,
       }),
       preDeployCommand: null,

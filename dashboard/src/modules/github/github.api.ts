@@ -79,9 +79,9 @@ export const listInstallationReposPage = Effect.fn(
   } satisfies GithubInstallationReposPage;
 });
 
-export const listInstallationRepoBranches = Effect.fn(
-  "Github.listInstallationRepoBranches",
-)(function* (installationId: number, repositoryFullName: string) {
+export const listGithubRepositoryBranches = Effect.fn(
+  "Github.listGithubRepositoryBranches",
+)(function* (installationId: number | null, repositoryFullName: string) {
   const repository = yield* Schema.decodeUnknownEffect(RepositoryFullName)(
     repositoryFullName,
   ).pipe(
@@ -112,8 +112,8 @@ export const listInstallationRepoBranches = Effect.fn(
   return branches.sort((left, right) => left.name.localeCompare(right.name));
 });
 
-export const listInstallationFiles = Effect.fn("Github.listInstallationFiles")(
-  function* (installationId: number, repositoryFullName: string, ref: string) {
+export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryFiles")(
+  function* (installationId: number | null, repositoryFullName: string, ref: string) {
     const api = yield* GithubApi;
     const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
     const base = `https://api.github.com/repos/${repositoryPath}`;

@@ -736,6 +736,8 @@ export type ServiceDeployMount = { volumeResourceId: string, volumeName: string,
 
 export type ServiceEnvValue = { "kind": "literal", value: string, parts?: Array<ValuePart>, } | { "kind": "secret", variableId?: string, encryptedValue?: EncryptedSecretValue, fingerprint: string, interpolated?: boolean, };
 
+export type ServiceGitAccess = { "type": "public" } | { "type": "github-installation", installationId: number, };
+
 export type ServiceGitBranch = { "type": "connected", name: string, } | { "type": "disconnected", previousName: string | null, };
 
 export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: string, timeoutSeconds: number, };
@@ -782,7 +784,7 @@ export type ServiceSettingChange = { path: string, kind: ChangeKind, before: Jso
 
 export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "cron", "value": string | null } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig };
 
-export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, installationId: number, rootDir: string, branch: ServiceGitBranch, } | { "type": "image", version: 1, image: string, credentials: ServiceImageCredentials, };
+export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, access: ServiceGitAccess, rootDir: string, branch: ServiceGitBranch, } | { "type": "image", version: 1, image: string, credentials: ServiceImageCredentials, };
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 

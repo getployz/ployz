@@ -8,7 +8,7 @@ import {
 
 export function githubFileSearchQueryOptions(input: {
   repositoryId: number;
-  installationId: number;
+  installationId: number | null;
   ref: string;
   pattern: string;
 }) {
@@ -25,7 +25,7 @@ export const githubKeys = {
   access: () => [...githubKeys.all, "access"] as const,
   branches: (input: {
     repositoryId: number;
-    installationId: number;
+    installationId: number | null;
   }) =>
     [
       ...githubKeys.all,
@@ -53,7 +53,7 @@ export function githubInstallUrlQueryOptions() {
 
 export function githubBranchesQueryOptions(input: {
   repositoryId: number;
-  installationId: number;
+  installationId: number | null;
 }) {
   return queryOptions({
     queryKey: githubKeys.branches(input),

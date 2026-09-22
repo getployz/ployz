@@ -8,24 +8,24 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { Data, Effect } from "effect";
 import * as tar from "tar";
-import { GithubApi, resolveInstallationBranchHead, resolveInstallationRepository } from "./github-observation.api";
+import { GithubApi, resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
 
 export class GithubSourceError extends Data.TaggedError("GithubSourceError")<{
   readonly message: string;
 }> { readonly publicErrorCategory = "validation" as const; }
 
-type SourceIdentity = { organizationId: string; installationId: number; repositoryId: number };
+type SourceIdentity = { organizationId: string; installationId: number | null; repositoryId: number };
 const authorizeRepository = Effect.fn("Github.authorizeSourceRepository")(function* (input: SourceIdentity) {
-  if (!(yield* getCachedGithubRepositoryForOrganization(input))) {
+  if (input.installationId !== null && !(yield* getCachedGithubRepositoryForOrganization({ ...input, installationId: input.installationId }))) {
     return yield* new GithubSourceError({ message: "Repository is not connected to this Organization." });
   }
-  return yield* resolveInstallationRepository(input.installationId, input.repositoryId);
+  return yield* resolveGithubRepository(input.installationId, input.repositoryId);
 });
 
 export const resolveGithubSourceSha = Effect.fn("Github.resolveSourceSha")(function* (input: SourceIdentity & { branch: string }) {
   const repository = yield* authorizeRepository(input);
-  const result = yield* resolveInstallationBranchHead(input.installationId, repository, `refs/heads/${input.branch}`);
+  const result = yield* resolveGithubBranchHead(input.installationId, repository, `refs/heads/${input.branch}`);
   if (result.state === "absent") return yield* new GithubSourceError({ message: "The source branch no longer exists." });
   return result.headSha;
 });
