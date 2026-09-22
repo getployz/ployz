@@ -142,6 +142,10 @@ _Avoid_: Unregistry, image ingest as a product term
 The work to produce one container image from source and a build recipe. A Compose project with three buildable Services has three Builds.
 _Avoid_: Deploy, whole-project build as one Build
 
+**Build Receipt**:
+Evidence associating captured build inputs with a completed image and its verified platforms. It does not establish that the image remains available or that a Deploy succeeded.
+_Avoid_: Applied State, cached deployment
+
 **Build Attempt**:
 One execution of a Build, which may succeed, fail, or stop before producing an image.
 _Avoid_: Build as an execution identity, Deploy Attempt

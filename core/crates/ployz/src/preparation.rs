@@ -164,6 +164,7 @@ pub async fn prepare(
     mut candidate: CapturedCompose,
     build: Option<CapturedBuild>,
     location: BuildLocation<'_>,
+    reusable: &[BuiltService],
     cancellation: &CancellationToken,
     progress: impl Fn(Progress),
 ) -> Result<Prepared, PreparationError> {
@@ -181,31 +182,37 @@ pub async fn prepare(
                 .await?;
             }
             build.cover_machines(&candidate, &machines)?;
+            let mut images = build
+                .reuse_images(client, &candidate, &machines, reusable, cancellation)
+                .await?;
             let targets = build.targets()?;
             let platforms = targets
                 .iter()
                 .flat_map(|target| target.platforms.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>();
             progress(Progress::Platforms(platforms.into_iter().collect()));
-            match location {
-                BuildLocation::Local { docker } => build.execute(docker, cancellation)?,
-                BuildLocation::Remote(target) => {
-                    let selected = read(cancellation, async {
-                        select_build_machine(client, target, &targets, &machines, cancellation)
-                            .await
-                            .map_err(PreparationError::Selection)
-                    })
-                    .await?;
-                    let id = selected.machine.id;
-                    progress(Progress::Selected(Box::new(selected)));
-                    // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
-                    build
-                        .execute_remote_images(client, id, cancellation.clone(), |event| {
-                            progress(Progress::Build(event))
+            if !targets.is_empty() {
+                images.extend(match location {
+                    BuildLocation::Local { docker } => build.execute(docker, cancellation)?,
+                    BuildLocation::Remote(target) => {
+                        let selected = read(cancellation, async {
+                            select_build_machine(client, target, &targets, &machines, cancellation)
+                                .await
+                                .map_err(PreparationError::Selection)
                         })
-                        .await?
-                }
+                        .await?;
+                        let id = selected.machine.id;
+                        progress(Progress::Selected(Box::new(selected)));
+                        // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
+                        build
+                            .execute_remote_images(client, id, cancellation.clone(), |event| {
+                                progress(Progress::Build(event))
+                            })
+                            .await?
+                    }
+                });
             }
+            images
         }
         None => Vec::new(),
     };

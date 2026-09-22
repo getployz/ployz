@@ -79,6 +79,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             candidate,
             captured_build,
             location,
+            &[],
             &cancellation,
             preparation_progress,
         )

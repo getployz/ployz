@@ -33,6 +33,7 @@ const sdk = require(dir);
         volumes: [],
       },
       sources: { api: checkout },
+      source_commits: { api: "a".repeat(40) },
     };
     const cancelled = new AbortController();
     cancelled.abort();
@@ -45,6 +46,8 @@ const sdk = require(dir);
       for await (const event of preparation) events.push(event);
       assert.ok(events.some(event => event.Delivered), "image delivery finishes before confirmation");
       assert.ok(prepared.operations.length > 0);
+      assert.match(prepared.buildReceipts.api.fingerprint, /^[0-9a-f]{64}$/);
+      assert.match(prepared.buildReceipts.api.image.reference, /^sha256:/);
       const running = prepared.confirm();
       assert.throws(() => prepared.confirm(), "confirmation is single-use");
       const outcome = await running.finished;

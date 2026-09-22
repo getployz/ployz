@@ -168,6 +168,7 @@ function wrapPreview(handle) {
   return {
     ...payload,
     noop: payload.operations.length === 0,
+    buildReceipts: handle.buildReceipts(),
     close: () => handle.close(),
     confirm(options = {}) {
       try {

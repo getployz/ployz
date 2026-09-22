@@ -253,7 +253,7 @@ pub(crate) fn available_variant<'store>(
 }
 
 /// Whether the store holds `image` content for exactly `platform`.
-fn holds_platform(store: &MachineImages, image: &str, platform: &str) -> bool {
+pub(crate) fn holds_platform(store: &MachineImages, image: &str, platform: &str) -> bool {
     stored(store, image).is_some_and(|summary| {
         summary
             .platforms

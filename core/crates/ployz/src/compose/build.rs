@@ -17,6 +17,8 @@ use platforms::RAILPACK_PLATFORMS;
 
 #[path = "remote_steps.rs"]
 mod remote_steps;
+#[path = "reuse.rs"]
+mod reuse;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuildOptions {
@@ -102,11 +104,11 @@ pub struct BuiltService {
     pub placement: Placement,
     /// The image this command built for it.
     pub built: BuiltImage,
-    pub(super) _retention: Option<BuildRetention>,
+    pub(crate) _retention: Option<BuildRetention>,
 }
 
 #[derive(Clone)]
-pub(super) enum BuildRetention {
+pub(crate) enum BuildRetention {
     Local {
         _tags: Arc<ployz_build::ImageRetention>,
     },

@@ -10,6 +10,7 @@ export const acquireDeploymentSources = Effect.fn("Deployments.acquireSources")(
   onSource: (serviceId: string) => Effect.Effect<void, Error, Database>,
 ) {
   const sources: Record<string, string> = {};
+  const source_commits: Record<string, string> = {};
   for (const snapshot of context.snapshots) {
     const source = snapshot.config.source;
     if (source.type !== "git") continue;
@@ -26,6 +27,7 @@ export const acquireDeploymentSources = Effect.fn("Deployments.acquireSources")(
     if (snapshot.config.build.builder === "dockerfile") capture.dockerfilePath = snapshot.config.build.dockerfilePath ?? "Dockerfile";
     const checkout = yield* materializeGithubSource(capture);
     sources[snapshot.config.privateDns] = checkout.repositoryDirectory;
+    source_commits[snapshot.config.privateDns] = sha;
   }
-  return sources;
+  return { sources, source_commits };
 });

@@ -30,7 +30,7 @@ mod logs;
 mod payloads;
 mod preparation;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
-pub use preparation::PreparationInput;
+pub use preparation::{BuildReceipt, PreparationInput};
 
 /// The public SDK Watch frame: the RPC frame plus the Services this observer
 /// derives from its Containers. The RPC frame carries only Container observations.
@@ -71,6 +71,7 @@ pub struct Watch {
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
 pub struct PreparedDeploy {
     preview: DeployPlan,
+    build_receipts: std::collections::BTreeMap<ployz_core::ServiceName, preparation::BuildReceipt>,
     session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
     retained: std::sync::Mutex<Option<Vec<crate::compose::BuiltService>>>,
@@ -289,9 +290,10 @@ impl Session {
             let prepared =
                 crate::preparation::prepare(
                     &mut client,
-                    captured.0,
-                    captured.1,
+                    captured.candidate,
+                    captured.build,
                     crate::preparation::BuildLocation::Remote(None),
+                    &captured.reusable,
                     &token,
                     |mut progress| {
                         if let crate::preparation::Progress::Build(ployz_build::Progress::Output(
@@ -317,8 +319,10 @@ impl Session {
                 .await
                 .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
+            let build_receipts = preparation::receipts(&captured.fingerprints, &retained);
             Ok(PreparedDeploy {
                 preview,
+                build_receipts,
                 session,
                 confirmed: AtomicBool::new(false),
                 retained: std::sync::Mutex::new(Some(retained)),
@@ -349,6 +353,7 @@ impl Session {
         };
         Ok(PreparedDeploy {
             preview,
+            build_receipts: Default::default(),
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
             retained: std::sync::Mutex::new(None),
@@ -374,6 +379,7 @@ impl Session {
         };
         Ok(PreparedDeploy {
             preview,
+            build_receipts: Default::default(),
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
             retained: std::sync::Mutex::new(None),

@@ -169,6 +169,10 @@ _Avoid_: Phase, prepared, build status
 The read-only Core projection Cloud persists after preparation and image delivery, before confirming application execution. It is product history rather than runtime authority; the live prepared handle owns confirmation and retained image resources.
 _Avoid_: Deploy Plan, reservation, dry run
 
+**Build Receipt**:
+Private evidence retained from a completed image preparation so a later Cloud Deployment Attempt can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
+_Avoid_: Applied image, deployment success
+
 **Build Platform Requirement**:
 The set of target platforms a service image must cover for one Cloud Deployment Attempt, derived by shared Core preparation from placement and build settings. Preparation checks actual destinations again before image delivery. A reused image receipt may cover a superset.
 _Avoid_: Organization Cluster architecture, global build platform, builder architecture

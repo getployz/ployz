@@ -25,6 +25,7 @@ import { deploymentProgressForEvent, type DeploymentProgress } from "./deploymen
 import { PloyzPreparationError } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
+import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -236,7 +237,7 @@ export const executeEnvironmentDeployment = Effect.fn(
       else cancellation.signal.addEventListener("abort", abort, { once: true });
       return Effect.sync(() => cancellation.signal.removeEventListener("abort", abort));
     });
-    const sources = yield* acquireDeploymentSources(context, (serviceId) => persistDeploymentProgress(context.deployment.id, {
+    const { sources, source_commits } = yield* acquireDeploymentSources(context, (serviceId) => persistDeploymentProgress(context.deployment.id, {
       completed: 0, total: 0, outcome: null, rows: [], compensation: [],
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
     })).pipe(Effect.raceFirst(cancelled));
@@ -246,18 +247,20 @@ export const executeEnvironmentDeployment = Effect.fn(
     const input = yield* compileRuntimeIntent(context, hostedDnsHostname);
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
+    const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts(context);
     const native = Object.keys(sources).length === 0
       ? yield* Effect.try({
           try: () => lowerDeployment(input),
           catch: (cause) => new DeploymentRuntimeInvalid({ failureCode: "sdk_preview_invalid", message: "The deployment settings are invalid.", cause }),
         }).pipe(Effect.flatMap((intent) => sdk.preview(intent)))
-      : yield* sdk.prepare({ deployment: input, sources }, async (event) => {
+      : yield* sdk.prepare({ deployment: input, sources, source_commits, build_receipts }, async (event) => {
           const progress = collector.event(event);
           if (progress) await persistPreparation(progress);
         }, cancellation.signal).pipe(Effect.tapError((error) => error instanceof PloyzPreparationError
           ? persistDeploymentProgress(context.deployment.id, { completed: 0, total: 0, rows: [], outcome: null, compensation: [],
               preparation: { ...collector.current(), message: error.message, failureCode: error.failureCode, stage: error.stage, work: error.work } })
           : Effect.void));
+    if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
     const prepared = { prepared: native, preview: yield* decodeSdkDeployPreview(preparedPreviewInput(native)) };
     yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview: prepared.preview });
     const [beforeConfirm] = yield* readStatus;

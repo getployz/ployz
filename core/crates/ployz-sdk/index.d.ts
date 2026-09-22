@@ -65,7 +65,16 @@ export declare const RpcError: {
   new (error: RpcErrorPayload, options?: ErrorOptions): Error & RpcErrorPayload;
 };
 
+/** Private build evidence; never proof that content still exists on a Machine. */
+export type BuildReceipt = {
+  fingerprint: string;
+  image: { reference: string; tags: string[]; platforms: string[]; location: string };
+  machine_id: MachineId;
+};
+export type BuildReceipts = Record<string, BuildReceipt>;
+
 export type PreparedDeploy = DeployPreview & {
+  readonly buildReceipts: BuildReceipts;
   readonly noop: boolean;
   /** Release unconfirmed retained image resources. */
   close(): void;
@@ -76,6 +85,8 @@ export type PreparedDeploy = DeployPreview & {
 export type PreparationInput = {
   deployment: Parameters<typeof import("./config").lowerDeployment>[0];
   sources: Record<string, string>;
+  source_commits?: Record<string, string>;
+  build_receipts?: BuildReceipts;
 };
 
 export type PreparationEvent =

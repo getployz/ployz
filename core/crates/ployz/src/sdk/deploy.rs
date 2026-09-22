@@ -7,6 +7,15 @@ use std::{ops::Deref, sync::atomic::Ordering};
 use tokio::sync::{Mutex, mpsc};
 
 impl PreparedDeploy {
+    /// Private completed Build evidence for a later preparation; not runtime truth.
+    #[must_use]
+    pub fn build_receipts(
+        &self,
+    ) -> &std::collections::BTreeMap<ployz_core::ServiceName, super::preparation::BuildReceipt>
+    {
+        &self.build_receipts
+    }
+
     /// Informational preview; execution remains bound to this prepared handle.
     #[must_use]
     pub fn preview(&self) -> &DeployPreview {

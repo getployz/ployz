@@ -1,9 +1,11 @@
+import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
+import type { DeploymentContext } from "./runtime-repository.contract";
 import { resolveLogFilter } from "#/modules/runtime/container-logs.server";
 import { Header } from "tar";
 import { gzipSync } from "node:zlib";
 import { access } from "node:fs/promises";
 import { Schema } from "effect";
-import { createGitServiceSource, projectServiceDeploymentConfig, createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy } from "#/modules/environment-design/services";
+import { createImageServiceSource, createGitServiceSource, projectServiceDeploymentConfig, createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy } from "#/modules/environment-design/services";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -158,6 +160,73 @@ describe("deployment runtime persistence", () => {
         createdAt: new Date("2026-09-04T02:00:00.000Z"),
       },
     ]);
+  });
+
+  it("retains private build receipts and supplies them on the next Git deployment", async () => {
+    const receipt = { api: {
+      fingerprint: "b".repeat(64), machine_id: runtimeWatchMachineFixture("a".repeat(32), "builder").id,
+      image: { reference: `sha256:${"c".repeat(64)}`, tags: [], platforms: ["linux/amd64"], location: "unix:///var/run/docker.sock" },
+    } };
+    const git = projectServiceDeploymentConfig({
+      source: createGitServiceSource({ repository: "owner/repo", repositoryId: 42, access: { type: "public" } }),
+      privateDns: "api", preDeployCommand: null, startCommand: null,
+      healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy(),
+    });
+    const header = new Header({ path: "root/Dockerfile", size: 0, mode: 0o644, type: "File" });
+    header.encode();
+    if (!header.block) throw new Error("Archive fixture failed");
+    const archive = gzipSync(Buffer.concat([Buffer.from(header.block), Buffer.alloc(1024)]));
+    let attempt = 0;
+    let confirmed = 0;
+    const outcome = { type: "success" as const, completed: [] };
+    const client = asTestDouble<Client>()({
+      prepare: (input: Parameters<Client["prepare"]>[0]) => {
+        expect(input.source_commits).toEqual({ api: "a".repeat(40) });
+        expect(input.build_receipts).toEqual(attempt === 0 ? {} : receipt);
+        const prepared = asTestDouble<PreparedDeploy>()({
+          ...preview(), buildReceipts: receipt, close: () => undefined,
+          confirm: () => {
+            confirmed++;
+            return { abort: () => undefined, finished: Promise.resolve(outcome),
+              async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; } };
+          },
+        });
+        return { abort: () => undefined, finished: Promise.resolve(prepared), async *[Symbol.asyncIterator]() { yield* []; } };
+      },
+      close: async () => undefined,
+    });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    for (const image of ["redis:7", "redis:8"]) {
+      const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+        environmentId, savedStateSnapshotId: targetSavedId,
+        triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+      }));
+      await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+      const context: DeploymentContext = {
+        deployment: { id: admitted.id, environmentId, status: "planning", inngestRunId: null, sourcePins: { [apiNodeId]: { commitSha: "a".repeat(40) } } },
+        environment: { id: environmentId, namespace: "production" }, project: { id: projectId, organizationId }, organization: { id: organizationId, slug: "runtime" },
+        snapshots: [{ serviceId: apiNodeId, serviceSlug: "api", config: git }, { serviceId: workerNodeId, serviceSlug: "worker", config: { ...git, privateDns: "worker", source: createImageServiceSource({ image }) } }], volumes: [],
+      };
+      await harness.runEffect(executeEnvironmentDeployment(context).pipe(
+        Effect.provide(runtime),
+        Effect.provideService(GithubApi, {
+          json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo", private: false }).pipe(Effect.orDie),
+          archive: () => Effect.succeed(new Response(archive)),
+        }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption),
+      ));
+      const [secret] = await harness.db.select().from(schema.environmentDeploymentSecret).where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, admitted.id));
+      expect(secret?.encryptedBuildReceipts).toBeTruthy();
+      if (!secret?.encryptedBuildReceipts) throw new Error("Missing build evidence");
+      expect(JSON.parse(encryption.decrypt(secret.encryptedBuildReceipts))).toEqual(receipt);
+      expect(JSON.stringify(secret)).not.toContain(receipt.api.fingerprint);
+      // Receipt writes cannot mutate a completed or differently owned attempt.
+      await expect(harness.runEffect(persistBuildReceipts(context, receipt).pipe(Effect.provideService(SecretEncryption, encryption))))
+        .rejects.toMatchObject({ failureCode: "build_receipts_not_owned" });
+      expect(await harness.runEffect(loadBuildReceipts({ ...context, organization: { id: userId, slug: "other" } }).pipe(Effect.provideService(SecretEncryption, encryption)))).toEqual({});
+      attempt++;
+    }
+    expect(confirmed).toBe(2);
   });
 
   it("scopes log discovery by organization and stable service identity", async () => {
@@ -379,7 +448,7 @@ describe("deployment runtime persistence", () => {
     await expect(admit()).rejects.toMatchObject({ _tag: "Conflict" });
     await harness.db.update(schema.environmentDeployment).set({ deployPreview: preview() }).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
-      { environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null },
+      { environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null, encryptedBuildReceipts: null },
     ]);
     const outcome = { version: 1, outcome: { type: "success" as const, completed: [] } };
     await harness.runEffect(persistSdkDeployOutcome({

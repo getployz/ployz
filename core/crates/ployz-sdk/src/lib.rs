@@ -467,6 +467,14 @@ impl DeployPreviewHandle {
         self.inner.close();
     }
 
+    /// Private completed Build evidence; availability is rechecked before reuse.
+    /// # Errors
+    /// Returns when evidence cannot be encoded as JSON.
+    #[napi]
+    pub fn build_receipts(&self) -> Result<serde_json::Value> {
+        to_json(self.inner.build_receipts())
+    }
+
     /// Planned rows and warnings.
     ///
     /// # Errors
