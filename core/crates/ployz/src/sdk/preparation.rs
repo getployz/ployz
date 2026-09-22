@@ -76,6 +76,14 @@ pub(super) fn capture(
                     .expect("build object")
                     .insert("dockerfile".into(), json!(dockerfile));
             }
+            if config.settings.build.builder == ServiceBuilder::Railpack
+                && let Some(command) = &config.settings.build.command
+            {
+                build
+                    .as_object_mut()
+                    .expect("build object")
+                    .insert("args".into(), json!({"RAILPACK_BUILD_CMD": command}));
+            }
             builds.insert(
                 name.to_string(),
                 BuildSpec {

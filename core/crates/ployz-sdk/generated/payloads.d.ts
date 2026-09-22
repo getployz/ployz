@@ -700,7 +700,11 @@ export type ServiceAttempt = {
  */
 name: ServiceName, };
 
-export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null, };
+export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null,
+/**
+ * Override Railpack’s build command; None preserves detection. Ignored for Dockerfiles.
+ */
+command: string | null, };
 
 export type ServiceBuilder = "dockerfile" | "railpack";
 

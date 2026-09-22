@@ -47,6 +47,7 @@ const FIELDS: &[&str] = &[
     "managedHostnames",
     "build.builder",
     "build.dockerfilePath",
+    "build.command",
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.

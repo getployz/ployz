@@ -154,6 +154,7 @@ impl ServiceSettingInput {
             Self::ManagedHostnameValue(value) => managed_hostname(value),
             Self::ManagedHostnamePrefix(value) => hostname_prefix(value),
             Self::Build(value) => {
+                optional_trimmed(&mut value.command, "build.command", 2000)?;
                 optional_trimmed(
                     &mut value.dockerfile_path,
                     "build.dockerfilePath",

@@ -58,7 +58,7 @@ function savedServiceConfig(command = "Saved API") {
     healthcheck: createDefaultServiceHealthcheck(),
     restartPolicy: createDefaultServiceRestartPolicy(),
     privateDns: "api",
-    build: { builder: "railpack", dockerfilePath: null, },
+    build: { builder: "railpack", dockerfilePath: null, command: null, },
     env: {
       SAVED_ONLY: { kind: "literal", value: "published" },
     },

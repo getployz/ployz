@@ -1,3 +1,4 @@
+import { ServiceCommandField } from "./ServiceCommandField";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
@@ -68,6 +69,7 @@ export function ServiceBuildSection({
   const { service, collection, diff } = state;
   const builderDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildBuilder);
   const dockerfileDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildDockerfilePath);
+  const commandDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildCommand);
   const build = service.build;
   const source = service.source;
   const gitRef =
@@ -117,6 +119,22 @@ export function ServiceBuildSection({
           <ToggleGroupItem data-changed={builderDiff.changed || undefined} value="dockerfile">Dockerfile</ToggleGroupItem>
         </ToggleGroup>
       </Field>
+
+      {build.builder === "railpack" ? (
+        <ServiceCommandField
+          label="Build command"
+          description="Override the detected build command. Leave empty to use Railpack’s default."
+          addLabel="Build command"
+          placeholder="pnpm run build"
+          value={build.command}
+          baselineLabel={commandDiff.baselineLabel}
+          baselineValue={commandDiff.baselineValue}
+          isChanged={commandDiff.changed}
+          onCommit={(value) => collection.update(service.id, (draft) => {
+            draft.build.command = value;
+          })}
+        />
+      ) : null}
 
       {build.builder === "dockerfile" ? (
         <Field>

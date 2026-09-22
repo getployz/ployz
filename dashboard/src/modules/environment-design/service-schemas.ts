@@ -133,7 +133,7 @@ export const serviceManagedHostnameSchema = serviceFieldSchema("managedHostnameV
 export const serviceBuilderSchema = Schema.Literals(["dockerfile", "railpack"]);
 export const serviceBuildConfigSchema = serviceFieldSchema("build");
 export const DEFAULT_SERVICE_BUILD_CONFIG: ServiceBuildConfig = {
-  builder: "railpack", dockerfilePath: null,
+  builder: "railpack", dockerfilePath: null, command: null,
 };
 export const serviceSourceSchema = serviceFieldSchema("source");
 

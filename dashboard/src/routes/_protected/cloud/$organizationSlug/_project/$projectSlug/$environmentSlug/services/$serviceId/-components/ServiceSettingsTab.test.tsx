@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { createContext, use } from "react";
@@ -31,11 +31,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function show(source: ServiceSource) {
+async function show(source: ServiceSource, builder: "dockerfile" | "railpack" = "dockerfile") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
-  const update = vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } }));
-  const build = { builder: "dockerfile", dockerfilePath: "docker/Dockerfile", } as const;
+  const update = vi.fn((_id: string, _apply: (draft: ServiceDrawerState["service"]) => void) => ({ isPersisted: { promise: Promise.resolve() } }));
+  const build = { builder, dockerfilePath: "docker/Dockerfile", command: null, } as const;
   const state = asTestDouble<ServiceDrawerState>()({
     organizationSlug: "acme",
     environmentSlug: "production",
@@ -111,4 +111,21 @@ it("restores saved build controls when changing to Git, including a disconnected
   expect(screen.getByText("src/**")).toBeTruthy();
   expect(state.service.build).toEqual(savedBuild);
   expect(update).not.toHaveBeenCalled();
+});
+
+it("saves and clears the Railpack build command using the command control", async () => {
+  const source = createGitServiceSource({ repository: "acme/api", repositoryId: 1, access: { type: "public" } });
+  const { state, update, changeSource } = await show(source, "railpack");
+  update.mockImplementation((_id, apply) => {
+    apply(state.service);
+    return { isPersisted: { promise: Promise.resolve() } };
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Build command" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Build command" }), { target: { value: "cd dashboard && pnpm build" } });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(state.service.build.command).toBe("cd dashboard && pnpm build"));
+  changeSource(source);
+  fireEvent.change(screen.getByRole("textbox", { name: "Build command" }), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(state.service.build.command).toBeNull());
 });

@@ -215,6 +215,8 @@ pub enum ServiceBuilder {
 pub struct ServiceBuildConfig {
     pub builder: ServiceBuilder,
     pub dockerfile_path: Option<String>,
+    /// Override Railpack’s build command; None preserves detection. Ignored for Dockerfiles.
+    pub command: Option<String>,
 }
 
 /// A compiled Volume relationship retaining its Cloud owner identity.

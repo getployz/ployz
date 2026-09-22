@@ -219,7 +219,7 @@ describe("service schemas", () => {
       managedHostnames: [],
       build: {
         builder: "railpack",
-        dockerfilePath: null,
+        dockerfilePath: null, command: null,
       },
     });
   });

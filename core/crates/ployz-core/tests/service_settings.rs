@@ -188,3 +188,35 @@ fn git_access_is_explicit_and_changes_with_repository_identity() {
     public["source"]["access"] = json!({"type": "github-installation", "installationId": 0});
     assert!(parse_service_config(public).is_err());
 }
+
+#[test]
+fn build_command_is_validated_compared_and_restored() {
+    let baseline = parse_service_config(config()).unwrap();
+    let mut input = config();
+    input["build"] = json!({"builder":"railpack", "command":"  cd dashboard && pnpm build  "});
+    let current = parse_service_config(input.clone()).unwrap();
+    assert_eq!(
+        current.settings.build.command.as_deref(),
+        Some("cd dashboard && pnpm build")
+    );
+    let rows = compare_service_settings(&current, Some(&baseline));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, "build.command");
+    assert_eq!(
+        restore_service_setting(current, &baseline, "build.command").unwrap(),
+        baseline
+    );
+    for command in [" ".to_owned(), "x".repeat(2001)] {
+        input["build"]["command"] = json!(command);
+        assert!(parse_service_config(input.clone()).is_err());
+    }
+    input["build"]["command"] = Value::Null;
+    assert!(
+        parse_service_config(input)
+            .unwrap()
+            .settings
+            .build
+            .command
+            .is_none()
+    );
+}

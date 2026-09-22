@@ -29,6 +29,7 @@ export const SERVICE_DEPLOYMENT_DIFF_PATHS = {
   routes: "routes",
   managedHostnames: "managedHostnames",
   buildBuilder: "build.builder",
+  buildCommand: "build.command",
   buildDockerfilePath: "build.dockerfilePath",
 } as const;
 
@@ -41,6 +42,7 @@ const labels = new Map(Object.entries({
   startCommand: "Start command", healthcheck: "Healthcheck", "healthcheck.path": "Healthcheck path", "healthcheck.timeoutSeconds": "Healthcheck timeout", restartPolicy: "Restart policy",
   maxRetries: "Max retries", cron: "Cron schedule", replicas: "Replicas",
   cpuLimit: "CPU limit", memLimit: "Memory limit", privateDns: "Private DNS",
+  "build.command": "Build command",
   managedHostnames: "Managed domains", "build.builder": "Builder", "build.dockerfilePath": "Dockerfile path",
   variableGroupAttachments: "Variable Group attachments (in precedence order)",
 }));
