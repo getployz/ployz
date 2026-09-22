@@ -1,11 +1,10 @@
-import { useState, useSyncExternalStore } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useMutation } from "@tanstack/react-query";
 import { useLogScroll } from "./log-scroll";
-import { Schema } from "effect";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { mergeContainerHistory, remainingHistory, containerLogPageSchema, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
+import { type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { Button } from "#/components/ui/button";
+import { Spinner } from "#/components/ui/spinner";
 import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
 
@@ -21,38 +20,25 @@ export function ContainerLogs({ selection, lifecycle = [] }: { selection: Contai
 function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection; lifecycle: readonly ContainerLogRow[] }) {
   const scope = useCollectionScope();
   const stream = getContainerLogStream(selection, scope);
-  const { collection, query, refresh } = stream;
+  const { collection, refresh } = stream;
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { status, errors } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { status, errors, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
-  const [exhausted, setExhausted] = useState<Record<string, string>>({});
   const rows = [...loaded, ...lifecycle].filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
     const difference = BigInt(a.timestamp) - BigInt(b.timestamp);
     return difference < 0n ? -1 : difference > 0n ? 1 : a.id.localeCompare(b.id);
   });
-  const { element, virtual } = useLogScroll({ count: rows.length, getItemKey: index => rows[index]?.id ?? index });
-  const history = useMutation({
-    mutationFn: async () => {
-      const before = remainingHistory(loaded, exhausted);
-      const response = await fetch(`/api/runtime/logs?${query}&before=${encodeURIComponent(JSON.stringify(before))}`, { signal: stream.signal });
-      if (!response.ok) throw new Error("Could not load older logs.");
-      const page = Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
-      return { page, before };
-    },
-    onSuccess: ({ page, before }) => {
-      mergeContainerHistory(collection, page.records);
-      stream.setErrors(Object.fromEntries(page.errors.map(error => [`${error.machineId}/${error.containerId}`, error.message])));
-      setExhausted(previous => {
-        const next = { ...previous };
-        for (const [source, boundary] of Object.entries(before)) {
-          const failed = page.errors.some(error => `${error.machineId}/${error.containerId}` === source);
-          const progressed = page.records.some(row => `${row.machineId}/${row.containerId}` === source && BigInt(row.timestamp) < BigInt(boundary));
-          if (!failed && !progressed) next[source] = boundary;
-        }
-        return next;
-      });
+  const touchY = useRef(0);
+  const dragging = useRef(false);
+  function loadAtTop(delta = 0) {
+    if ((element.current?.scrollTop ?? 0) + delta < 160 && !historyError) void stream.loadOlder();
+  }
+  const { element, virtual } = useLogScroll({
+    paddingStart: 40, count: rows.length, getItemKey: index => rows[index]?.id ?? index,
+    onChange: (instance, sync) => {
+      if (dragging.current && sync && instance.scrollDirection === "backward" && (instance.scrollOffset ?? 0) < 160 && !historyError) void stream.loadOlder();
     },
   });
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
@@ -62,18 +48,31 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
       <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
       <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} />
       <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} />
-      <Button variant="ghost" size="sm" onClick={refresh}>Refresh</Button>
     </div>
     <div className="flex items-center justify-between gap-2">
-      <Button variant="outline" size="sm" disabled={history.isPending || !Object.keys(remainingHistory(loaded, exhausted)).length} onClick={() => history.mutate()}>{history.isPending ? "Loading…" : "Load older"}</Button>
       <span role="status" className="text-xs text-muted-foreground">{status}</span>
-      <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button>
+      {status === "Disconnected" ? <Button variant="ghost" size="sm" onClick={refresh}>Reconnect</Button> : null}
+      {!virtual.isAtEnd() ? <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button> : null}
     </div>
-    {history.error ? <p role="alert">Could not load older logs.</p> : null}
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
-    <div ref={element} tabIndex={0} aria-label="Container logs" className="h-80 overflow-auto font-mono text-xs">
-      {!rows.length ? <p className="text-muted-foreground">No matching output available.</p> : null}
+    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="h-80 overflow-auto font-mono text-xs"
+      onPointerDown={() => { dragging.current = true; }}
+      onPointerUp={() => { dragging.current = false; }}
+      onPointerLeave={() => { dragging.current = false; }}
+      onWheel={event => { if (event.deltaY < 0) loadAtTop(event.deltaY); }}
+      onKeyDown={event => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) loadAtTop(event.key === "Home" ? -Infinity : event.key === "PageUp" ? -event.currentTarget.clientHeight : -40); }}
+      onTouchStart={event => { touchY.current = event.touches[0]?.clientY ?? 0; }}
+      onTouchMove={event => {
+        const next = event.touches[0]?.clientY ?? touchY.current;
+        if (next > touchY.current) loadAtTop(touchY.current - next);
+        touchY.current = next;
+      }}>
+      {!rows.length && status === "Live" ? <p className="text-muted-foreground">No matching output available.</p> : null}
       <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
+        <div className="absolute inset-x-0 top-0">
+          {historyPending ? <div className="flex items-center gap-2"><Spinner aria-label="Loading older logs" /><span>Loading older logs…</span></div> : null}
+          {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
+        </div>
         {virtual.getVirtualItems().map(item => {
           const row = rows[item.index];
           if (!row) return null;

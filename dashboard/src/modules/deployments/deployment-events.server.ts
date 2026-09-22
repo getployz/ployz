@@ -10,14 +10,14 @@ export const loadDeploymentEvents = Effect.fn("Deployments.events")(function* (i
   organizationId: string; deploymentId: string; after: number;
 }) {
   const { drizzle } = yield* Database;
-  const [deployment] = yield* drizzle.select({ id: environmentDeployment.id })
+  const [deployment] = yield* drizzle.select({ id: environmentDeployment.id, finishedAt: environmentDeployment.finishedAt })
     .from(environmentDeployment).where(and(eq(environmentDeployment.id, input.deploymentId), eq(environmentDeployment.organizationId, input.organizationId))).limit(1);
   if (!deployment) return yield* new NotFound({ message: "Deployment was not found." });
   const events = yield* drizzle.select().from(environmentDeploymentEvent)
     .where(and(eq(environmentDeploymentEvent.deploymentId, input.deploymentId), gt(environmentDeploymentEvent.id, input.after)))
     .orderBy(asc(environmentDeploymentEvent.id)).limit(50);
   const last = events.at(-1);
-  return { events, nextSequence: events.length === 50 && last ? String(last.id) : null };
+  return { events, finished: deployment.finishedAt !== null, nextSequence: events.length === 50 && last ? String(last.id) : null };
 });
 
 export const persistDeploymentProgress = Effect.fn("Deployments.persistProgress")(function* (deploymentId: string, progress: typeof environmentDeploymentEvent.$inferInsert.progress) {

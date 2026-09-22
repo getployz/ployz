@@ -9,7 +9,7 @@ import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { ContainerLogs } from "./container-logs";
 
-it("reuses cached logs across Strict Mode mounts, navigation and refresh", async () => {
+it("retains logs and exhausted history across navigation, and reconnects only on failure", async () => {
   const sources: FakeEventSource[] = [];
   class FakeEventSource extends EventTarget {
     closed = false;
@@ -40,11 +40,12 @@ it("reuses cached logs across Strict Mode mounts, navigation and refresh", async
     await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
       id: "m/c/100/0", timestamp: "100", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: "hello",
     } }) })));
-    const button = screen.getByRole("button", { name: "Load older" });
-    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
-    fireEvent.click(button);
+    expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+    expect(fetchHistory).not.toHaveBeenCalled();
+    fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
     await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(true));
+    await waitFor(() => expect(stream.getSnapshot().historyPending).toBe(false));
     expect(stream.collection.size).toBe(1);
     const opened = sources.length;
     firstView.unmount();
@@ -52,9 +53,12 @@ it("reuses cached logs across Strict Mode mounts, navigation and refresh", async
     expect(source.closed).toBe(false);
     expect(stream.collection.size).toBe(1);
     mount();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Load older" }).hasAttribute("disabled")).toBe(false));
+    await act(async () => { await stream.loadOlder(); });
+    expect(fetchHistory).toHaveBeenCalledTimes(1);
     expect(sources).toHaveLength(opened);
-    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+    await act(async () => source.dispatchEvent(new Event("unavailable")));
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(stream.collection.size).toBe(1);
     expect(sources.filter(source => !source.closed)).toHaveLength(1);
     expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);

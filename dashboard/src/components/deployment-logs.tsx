@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { reconcileCollection } from "#/collections/query-collection";
+import { useQuery } from "@tanstack/react-query";
 import { getDeploymentLogsCollection } from "#/modules/deployments/deployment-log.collection";
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
@@ -42,20 +42,15 @@ function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress:
 
 export function DeploymentLogs({ organizationSlug, deploymentId, serviceId, hasBuild }: { organizationSlug: string; deploymentId: string; serviceId?: string; hasBuild: boolean }) {
   const collection = getDeploymentLogsCollection(organizationSlug, deploymentId, useCollectionScope());
-  const { data: events = [], isLoading, isError } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
+  const { data: events = [] } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
   const [tab, setTab] = useState<"Build logs" | "Deploy logs">(hasBuild ? "Build logs" : "Deploy logs");
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState(false);
+  const request = useQuery({ ...collection.queryOptions, enabled: false });
   const logs = lifecycleLogs(events, serviceId);
-  async function refresh() {
-    setRefreshing(true); setRefreshError(false);
-    try { await reconcileCollection(collection); } catch { setRefreshError(true); } finally { setRefreshing(false); }
-  }
   return <div className="rounded-lg bg-background p-4">
-    <div className="mb-3 flex items-center gap-4">{(["Build logs", "Deploy logs"] as const).map((t) => <button key={t} type="button" className={cn("text-xs underline-offset-8", tab === t ? "underline" : "text-muted-foreground")} aria-pressed={tab === t} onClick={() => setTab(t)}>{t}</button>)}<Button className="ml-auto" variant="ghost" size="sm" disabled={refreshing || isLoading} onClick={() => void refresh()}>Refresh logs</Button></div>
-    {isError || refreshError ? <p role="alert" className="text-xs text-destructive">Could not load logs. Try refreshing.</p> : null}
+    <div className="mb-3 flex items-center gap-4">{(["Build logs", "Deploy logs"] as const).map((t) => <button key={t} type="button" className={cn("text-xs underline-offset-8", tab === t ? "underline" : "text-muted-foreground")} aria-pressed={tab === t} onClick={() => setTab(t)}>{t}</button>)}</div>
+    {request.isError ? <p role="alert">Could not load deployment logs. <Button variant="ghost" size="sm" disabled={request.isFetching} onClick={() => void collection.utils.refetch()}>Retry</Button></p> : null}
     {tab === "Deploy logs" ? <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={logs} /> : <BuildLogViewer key={`${deploymentId}:${serviceId ?? "all"}`}>
-      {isLoading ? <p>Loading logs…</p> : <BuildLogs events={events} serviceId={serviceId} hasBuild={hasBuild} />}
+      {!events.length && request.isPending ? <p>Loading logs…</p> : <BuildLogs events={events} serviceId={serviceId} hasBuild={hasBuild} />}
     </BuildLogViewer>}
   </div>;
 }

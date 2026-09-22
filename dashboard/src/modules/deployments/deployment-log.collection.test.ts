@@ -20,8 +20,8 @@ it("loads the first log page through the API contract and follows its cursor", a
   const readPage = vi.fn(async ({ data }: Parameters<typeof listDeploymentProgressLogsServerFn>[0]) => {
     const query = Schema.decodeUnknownSync(deploymentOperationEvidencePageQuerySchema)(data);
     return query.afterSequence === undefined
-      ? { events: [row(1)], nextSequence: "1" }
-      : { events: [row(2)], nextSequence: null };
+      ? { finished: true, events: [row(1)], nextSequence: "1" }
+      : { finished: true, events: [row(2)], nextSequence: null };
   });
   const collection = createDeploymentLogsCollection("nick", deploymentId, {
     queryClient: client, sessionId: "session", userId: "user",
@@ -33,5 +33,27 @@ it("loads the first log page through the API contract and follows its cursor", a
   } finally {
     await collection.cleanup();
     client.clear();
+  }
+});
+
+it("polls an active deployment through its final output, then stops", async () => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  const readPage = vi.fn(async () => ({ events: [], nextSequence: null, finished: false }));
+  const collection = createDeploymentLogsCollection("nick", "8f79e99b-cd08-4e9c-af96-f3fed313acc5", {
+    queryClient: client, sessionId: "poll-session", userId: "user",
+  }, readPage);
+  const observer = collection.subscribeChanges(() => {});
+  try {
+    await collection.preload();
+    expect(readPage).toHaveBeenCalledTimes(1);
+    readPage.mockResolvedValue({ events: [], nextSequence: null, finished: true });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(readPage).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(readPage).toHaveBeenCalledTimes(2);
+  } finally {
+    observer.unsubscribe();
+    await collection.cleanup(); client.clear(); vi.useRealTimers();
   }
 });
