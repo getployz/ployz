@@ -65,13 +65,14 @@ async function* logs(transport, options = {}) {
           const key = sourceKey(container);
           let source = sources.get(key);
           if (!source) {
-            source = { reader: null, last: null, failed: false, reopened: false, container };
+            source = { reader: null, last: null, failed: false, handoffSpent: false, container };
             sources.set(key, source);
           } else {
-            source.reopened = false;
+            if (source.container.runtime.state !== container.runtime.state) source.handoffSpent = false;
             source.container = container;
           }
-          if (pending.has(key) || source.reader || source.failed || source.reopened) continue;
+          if (pending.has(key) || source.reader || source.failed) continue;
+          if (source.handoffSpent && container.runtime.state !== "running") continue;
           if (source.last !== null && container.runtime.state !== "running") continue;
           openSource(key, source);
         }
@@ -84,10 +85,8 @@ async function* logs(transport, options = {}) {
         } else if (event.error || event.value == null) {
           source.reader?.cancel(); source.reader = null;
           source.failed ||= !!event.error;
-          // One immediate handoff covers a running observation that raced ahead
-          // of EOF. Wait for a fresh observation/output before another handoff.
-          if (!source.failed && options.follow !== false && source.container.runtime.state === "running" && !source.reopened) {
-            source.reopened = true;
+          if (!source.failed && options.follow !== false && source.container.runtime.state === "running" && !source.handoffSpent) {
+            source.handoffSpent = true;
             openSource(event.key, source);
           }
           if (event.error) {
@@ -102,7 +101,7 @@ async function* logs(transport, options = {}) {
             yield { type: "source_error", machineId, containerId, message: row.message };
           } else if (source.boundary === null || BigInt(row.timestamp_nanos) > BigInt(source.boundary) || row.timestamp_nanos === source.boundary && source.skip-- <= 0) {
             source.boundary = null;
-            source.reopened = false;
+            source.handoffSpent = false;
             source.last = row.timestamp_nanos;
             yield { type: "record", record: identify(row, counts) };
           }

@@ -77,6 +77,41 @@ test("one failed source does not interrupt other containers", async () => {
   assert.equal((await output.next()).done, true);
 });
 
+test("a later running observation follows after the immediate EOF handoff ends", async () => {
+  const t = transport();
+  const abort = new AbortController();
+  const output = logs(t, { signal: abort.signal });
+  try {
+    t.frames.push({ containers: [container("a")] });
+    const first = output.next();
+    await tick();
+    t.readers.get("a").push(row("a", 1));
+    await first;
+    t.readers.get("a").push(null);
+    const resumed = output.next();
+    await tick();
+    assert.equal(t.requests.length, 2);
+    t.readers.get("a").push(null);
+    await tick();
+    await tick();
+    assert.equal(t.requests.length, 2);
+    t.frames.push({ containers: [container("a")] });
+    await tick();
+    assert.equal(t.requests.length, 3);
+    t.readers.get("a").push(null);
+    await tick();
+    assert.equal(t.requests.length, 3);
+    t.frames.push({ containers: [container("a")] });
+    await tick();
+    assert.equal(t.requests.length, 4);
+    t.readers.get("a").push(row("a", 4, "resumed"));
+    assert.equal((await resumed).value.record.message, "resumed");
+  } finally {
+    const end = output.next();
+    abort.abort();
+    await end;
+  }
+});
 test("clean EOF reattaches when the running observation already arrived", async () => {
   const t = transport(); const abort = new AbortController();
   const output = logs(t, { signal: abort.signal });
