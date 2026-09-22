@@ -13,6 +13,7 @@ import {
   getSealedVariableCollisionMessage,
   parseEnv,
   parseJson,
+  serializeEntriesToEnv,
   serializeVariablesToEnv,
   serializeVariablesToJson,
 } from "#/modules/environment-design/variable-raw-editor";
@@ -121,6 +122,29 @@ describe("parseEnv", () => {
   it("interprets \\n inside double quotes", () => {
     const [entry] = parseEnvOk('MULTI="line1\\nline2"');
     expect(entry).toEqual({ key: "MULTI", value: "line1\nline2" });
+  });
+
+  it.each(["\n", "\r\n"])("parses multiline PEM values with %j line endings and round-trips them", newline => {
+    const pem = ["-----BEGIN PRIVATE KEY-----", "fake-test-key", "-----END PRIVATE KEY-----"].join("\n");
+    const input = `KEY="${pem.replaceAll("\n", newline)}" # key${newline}NEXT=ok`;
+    const entries = parseEnvOk(input);
+    expect(entries).toEqual([{ key: "KEY", value: pem }, { key: "NEXT", value: "ok" }]);
+    expect(parseEnvOk(serializeEntriesToEnv(entries))).toEqual(entries);
+  });
+
+  it.each(['"', "'"])("preserves whitespace, blank lines and assignment-looking text inside %s quotes", quote => {
+    const value = "first  \n\n # literal comment\nFOO=inside\n  last ";
+    const input = `FOO=outside\nTEXT=${quote}${value}${quote}\nAFTER=yes`;
+    expect(parseEnvOk(input)).toEqual([
+      { key: "FOO", value: "outside" }, { key: "TEXT", value }, { key: "AFTER", value: "yes" },
+    ]);
+    expect(findDuplicateEnvKeys(input)).toEqual([]);
+    expect(findDuplicateEnvKeys(`${input}\nfoo=updated`)).toEqual(["FOO"]);
+  });
+
+  it("reports the opening line for unterminated multiline values and rejects trailing text", () => {
+    expect(expectErr(parseEnv('OK=1\nKEY="first\nsecond')).message).toBe('Line 2: unterminated double-quoted value.');
+    expect(expectErr(parseEnv('KEY="first\nsecond" junk')).message).toMatch(/unexpected text/);
   });
 
   it("rejects invalid lines", () => {

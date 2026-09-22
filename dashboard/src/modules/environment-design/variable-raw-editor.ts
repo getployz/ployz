@@ -104,10 +104,19 @@ function parseQuotedValueOrThrow(
   input: string,
   quote: '"' | "'",
   lineNo: number,
+  nextLine: () => string | undefined,
 ): string {
   let result = "";
   let i = 1;
-  while (i < input.length) {
+  while (true) {
+    if (i === input.length) {
+      const continuation = nextLine();
+      if (continuation === undefined) break;
+      result += "\n";
+      input = continuation;
+      i = 0;
+    }
+    if (i === input.length) continue;
     const ch = input[i];
     if (ch === "\\" && quote === '"' && i + 1 < input.length) {
       const next = input[i + 1];
@@ -135,12 +144,12 @@ function parseQuotedValueOrThrow(
   );
 }
 
-function parseEnvValueOrThrow(rawValue: string, lineNo: number): string {
-  const value = rawValue.trim();
+function parseEnvValueOrThrow(rawValue: string, lineNo: number, nextLine: () => string | undefined): string {
+  const value = rawValue.trimStart();
   if (value === "") return "";
   const first = value[0];
   if (first === '"' || first === "'") {
-    return parseQuotedValueOrThrow(value, first, lineNo);
+    return parseQuotedValueOrThrow(value, first, lineNo, nextLine);
   }
   // Bare value — strip an inline comment if present.
   const commentIdx = value.indexOf(" #");
@@ -148,40 +157,35 @@ function parseEnvValueOrThrow(rawValue: string, lineNo: number): string {
   return trimmed.trim();
 }
 
+function* envEntries(text: string): Generator<Result.Result<ParsedEntry, RawEditorParseError>> {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const lineNo = i + 1;
+    const trimmed = (lines[i] ?? "").trimStart();
+    if (trimmed.trim() === "" || trimmed.startsWith("#")) continue;
+    try {
+      const match = ENV_LINE_RE.exec(trimmed);
+      if (!match) throw new RawEditorParseError(`Line ${lineNo}: expected KEY=VALUE.`);
+      const key = (match[1] ?? "").toUpperCase();
+      const value = parseEnvValueOrThrow(match[2] ?? "", lineNo, () => lines[++i]);
+      yield Result.succeed({ key, value });
+    } catch (cause) {
+      if (!(cause instanceof RawEditorParseError)) throw cause;
+      yield Result.fail(cause);
+    }
+  }
+}
+
 export function parseEnv(
   text: string,
 ): Result.Result<ParsedEntry[], RawEditorParseError> {
-  try {
-    const entries: ParsedEntry[] = [];
-    const indexByKey = new Map<string, number>();
-    const lines = text.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i += 1) {
-      const lineNo = i + 1;
-      const raw = lines[i] ?? "";
-      const trimmed = raw.trim();
-      if (trimmed === "" || trimmed.startsWith("#")) continue;
-      const match = ENV_LINE_RE.exec(trimmed);
-      if (!match) {
-        throw new RawEditorParseError(`Line ${lineNo}: expected KEY=VALUE.`);
-      }
-      const key = (match[1] ?? "").toUpperCase();
-      const value = parseEnvValueOrThrow(match[2] ?? "", lineNo);
-      const existingIndex = indexByKey.get(key);
-      if (existingIndex === undefined) {
-        indexByKey.set(key, entries.length);
-        entries.push({ key, value });
-      } else {
-        // Duplicate key: last value wins (dotenv semantics), keeping the
-        // entry's original position. findDuplicateEnvKeys surfaces a
-        // non-blocking notice so the merge isn't silent.
-        entries[existingIndex] = { key, value };
-      }
-    }
-    return Result.succeed(entries);
-  } catch (cause) {
-    if (cause instanceof RawEditorParseError) return Result.fail(cause);
-    throw cause;
+  const entries = new Map<string, ParsedEntry>();
+  for (const entry of envEntries(text)) {
+    if (Result.isFailure(entry)) return Result.fail(entry.failure);
+    // Last value wins while retaining the key's original position.
+    entries.set(entry.success.key, entry.success);
   }
+  return Result.succeed([...entries.values()]);
 }
 
 export function parseJson(
@@ -243,12 +247,9 @@ export function parseJson(
  */
 export function findDuplicateEnvKeys(text: string): string[] {
   const counts = new Map<string, number>();
-  for (const raw of text.split(/\r?\n/)) {
-    const trimmed = raw.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-    const match = ENV_LINE_RE.exec(trimmed);
-    if (!match) continue;
-    const key = (match[1] ?? "").toUpperCase();
+  for (const entry of envEntries(text)) {
+    if (Result.isFailure(entry)) continue;
+    const key = entry.success.key;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts.entries()].flatMap(([key, n]) => (n > 1 ? [key] : []));
