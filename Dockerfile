@@ -33,11 +33,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=dashboard /app/dashboard/.output dashboard/.output
-COPY --from=dashboard /app/dashboard/node_modules dashboard/node_modules
-COPY --from=dashboard /app/core/crates/ployz-sdk core/crates/ployz-sdk
-COPY dashboard/package.json dashboard/drizzle.config.ts dashboard/
-COPY dashboard/drizzle/ dashboard/drizzle/
-COPY dashboard/scripts/start-with-inngest-sync.mjs dashboard/scripts/start-with-inngest-sync.mjs
-# Keep /app as the working directory for Railway's existing cd dashboard commands.
-CMD ["sh", "-c", "cd dashboard && exec node scripts/start-with-inngest-sync.mjs"]
+COPY --from=dashboard /app/dashboard/.output .output
+COPY --from=dashboard /app/dashboard/node_modules node_modules
+# The app's packaged SDK is the runtime copy; replace pnpm's source-tree link.
+RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
+COPY dashboard/package.json dashboard/drizzle.config.ts ./
+COPY dashboard/drizzle/ drizzle/
+COPY dashboard/scripts/start-with-inngest-sync.mjs scripts/start-with-inngest-sync.mjs
+CMD ["node", "scripts/start-with-inngest-sync.mjs"]
