@@ -29,6 +29,7 @@ const LABEL_CREATION_KEY: &str = "ployz.creation.key";
 pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     /// Optional identity of this currently existing creation.
     pub(crate) creation_key: Option<&'spec str>,
+    pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Project that owns the resulting container.
@@ -56,6 +57,7 @@ impl ContainerRuntime {
             &machine,
             ContainerRequest {
                 creation_key: None,
+                deployment_id: None,
                 kind,
                 project_name,
                 spec,
@@ -83,6 +85,7 @@ impl ContainerRuntime {
     {
         let ContainerRequest {
             creation_key,
+            deployment_id,
             kind,
             project_name,
             spec,
@@ -125,8 +128,8 @@ impl ContainerRuntime {
             kind,
             project_name,
             spec,
-            reserved_name,
             creation_key,
+            deployment_id,
         )
         .await
         .map_err(E::from)
@@ -138,9 +141,11 @@ impl ContainerRuntime {
         kind: ContainerKind,
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
-        reserved_name: Option<String>,
         creation_key: Option<&str>,
+        deployment_id: Option<&ployz_core::DeploymentLogId>,
     ) -> Result<ContainerCreated, Error> {
+        let reserved_name =
+            creation_key.map(|key| creation_name(&machine.id, project_name, kind, key));
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
@@ -148,6 +153,11 @@ impl ContainerRuntime {
             project_name,
             spec,
         )?;
+        if let Some(id) = deployment_id {
+            body.labels
+                .get_or_insert_default()
+                .insert("ployz.deployment.id".into(), id.to_string());
+        }
         if let Some(key) = creation_key {
             body.labels
                 .get_or_insert_default()

@@ -456,6 +456,7 @@ impl MachineRpc for DiscoveryService {
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
+    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
@@ -1004,6 +1005,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::ContainerLogsStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn container_log_history(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
         Err(Status::unimplemented("unused"))
     }
 

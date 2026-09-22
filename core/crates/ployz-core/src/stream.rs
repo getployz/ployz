@@ -2,6 +2,7 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
+use ts_rs::TS;
 
 use crate::{ContainerId, MachineId, MachineName, OpaquePayload, RpcError, ServiceId, ServiceName};
 
@@ -244,7 +245,7 @@ impl ExecResponseFrame {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum MachineLogService {
     Ployz,
@@ -282,7 +283,7 @@ impl FromStr for MachineLogService {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "origin")]
 pub enum LogOrigin {
     Service {
@@ -297,7 +298,7 @@ pub enum LogOrigin {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LogMetadata {
     pub origin: LogOrigin,
     pub machine_id: MachineId,

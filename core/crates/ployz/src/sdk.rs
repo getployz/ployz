@@ -2,9 +2,8 @@
 //! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
 //! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
 //! destroy_project, destroy_cluster, and close.
-use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -14,7 +13,7 @@ use ts_rs::TS;
 
 use crate::connect::{Client, ConnectError, Connector, TransportError, connect_selected_with};
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
-use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
+use crate::deploy::{DeployIntent, DeployPlan, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
     DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot, ExecutionError,
@@ -26,8 +25,11 @@ use ployz_core::{
 
 pub use payloads::typescript_declarations;
 
+mod deploy;
+mod logs;
 mod payloads;
 mod preparation;
+pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::PreparationInput;
 
 /// The public SDK Watch frame: the RPC frame plus the Services this observer
@@ -576,113 +578,6 @@ impl std::fmt::Debug for PreparedDeploy {
             .field("noop", &self.preview.noop())
             .field("operations", &self.preview.operations.len())
             .finish_non_exhaustive()
-    }
-}
-
-impl PreparedDeploy {
-    /// Informational preview; execution remains bound to this prepared handle.
-    #[must_use]
-    pub fn preview(&self) -> &DeployPreview {
-        self.preview.preview()
-    }
-
-    /// True when this preview planned no operations.
-    #[must_use]
-    pub fn noop(&self) -> bool {
-        self.preview.noop()
-    }
-
-    /// Release an unconfirmed preparation and its retained images.
-    pub fn close(&self) {
-        let mut retained = self.retained.lock().expect("retained build lock");
-        self.confirmed.store(true, Ordering::SeqCst);
-        retained.take();
-    }
-
-    /// Execute these operations. Illegal after a previous confirm.
-    ///
-    /// # Errors
-    ///
-    /// Returns when this preview already confirmed, or when the session is closed.
-    pub fn confirm(&self) -> Result<RunningDeploy, RpcError> {
-        let session = Session {
-            inner: self.session.upgrade().ok_or_else(closed)?,
-        };
-        if session.inner.cancel.is_cancelled() {
-            return Err(closed());
-        }
-        let mut retained = self.retained.lock().expect("retained build lock");
-        if self.confirmed.swap(true, Ordering::SeqCst) {
-            return Err(invalid_argument(
-                "this Deploy Preview already confirmed".into(),
-            ));
-        }
-        let cancel = session.inner.cancel.child_token();
-        let (tx, rx) = mpsc::unbounded_channel();
-        let client = session.client()?;
-        let preview = self.preview.clone();
-        let token = cancel.clone();
-        let session_cancel = session.inner.cancel.clone();
-        let retained = retained.take();
-        let join = tokio::spawn(async move {
-            let _retained = retained;
-            tokio::select! {
-                biased;
-                () = session_cancel.cancelled() => Err(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "session closed; in-flight Deploy outcome may be uncertain".into(),
-                    details: Value::Null,
-                }),
-                outcome = client.confirm(&preview, &token, Some(tx)) => Ok(outcome),
-            }
-        });
-        Ok(RunningDeploy {
-            cancel,
-            events: Mutex::new(Some(rx)),
-            join: Mutex::new(Some(join)),
-        })
-    }
-}
-
-impl Deref for PreparedDeploy {
-    type Target = DeployPreview;
-
-    fn deref(&self) -> &Self::Target {
-        &self.preview
-    }
-}
-
-impl RunningDeploy {
-    /// Cancel this Deploy. The outcome is a failed Deploy with `cancelled`.
-    pub fn abort(&self) {
-        self.cancel.cancel();
-    }
-
-    /// Next progress or outcome event, or `None` when the stream ended.
-    pub async fn next(&self) -> Option<DeployEvent> {
-        let mut guard = self.events.lock().await;
-        let rx = guard.as_mut()?;
-        if let Some(event) = rx.recv().await {
-            return Some(event);
-        }
-        *guard = None;
-        None
-    }
-
-    /// Wait for the Deploy Outcome. Progress events are still produced.
-    ///
-    /// # Errors
-    /// Returns unavailable when session closure interrupts execution; mutations may have completed.
-    pub async fn finished(&self) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let handle = self
-            .join
-            .lock()
-            .await
-            .take()
-            .expect("deploy already finished");
-        let outcome = handle.await.expect("deploy task joins");
-        while self.next().await.is_some() {}
-        outcome
     }
 }
 

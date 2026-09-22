@@ -1,5 +1,6 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { Tabs, TabsList, TabsTrigger } from "#/components/ui/tabs";
+import { ContainerLogs } from "#/components/container-logs";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "#/components/ui/tabs";
 import { ServiceSettingsTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingsTab";
 import { ServiceVariablesTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesTab";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
@@ -30,6 +31,7 @@ export function ServiceDrawerTabs({
 
       <ServiceSettingsTab state={state} />
       <ServiceVariablesTab state={state} />
+      <TabsContent value="logs"><ContainerLogs selection={{ organizationSlug: state.organizationSlug, environmentSlug: state.environmentSlug, serviceId: state.service.id }} /></TabsContent>
     </Tabs>
   );
 }

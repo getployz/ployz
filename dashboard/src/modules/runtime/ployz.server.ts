@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type {
   Client,
+  LogOptions, LogEvent, LogHistoryOptions, LogHistoryPage,
   EnrollmentAssignment,
   EnrollmentSnapshot,
   ClusterTeardown,
@@ -68,10 +69,12 @@ export type PloyzSdkError =
   | MissingDataLossIdentities;
 
 export type PloyzPreparedDeploy = Omit<PreparedDeploy, "confirm"> & {
-  readonly confirm: (onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal) => Effect.Effect<unknown, PloyzSdkError>;
+  readonly confirm: (onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal, deploymentId?: string) => Effect.Effect<unknown, PloyzSdkError>;
 };
 
 export interface PloyzSession {
+  readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
+  readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
   readonly removeCloudPairing: () => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
@@ -199,9 +202,9 @@ function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<
 function wrapPrepared(prepared: PreparedDeploy): PloyzPreparedDeploy {
   return {
     ...prepared,
-    confirm: (onEvent, cancellation) => Effect.scoped(Effect.gen(function* () {
+    confirm: (onEvent, cancellation, deploymentId) => Effect.scoped(Effect.gen(function* () {
       const running = yield* Effect.acquireRelease(
-        Effect.try({ try: () => prepared.confirm(cancellation ? { signal: cancellation } : {}), catch: (cause) => asSdkFailure("confirm", cause) }),
+        Effect.try({ try: () => prepared.confirm({ signal: cancellation, deploymentId }), catch: (cause) => asSdkFailure("confirm", cause) }),
         (running, exit) => Effect.promise(async () => {
           if (Exit.isFailure(exit)) running.abort();
           await running.finished.catch(() => undefined);
@@ -235,6 +238,8 @@ function wrapClient(client: Client): PloyzSession {
       catch: (cause) => new RuntimeConnectionFailure({ cause }),
     });
   return {
+    logs: (options) => Effect.try({ try: () => client.runtime.logs(options), catch: (cause) => asSdkFailure("logs", cause) }),
+    logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
     removeCloudPairing: () => sdkPromise("remove Cloud pairing", () => client.removeCloudPairing()),
     observeEnrollment: () => Effect.tryPromise({

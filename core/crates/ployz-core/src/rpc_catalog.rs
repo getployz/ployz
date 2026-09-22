@@ -73,6 +73,7 @@ macro_rules! rpc_catalog {
                 Reset: (reset, "Reset", ResetRequest, "reset", ResetAccepted, RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1", Always),
             }
             server_streaming {
+                ContainerLogHistory: (container_log_history, "ContainerLogHistory", ContainerLogHistoryRequest, "container_log_history", CONTAINER_LOG_HISTORY_CAPABILITY, "ployz.container.log-history.v1", Container),
                 ContainerLogs: (container_logs, "ContainerLogs", ContainerLogsRequest, "container_logs", CONTAINER_LOGS_CAPABILITY, "ployz.container.logs.v1", Container),
                 MachineLogs: (machine_logs, "MachineLogs", MachineLogsRequest, "machine_logs", MACHINE_LOGS_CAPABILITY, "ployz.machine.logs.v1", Container),
                 RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Always),

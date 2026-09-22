@@ -27,6 +27,7 @@ import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
+import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
 import { Route as ApiEnrollTokenCallbackRouteImport } from './routes/api/enroll/$token/callback'
@@ -135,6 +136,11 @@ const ApiGithubWebhookRoute = ApiGithubWebhookRouteImport.update({
 const ApiRuntimeEventsRoute = ApiRuntimeEventsRouteImport.update({
   id: '/api/runtime/events',
   path: '/api/runtime/events',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiRuntimeLogsRoute = ApiRuntimeLogsRouteImport.update({
+  id: '/api/runtime/logs',
+  path: '/api/runtime/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudOrganizationSlugOrgRouteRoute =
@@ -295,6 +301,7 @@ export interface FileRoutesByFullPath {
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
@@ -329,6 +336,7 @@ export interface FileRoutesByTo {
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/cloud': typeof ProtectedCloudIndexRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -365,6 +373,7 @@ export interface FileRoutesById {
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
   '/_protected/cloud/$organizationSlug/_org': typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
@@ -405,6 +414,7 @@ export interface FileRouteTypes {
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/runtime/events'
+    | '/api/runtime/logs'
     | '/cloud/'
     | '/api/enroll/$token/callback'
     | '/cloud/$organizationSlug/$projectSlug'
@@ -439,6 +449,7 @@ export interface FileRouteTypes {
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/runtime/events'
+    | '/api/runtime/logs'
     | '/cloud'
     | '/api/enroll/$token/callback'
     | '/cloud/$organizationSlug/new'
@@ -474,6 +485,7 @@ export interface FileRouteTypes {
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/runtime/events'
+    | '/api/runtime/logs'
     | '/_protected/cloud/'
     | '/_protected/cloud/$organizationSlug/_org'
     | '/_protected/cloud/$organizationSlug/_project'
@@ -507,6 +519,7 @@ export interface RootRouteChildren {
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
+  ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -635,6 +648,13 @@ declare module '@tanstack/react-router' {
       path: '/api/runtime/events'
       fullPath: '/api/runtime/events'
       preLoaderRoute: typeof ApiRuntimeEventsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/runtime/logs': {
+      id: '/api/runtime/logs'
+      path: '/api/runtime/logs'
+      fullPath: '/api/runtime/logs'
+      preLoaderRoute: typeof ApiRuntimeLogsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/$organizationSlug/_org': {
@@ -979,6 +999,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
+  ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

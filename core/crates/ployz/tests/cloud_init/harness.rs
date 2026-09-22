@@ -348,6 +348,7 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<Self::BuildStream>, Status> {
         Err(Status::unimplemented("Build is not used by this fixture"))
     }
+    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
@@ -1061,6 +1062,12 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::ContainerLogsStream>, Status> {
+        unused()
+    }
+    async fn container_log_history(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
         unused()
     }
     async fn machine_logs(

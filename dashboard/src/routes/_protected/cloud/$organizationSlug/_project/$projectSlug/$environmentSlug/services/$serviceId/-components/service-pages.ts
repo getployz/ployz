@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect";
 export const SERVICE_PAGES = [
   { id: "settings", label: "Settings" },
   { id: "variables", label: "Variables" },
+  { id: "logs", label: "Logs" },
 ] as const;
 
 export type ServicePage = (typeof SERVICE_PAGES)[number]["id"];

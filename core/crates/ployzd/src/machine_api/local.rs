@@ -137,6 +137,7 @@ impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type BuildStream = RpcStream;
     type ContainerLogsStream = RpcStream;
+    type ContainerLogHistoryStream = RpcStream;
     type MachineLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
@@ -297,6 +298,7 @@ impl MachineRpc for MachineService {
                     &request.project_name,
                     &request.resolved_spec,
                     request.creation_key,
+                    request.deployment_id,
                 )
                 .await,
         )
@@ -446,6 +448,25 @@ impl MachineRpc for MachineService {
             .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
         containers
             .container_logs(&record.id(), &machine.name, request)
+            .await
+            .map(Response::new)
+    }
+
+    async fn container_log_history(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
+        let request = op::ContainerLogHistory::from_request_body(request_body(request)?)
+            .map_err(invalid_request)?;
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?;
+        let record = self.local_record();
+        let machine = record
+            .machine()
+            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
+        containers
+            .container_log_history(&record.id(), &machine.name, request)
             .await
             .map(Response::new)
     }

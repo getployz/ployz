@@ -3,7 +3,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ExecConfig, ExecOptions, ExecRequestFrame,
-    ExecResponseFrame, LogBody, LogEntry, LogsOptions, MachineId, MachineName, MachineRpcClient,
+    ExecResponseFrame, LogBody, LogEntry, LogsOptions, MachineName, MachineRpcClient,
     OpaquePayload, op,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -181,7 +181,6 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
 
     let frames = exec_frames(
         &mut client,
-        &machine.id,
         &created.container_id,
         ["sh", "-c", "printf out; printf err >&2; exit 42"],
         false,
@@ -199,10 +198,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     );
     let (request_sender, request_receiver) = tokio::sync::mpsc::channel(1);
     request_sender.send(open_config).await.unwrap();
-    let mut request = Request::new(ReceiverStream::new(request_receiver));
-    request
-        .metadata_mut()
-        .insert("machine", machine.id.as_str().parse().unwrap());
+    let request = Request::new(ReceiverStream::new(request_receiver));
     let mut output = client.exec(request).await.unwrap().into_inner();
     let open_frames = tokio::time::timeout(Duration::from_secs(5), async {
         let mut frames = Vec::new();
@@ -222,7 +218,6 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
 
     let detached = exec_frames(
         &mut client,
-        &machine.id,
         &created.container_id,
         ["sh", "-c", "sleep 1"],
         true,
@@ -247,10 +242,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     })
     .encode()
     .unwrap();
-    let mut request = Request::new(tokio_stream::iter([empty]));
-    request
-        .metadata_mut()
-        .insert("machine", machine.id.as_str().parse().unwrap());
+    let request = Request::new(tokio_stream::iter([empty]));
     assert_eq!(
         client.exec(request).await.unwrap_err().code(),
         tonic::Code::InvalidArgument
@@ -267,10 +259,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     })
     .encode()
     .unwrap();
-    let mut request = Request::new(logs);
-    request
-        .metadata_mut()
-        .insert("machine", machine.id.as_str().parse().unwrap());
+    let request = Request::new(logs);
     let entries = client
         .container_logs(request)
         .await
@@ -291,6 +280,34 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         ]
     );
 
+    let history = op::ContainerLogHistory::into_request(ployz_core::ContainerLogHistoryRequest {
+        container_id: created.container_id,
+        before_nanos: (entries
+            .iter()
+            .map(|entry| entry.timestamp_unix_nanos)
+            .max()
+            .unwrap()
+            + 1)
+        .to_string(),
+        limit: 1,
+    })
+    .encode()
+    .unwrap();
+    let request = Request::new(history);
+    let older = client
+        .container_log_history(request)
+        .await
+        .unwrap()
+        .into_inner()
+        .map(|entry| LogEntry::decode(&entry.unwrap()).unwrap())
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(
+        older.last().unwrap().body,
+        LogBody::Stderr(b"container-err\n".to_vec())
+    );
+    assert!(older.len() <= entries.len());
+
     runtime
         .remove(&created.container_id, true, true)
         .await
@@ -301,16 +318,12 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
 
 async fn exec_frames<const N: usize>(
     client: &mut MachineRpcClient<tonic::transport::Channel>,
-    machine_id: &MachineId,
     container_id: &ContainerId,
     command: [&str; N],
     detach: bool,
 ) -> Result<Vec<ExecResponseFrame>, Status> {
     let config = exec_config(container_id, command, detach);
-    let mut request = Request::new(tokio_stream::iter([config]));
-    request
-        .metadata_mut()
-        .insert("machine", machine_id.as_str().parse().unwrap());
+    let request = Request::new(tokio_stream::iter([config]));
     let mut stream = client.exec(request).await?.into_inner();
     let mut frames = Vec::new();
     while let Some(frame) = stream.message().await? {

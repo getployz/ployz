@@ -22,6 +22,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
             let calls = Arc::new(AtomicUsize::new(0));
             let attempts = calls.clone();
             let request = CreateContainerRequest {
+                deployment_id: None,
                 creation_key: Some("global:test".into()),
                 kind: ContainerKind::ServiceContainer,
                 project_name: ProjectName::parse("app").unwrap(),
@@ -160,6 +161,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
         .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
         .unwrap();
         let request = CreateContainerRequest {
+            deployment_id: None,
             creation_key: Some(crate::cluster::global_creation_key(&spec)),
             kind: ContainerKind::ServiceContainer,
             project_name: ProjectName::parse("app").unwrap(),
@@ -477,6 +479,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
         let target = machine('1', "joiner");
         let observed = target.clone();
         let request = CreateContainerRequest {
+            deployment_id: None,
             creation_key: Some("global:storage".into()),
             kind: ContainerKind::ServiceContainer,
             project_name: ProjectName::parse("app").unwrap(),

@@ -374,3 +374,6 @@ _Avoid_: Complete result, rollback signal
 **Name Ambiguity**:
 The expected condition in which one Machine Name or Service Name matches multiple durable identities. For Services, the matches are Qualified Services. Ployz preserves every match and does not choose or repair a winner in the domain model.
 _Avoid_: Duplicate error, canonical winner
+
+**Deployment Log ID**:
+An adapter-supplied identity for the deployment attempt that created a Container. It is creation metadata used to select output, not part of the authored Service configuration or a globally coordinated deployment record.

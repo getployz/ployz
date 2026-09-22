@@ -23,6 +23,7 @@ import type {
   RequestedServiceSpec,
   RpcError as RpcErrorPayload,
   RuntimeWatchView,
+  ContainerLogRecord,
 } from "./generated/payloads";
 export * from "./generated/payloads";
 
@@ -45,7 +46,18 @@ export type WatchOptions = {
   readonly signal?: AbortSignal;
 };
 
-export type ConfirmOptions = WatchOptions;
+export type LogFilter = {
+  projectName?: string; serviceId?: string; serviceName?: string; deploymentId?: string;
+  machineId?: string; containerId?: string; kind?: "service_container" | "pre_deploy_hook";
+};
+export type LogRecord = ContainerLogRecord & { id: string };
+export type LogSourceError = { type: "source_error"; machineId: string; containerId: string; message: string };
+export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError;
+export type LogOptions = WatchOptions & { filter?: LogFilter; tail?: number; follow?: boolean };
+export type LogHistoryOptions = WatchOptions & { filter?: LogFilter; before: Record<string, string>; limit?: number };
+export type LogHistoryPage = { records: LogRecord[]; errors: LogSourceError[] };
+
+export type ConfirmOptions = WatchOptions & { deploymentId?: string };
 
 export type RunOptions = WatchOptions;
 
@@ -109,6 +121,8 @@ export declare class Client {
   about(): Promise<ContractDescription>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
+    logs(options?: LogOptions): AsyncIterable<LogEvent>;
+    logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewProjectRemoval(

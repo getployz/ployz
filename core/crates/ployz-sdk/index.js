@@ -52,11 +52,22 @@ function withRpcError(promise) {
   return promise.catch(throwRpcError);
 }
 
+const runtimeLogs = require("./runtime-logs.js");
+
 class Client {
   constructor(inner) {
     this._inner = inner;
+    const logTransport = {
+      watch: (options) => iterateWatch(() => inner.watch(), options.signal),
+      open: async (input) => {
+        const reader = await withRpcError(inner.containerLogs(input));
+        return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
+      },
+    };
     this.runtime = {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),
+      logs: (options = {}) => runtimeLogs.logs(logTransport, options),
+      logHistory: (options) => runtimeLogs.history(logTransport, options),
     };
   }
 
@@ -160,7 +171,7 @@ function wrapPreview(handle) {
     close: () => handle.close(),
     confirm(options = {}) {
       try {
-        return wrapRunning(handle.confirm(), options && options.signal);
+        return wrapRunning(handle.confirm(options?.deploymentId), options && options.signal);
       } catch (error) {
         throwRpcError(error);
       }

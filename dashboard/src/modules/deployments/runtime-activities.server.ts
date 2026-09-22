@@ -160,8 +160,8 @@ export const previewRuntimeIntent = Effect.fn(
 });
 
 const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
-  function* ({ prepared, preview }: Effect.Success<ReturnType<typeof previewRuntimeIntent>>, onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal) {
-  const outcome = yield* prepared.confirm(onEvent, cancellation);
+  function* ({ prepared, preview }: Effect.Success<ReturnType<typeof previewRuntimeIntent>>, onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal, deploymentId?: string) {
+  const outcome = yield* prepared.confirm(onEvent, cancellation, deploymentId);
   const evidence = yield* Schema.decodeUnknownEffect(Schema.Json)({ version: 1, outcome });
   const projected = yield* Effect.try({
     try: () => projectRuntimeOutcome(preview, evidence),
@@ -278,7 +278,7 @@ export const executeEnvironmentDeployment = Effect.fn(
       }) };
       previous = progress;
       await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
-    }, cancellation.signal);
+    }, cancellation.signal, context.deployment.id);
     return { outcome, evidence };
     }).pipe(Effect.raceFirst(watchCancellation));
   }).pipe(Effect.scoped, Effect.flatMap(({ outcome, evidence }) => Effect.gen(function* () {

@@ -20,6 +20,9 @@ use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
 
+#[path = "log_history.rs"]
+mod log_history;
+
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
         let first = requests
@@ -157,6 +160,44 @@ impl ContainerRuntime {
         };
         let source = self.raw_logs(request.container_id.as_str(), &request.options)?;
         Ok(serve_logs(source, metadata, request.options.follow))
+    }
+
+    pub async fn container_log_history(
+        &self,
+        machine_id: &MachineId,
+        machine_name: &MachineName,
+        request: ployz_core::ContainerLogHistoryRequest,
+    ) -> Result<RpcStream, Status> {
+        let observation = self
+            .inspect_managed(&request.container_id, machine_id)
+            .await
+            .map_err(docker_status)?;
+        let metadata = LogMetadata {
+            origin: LogOrigin::Service {
+                service_id: observation.service_id(),
+                service_name: observation.resolved_spec.name.clone(),
+                container_id: observation.container_id,
+                hook: observation.labels.get(super::LABEL_HOOK).cloned(),
+            },
+            machine_id: *machine_id,
+            machine_name: machine_name.clone(),
+        };
+        if !(1..=1000).contains(&request.limit) {
+            return Err(Status::invalid_argument("limit must be 1..1000"));
+        }
+        let before = request
+            .before_nanos
+            .parse::<i64>()
+            .map_err(|_| Status::invalid_argument("before_nanos must be an i64 timestamp"))?;
+        let entries = log_history::read_history(
+            self,
+            request.container_id.as_str(),
+            before,
+            i32::from(request.limit),
+        )
+        .await?;
+        let source = Box::pin(futures_util::stream::iter(entries.into_iter().map(Ok))) as LogSource;
+        Ok(serve_logs(source, metadata, false))
     }
 
     #[allow(clippy::result_large_err)]

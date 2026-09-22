@@ -12,3 +12,4 @@ esac
 rm -f crates/ployz-sdk/ployz-sdk.node && cp "$binding" crates/ployz-sdk/ployz-sdk.node
 bash scripts/build-config-browser.sh
 node crates/ployz-sdk/tests/config-contract.mjs
+node --test crates/ployz-sdk/tests/node_logs.js

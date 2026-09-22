@@ -19,6 +19,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
         .create_with_admission(
             &machine,
             ContainerRequest {
+                deployment_id: None,
                 creation_key: None,
                 kind: ContainerKind::ServiceContainer,
                 project_name: &project,

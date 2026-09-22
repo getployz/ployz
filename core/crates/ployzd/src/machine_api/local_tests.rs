@@ -503,6 +503,7 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     let service =
         MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
     let request = CreateContainerRequest {
+        deployment_id: None,
         creation_key: Some("retry/1".into()),
         kind: ContainerKind::ServiceContainer,
         project_name: ProjectName::parse("app").unwrap(),

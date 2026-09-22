@@ -256,3 +256,8 @@ declare const enrollmentSnapshot: EnrollmentSnapshot;
 const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfies EnrollmentAssignment;
 client.observeEnrollment() satisfies Promise<EnrollmentSnapshot>;
 client.register(assignment) satisfies Promise<Registered>;
+
+import { lowerDeployment } from '../config';
+import type { ServiceConfig } from '../config';
+declare const serviceConfig: ServiceConfig;
+lowerDeployment({ projectName: 'test', snapshots: [{ serviceId: 'service-id', config: serviceConfig }] });

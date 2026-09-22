@@ -26,6 +26,7 @@ if (
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-volumes-"));
 fs.copyFileSync(path.join(pkg, "index.js"), path.join(dir, "index.js"));
+fs.copyFileSync(path.join(pkg, "runtime-logs.js"), path.join(dir, "runtime-logs.js"));
 fs.copyFileSync(addon, path.join(dir, "ployz-sdk.node"));
 const sdk = require(dir);
 

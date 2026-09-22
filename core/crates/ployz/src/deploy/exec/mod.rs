@@ -224,6 +224,7 @@ impl MachineOperations for Client {
         }
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
+                deployment_id: self.deployment_id.clone(),
                 creation_key: replay_key.or_else(|| {
                     (kind == ContainerKind::ServiceContainer
                         && spec.mode == ployz_core::ServiceMode::Global)

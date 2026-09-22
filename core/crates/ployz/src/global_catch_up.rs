@@ -258,6 +258,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     for slot in slots {
         let identity = slot.identity().clone();
         let request = CreateContainerRequest {
+            deployment_id: None,
             creation_key: Some(crate::cluster::global_creation_key(slot.resolved_spec())),
             kind: ContainerKind::ServiceContainer,
             project_name: identity.project.clone(),

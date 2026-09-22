@@ -202,6 +202,21 @@ impl Client {
         to_json(&description)
     }
 
+    /// Read one Container's output through its owning Machine.
+    /// # Errors
+    /// Returns malformed input and Machine transport failures.
+    #[napi]
+    pub async fn container_logs(&self, input: serde_json::Value) -> Result<ContainerLogStream> {
+        let input = serde_json::from_value(input).map_err(invalid_json)?;
+        Ok(ContainerLogStream {
+            inner: self
+                .inner
+                .container_logs(input)
+                .await
+                .map_err(rpc_to_napi)?,
+        })
+    }
+
     /// Open a Runtime Watch stream of complete frames.
     ///
     /// # Errors
@@ -469,8 +484,15 @@ impl DeployPreviewHandle {
     /// Returns a generated [`RpcError`] JSON payload when this preview already
     /// confirmed.
     #[napi]
-    pub fn confirm(&self) -> Result<RunningDeployHandle> {
-        let inner = self.inner.confirm().map_err(rpc_to_napi)?;
+    pub fn confirm(&self, deployment_id: Option<String>) -> Result<RunningDeployHandle> {
+        let deployment_id = deployment_id
+            .map(|id| id.parse::<ployz_core::DeploymentLogId>())
+            .transpose()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let inner = self
+            .inner
+            .confirm_with_log_id(deployment_id)
+            .map_err(rpc_to_napi)?;
         Ok(RunningDeployHandle { inner })
     }
 }
@@ -584,4 +606,30 @@ pub fn allocate_enrollment(
             })
         })?;
     to_json(&assignment)
+}
+
+/// Cancellable Container log reader.
+#[napi]
+pub struct ContainerLogStream {
+    inner: sdk::ContainerLogStream,
+}
+#[napi]
+impl ContainerLogStream {
+    /// Next output, or null at EOF/cancellation.
+    /// # Errors
+    /// Returns Machine transport or encoding failures.
+    #[napi]
+    pub async fn next(&self) -> Result<Option<serde_json::Value>> {
+        self.inner
+            .next()
+            .await
+            .map_err(rpc_to_napi)?
+            .map(|row| to_json(&row))
+            .transpose()
+    }
+    /// Stop this reader without closing its session.
+    #[napi]
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
 }

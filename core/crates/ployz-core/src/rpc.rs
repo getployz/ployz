@@ -295,6 +295,9 @@ pub struct GetContainerObservationsRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateContainerRequest {
+    /// Correlation metadata, never part of the Service configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<crate::DeploymentLogId>,
     /// Retry identity for a currently existing creation, scoped to Machine, Project, and kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creation_key: Option<String>,
@@ -355,6 +358,15 @@ pub struct LogsOptions {
 pub struct ContainerLogsRequest {
     pub container_id: ContainerId,
     pub options: LogsOptions,
+}
+
+/// Read older output including the boundary timestamp's complete group.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerLogHistoryRequest {
+    pub container_id: ContainerId,
+    pub limit: u16,
+    /// Nanoseconds as decimal text, preserving precision in JavaScript.
+    pub before_nanos: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

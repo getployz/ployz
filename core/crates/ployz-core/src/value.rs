@@ -978,3 +978,9 @@ mod tests {
         assert!(MachineVersion::parse("stable").is_err());
     }
 }
+
+validated_string_newtype!(
+    /// Caller-assigned correlation for Containers created by one deployment attempt.
+    DeploymentLogId, "deployment log ID", "1..128 ASCII letters, digits, hyphens or underscores", |value|
+    !value.is_empty() && value.len() <= 128 && value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+);

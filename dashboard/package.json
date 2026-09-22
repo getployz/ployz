@@ -50,6 +50,7 @@
     "@tanstack/react-router-ssr-query": "^1.167.1",
     "@tanstack/react-router-with-db": "^0.1.0",
     "@tanstack/react-start": "^1.168.30",
+    "@tanstack/react-virtual": "^3.14.13",
     "@xyflow/react": "^12.10.2",
     "better-auth": "^1.6.6",
     "class-variance-authority": "^0.7.1",

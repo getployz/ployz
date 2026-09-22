@@ -310,7 +310,7 @@ function GitRepoSelectorResults({
   const raw = getRawGithubReposCollection(scope);
   // Query errors must repaint even when the collection retains identical rows.
   const { isError, dataUpdatedAt } = useQuery({
-    queryKey: githubReposQueryKey(scope), queryFn: skipToken, gcTime: 1,
+    queryKey: githubReposQueryKey(scope), queryFn: skipToken,
   });
   const { isReady: rawReady } = useLiveQuery(raw);
   const githubRepos = rawReady ? getGithubReposCollection(scope) : undefined;

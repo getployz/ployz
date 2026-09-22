@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { EnvironmentPlaceholder } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/-components/EnvironmentPlaceholder";
+import { ContainerLogs } from "#/components/container-logs";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs",
@@ -8,10 +8,6 @@ export const Route = createFileRoute(
 });
 
 function RouteComponent() {
-  return (
-    <EnvironmentPlaceholder
-      title="No logs yet"
-      description="Deploy a service to start seeing logs here."
-    />
-  );
+  const { organizationSlug, environmentSlug } = Route.useParams();
+  return <div className="p-4"><ContainerLogs selection={{ organizationSlug, environmentSlug }} /></div>;
 }

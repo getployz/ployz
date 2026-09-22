@@ -167,3 +167,8 @@ _Avoid_: Deploy Plan, reservation, dry run
 **Build Platform Requirement**:
 The set of target platforms a service image must cover for one Cloud Deployment Attempt, derived by shared Core preparation from placement and build settings. Preparation checks actual destinations again before image delivery. A reused image receipt may cover a superset.
 _Avoid_: Organization Cluster architecture, global build platform, builder architecture
+
+
+**Deployment Logs**:
+The user-facing output for a Cloud Deployment Attempt: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
+_Avoid_: Deploy Progress alone, Build Logs

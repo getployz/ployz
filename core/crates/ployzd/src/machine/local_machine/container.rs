@@ -88,12 +88,13 @@ impl LocalMachine {
         project: &ProjectName,
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
+        deployment_id: Option<ployz_core::DeploymentLogId>,
     ) -> Result<ContainerCreated, Error> {
         // Once admitted, caller cancellation must not let reset overtake a Docker request.
         let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
         self.finish_mutation(async move {
             local
-                .create_container_admitted(kind, &project, &spec, creation_key)
+                .create_container_admitted(kind, &project, &spec, creation_key, deployment_id)
                 .await
         })
         .await
@@ -275,6 +276,7 @@ impl LocalMachine {
         project: &ProjectName,
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
+        deployment_id: Option<ployz_core::DeploymentLogId>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record();
@@ -290,6 +292,7 @@ impl LocalMachine {
                 machine,
                 ContainerRequest {
                     creation_key: creation_key.as_deref(),
+                    deployment_id: deployment_id.as_ref(),
                     kind,
                     project_name: project,
                     spec,
@@ -341,7 +344,7 @@ mod tests {
         })).unwrap();
         let project = ProjectName::parse("app").unwrap();
         let existing = local
-            .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
+            .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
             .await
             .unwrap();
         let update = serde_json::from_value(json!({
@@ -358,7 +361,7 @@ mod tests {
             ContainerKind::PreDeployHook,
         ] {
             let error = local
-                .create_container(kind, &project, &spec, None)
+                .create_container(kind, &project, &spec, None, None)
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains("accept"), "{error}");
@@ -395,7 +398,13 @@ mod tests {
             .to_resolved(ServiceId::random(), Default::default())
             .unwrap();
         let error = local
-            .create_container(ContainerKind::ServiceContainer, &project, &ingress, None)
+            .create_container(
+                ContainerKind::ServiceContainer,
+                &project,
+                &ingress,
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("accept"), "{error}");
@@ -404,6 +413,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 &ProjectName::system(),
                 &ingress,
+                None,
                 None,
             )
             .await
@@ -453,7 +463,13 @@ mod tests {
                 let project = project.clone();
                 async move {
                     local
-                        .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
+                        .create_container(
+                            ContainerKind::ServiceContainer,
+                            &project,
+                            &spec,
+                            None,
+                            None,
+                        )
                         .await
                 }
             });
@@ -478,7 +494,7 @@ mod tests {
             assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
             assert!(matches!(
                 local
-                    .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
+                    .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
                     .await,
                 Err(LocalMachineError::NotParticipating)
             ));
@@ -507,7 +523,7 @@ mod tests {
         let project = ProjectName::parse("app").unwrap();
         assert!(matches!(
             local
-                .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
+                .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));
@@ -537,7 +553,7 @@ mod tests {
             barrier.wait().await;
         });
         local
-            .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
+            .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
             .await
             .unwrap();
         release.await.unwrap();
@@ -597,7 +613,7 @@ mod tests {
         let project = ProjectName::parse("app").unwrap();
         assert!(matches!(
             local
-                .create_container(ContainerKind::ServiceContainer, &project, &spec, None)
+                .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));

@@ -1,3 +1,4 @@
+import { resolveLogFilter } from "#/modules/runtime/container-logs.server";
 import { Header } from "tar";
 import { gzipSync } from "node:zlib";
 import { access } from "node:fs/promises";
@@ -157,6 +158,16 @@ describe("deployment runtime persistence", () => {
         createdAt: new Date("2026-09-04T02:00:00.000Z"),
       },
     ]);
+  });
+
+  it("scopes log discovery by organization and stable service identity", async () => {
+    const filter = await harness.runTransaction(() => resolveLogFilter(organizationId, {
+      organizationSlug: "runtime", environmentSlug: "production", serviceId: apiNodeId,
+    }));
+    expect(filter).toEqual({ projectName: "production", serviceId: apiNodeId, deploymentId: undefined });
+    await expect(harness.runTransaction(() => resolveLogFilter("00000000-0000-4000-8000-000000000999", {
+      organizationSlug: "other", environmentSlug: "production",
+    }))).rejects.toThrow("Environment was not found");
   });
 
   it.each(["failed", "unknown", "cancelled"] as const)("preparation %s cleans source and never confirms or applies", async (kind) => {

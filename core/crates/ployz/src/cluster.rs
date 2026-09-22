@@ -48,6 +48,7 @@ const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct Client {
+    pub(crate) deployment_id: Option<ployz_core::DeploymentLogId>,
     channel: Channel,
     connection: Connection,
     source: ConnectionSource,
@@ -68,6 +69,7 @@ impl Client {
         connector: Arc<dyn Connector>,
     ) -> Self {
         Self {
+            deployment_id: None,
             channel,
             connection,
             source,
@@ -333,6 +335,18 @@ impl Client {
         let mut rpc = self.machine_rpc();
         Ok(rpc
             .container_logs(target_request(request, Some(target)))
+            .await?
+            .into_inner())
+    }
+
+    pub(crate) async fn container_log_history_stream(
+        &self,
+        target: &MachineTarget,
+        request: OpaquePayload,
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
+        let mut rpc = self.machine_rpc();
+        Ok(rpc
+            .container_log_history(target_request(request, Some(target)))
             .await?
             .into_inner())
     }
@@ -705,6 +719,7 @@ impl Client {
     ) -> Result<ContainerCreated, RpcError> {
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
+                deployment_id: None,
                 creation_key,
                 kind,
                 project_name,

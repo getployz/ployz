@@ -43,6 +43,7 @@ pub struct LowerDeploymentInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LowerDeploymentSnapshot {
+    service_id: Option<String>,
     config: Value,
     replicas: Option<u8>,
     #[serde(default)]
@@ -236,7 +237,14 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                     ..Default::default()
                 },
                 entrypoint: Vec::new(),
-                labels: Default::default(),
+                labels: crate::ContainerLabels::parse(
+                    snapshot
+                        .service_id
+                        .map(|id| ("cloud.ployz.service.id".into(), id))
+                        .into_iter()
+                        .collect(),
+                )
+                .map_err(lowering_error)?,
                 hostname: None,
                 extra_hosts: Vec::new(),
                 cap_add: Vec::new(),

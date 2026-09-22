@@ -59,6 +59,8 @@ export type ContainerKind = "service_container" | "pre_deploy_hook";
 
 export type ContainerLabels = { [key in string]: string };
 
+export type ContainerLogRecord = { source: LogMetadata, timestamp_nanos: string, channel: LogChannel, message: string, };
+
 export type ContainerObservation = { container_id: ContainerId,
 /**
  * Generated Docker name for display, never identity or selection.
@@ -296,7 +298,13 @@ export type LocalMachinePhase = "uninitialized" | "joining" | "participating" | 
 
 export type LocalMachineRemoved = { reset_warning: string | null, };
 
+export type LogChannel = "stdout" | "stderr" | "error";
+
 export type LogDriver = { name: string, options: { [key in string]: string }, };
+
+export type LogMetadata = { origin: LogOrigin, machine_id: MachineId, machine_name: MachineName, };
+
+export type LogOrigin = { "origin": "service", service_id: ServiceId, service_name: ServiceName, container_id: ContainerId, hook: string | null, } | { "origin": "machine", service: MachineLogService, };
 
 export type Machine = {
 /**
@@ -341,6 +349,8 @@ export type MachineIdentity = { id: MachineId, name: MachineName, };
 export type MachineLabelKey = string;
 
 export type MachineLabelValue = string;
+
+export type MachineLogService = "ployz" | "docker" | "corrosion";
 
 export type MachineName = string;
 
