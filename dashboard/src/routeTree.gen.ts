@@ -18,7 +18,6 @@ import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as PublicDocsRouteImport } from './routes/_public/docs'
 import { Route as PublicHomeRouteImport } from './routes/_public/home'
 import { Route as PublicPricingRouteImport } from './routes/_public/pricing'
-import { Route as ApiInngestRouteImport } from './routes/api/inngest'
 import { Route as ApiWaitlistRouteImport } from './routes/api/waitlist'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
@@ -91,11 +90,6 @@ const PublicPricingRoute = PublicPricingRouteImport.update({
   id: '/pricing',
   path: '/pricing',
   getParentRoute: () => PublicRouteRoute,
-} as any)
-const ApiInngestRoute = ApiInngestRouteImport.update({
-  id: '/api/inngest',
-  path: '/api/inngest',
-  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiWaitlistRoute = ApiWaitlistRouteImport.update({
   id: '/api/waitlist',
@@ -293,7 +287,6 @@ export interface FileRoutesByFullPath {
   '/docs': typeof PublicDocsRoute
   '/home': typeof PublicHomeRoute
   '/pricing': typeof PublicPricingRoute
-  '/api/inngest': typeof ApiInngestRoute
   '/api/waitlist': typeof ApiWaitlistRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -328,7 +321,6 @@ export interface FileRoutesByTo {
   '/docs': typeof PublicDocsRoute
   '/home': typeof PublicHomeRoute
   '/pricing': typeof PublicPricingRoute
-  '/api/inngest': typeof ApiInngestRoute
   '/api/waitlist': typeof ApiWaitlistRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -364,7 +356,6 @@ export interface FileRoutesById {
   '/_public/docs': typeof PublicDocsRoute
   '/_public/home': typeof PublicHomeRoute
   '/_public/pricing': typeof PublicPricingRoute
-  '/api/inngest': typeof ApiInngestRoute
   '/api/waitlist': typeof ApiWaitlistRoute
   '/_public/': typeof PublicIndexRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
@@ -406,7 +397,6 @@ export interface FileRouteTypes {
     | '/docs'
     | '/home'
     | '/pricing'
-    | '/api/inngest'
     | '/api/waitlist'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
@@ -441,7 +431,6 @@ export interface FileRouteTypes {
     | '/docs'
     | '/home'
     | '/pricing'
-    | '/api/inngest'
     | '/api/waitlist'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
@@ -476,7 +465,6 @@ export interface FileRouteTypes {
     | '/_public/docs'
     | '/_public/home'
     | '/_public/pricing'
-    | '/api/inngest'
     | '/api/waitlist'
     | '/_public/'
     | '/_protected/cloud/$organizationSlug'
@@ -512,7 +500,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ProtectedRouteRoute: typeof ProtectedRouteRouteWithChildren
   PublicRouteRoute: typeof PublicRouteRouteWithChildren
-  ApiInngestRoute: typeof ApiInngestRoute
   ApiWaitlistRoute: typeof ApiWaitlistRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
@@ -586,13 +573,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/pricing'
       preLoaderRoute: typeof PublicPricingRouteImport
       parentRoute: typeof PublicRouteRoute
-    }
-    '/api/inngest': {
-      id: '/api/inngest'
-      path: '/api/inngest'
-      fullPath: '/api/inngest'
-      preLoaderRoute: typeof ApiInngestRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/api/waitlist': {
       id: '/api/waitlist'
@@ -992,7 +972,6 @@ const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
   PublicRouteRoute: PublicRouteRouteWithChildren,
-  ApiInngestRoute: ApiInngestRoute,
   ApiWaitlistRoute: ApiWaitlistRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
@@ -1006,10 +985,11 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

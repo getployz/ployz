@@ -80,7 +80,6 @@ const rawConfig = Config.all({
     Config.withDefault(DEFAULT_INSTALLER_URL),
   ),
   installerSha256: optional(Config.schema(Sha256, "PLOYZ_INSTALLER_SHA256")),
-  inngestServeOrigin: optional(Config.url("INNGEST_SERVE_ORIGIN")),
   inngestEventKey: optional(Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY")),
   inngestSigningKey: optional(
     Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
@@ -168,14 +167,6 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
 const makeAppConfig = Effect.gen(function* () {
   const raw = yield* rawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
-  const serveOrigin = raw.inngestServeOrigin ?? raw.appUrl;
-  if (
-    !["http:", "https:"].includes(serveOrigin.protocol) ||
-    serveOrigin.username || serveOrigin.password ||
-    serveOrigin.pathname !== "/" || serveOrigin.search || serveOrigin.hash
-  ) {
-    return yield* invalid("INNGEST_SERVE_ORIGIN must be an HTTP(S) origin without credentials, path, query, or fragment");
-  }
   const appUrl = raw.appUrl.href.replace(/\/$/, "");
 
   return {
@@ -202,7 +193,6 @@ const makeAppConfig = Effect.gen(function* () {
       installerSha256: raw.installerSha256,
     },
     inngest: {
-      serveOrigin: serveOrigin.origin,
       eventKey: raw.inngestEventKey,
       signingKey: raw.inngestSigningKey,
       signingKeyFallback: raw.inngestSigningKeyFallback,

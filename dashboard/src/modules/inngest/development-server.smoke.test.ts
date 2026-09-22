@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer, type Server } from "node:http";
+import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "inngest/node";
+import { connect, type WorkerConnection } from "inngest/connect";
 import { Inngest } from "inngest";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -77,18 +77,6 @@ async function availablePort() {
   return address.port;
 }
 
-async function listen(server: Server, port: number) {
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", resolve);
-  });
-}
-
-async function closeServer(server: Server | undefined) {
-  if (!server?.listening) return;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-}
-
 async function stopProcess(process: ChildProcess | undefined) {
   if (!process || process.exitCode !== null) return;
   process.kill("SIGTERM");
@@ -114,12 +102,16 @@ async function waitForRow(
 }
 
 describe("Inngest development server durable smoke", () => {
-  let appServer: Server | undefined;
+  let worker: WorkerConnection | undefined;
+  let replacement: WorkerConnection | undefined;
+  let releaseStep: (() => void) | undefined;
   let devServer: ChildProcess | undefined;
   let directory: string | undefined;
 
   afterEach(async () => {
-    await closeServer(appServer);
+    releaseStep?.();
+    await worker?.close();
+    await replacement?.close();
     await stopProcess(devServer);
     if (directory) await rm(directory, { recursive: true, force: true });
   });
@@ -146,7 +138,6 @@ describe("Inngest development server durable smoke", () => {
       },
     ]);
 
-    const appPort = await availablePort();
     const devPort = await availablePort();
     const gatewayPort = await availablePort();
     const gatewayGrpcPort = await availablePort();
@@ -240,12 +231,21 @@ describe("Inngest development server durable smoke", () => {
       },
     );
 
-    appServer = createServer({
-      client: inngest,
-      functions: [resumed, cancellable, cancellation],
-      serveOrigin: `http://127.0.0.1:${appPort}`,
+    let startedResolve = () => {};
+    const startedPromise = new Promise<void>((resolve) => { startedResolve = resolve; });
+    let releaseResolve = () => {};
+    const releasePromise = new Promise<void>((resolve) => { releaseResolve = resolve; });
+    releaseStep = releaseResolve;
+    let executions = 0;
+    const draining = inngest.createFunction({ id: "drain-smoke", retries: 0,
+      triggers: [{ event: "smoke/drain" }] }, async ({ step }) => {
+      await step.run("held-work", async () => {
+        executions++;
+        startedResolve();
+        await releasePromise;
+      });
     });
-    await listen(appServer, appPort);
+    const functions = [resumed, cancellable, cancellation, draining];
 
     devServer = spawn(
       join(process.cwd(), "node_modules/inngest-cli/bin/inngest"),
@@ -265,13 +265,13 @@ describe("Inngest development server durable smoke", () => {
         "1",
         "--tick",
         "50",
-        "--sdk-url",
-        `http://127.0.0.1:${appPort}/api/inngest`,
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
 
     await waitForDevServer(devPort, devServer);
+    worker = await connect({ apps: [{ client: inngest, functions }],
+      gatewayUrl: `ws://127.0.0.1:${gatewayPort}/v0/connect`, handleShutdownSignals: [] });
     await inngest.send({
       name: "smoke/resume",
       data: { operationId: resumedOperationId },
@@ -315,6 +315,20 @@ describe("Inngest development server durable smoke", () => {
       claimCount: 1,
       interruptionCount: 0,
     });
+
+    await inngest.send({ name: "smoke/drain", data: {} });
+    await startedPromise;
+    let closed = false;
+    const closing = worker.close().then(() => { closed = true; });
+    replacement = await connect({ apps: [{ client: inngest, functions }],
+      gatewayUrl: `ws://127.0.0.1:${gatewayPort}/v0/connect`, handleShutdownSignals: [] });
+    expect(closed).toBe(false);
+    await inngest.send({ name: "smoke/drain", data: {} });
+    await expect.poll(() => executions, { timeout: 10_000 }).toBe(2);
+    expect(closed).toBe(false);
+    releaseResolve();
+    await closing;
+    expect(closed).toBe(true);
   }, 60_000);
 });
 

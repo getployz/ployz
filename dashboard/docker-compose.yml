@@ -28,8 +28,8 @@ services:
     command:
       - inngest
       - dev
-      - -u
-      - https://ployz-cloud.localhost/api/inngest
+      - --no-discovery
+      - --no-poll
 
 volumes:
   postgres-data:

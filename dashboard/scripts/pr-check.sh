@@ -7,7 +7,7 @@ checks=(
   "typecheck:pnpm typecheck"
   "lint:pnpm lint"
   "sdk:bash ../core/scripts/build-cloud-sdk.sh"
-  "build:pnpm exec vite build && node scripts/package-sdk.mjs"
+  "build:pnpm build:app"
   "test:pnpm test"
 )
 

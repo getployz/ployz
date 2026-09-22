@@ -25,7 +25,7 @@ COPY --from=sdk /app/core/crates/ployz-sdk /app/core/crates/ployz-sdk
 RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/root/.local/share/pnpm/store,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
 COPY dashboard/ ./
 # The SDK was built above; do not run package.json's combined Rust + Vite build.
-RUN pnpm exec vite build && node scripts/package-sdk.mjs && pnpm prune --prod
+RUN pnpm build:app && pnpm prune --prod
 
 FROM node AS runtime
 RUN apt-get update \
@@ -39,5 +39,4 @@ COPY --from=dashboard /app/dashboard/node_modules node_modules
 RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
 COPY dashboard/package.json dashboard/drizzle.config.ts ./
 COPY dashboard/drizzle/ drizzle/
-COPY dashboard/scripts/start-with-inngest-sync.mjs scripts/start-with-inngest-sync.mjs
-CMD ["node", "scripts/start-with-inngest-sync.mjs"]
+CMD ["node", ".output/server/index.mjs"]

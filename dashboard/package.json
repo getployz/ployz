@@ -11,8 +11,8 @@
   },
   "scripts": {
     "dev": "bash ../core/scripts/build-cloud-sdk.sh && portless ployz-cloud vite dev",
-    "build": "bash ../core/scripts/build-cloud-sdk.sh && vite build && node scripts/package-sdk.mjs",
-    "start": "node scripts/start-with-inngest-sync.mjs",
+    "build": "bash ../core/scripts/build-cloud-sdk.sh && pnpm build:app",
+    "start": "node .output/server/index.mjs",
     "preview": "vite preview",
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
     "db:generate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs generate",
@@ -25,7 +25,9 @@
     "typecheck": "tsc --noEmit",
     "doctor": "pnpm dlx react-doctor@latest --verbose --blocking warning --yes",
     "lint": "oxlint --type-aware .",
-    "lint:fix": "oxlint --type-aware --fix ."
+    "lint:fix": "oxlint --type-aware --fix .",
+    "build:app": "vite build && vite build --config vite.worker.config.ts && node scripts/package-sdk.mjs",
+    "start:worker": "node --env-file-if-exists=.env .output/worker/index.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

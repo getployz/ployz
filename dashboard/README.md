@@ -14,6 +14,9 @@ cp .env.example .env
 docker compose up -d
 pnpm db:migrate
 pnpm dev
+# In a second terminal (rebuild after worker code changes):
+pnpm exec vite build --config vite.worker.config.ts
+PORT=3001 INNGEST_DEV=1 pnpm start:worker
 ```
 
 Configure `.env` before running migrations or starting the app. `pnpm dev` builds
@@ -25,16 +28,41 @@ retain it with `docker compose -p <existing-name>`.
 
 ## Build and deploy
 
-`pnpm build` compiles the native SDK and browser WASM from
-`../core/crates/ployz-sdk`, builds the application, and packages the native runtime
-into `.output/`. `pnpm start` starts that output.
+`pnpm build` compiles the native SDK and browser WASM, then builds the web and
+Connect worker into `.output/`. The root Dockerfile packages both in one image:
 
-Hosting must include both `dashboard/` and `core/` in the checkout, with commands
-running from `/dashboard` and Rust/Go available during the build. When this layout
-lands, update the existing Railway **Ployz Dashboard / production / web** service's
-root directory to `/dashboard`. Retain its variables, domains, and
-`pnpm db:migrate` pre-deploy command. This repository change does not apply hosted
-settings.
+| Process | Start command | Healthcheck |
+| --- | --- | --- |
+| Web | `npm start` | `/` |
+| Worker | `npm run start:worker` | `/ready` |
+
+Run one worker alongside the web service. Both use the same application variables
+and database; only web needs public ingress. The worker uses `INNGEST_BASE_URL`
+for the Inngest API and, for a self-hosted gateway, set
+`INNGEST_CONNECT_GATEWAY_URL=ws://inngest.railway.internal:8289/v0/connect`.
+The equivalent local dev defaults are ports 8288 and 8289. Use different `PORT`
+values when running both processes directly on the same host.
+
+Connect registers the existing `ployz-cloud` functions automatically. Web no
+longer exposes `/api/inngest` or performs HTTP function sync. Deploy worker code
+independently of web-only changes. Publish the image once and point both services
+at that image; do not rebuild the Railway-specific Dockerfile under another
+service ID (its cache IDs belong to web).
+
+On SIGTERM/SIGINT, Connect stops accepting new steps and finishes active steps
+before the worker disposes database and SDK resources. Set Railway worker
+`RAILWAY_DEPLOYMENT_DRAINING_SECONDS=1800` (or a longer operational allowance);
+on Docker use the corresponding `stop_grace_period`. This is a shutdown grace
+period, not a deployment execution timeout. A crash or forced kill can still
+leave remote effects unknown; interrupted deployment steps are not blindly retried.
+
+For the initial HTTP-to-Connect cutover, pause new deployment admission operationally,
+wait for active workflows to settle, and remove the old HTTP app registration in
+Inngest before starting the Connect worker. Replace web with this version so no
+old replica can re-sync the HTTP registration. Keep existing Inngest storage and
+the `ployz-cloud` app/function IDs. Verify only the Connect registration is active
+before allowing new deployments. Do not run HTTP and Connect registrations side
+by side. Run migrations once before the rollout, not independently on each process.
 
 See [DESIGN.md](DESIGN.md) for product design and [CONTEXT.md](CONTEXT.md) for the
 Dashboard glossary.
