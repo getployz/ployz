@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation } from "@tanstack/react-query";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useLogScroll } from "./log-scroll";
 import { Schema } from "effect";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { mergeContainerHistory, remainingHistory, containerLogPageSchema, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
@@ -28,14 +28,11 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
   const [exhausted, setExhausted] = useState<Record<string, string>>({});
-  const element = useRef<HTMLDivElement>(null);
-  const following = useRef(true);
-  const anchor = useRef<{ id: string; offset: number } | null>(null);
   const rows = [...loaded, ...lifecycle].filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
     const difference = BigInt(a.timestamp) - BigInt(b.timestamp);
     return difference < 0n ? -1 : difference > 0n ? 1 : a.id.localeCompare(b.id);
   });
-  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => element.current, estimateSize: () => 24, getItemKey: index => rows[index]?.id ?? index, overscan: 12 });
+  const { element, virtual } = useLogScroll({ count: rows.length, getItemKey: index => rows[index]?.id ?? index });
   const history = useMutation({
     mutationFn: async () => {
       const before = remainingHistory(loaded, exhausted);
@@ -45,10 +42,6 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
       return { page, before };
     },
     onSuccess: ({ page, before }) => {
-      const first = virtual.getVirtualItems().find(item => item.end > (element.current?.scrollTop ?? 0));
-      const firstRow = first && rows[first.index];
-      anchor.current = first && firstRow ? { id: firstRow.id, offset: (element.current?.scrollTop ?? 0) - first.start } : null;
-      following.current = false;
       mergeContainerHistory(collection, page.records);
       stream.setErrors(Object.fromEntries(page.errors.map(error => [`${error.machineId}/${error.containerId}`, error.message])));
       setExhausted(previous => {
@@ -62,16 +55,6 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
       });
     },
   });
-  useLayoutEffect(() => {
-    if (anchor.current) {
-      const index = rows.findIndex(row => row.id === anchor.current?.id);
-      if (index >= 0) {
-        virtual.scrollToIndex(index, { align: "start" });
-        if (element.current) element.current.scrollTop += anchor.current.offset;
-      }
-      anchor.current = null;
-    } else if (following.current && rows.length) virtual.scrollToIndex(rows.length - 1, { align: "end" });
-  }, [rows, virtual]);
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
   const services = [...new Set(loaded.map(row => row.serviceName))];
   return <div className="flex min-h-0 flex-col gap-3">
@@ -84,11 +67,11 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
     <div className="flex items-center justify-between gap-2">
       <Button variant="outline" size="sm" disabled={history.isPending || !Object.keys(remainingHistory(loaded, exhausted)).length} onClick={() => history.mutate()}>{history.isPending ? "Loading…" : "Load older"}</Button>
       <span role="status" className="text-xs text-muted-foreground">{status}</span>
-      <Button variant="ghost" size="sm" onClick={() => { following.current = true; if (rows.length) virtual.scrollToIndex(rows.length - 1, { align: "end" }); }}>Latest</Button>
+      <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button>
     </div>
     {history.error ? <p role="alert">Could not load older logs.</p> : null}
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
-    <div ref={element} tabIndex={0} aria-label="Container logs" className="h-80 overflow-auto font-mono text-xs" onScroll={() => { const node = element.current; if (node) following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48; }}>
+    <div ref={element} tabIndex={0} aria-label="Container logs" className="h-80 overflow-auto font-mono text-xs">
       {!rows.length ? <p className="text-muted-foreground">No matching output available.</p> : null}
       <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
         {virtual.getVirtualItems().map(item => {

@@ -7,6 +7,7 @@ import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments
 import { Button } from "#/components/ui/button";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
+import { BuildLogViewer } from "./log-scroll";
 import { cn } from "#/lib/utils";
 
 export function BuildLogs({ events, serviceId, hasBuild }: {
@@ -53,8 +54,8 @@ export function DeploymentLogs({ organizationSlug, deploymentId, serviceId, hasB
   return <div className="rounded-lg bg-background p-4">
     <div className="mb-3 flex items-center gap-4">{(["Build logs", "Deploy logs"] as const).map((t) => <button key={t} type="button" className={cn("text-xs underline-offset-8", tab === t ? "underline" : "text-muted-foreground")} aria-pressed={tab === t} onClick={() => setTab(t)}>{t}</button>)}<Button className="ml-auto" variant="ghost" size="sm" disabled={refreshing || isLoading} onClick={() => void refresh()}>Refresh logs</Button></div>
     {isError || refreshError ? <p role="alert" className="text-xs text-destructive">Could not load logs. Try refreshing.</p> : null}
-    {tab === "Deploy logs" ? <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={logs} /> : <div className="max-h-80 overflow-auto break-words font-mono text-xs leading-6" tabIndex={0} aria-label={tab}>
+    {tab === "Deploy logs" ? <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={logs} /> : <BuildLogViewer key={`${deploymentId}:${serviceId ?? "all"}`}>
       {isLoading ? <p>Loading logs…</p> : <BuildLogs events={events} serviceId={serviceId} hasBuild={hasBuild} />}
-    </div>}
+    </BuildLogViewer>}
   </div>;
 }
