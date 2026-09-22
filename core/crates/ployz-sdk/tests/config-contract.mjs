@@ -48,14 +48,14 @@ for (const api of [native, browser]) {
   const { env, mounts, ...settings } = baseline;
   const intent = api.parseEnvironmentIntent({
     version: 1, environmentSlug: 'production',
-    services: [{ id: id(1), lineageId: id(2), slug: 'api', config: settings,
+    services: [{ id: id(1), lineageId: id(2), slug: 'api-display-slug', config: settings,
       variables: [], volumeAttachments: [] }],
     volumes: [],
   });
   const compiled = api.compileEnvironmentIntent(id(3), intent);
   assert.equal(compiled.nodeSnapshots[0].config.privateDns, 'api');
   assert.equal('name' in compiled.nodeSnapshots[0].config, false);
-  assert.equal(compiled.variableProducers.find(v => v.key === 'PLOYZ_PRIVATE_DOMAIN').value.value, 'api-production.internal');
+  assert.equal(compiled.variableProducers.find(v => v.key === 'PLOYZ_PRIVATE_DOMAIN').value.value, 'api.internal');
   const changed = structuredClone(intent);
   changed.services[0].config.startCommand = 'new command';
   const reverted = api.restoreEnvironmentNode(changed, intent, { nodeType: 'service', nodeId: id(1) }, 'startCommand');

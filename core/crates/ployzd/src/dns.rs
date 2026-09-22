@@ -27,7 +27,7 @@ use hickory_server::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     ContainerObservation, Machine, MachineId, MembershipObservation, ProjectName, QualifiedService,
-    ServiceContainer, ServiceId, service_containers, serving_containers, synthesize_membership,
+    ServiceId, service_containers, serving_containers, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -160,7 +160,7 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
-            caller_projects: unique_caller_projects(&containers),
+            caller_projects: unique_caller_projects(observations),
         }
     }
 
@@ -261,16 +261,16 @@ impl Projection {
     }
 }
 
-fn unique_caller_projects(containers: &[ServiceContainer]) -> HashMap<Ipv4Addr, ProjectName> {
+fn unique_caller_projects(containers: &[ContainerObservation]) -> HashMap<Ipv4Addr, ProjectName> {
     let mut by_address = HashMap::<Ipv4Addr, Vec<ProjectName>>::new();
     for container in containers {
-        let Some(address) = container.as_observation().address else {
+        let Some(address) = container.address else {
             continue;
         };
         by_address
             .entry(address.0)
             .or_default()
-            .push(container.as_observation().project_name.clone());
+            .push(container.project_name.clone());
     }
     by_address
         .into_iter()

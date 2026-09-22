@@ -4,7 +4,7 @@ const PLATFORM_HTTP_PORT = 3000;
 
 type ServiceExportContext = Pick<
   ServiceWithContextRecord,
-  "id" | "lineageId" | "name" | "slug" | "environmentId" | "environmentSlug"
+  "id" | "lineageId" | "name" | "slug" | "environmentId" | "environmentSlug" | "privateDns"
 >;
 
 export interface ManagedServiceExportRecord {
@@ -31,7 +31,7 @@ export function getManagedServiceExports(
     {
       key: "PLOYZ_PRIVATE_DOMAIN",
       description: "The private DNS name of the service.",
-      value: `${service.slug}-${service.environmentSlug}.internal`,
+      value: `${service.privateDns}.internal`,
     },
     {
       key: "PORT",

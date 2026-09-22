@@ -216,7 +216,7 @@ pub fn compile_environment_intent(
         for (key, value) in [
             (
                 "PLOYZ_PRIVATE_DOMAIN",
-                format!("{}-{}.internal", service.slug, intent.environment_slug),
+                format!("{}.internal", service.config.private_dns),
             ),
             ("PORT", "3000".into()),
             ("PLOYZ_ENVIRONMENT_NAME", intent.environment_slug.clone()),

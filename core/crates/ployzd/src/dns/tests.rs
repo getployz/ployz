@@ -315,7 +315,7 @@ fn caller_project_answers_service_internal() {
 }
 
 #[test]
-fn caller_project_requires_exactly_one_visible_service_container() {
+fn caller_project_includes_hooks_but_requires_one_visible_container() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let api = observation(
         1,
@@ -355,9 +355,19 @@ fn caller_project_requires_exactly_one_visible_service_container() {
     );
     let projection = unfiltered_projection(&[api, hook, first_share, second_share]);
 
+    assert_eq!(
+        addresses(plan_from(
+            &projection,
+            "api.internal.",
+            RecordType::A,
+            Ipv4Addr::new(10, 210, 1, 9),
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    // Hooks can resolve peers without becoming service endpoints themselves.
     assert_nxdomain(plan_from(
         &projection,
-        "api.internal.",
+        "migrate.internal.",
         RecordType::A,
         Ipv4Addr::new(10, 210, 1, 9),
     ));

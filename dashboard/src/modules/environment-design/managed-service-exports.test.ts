@@ -7,6 +7,7 @@ const service = {
   lineageId: "33333333-3333-4333-8333-333333333333",
   name: "API Service",
   slug: "api-service",
+  privateDns: "api",
   environmentSlug: "production",
 };
 
@@ -18,7 +19,7 @@ describe("managed service exports", () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: "PLOYZ_PRIVATE_DOMAIN",
-          value: "api-service-production.internal",
+          value: "api.internal",
           exported: true,
           managed: true,
         }),
