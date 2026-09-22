@@ -113,6 +113,8 @@ pub(super) async fn execute(
                 }
                 Progress::Stage(_)
                 | Progress::Output(_)
+                | Progress::Step(_)
+                | Progress::StepOutput { .. }
                 | Progress::Timing { .. }
                 | Progress::Target { .. } => {}
             }

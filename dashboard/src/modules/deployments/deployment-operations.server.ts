@@ -1,4 +1,4 @@
-import { loadDeploymentEvents } from "./deployment-events.server";
+import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-events.server";
 
 import "@tanstack/react-start/server-only";
 
@@ -141,6 +141,13 @@ export const listDeploymentOperationEvidence = Effect.fn(
       afterSequence: input.afterSequence,
       limit: input.limit ?? 50,
     });
+});
+
+export const listDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
+  const organization = yield* requireOrganization(actor, input.organizationSlug);
+  const after = Number(input.afterSequence ?? 0);
+  if (!Number.isSafeInteger(after) || after < 0) return yield* new Validation({ message: "Invalid log cursor." });
+  return yield* loadDeploymentBuildLog({ organizationId: organization.id, deploymentId: input.deploymentId, after, limit: input.limit ?? 100 });
 });
 
 export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {

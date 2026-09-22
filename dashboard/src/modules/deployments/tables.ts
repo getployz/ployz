@@ -15,7 +15,7 @@ import { type ServiceMode } from "#/modules/services/deploy-compile-types";
 
 import { sql } from "drizzle-orm";
 
-import { type AnyPgColumn, bigserial, check, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, bigint, bigserial, boolean, check, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -205,3 +205,32 @@ export const environmentDeploymentEvent = pgTable("environment_deployment_event"
   progress: jsonb("progress").notNull().$type<import("./deployment-progress").DeploymentProgress>(),
   createdAt,
 }, (table) => [index("environment_deployment_event_cursor_idx").on(table.deploymentId, table.id)]);
+
+/**
+ * One row per build step of a Cloud Deployment Attempt: a BuildKit vertex or a
+ * Ployz-owned phase such as source upload. Steps change state until complete;
+ * their output is appended separately.
+ */
+export const environmentDeploymentBuildStep = pgTable("environment_deployment_build_step", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
+  /** BuildKit digest or `stage:<Stage>`; stable across repeated reports. */
+  key: text("key").notNull(),
+  name: text("name").notNull(),
+  startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
+  completedAt: timestamp("completed_at", { mode: "date", withTimezone: true }),
+  cached: boolean("cached").notNull().default(false),
+  error: text("error"),
+  createdAt,
+  updatedAt,
+}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.key)]);
+
+/** Append-only output attributed to one build step. */
+export const environmentDeploymentBuildOutput = pgTable("environment_deployment_build_output", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
+  stepId: bigint("step_id", { mode: "number" }).notNull().references(() => environmentDeploymentBuildStep.id, { onDelete: "cascade" }),
+  stderr: boolean("stderr").notNull().default(false),
+  text: text("text").notNull(),
+  createdAt,
+}, (table) => [index("environment_deployment_build_output_cursor_idx").on(table.deploymentId, table.id)]);

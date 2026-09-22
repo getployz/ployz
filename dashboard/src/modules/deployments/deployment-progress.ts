@@ -23,7 +23,6 @@ export const deploymentProgressRowSchema = Schema.Struct({
 export const preparationProgressSchema = Schema.Struct({
   phase: Schema.Literals(["source", "selection", "build", "transfer", "ready"]),
   serviceId: text, machineId: text, machineName: text, message: text,
-  output: Schema.String, outputTruncated: Schema.Boolean,
   failureCode: Schema.optional(Schema.String),
   stage: Schema.optional(Schema.String),
   work: Schema.optional(Schema.Record(Schema.String, Schema.String)),

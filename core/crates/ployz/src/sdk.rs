@@ -4,6 +4,7 @@
 //! destroy_project, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -276,7 +277,12 @@ impl Session {
         let cancel = self.inner.cancel.child_token();
         let token = cancel.clone();
         let session = Arc::downgrade(&self.inner);
-        let (events, receiver) = tokio::sync::broadcast::channel(128);
+        // Lossless while the consumer keeps up: structured state is never
+        // dropped, and output is only replaced by a marker beyond the budget.
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let buffered = Arc::new(AtomicUsize::new(0));
+        let producer_buffered = Arc::clone(&buffered);
+        let budget = std::sync::Mutex::new(OutputBudget::default());
         let join = tokio::spawn(async move {
             let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
                 .await
@@ -287,37 +293,23 @@ impl Session {
                     true,
                 ));
             }
-            let prepared =
-                crate::preparation::prepare(
-                    &mut client,
-                    captured.candidate,
-                    captured.build,
-                    crate::preparation::BuildLocation::Remote(None),
-                    &captured.reusable,
-                    &token,
-                    |mut progress| {
-                        if let crate::preparation::Progress::Build(ployz_build::Progress::Output(
-                            bytes,
-                        )) = &mut progress
-                            && bytes.len() > 4096
-                        {
-                            bytes.drain(..bytes.len() - 4096);
-                            let _ =
-                                events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
-                        }
-                        let value = serde_json::to_value(progress)
-                            .expect("preparation progress serializes");
-                        // Build output is lossy progress, never a backpressure dependency of cleanup.
-                        let value = if value.to_string().len() > 16_384 {
-                            serde_json::json!({"phase":"truncated", "dropped":1})
-                        } else {
-                            value
-                        };
-                        let _ = events.send(value);
-                    },
-                )
-                .await
-                .map_err(|error| preparation_error(error, token.is_cancelled()))?;
+            let prepared = crate::preparation::prepare(
+                &mut client,
+                captured.candidate,
+                captured.build,
+                crate::preparation::BuildLocation::Remote(None),
+                &captured.reusable,
+                &token,
+                |progress| {
+                    let frame = budget
+                        .lock()
+                        .expect("output budget lock")
+                        .frame(progress, &producer_buffered);
+                    let _ = events.send(frame);
+                },
+            )
+            .await
+            .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             let build_receipts = preparation::receipts(&captured.fingerprints, &retained);
             Ok(PreparedDeploy {
@@ -331,6 +323,7 @@ impl Session {
         Ok(RunningPreparation {
             cancel,
             events: Mutex::new(receiver),
+            buffered,
             join: Mutex::new(Some(join)),
         })
     }
@@ -700,10 +693,73 @@ fn invalid_argument(message: String) -> RpcError {
     }
 }
 
-/// Cancellable preparation with bounded, lossy progress independent of completion.
+/// Most build output retained ahead of a slow consumer before it is dropped.
+const OUTPUT_BUDGET: usize = 64 * 1024 * 1024;
+
+/// Replaces output beyond the budget with one marker per step until the
+/// consumer catches up. Structured progress always passes.
+#[derive(Default)]
+struct OutputBudget {
+    marked: std::collections::HashSet<(String, bool)>,
+}
+
+impl OutputBudget {
+    fn frame(
+        &mut self,
+        progress: crate::preparation::Progress,
+        buffered: &AtomicUsize,
+    ) -> (usize, Value) {
+        use crate::preparation::Progress;
+        use ployz_build::Progress as Build;
+        let held = buffered.load(Ordering::Relaxed);
+        if held < OUTPUT_BUDGET / 2 {
+            self.marked.clear();
+        }
+        let progress = match progress {
+            Progress::Build(Build::StepOutput { step, stderr, text })
+                if held + text.len() > OUTPUT_BUDGET =>
+            {
+                if !self.marked.insert((step.clone(), stderr)) {
+                    return (0, Value::Null);
+                }
+                Progress::Build(Build::StepOutput {
+                    step,
+                    stderr,
+                    text: "… output dropped: the consumer fell behind\n".into(),
+                })
+            }
+            Progress::Build(Build::Output(bytes)) if held + bytes.len() > OUTPUT_BUDGET => {
+                if !self.marked.insert((String::new(), false)) {
+                    return (0, Value::Null);
+                }
+                Progress::Build(Build::Output(
+                    b"\xe2\x80\xa6 output dropped: the consumer fell behind\n".to_vec(),
+                ))
+            }
+            other => other,
+        };
+        let size = match &progress {
+            Progress::Build(Build::StepOutput { text, .. }) => text.len(),
+            Progress::Build(Build::Output(bytes)) => bytes.len(),
+            Progress::Build(
+                Build::Stage(_) | Build::Step(_) | Build::Timing { .. } | Build::Target { .. },
+            )
+            | Progress::Platforms(_)
+            | Progress::Selected(_)
+            | Progress::Transfer
+            | Progress::Delivered { .. } => 0,
+        };
+        buffered.fetch_add(size, Ordering::Relaxed);
+        let value = serde_json::to_value(progress).expect("preparation progress serializes");
+        (size, value)
+    }
+}
+
+/// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub struct RunningPreparation {
     cancel: CancellationToken,
-    events: Mutex<tokio::sync::broadcast::Receiver<Value>>,
+    events: Mutex<tokio::sync::mpsc::UnboundedReceiver<(usize, Value)>>,
+    buffered: Arc<AtomicUsize>,
     join: Mutex<Option<tokio::task::JoinHandle<Result<PreparedDeploy, RpcError>>>>,
 }
 impl RunningPreparation {
@@ -711,14 +767,15 @@ impl RunningPreparation {
     pub fn abort(&self) {
         self.cancel.cancel();
     }
-    /// Read one progress frame; slow consumers receive explicit truncation evidence.
+    /// Read one progress frame; frames are retained until read, within the budget.
     pub async fn next(&self) -> Option<Value> {
-        match self.events.lock().await.recv().await {
-            Ok(value) => Some(value),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                Some(serde_json::json!({"phase":"truncated", "dropped":dropped}))
+        let mut events = self.events.lock().await;
+        loop {
+            let (size, value) = events.recv().await?;
+            self.buffered.fetch_sub(size, Ordering::Relaxed);
+            if !value.is_null() {
+                return Some(value);
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
     }
     /// Await preparation without draining or blocking on progress consumption.
@@ -811,32 +868,58 @@ fn preparation_error(
 mod preparation_tests {
     use super::*;
     #[tokio::test]
-    async fn slow_preparation_consumer_is_bounded_and_cannot_block_completion() {
-        let (events, receiver) = tokio::sync::broadcast::channel(128);
+    async fn slow_preparation_consumer_loses_nothing_and_cannot_block_completion() {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
         let join = tokio::spawn(async move {
             for n in 0..1000 {
-                events.send(serde_json::json!({"n":n})).unwrap();
+                events.send((1, serde_json::json!({"n":n}))).unwrap();
             }
             Err(invalid_argument("fixture failure".into()))
         });
         let running = RunningPreparation {
             cancel: CancellationToken::new(),
             events: Mutex::new(receiver),
+            buffered: Arc::new(AtomicUsize::new(1000)),
             join: Mutex::new(Some(join)),
         };
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), running.finished())
             .await
             .unwrap();
         assert_eq!(result.unwrap_err().message, "fixture failure");
-        assert_eq!(
-            running.next().await.unwrap().get("phase").unwrap(),
-            "truncated"
-        );
         let mut count = 0;
         while running.next().await.is_some() {
             count += 1;
         }
-        assert_eq!(count, 128);
+        assert_eq!(count, 1000);
+        assert_eq!(running.buffered.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn output_beyond_the_budget_becomes_one_marker_per_step_until_the_consumer_catches_up() {
+        use crate::preparation::Progress;
+        use ployz_build::Progress as Build;
+        let buffered = AtomicUsize::new(OUTPUT_BUDGET);
+        let mut budget = OutputBudget::default();
+        let output = |text: &str| {
+            Progress::Build(Build::StepOutput {
+                step: "sha256:a".into(),
+                stderr: false,
+                text: text.into(),
+            })
+        };
+        let (size, marker) = budget.frame(output("cargo output\n"), &buffered);
+        assert!(marker.to_string().contains("output dropped"), "{marker}");
+        assert!(size > 0);
+        assert_eq!(budget.frame(output("more\n"), &buffered), (0, Value::Null));
+        // Structured state always passes.
+        let (_, step) = budget.frame(
+            Progress::Build(Build::Step(ployz_build::BuildStep::default())),
+            &buffered,
+        );
+        assert!(step.get("Build").is_some());
+        buffered.store(0, Ordering::Relaxed);
+        let (size, value) = budget.frame(output("after\n"), &buffered);
+        assert_eq!(size, "after\n".len());
+        assert!(value.to_string().contains("after"), "{value}");
     }
     #[test]
     fn selection_failure_is_known_and_does_not_expose_provider_details() {

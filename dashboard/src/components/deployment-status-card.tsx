@@ -101,7 +101,6 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
       <Step title="Build" state={build.state} detail={build.detail}>
         {pins.map(([id, pin]) => <p key={id} className="mt-1 break-all font-mono text-xs">Commit: {pin.commitSha}</p>)}
         {hasBuild && (preparation?.machineName || preparation?.machineId) ? <p className="mt-1 text-xs text-muted-foreground">Build Server: {preparation.machineName ?? preparation.machineId}</p> : null}
-        {hasBuild && preparation?.outputTruncated ? <p className="mt-1 text-xs text-muted-foreground">Build output truncated. Open logs for retained output.</p> : null}
       </Step>
       <Step title="Deploy" state={deployState} detail={unchanged ? "No operations planned for this service" : rows.length ? summarizeRows(rows) : progress?.outcome === "success" ? "No runtime changes needed" : deployment.status === "applied" ? "Applied · operation evidence unavailable" : preparationUnknown ? "Not started" : unknown ? "Runtime outcome unavailable" : deployment.status === "deploying" && build.ready ? "Waiting for runtime progress" : "Waiting to start"}>
         {runningLabels.length ? <p className="mt-1 text-xs text-muted-foreground">{runningLabels.join(" · ")}</p> : null}

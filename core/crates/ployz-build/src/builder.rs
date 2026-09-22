@@ -154,9 +154,33 @@ impl<'a> Builder<'a> {
         started: impl FnOnce(),
     ) -> Result<(), BuildError> {
         let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-        self.docker
-            .run_started("the build", &borrowed, Streams::Inherited, started)
-            .map(|_| ())
+        let Some(progress) = self.docker.progress else {
+            return self
+                .docker
+                .run_started("the build", &borrowed, Streams::Inherited, started)
+                .map(|_| ());
+        };
+        // Bake runs with rawjson progress; parse it here so unattributed output
+        // from other Docker commands stays plain.
+        let parser = std::sync::Mutex::new(crate::solve::SolveParser::default());
+        let structured = |event| {
+            if let crate::Progress::Output(bytes) = event {
+                parser
+                    .lock()
+                    .expect("solve parser lock")
+                    .feed(&bytes, progress);
+            } else {
+                progress(event);
+            }
+        };
+        let result = self.docker.with_progress(&structured).run_started(
+            "the build",
+            &borrowed,
+            Streams::Inherited,
+            started,
+        );
+        parser.lock().expect("solve parser lock").finish(progress);
+        result.map(|_| ())
     }
 
     /// Confirm teardown before releasing retained state; failure preserves its

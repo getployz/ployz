@@ -186,6 +186,10 @@ pub(super) fn report_selection(selected: &crate::preparation::SelectedBuilder) {
     eprintln!("Build Machine: {}", selected.machine.id);
 }
 
+// ponytail: one process renders one build; a static keeps the plain-fn callback shape.
+static RENDERER: std::sync::LazyLock<ployz_build::PlainRenderer> =
+    std::sync::LazyLock::new(ployz_build::PlainRenderer::default);
+
 pub(super) fn progress(event: ployz_build::Progress) {
     use std::io::Write as _;
     match event {
@@ -199,8 +203,12 @@ pub(super) fn progress(event: ployz_build::Progress) {
             queue_wait.as_secs_f64(),
             execution.as_secs_f64()
         ),
-        ployz_build::Progress::Output(bytes) => {
-            let _ = std::io::stderr().write_all(&bytes);
+        event @ (ployz_build::Progress::Output(_)
+        | ployz_build::Progress::Step(_)
+        | ployz_build::Progress::StepOutput { .. }) => {
+            if let Some(text) = RENDERER.render(&event) {
+                let _ = std::io::stderr().write_all(text.as_bytes());
+            }
         }
     }
 }

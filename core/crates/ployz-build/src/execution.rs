@@ -20,7 +20,16 @@ pub enum Stage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Progress {
     Stage(Stage),
+    /// Output the execution host could not attribute to a step.
     Output(Vec<u8>),
+    /// A BuildKit step, repeated whenever its state changes.
+    Step(BuildStep),
+    /// Output BuildKit attributed to one step.
+    StepOutput {
+        step: String,
+        stderr: bool,
+        text: String,
+    },
     /// Client-observed waiting and admitted execution, measured separately.
     Timing {
         queue_wait: Duration,
@@ -31,6 +40,19 @@ pub enum Progress {
         name: String,
         outcome: TargetEvidence,
     },
+}
+
+/// One BuildKit vertex: a Dockerfile instruction, image resolution, or
+/// context transfer. `id` is stable across repeated reports of the same step.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BuildStep {
+    pub id: String,
+    pub name: String,
+    /// RFC 3339 timestamps as BuildKit reports them.
+    pub started: Option<String>,
+    pub completed: Option<String>,
+    pub cached: bool,
+    pub error: Option<String>,
 }
 
 /// What this attempt proved about one target.

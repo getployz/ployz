@@ -12,7 +12,7 @@ import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
 import { executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
 import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
-import { loadDeploymentEvents, persistDeploymentProgress } from "./deployment-events.server";
+import { loadDeploymentBuildLog, loadDeploymentEvents, persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Redacted } from "effect";
@@ -447,6 +447,29 @@ describe("deployment runtime persistence", () => {
     if (!first) throw new Error("Missing retained progress");
     expect((await harness.runEffect(loadDeploymentEvents({ organizationId, deploymentId: admitted.id, after: first.id }))).events).toEqual([]);
     await expect(harness.runEffect(loadDeploymentEvents({ organizationId: userId, deploymentId: admitted.id, after: 0 }))).rejects.toThrow();
+  });
+
+  it("upserts build steps by key, attributes output to steps, and scopes reads to the organization", async () => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    const started = new Date("2026-09-22T21:09:06Z");
+    const running = { key: "sha256:a", name: "[sdk 5/6] RUN cargo build", startedAt: started, completedAt: null, cached: false, error: null };
+    // Output may arrive for a step that has not been reported yet.
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ step: "sha256:a", stderr: true, text: "Compiling\n" }] }));
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [running], output: [] }));
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [{ ...running, completedAt: new Date("2026-09-22T21:11:28Z") }], output: [{ step: "sha256:a", stderr: false, text: "Finished\n" }] }));
+    const page = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 1 }));
+    expect(page.steps.map(({ key, name, startedAt, completedAt }) => ({ key, name, startedAt, completedAt }))).toEqual([
+      { key: "sha256:a", name: "[sdk 5/6] RUN cargo build", startedAt: started, completedAt: new Date("2026-09-22T21:11:28Z") },
+    ]);
+    expect(page.output.map((row) => [row.stepId, row.stderr, row.text])).toEqual([[page.steps[0]?.id, true, "Compiling\n"]]);
+    expect(page.nextSequence).toBe(String(page.output[0]?.id));
+    const rest = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: Number(page.nextSequence), limit: 100 }));
+    expect(rest.output.map((row) => row.text)).toEqual(["Finished\n"]);
+    expect(rest.nextSequence).toBeNull();
+    await expect(harness.runEffect(loadDeploymentBuildLog({ organizationId: userId, deploymentId: admitted.id, after: 0, limit: 100 }))).rejects.toThrow();
   });
 
   it("retains a normally admitted outcome and applies the deployment", async () => {

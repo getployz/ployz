@@ -34,12 +34,11 @@ it("does not claim an unknown runtime outcome was never attempted", () => {
 
 it("shows captured commit, selected Server, transfer phase and truncation", () => {
   const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: { web: { commitSha: "a".repeat(40) } }, buildServiceIds: ["web"], status: "deploying", createdAt: new Date(), serviceCount: 1 });
-  const progress = { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "transfer" as const, serviceId: "web", machineId: "machine", machineName: "builder", message: null, output: "", outputTruncated: true } };
+  const progress = { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "transfer" as const, serviceId: "web", machineId: "machine", machineName: "builder", message: null } };
   const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
   expect(html).toContain("Transferring images");
   expect(html).toContain("a".repeat(40));
   expect(html).toContain("Build Server: builder");
-  expect(html).toContain("Build output truncated");
   expect(html).not.toContain("Using prebuilt images");
 });
 it("keeps image-only deployments on the prebuilt path", () => {
@@ -84,7 +83,7 @@ it.each(["ready", "preview", "success"] as const)("keeps %s preparation complete
       deployPreview: evidence === "preview" ? asTestDouble<NonNullable<EnvironmentDeploymentSummary["deployPreview"]>>()({ warnings: [] }) : null,
     });
     const progress = { completed: 0, total: 0, outcome: evidence === "success" ? "success" as const : null, rows: [], compensation: [],
-      preparation: { phase: evidence === "ready" ? "ready" as const : "build" as const, serviceId: "web", machineId: "machine", machineName: "builder", message: null, output: "", outputTruncated: false },
+      preparation: { phase: evidence === "ready" ? "ready" as const : "build" as const, serviceId: "web", machineId: "machine", machineName: "builder", message: null },
     };
     const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
     expect(html).toContain("Images prepared");

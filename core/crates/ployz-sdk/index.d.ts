@@ -89,13 +89,15 @@ export type PreparationInput = {
   build_receipts?: BuildReceipts;
 };
 
+/** One BuildKit step; `id` is stable across repeated reports, timestamps are RFC 3339. */
+export type BuildStep = { id: string; name: string; started: string | null; completed: string | null; cached: boolean; error: string | null };
+
 export type PreparationEvent =
   | { Platforms: string[] }
   | { Selected: { machine: import("./generated/payloads").Machine; rejections: string[] } }
-  | { Build: { Stage: string } | { Output: number[] } | { Timing: unknown } | { Target: unknown } }
+  | { Build: { Stage: string } | { Output: number[] } | { Step: BuildStep } | { StepOutput: { step: string; stderr: boolean; text: string } } | { Timing: unknown } | { Target: unknown } }
   | "Transfer"
-  | { Delivered: { image: string; machine_id: MachineId } }
-  | { phase: "truncated"; dropped: number };
+  | { Delivered: { image: string; machine_id: MachineId } };
 
 export type RunningPreparation = AsyncIterable<PreparationEvent> & {
   abort(): void;

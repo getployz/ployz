@@ -182,6 +182,10 @@ _Avoid_: Organization Cluster architecture, global build platform, builder archi
 The user-facing output for a Cloud Deployment Attempt: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
 _Avoid_: Deploy Progress alone, Build Logs
 
+**Build Step**:
+One unit of a Cloud Deployment Attempt's build as the Engine reports it: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload or image delivery. A Build Step is keyed stably within its attempt, changes state until it completes, and owns the output attributed to it. Build Steps are retained with the attempt, separately from lifecycle history.
+_Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a Build Step)
+
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Cloud Deployment Attempt and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
 Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering. This inference does not change explicit Compose dependency semantics.

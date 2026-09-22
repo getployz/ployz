@@ -292,6 +292,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
     };
 
     let validate = bake_arguments(&request(Output::Validate), &planned, metadata, None);
+    assert!(validate.contains(&"--progress=rawjson".to_owned()));
     assert!(validate.contains(&"--check".to_owned()));
     assert!(!validate.contains(&"--load".to_owned()));
     assert!(!validate.contains(&"--metadata-file".to_owned()));

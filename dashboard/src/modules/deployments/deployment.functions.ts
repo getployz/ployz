@@ -12,6 +12,7 @@ import {
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
+  listDeploymentBuildLog,
   listDeploymentOperationEvidence,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
@@ -98,6 +99,11 @@ export const cancelEnvironmentDeploymentServerFn = createServerFn({ method: "POS
   .middleware(deploymentMiddleware)
   .validator(strictValidator(cancelEnvironmentDeploymentSchema))
   .handler(({ context, data }) => runActor(context, cancelEnvironmentDeployment(context.actor, data)));
+
+export const listDeploymentBuildLogServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(deploymentOperationEvidencePageQuerySchema))
+  .handler(({ context, data }) => runActor(context, listDeploymentBuildLog(context.actor, data)));
 
 export const listDeploymentProgressLogsServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)

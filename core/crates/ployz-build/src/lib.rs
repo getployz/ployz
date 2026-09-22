@@ -27,6 +27,9 @@ pub use execution::{
 };
 mod railpack;
 pub use railpack::Railpack;
+mod solve;
+pub use execution::BuildStep;
+pub use solve::PlainRenderer;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -256,10 +259,11 @@ pub fn execute(
     request: &Request<'_>,
     cancellation: &Cancellation,
 ) -> Result<Vec<BuiltImage>, BuildError> {
+    let renderer = PlainRenderer::default();
     execute_admitted(request, Admission::wait(cancellation)?, &|event| {
-        if let Progress::Output(bytes) = event {
+        if let Some(text) = renderer.render(&event) {
             use std::io::Write as _;
-            let _ = std::io::stderr().write_all(&bytes);
+            let _ = std::io::stderr().write_all(text.as_bytes());
         }
     })
 }
@@ -470,6 +474,8 @@ fn bake_arguments(
         builder_name(),
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
+        // Structured progress: every consumer sees BuildKit's own step tree.
+        "--progress=rawjson".to_owned(),
     ];
     if let Some(overrides) = overrides {
         arguments.extend([
@@ -761,6 +767,21 @@ impl<'a> Docker<'a> {
 
     /// The same Docker with a fresh budget for releasing resources, so
     /// cleanup still runs, bounded, after the attempt's deadline passes.
+    /// The same host with progress routed elsewhere.
+    pub(crate) fn with_progress<'p>(&self, progress: &'p (dyn Fn(Progress) + Sync)) -> Docker<'p>
+    where
+        'a: 'p,
+    {
+        Docker {
+            program: self.program,
+            environment: self.environment,
+            working_dir: self.working_dir,
+            deadline: self.deadline,
+            cancellation: self.cancellation,
+            progress: Some(progress),
+        }
+    }
+
     pub(crate) fn releasing(&self) -> Docker<'a> {
         Docker {
             program: self.program,
