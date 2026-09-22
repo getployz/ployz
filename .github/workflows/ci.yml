@@ -194,11 +194,12 @@ jobs:
 
   cloud:
     needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
     uses: ./.github/workflows/cloud.yml
     permissions:
       contents: read
       actions: write
+      packages: write
     secrets: inherit
 
   release-contracts:

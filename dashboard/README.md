@@ -68,3 +68,30 @@ See [DESIGN.md](DESIGN.md) for product design and [CONTEXT.md](CONTEXT.md) for t
 Dashboard glossary.
 
 Variable Group authoring is disabled by default. Set `VITE_VARIABLE_GROUPS_ENABLED=true` before starting the dev server or building Dashboard to enable it. The flag is shared by UI and server authoring actions; existing attached values still participate in deployment when disabled.
+
+### Cloud image deployment
+
+The existing Cloud workflow reuses the matching SDK artifact (and the shared
+kache/R2 compiler cache on misses), builds both entrypoints, and packages
+`Dockerfile.cloud`. The final image smoke test loads the native SDK inside the
+runtime container. CI uses Ubuntu 24.04; the runtime uses Node 24 on Debian Trixie
+so its glibc supports that native artifact.
+
+On every main push, the build job publishes `ghcr.io/getployz/ployz2-cloud:main`
+and triggers Railway immediately, without waiting for the parallel checks.
+New pushes cancel superseded runs. Publication and deployment also check that the
+commit is still main. A deployment already accepted by Railway is not cancelled
+by cancelling GitHub Actions.
+
+One-time setup:
+- Set the repository secret `RAILWAY_TOKEN` to a Railway project token scoped to
+  Ployz Dashboard's production environment.
+- Make the GHCR package public after its first publication (or configure Railway
+  with registry read credentials).
+- Set web and worker to that Docker image source instead of the GitHub repository.
+  Keep web's migrations/start command, and worker's start override, `/ready`,
+  and 30-minute drain. The service IDs live in `scripts/publish-cloud-image.sh`.
+- Disable scheduled image auto updates: CI runs `railway redeploy --from-source`
+  for both services after the image push.
+
+The root `Dockerfile` remains the source-build path for self-hosting.

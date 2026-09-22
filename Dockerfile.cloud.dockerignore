@@ -1,0 +1,12 @@
+**
+!dashboard/
+!dashboard/.output/
+!dashboard/.output/**
+!dashboard/node_modules/
+!dashboard/node_modules/**
+!dashboard/package.json
+!dashboard/drizzle.config.ts
+!dashboard/drizzle/
+!dashboard/drizzle/**
+**/.env
+**/.env.*

@@ -1,0 +1,14 @@
+# CI builds Rust and both entrypoints once, before packaging this runtime image.
+# Ubuntu 24.04 builds the native SDK (glibc 2.39); Trixie supplies glibc 2.41.
+FROM node:24.18.1-trixie-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+ENV NODE_ENV=production
+WORKDIR /app
+COPY dashboard/.output .output
+COPY dashboard/node_modules node_modules
+RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
+COPY dashboard/package.json dashboard/drizzle.config.ts ./
+COPY dashboard/drizzle/ drizzle/
+CMD ["node", "--experimental-loader=@opentelemetry/instrumentation/hook.mjs", "--import", "@opentelemetry/auto-instrumentations-node/register", ".output/server/index.mjs"]

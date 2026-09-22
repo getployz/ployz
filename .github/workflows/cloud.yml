@@ -3,6 +3,8 @@ name: Cloud
 on:
   workflow_call:
     secrets:
+      RAILWAY_TOKEN:
+        required: false
       KACHE_S3_ACCESS_KEY_ID:
         required: false
       KACHE_S3_SECRET_ACCESS_KEY:
@@ -43,11 +45,13 @@ env:
 
 jobs:
   static:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-cloud
+      - name: Verify image publication ordering
+        run: python3 scripts/test-publish-cloud-image.py
       - name: Typecheck
         run: pnpm pr:check typecheck
       - name: Lint
@@ -56,7 +60,7 @@ jobs:
 
   sdk:
     name: Prepare matching SDK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -102,9 +106,12 @@ jobs:
           if-no-files-found: error
 
   build:
+    permissions:
+      contents: read
+      packages: write
     needs: sdk
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-cloud
@@ -114,10 +121,29 @@ jobs:
           path: core/crates/ployz-sdk
       - name: Build and verify frontend package
         run: pnpm pr:check build
+      - name: Package and smoke-test runtime image
+        run: |
+          pnpm prune --prod
+          docker build -f ../Dockerfile.cloud -t ployz-cloud:ci ..
+          docker run --rm --entrypoint node ployz-cloud:ci -e '
+            const assert = require("node:assert/strict");
+            const fs = require("node:fs");
+            const { parseServiceSetting } = require("@ployz/sdk/config");
+            assert.equal(parseServiceSetting("source", { version: 1, type: "empty", rootDir: "/" }).type, "empty");
+            for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs"]) assert.ok(fs.existsSync(file), file);
+            require.resolve("inngest/connect");
+          '
+      - name: Publish latest main and trigger Railway
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: bash scripts/publish-cloud-image.sh
+
 
   test:
     needs: sdk
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6

@@ -736,7 +736,11 @@ impl OutputBudget {
                     b"\xe2\x80\xa6 output dropped: the consumer fell behind\n".to_vec(),
                 ))
             }
-            other => other,
+            other @ (Progress::Platforms(_)
+            | Progress::Selected(_)
+            | Progress::Build(_)
+            | Progress::Transfer
+            | Progress::Delivered { .. }) => other,
         };
         let size = match &progress {
             Progress::Build(Build::StepOutput { text, .. }) => text.len(),
