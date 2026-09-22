@@ -23,7 +23,7 @@ it("keeps the SSR canvas visible while hydrated live queries take over", async (
   }
   server.setQueryData(["collections", "session", "user", "acme", "environment_saved_state_snapshot", "production"], [{ id: "saved", environmentId: "env", organizationId: "org" }]);
   await preloadCollection(getEnvironmentSavedStateRevisionsCollection("acme", scope));
-  server.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, []);
+  server.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, { version: "", states: [] });
   await Promise.all([
     server.ensureQueryData(environmentCanvasOptions(params, scope)),
     preloadOrganizationEnvironmentChangeStateProjections(scope, "acme"),

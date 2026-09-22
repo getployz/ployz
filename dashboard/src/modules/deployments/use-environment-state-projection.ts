@@ -1,7 +1,7 @@
 import { preloadCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   queryOptions,
   useSuspenseQuery,
@@ -32,17 +32,22 @@ function readProjectionVersion({ deployments, savedStateRevisions }: ProjectionM
   return projectionVersion([...deployments.values()], [...savedStateRevisions.values()]);
 }
 
-export function environmentChangeStateOptions(organizationSlug: string, scope: CollectionScope) {
-  const version = readProjectionVersion(projectionMetadata(organizationSlug, scope));
+type ReadChangeStates = (input: Parameters<typeof listLatestOrganizationEnvironmentChangeStatesServerFn>[0]) => ReturnType<typeof listLatestOrganizationEnvironmentChangeStatesServerFn>;
+
+export function environmentChangeStateOptions(organizationSlug: string, scope: CollectionScope,
+  read: ReadChangeStates = listLatestOrganizationEnvironmentChangeStatesServerFn,
+) {
   return queryOptions({
     queryKey: [
       ...serviceDeploymentKeys.environmentChangeStatesOrg(organizationSlug),
-      scope.sessionId, scope.userId, scope.environmentSlug ?? null, version,
+      scope.sessionId, scope.userId, scope.environmentSlug ?? null,
     ],
     staleTime: Infinity,
-    queryFn: () => listLatestOrganizationEnvironmentChangeStatesServerFn({
-      data: { organizationSlug, environmentSlug: scope.environmentSlug },
-    }),
+    queryFn: async ({ signal }) => {
+      const version = readProjectionVersion(projectionMetadata(organizationSlug, scope));
+      const states = await read({ data: { organizationSlug, environmentSlug: scope.environmentSlug }, signal });
+      return { version, states };
+    },
   });
 }
 
@@ -52,9 +57,9 @@ export async function preloadOrganizationEnvironmentChangeStateProjections(scope
   return scope.queryClient.ensureQueryData(environmentChangeStateOptions(organizationSlug, scope));
 }
 
-function projectionVersion(deployments: Array<{ id: string; status: string; updatedAt: Date }>, revisions: Array<{ id: string }>) {
+function projectionVersion(deployments: Array<{ id: string; status: string; savedStateSnapshotId: string }>, revisions: Array<{ id: string }>) {
   return [
-    ...deployments.map((row) => `deployment:${row.id}:${row.status}:${row.updatedAt.getTime()}`),
+    ...deployments.map((row) => `deployment:${row.id}:${row.status}:${row.savedStateSnapshotId}`),
     ...revisions.map((row) => `saved:${row.id}`),
   ].sort().join("|");
 }
@@ -64,20 +69,38 @@ function projectionVersion(deployments: Array<{ id: string; status: string; upda
  *
  * Saved and Applied State are projected on the server. Saved revision inserts
  * and deployment lifecycle changes arrive through metadata-only API
- * collections, so each metadata version has one shared projection query.
+ * collections. Progress timestamps do not affect comparison state, and refreshes
+ * retain the existing result so an open editor never suspends on background work.
  */
 export function useEnvironmentChangeStateProjection({
   organizationSlug,
   environmentId,
 }: EnvironmentChangeStateProjectionInput): EnvironmentChangeStateProjection | null {
   const scope = useCollectionScope();
-  useEnvironmentProjectionVersion(projectionMetadata(organizationSlug, scope));
-  const { data: organizationState } = useSuspenseQuery(environmentChangeStateOptions(organizationSlug, scope));
+  const organizationState = useEnvironmentChangeStates(organizationSlug, scope);
   return environmentId
     ? (organizationState.find(
         (state) => state.environmentId === environmentId,
       ) ?? null)
     : null;
+}
+
+/** Share one scoped comparison read, retaining its data during metadata refreshes. */
+export function useEnvironmentChangeStates(organizationSlug: string, scope: CollectionScope,
+  read: ReadChangeStates = listLatestOrganizationEnvironmentChangeStatesServerFn,
+) {
+  const version = useEnvironmentProjectionVersion(projectionMetadata(organizationSlug, scope));
+  const options = environmentChangeStateOptions(organizationSlug, scope, read);
+  const { data, dataUpdatedAt } = useSuspenseQuery(options);
+  const { queryClient, sessionId, userId, environmentSlug } = scope;
+  useEffect(() => {
+    // A manual refresh can finish with the cached version after newer metadata arrived.
+    if (data.version !== version) {
+      const { queryKey } = environmentChangeStateOptions(organizationSlug, { queryClient, sessionId, userId, environmentSlug });
+      void queryClient.invalidateQueries({ queryKey, exact: true }, { cancelRefetch: false });
+    }
+  }, [data.version, dataUpdatedAt, version, organizationSlug, queryClient, sessionId, userId, environmentSlug]);
+  return data.states;
 }
 
 /** Read the same hydrated collection snapshot as the loader; subscribe only for subsequent changes. */

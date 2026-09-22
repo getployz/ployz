@@ -21,7 +21,7 @@ function setup(server: boolean) {
   for (const table of ["environment_deployment", "environment_saved_state_snapshot", "environment_node_introduction"]) {
     queryClient.setQueryData(["collections", "session", "user", "acme", table, "production"], []);
   }
-  queryClient.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, []);
+  queryClient.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, { version: "", states: [] });
   // Seed an in-flight read through the real Query cache; the loader must share it.
   const request = queryClient.fetchQuery({ ...environmentResourcesOptions(params, scope), queryFn: () => promise });
   const context = { queryClient, session: { session: { id: "session" }, user: { id: "user" } } };

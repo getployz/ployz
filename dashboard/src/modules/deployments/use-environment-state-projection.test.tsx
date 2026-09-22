@@ -1,60 +1,17 @@
 // @vitest-environment jsdom
-import { Suspense, type ReactNode } from "react";
-import { act, renderHook } from "@testing-library/react";
+import { Suspense } from "react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import { focusManager, QueryClient, QueryClientProvider, useQuery, useSuspenseQuery, dehydrate, hydrate } from "@tanstack/react-query";
-import { environmentChangeStateOptions, preloadOrganizationEnvironmentChangeStateProjections, useEnvironmentProjectionVersion } from "./use-environment-state-projection";
+import { QueryClient, QueryClientProvider, dehydrate, hydrate } from "@tanstack/react-query";
+import { environmentChangeStateOptions, preloadOrganizationEnvironmentChangeStateProjections, useEnvironmentProjectionVersion, useEnvironmentChangeStates } from "./use-environment-state-projection";
 
 import { renderToString } from "react-dom/server";
 import { hydrateRoot } from "react-dom/client";
 import { getDbClient } from "#/collections/scope";
 import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
-import { createApiCollection, preloadCollection } from "#/collections/query-collection";
-import { serviceDeploymentKeys } from "./deployment-queries";
-import type { environmentDeployment } from "./tables";
-
-it("refreshes the Environment projection when API deployment or revision metadata changes without local writes", async () => {
-  vi.useFakeTimers();
-  focusManager.setFocused(true);
-  const client = new QueryClient();
-  let deployment: typeof environmentDeployment.$inferSelect = {
-    id: "deploy", organizationId: "org", environmentId: "env", status: "deploying", updatedAt: new Date(0),
-    triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: "saved-1", serviceActionPolicy: null,
-    inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, variableProducers: null,
-    sourcePins: {}, deployManifest: null, deployPreview: null, runtimeProgress: null, failureCode: null, failureMessage: null, message: null,
-    cancellationRequestedAt: null, dispatchRequestedAt: null, startedAt: null, finishedAt: null, createdAt: new Date(0),
-  };
-  let revisions = [{ id: "saved-1", environmentId: "env", organizationId: "org" }];
-  let marker = "initial";
-  const deployments = createApiCollection({ queryClient: client, queryKey: ["projection", "deployments"],
-    queryFn: async () => [deployment], getKey: (row: typeof deployment) => row.id });
-  const savedStateRevisions = createApiCollection({ queryClient: client, queryKey: ["projection", "revisions"],
-    queryFn: async () => revisions, getKey: (row: (typeof revisions)[number]) => row.id });
-  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  const hook = renderHook(() => {
-    const version = useEnvironmentProjectionVersion({ deployments, savedStateRevisions });
-    return useQuery({ queryKey: [...serviceDeploymentKeys.environmentChangeStatesOrg("org"), version], queryFn: async () => ({ marker }) }).data;
-  }, { wrapper });
-  try {
-    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
-    expect(hook.result.current).toMatchObject({ marker: "initial" });
-    deployment = { ...deployment, status: "applied", updatedAt: new Date(1) };
-    marker = "applied";
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
-    expect(hook.result.current).toMatchObject({ marker: "applied" });
-    revisions = [...revisions, { id: "saved-2", environmentId: "env", organizationId: "org" }];
-    marker = "new-revision";
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
-    expect(hook.result.current).toMatchObject({ marker: "new-revision" });
-  } finally {
-    hook.unmount();
-    client.clear();
-    vi.useRealTimers();
-    focusManager.setFocused(undefined);
-  }
-});
+import { preloadCollection } from "#/collections/query-collection";
+import type { EnvironmentChangeStateProjection } from "./deployment-contract";
+import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
 
 it("hydrates the server projection without an empty-version query or a loading fallback", async () => {
   const serverClient = new QueryClient();
@@ -71,7 +28,7 @@ it("hydrates the server projection without an empty-version query or a loading f
   ]);
   await Promise.all(Object.values(serverMetadata).map(preloadCollection));
   const serverOptions = environmentChangeStateOptions("org", serverScope);
-  serverClient.setQueryData(serverOptions.queryKey, []);
+  serverClient.setQueryData(serverOptions.queryKey, { version: "saved:saved-1", states: [] });
   await preloadOrganizationEnvironmentChangeStateProjections(serverScope, "org");
 
   const fallback = vi.fn(() => <span>Loading projection</span>);
@@ -80,7 +37,7 @@ it("hydrates the server projection without an empty-version query or a loading f
       deployments: getEnvironmentDeploymentsCollection("org", scope),
       savedStateRevisions: getEnvironmentSavedStateRevisionsCollection("org", scope),
     });
-    useSuspenseQuery(environmentChangeStateOptions("org", scope));
+    useEnvironmentChangeStates("org", scope);
     return <span>{version}</span>;
   }
   function App({ scope }: { scope: typeof serverScope }) {
@@ -111,4 +68,158 @@ it("hydrates the server projection without an empty-version query or a loading f
     serverClient.clear();
     browserClient.clear();
   }
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((yes) => { resolve = yes; });
+  return { promise, resolve };
+}
+
+function comparison(token: string): EnvironmentChangeStateProjection[] {
+  return [{ environmentId: "env", saved: null, applied: { token, nodes: [] }, deploymentEvidence: null }];
+}
+
+async function editorFixture() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const scope = { queryClient, sessionId: "session", userId: "user", environmentSlug: "production" };
+  const deploymentKey = ["collections", "session", "user", "org", "environment_deployment", "production"];
+  const savedKey = ["collections", "session", "user", "org", "environment_saved_state_snapshot", "production"];
+  const deployment = { id: "deploy", status: "deploying", savedStateSnapshotId: "saved", updatedAt: new Date(0) };
+  queryClient.setQueryData(deploymentKey, [deployment]);
+  queryClient.setQueryData(savedKey, []);
+  const metadata = {
+    deployments: getEnvironmentDeploymentsCollection("org", scope),
+    savedStateRevisions: getEnvironmentSavedStateRevisionsCollection("org", scope),
+  };
+  await Promise.all(Object.values(metadata).map(preloadCollection));
+  const read = vi.fn(async () => comparison("initial"));
+  const options = environmentChangeStateOptions("org", scope, read);
+  await queryClient.fetchQuery(options);
+  function Editor() {
+    const states = useEnvironmentChangeStates("org", scope, read);
+    return <div role="dialog" aria-label="Edit service">
+      <span>{states[0]?.applied.token}</span>
+      <ServiceSettingInput ariaLabel="Start command" value="npm start" isChanged={false}
+        onCommit={() => ({ isPersisted: { promise: Promise.resolve() } })} />
+    </div>;
+  }
+  const view = render(<QueryClientProvider client={queryClient}>
+    <Suspense fallback={<p role="status">Loading resource</p>}><Editor /></Suspense>
+  </QueryClientProvider>);
+  return { queryClient, scope, read, deploymentKey, savedKey, deployment, options, view,
+    async dispose() { view.unmount(); await getDbClient(queryClient).cleanup(); queryClient.clear(); } };
+}
+
+it("keeps a focused editor stable through progress and refreshes lifecycle and saved changes in the background", async () => {
+  const test = await editorFixture();
+  try {
+    const input = screen.getByRole("textbox", { name: "Start command" });
+    input.focus();
+    fireEvent.change(input, { target: { value: "npm run custom" } });
+    for (let n = 1; n <= 3; n++) {
+      await act(async () => { test.queryClient.setQueryData(test.deploymentKey, [{ ...test.deployment, updatedAt: new Date(n) }]); });
+    }
+    expect(test.read).toHaveBeenCalledTimes(1);
+    expect(environmentChangeStateOptions("org", test.scope).queryKey).toEqual(test.options.queryKey);
+    const applied = deferred<EnvironmentChangeStateProjection[]>();
+    const saved = deferred<EnvironmentChangeStateProjection[]>();
+    test.read.mockImplementationOnce(() => applied.promise).mockImplementationOnce(() => saved.promise);
+    await act(async () => { test.queryClient.setQueryData(test.deploymentKey, [{ ...test.deployment, status: "applied" }]); });
+    await waitFor(() => expect(test.read).toHaveBeenCalledTimes(2));
+    // A second metadata change during a request must be fetched after that request settles.
+    await act(async () => { test.queryClient.setQueryData(test.savedKey, [{ id: "saved-next" }]); });
+    expect(test.read).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("initial")).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+    expect(input).toHaveProperty("value", "npm run custom");
+    await act(async () => { applied.resolve(comparison("applied")); });
+    await waitFor(() => expect(test.read).toHaveBeenCalledTimes(3));
+    await act(async () => { saved.resolve(comparison("saved-next")); });
+    await screen.findByText("saved-next");
+    expect(screen.getByRole("textbox", { name: "Start command" })).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input).toHaveProperty("value", "npm run custom");
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally { await test.dispose(); }
+});
+
+it("refreshes cached comparisons after metadata changes while the editor is closed", async () => {
+  const test = await editorFixture();
+  try {
+    test.view.unmount();
+    await act(async () => { test.queryClient.setQueryData(test.savedKey, [{ id: "saved-while-closed" }]); });
+    const refreshed = deferred<EnvironmentChangeStateProjection[]>();
+    test.read.mockImplementationOnce(() => refreshed.promise);
+    function Reopened() {
+      const states = useEnvironmentChangeStates("org", test.scope, test.read);
+      return <span>{states[0]?.applied.token}</span>;
+    }
+    test.view = render(<QueryClientProvider client={test.queryClient}>
+      <Suspense fallback={<p role="status">Loading</p>}><Reopened /></Suspense>
+    </QueryClientProvider>);
+    await waitFor(() => expect(test.read).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("initial")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    await act(async () => { refreshed.resolve(comparison("current")); });
+    await screen.findByText("current");
+  } finally { test.view.unmount(); await test.dispose(); }
+});
+
+it("retains the draft and comparison after a background failure without retrying on keystrokes", async () => {
+  const test = await editorFixture();
+  try {
+    const input = screen.getByRole("textbox", { name: "Start command" });
+    input.focus();
+    test.read.mockRejectedValueOnce(new Error("temporarily unavailable"));
+    await act(async () => { test.queryClient.setQueryData(test.deploymentKey, [{ ...test.deployment, status: "failed" }]); });
+    await waitFor(() => expect(test.queryClient.getQueryState(test.options.queryKey)?.status).toBe("error"));
+    fireEvent.change(input, { target: { value: "keep typing" } });
+    expect(input).toHaveProperty("value", "keep typing");
+    expect(document.activeElement).toBe(input);
+    expect(screen.getByText("initial")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(test.read).toHaveBeenCalledTimes(2);
+  } finally { await test.dispose(); }
+});
+
+it("loads a different environment independently instead of showing the previous comparison", async () => {
+  const test = await editorFixture();
+  const other = { ...test.scope, environmentSlug: "staging" };
+  const load = deferred<EnvironmentChangeStateProjection[]>();
+  try {
+    for (const table of ["environment_deployment", "environment_saved_state_snapshot"]) {
+      test.queryClient.setQueryData(["collections", "session", "user", "org", table, "staging"], []);
+    }
+    test.read.mockImplementationOnce(() => load.promise);
+    function OtherEnvironment() {
+      const states = useEnvironmentChangeStates("org", other, test.read);
+      return <span>{states[0]?.applied.token}</span>;
+    }
+    test.view.rerender(<QueryClientProvider client={test.queryClient}>
+      <Suspense fallback={<p role="status">Loading staging</p>}><OtherEnvironment /></Suspense>
+    </QueryClientProvider>);
+    expect(screen.getByRole("status").textContent).toBe("Loading staging");
+    expect(screen.queryByRole("dialog", { name: "Edit service" })).toBeNull();
+    await act(async () => { load.resolve(comparison("staging")); });
+    await screen.findByText("staging");
+    expect(environmentChangeStateOptions("org", { ...other, sessionId: "other-session" }).queryKey)
+      .not.toEqual(environmentChangeStateOptions("org", other).queryKey);
+  } finally { load.resolve([]); await test.dispose(); }
+});
+
+it("catches metadata changes during a manual refresh even when its response matches the cache", async () => {
+  const test = await editorFixture();
+  try {
+    const manual = deferred<EnvironmentChangeStateProjection[]>();
+    test.read.mockImplementationOnce(() => manual.promise).mockResolvedValueOnce(comparison("latest"));
+    await act(async () => { void test.queryClient.invalidateQueries({ queryKey: test.options.queryKey }); });
+    await waitFor(() => expect(test.read).toHaveBeenCalledTimes(2));
+    await act(async () => { test.queryClient.setQueryData(test.savedKey, [{ id: "saved-during-refresh" }]); });
+    await act(async () => { manual.resolve(comparison("initial")); });
+    await screen.findByText("latest");
+    expect(test.read).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally { await test.dispose(); }
 });
