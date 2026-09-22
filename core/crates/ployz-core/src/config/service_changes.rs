@@ -120,9 +120,30 @@ pub fn restore_service_setting(
 ) -> Result<ServiceConfig, ConfigError> {
     if let Some(id) = path.strip_prefix("routes.") {
         let mut current = current;
-        current.settings.routes.retain(|route| route.id != id);
-        if let Some(route) = baseline.settings.routes.iter().find(|route| route.id == id) {
-            current.settings.routes.push(route.clone());
+        let routes = &mut current.settings.routes;
+        let baseline = &baseline.settings.routes;
+        if let Some((index, restored)) = baseline
+            .iter()
+            .enumerate()
+            .find(|(_, route)| route.id == id)
+        {
+            if let Some(route) = routes.iter_mut().find(|route| route.id == id) {
+                *route = restored.clone();
+            } else {
+                // Restore before later baseline routes and newly linked domains.
+                let position = routes
+                    .iter()
+                    .position(|route| {
+                        baseline
+                            .iter()
+                            .position(|prior| prior.id == route.id)
+                            .is_none_or(|prior| prior > index)
+                    })
+                    .unwrap_or(routes.len());
+                routes.insert(position, restored.clone());
+            }
+        } else {
+            routes.retain(|route| route.id != id);
         }
         return parse_service_config(json!(current));
     }

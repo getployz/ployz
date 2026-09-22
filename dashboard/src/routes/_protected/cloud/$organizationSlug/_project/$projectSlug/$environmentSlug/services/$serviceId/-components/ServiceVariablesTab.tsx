@@ -1,3 +1,4 @@
+import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -58,7 +59,8 @@ export function ServiceVariablesTab({
   state: ServiceDrawerState;
 }) {
   const collectionScope = useCollectionScope();
-  const ployzManagedVariables = getManagedServiceExports(state.service);
+  const { hostedDnsHostname } = useRuntimeStatus();
+  const ployzManagedVariables = getManagedServiceExports(state.service, hostedDnsHostname);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
   );

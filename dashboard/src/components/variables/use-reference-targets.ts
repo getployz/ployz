@@ -1,3 +1,4 @@
+import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { useServicesCollection } from "#/modules/services/services.collection";
 import { useLiveQuery, eq } from "@tanstack/react-db";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -14,6 +15,7 @@ export function useReferenceTargets(input: {
   environmentId: string;
   owner: ReferenceOwner;
 }): ReferenceTarget[] {
+  const { hostedDnsHostname } = useRuntimeStatus();
   const document = useEnvironmentDocument(input.organizationSlug, input.environmentId);
   const services = useServicesCollection(input.organizationSlug);
   const { data: identities } = useLiveQuery({ queryKey: ['reference-services', services.id, input.environmentId], query: q => q.from({ service: services }).where(({ service }) => eq(service.environmentId, input.environmentId)) });
@@ -26,7 +28,7 @@ export function useReferenceTargets(input: {
     services: document.intent.services.map((service) => ({ slug: service.slug, name: names.get(service.id) ?? service.slug,
       isSelf: input.owner.kind === "service" && service.id === input.owner.serviceId,
       variables: variables(service.variables),
-      managedExports: getManagedServiceExports({ ...service.config, name: names.get(service.id) ?? service.slug, id: service.id, lineageId: service.lineageId, slug: service.slug, environmentId: document.id, environmentSlug: document.namespace }).map((exported) => ({ key: exported.key, description: exported.description })),
+      managedExports: getManagedServiceExports({ ...service.config, name: names.get(service.id) ?? service.slug, id: service.id, lineageId: service.lineageId, slug: service.slug, environmentId: document.id, environmentSlug: document.namespace }, hostedDnsHostname).map((exported) => ({ key: exported.key, description: exported.description })),
     })),
     variableGroups: (variableGroupsEnabled ? document.intent.variableGroups : []).map((group) => ({ slug: group.slug, name: group.name,
       isSelf: input.owner.kind === "variable_group" && group.variableGroupId === input.owner.variableGroupId,

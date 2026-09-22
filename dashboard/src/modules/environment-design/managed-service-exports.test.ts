@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getManagedServiceExports } from "#/modules/environment-design/managed-service-exports";
+import { getManagedServiceExports, servicePublicDomain } from "#/modules/environment-design/managed-service-exports";
 
 const service = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -9,6 +9,8 @@ const service = {
   slug: "api-service",
   privateDns: "api",
   environmentSlug: "production",
+  routes: [],
+  managedHostnames: [],
 };
 
 describe("managed service exports", () => {
@@ -45,4 +47,17 @@ describe("managed service exports", () => {
       "PLOYZ_SERVICE_ID",
     ]);
   });
+});
+
+it("selects the last linked custom domain, then generated domain, regardless of DNS", () => {
+  const first = { id: "first", hostname: "first.example.test", targetPort: null };
+  const last = { id: "last", hostname: "unresolved.example.test", targetPort: null };
+  const config = { routes: [first, last], managedHostnames: [{ prefix: "old", targetPort: null }, { prefix: "api", targetPort: null }] };
+  expect(servicePublicDomain(config, "cluster.example.test")).toBe(last.hostname);
+  expect(servicePublicDomain({ ...config, routes: [{ ...first, targetPort: 8080 }, last] }, null)).toBe(last.hostname);
+  expect(servicePublicDomain({ ...config, routes: [first] }, null)).toBe(first.hostname);
+  expect(servicePublicDomain({ ...config, routes: [] }, "cluster.example.test")).toBe("api.cluster.example.test");
+  expect(servicePublicDomain({ ...config, routes: [] }, null)).toBeNull();
+  expect(servicePublicDomain(service, "cluster.example.test")).toBeNull();
+  expect(getManagedServiceExports({ ...service, ...config }).find(row => row.key === "PLOYZ_PUBLIC_DOMAIN")?.value).toBe(last.hostname);
 });

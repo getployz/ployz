@@ -69,9 +69,9 @@ export class DeploymentRuntimeInvalid extends Data.TaggedError(
   readonly retriable = false as const;
 }
 
-function compileRuntimeIntent(context: DeploymentContext) {
+function compileRuntimeIntent(context: DeploymentContext, hostedDnsHostname: string | null) {
   return Effect.gen(function* () {
-    const resolvedEnv = yield* loadResolvedDeployEnv(context);
+    const resolvedEnv = yield* loadResolvedDeployEnv(context, hostedDnsHostname);
     return yield* Effect.try({
       try: () =>
         compileSdkPreparationInput({
@@ -240,8 +240,10 @@ export const executeEnvironmentDeployment = Effect.fn(
       completed: 0, total: 0, outcome: null, rows: [], compensation: [],
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
     })).pipe(Effect.raceFirst(cancelled));
-    const input = yield* compileRuntimeIntent(context);
     const sdk = yield* connectedRuntime(context.organization.id);
+    const needsHostedDomain = context.snapshots.some(({ config }) => config.routes.length === 0 && config.managedHostnames.length > 0);
+    const hostedDnsHostname = needsHostedDomain ? (yield* sdk.watchFirstFrame(10_000)).hosted_dns_hostname : null;
+    const input = yield* compileRuntimeIntent(context, hostedDnsHostname);
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
     const native = Object.keys(sources).length === 0

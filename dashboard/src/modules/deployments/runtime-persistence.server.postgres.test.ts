@@ -15,7 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Redacted } from "effect";
 import type { Client, PreparedDeploy, ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
-import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { resolvedServiceSpecFixture, runtimeWatchMachineFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { collectionReadInput } from "#/collections/read.contract";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
@@ -186,7 +186,9 @@ describe("deployment runtime persistence", () => {
     let checkout: string | undefined;
     let confirmed = 0;
     const client = asTestDouble<Client>()({
+      runtime: { watch: async function* () { yield runtimeWatchFrameFixture({ hosted_dns_hostname: "cluster.example.test" }); } },
       prepare: (input: Parameters<Client["prepare"]>[0]) => {
+        expect(input.deployment.snapshots[0]?.resolvedEnv?.["PLOYZ_PUBLIC_DOMAIN"]).toBe("api.cluster.example.test");
         checkout = Object.values(input.sources)[0];
         const finished = Promise.reject({ code: "internal", details: { preparation: { kind, stage: "Building" } } });
         void finished.catch(() => undefined);
@@ -202,7 +204,7 @@ describe("deployment runtime persistence", () => {
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const config = projectServiceDeploymentConfig({ source: createGitServiceSource({ repository: "owner/repo", repositoryId: 42, access: { type: "github-installation", installationId: 17  }}),
-      privateDns: "api", preDeployCommand: null, startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
+      privateDns: "api", managedHostnames: [{ prefix: "api", targetPort: null }], preDeployCommand: null, startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
     await harness.runEffect(executeEnvironmentDeployment({
       deployment: { id: admitted.id, environmentId, status: "planning", inngestRunId: null, sourcePins: { [apiNodeId]: { commitSha: "a".repeat(40) } } },
       environment: { id: environmentId, namespace: "production" }, project: { id: projectId, organizationId }, organization: { id: organizationId, slug: "runtime" },

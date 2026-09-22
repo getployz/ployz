@@ -108,6 +108,9 @@ _Avoid_: Prepared snapshot, build workflow, Core Deploy
 The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity, Node Introduction, and canvas position when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
+**Public Domain Variable**:
+`PLOYZ_PUBLIC_DOMAIN` is the last linked custom domain in a Service's captured route list, otherwise the last generated hostname expanded against the observed Cluster Domain during deployment preparation. DNS and certificate health do not affect selection. Domain lists retain link order; port edits retain position, removal falls back to the preceding domain, and relinking appends. With no public hostname the managed variable is absent. Cloud exposes it for references and injects it into the deployment environment; authored overrides retain the usual variable precedence. Running containers keep the value captured for their deployment.
+
 **Variable Group**:
 A Cloud-owned collection of variables that can be attached to Services. Cloud resolves its values into Service configuration before requesting Engine operations; the Engine has no Variable Group identity or lifecycle.
 

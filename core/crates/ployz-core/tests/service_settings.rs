@@ -220,3 +220,39 @@ fn build_command_is_validated_compared_and_restored() {
             .is_none()
     );
 }
+
+#[test]
+fn restoring_routes_preserves_link_order() {
+    let mut input = config();
+    input["routes"] = json!([
+        {"id":"11111111-1111-4111-8111-111111111111","hostname":"first.example.com","targetPort":3000},
+        {"id":"22222222-2222-4222-8222-222222222222","hostname":"last.example.com","targetPort":3000}
+    ]);
+    let baseline = parse_service_config(input).unwrap();
+    let mut edited = baseline.clone();
+    edited.settings.routes[0].target_port = Some(8080);
+    let restored = restore_service_setting(
+        edited,
+        &baseline,
+        "routes.11111111-1111-4111-8111-111111111111",
+    )
+    .unwrap();
+    assert_eq!(restored.settings.routes, baseline.settings.routes);
+
+    let mut deleted = baseline.clone();
+    deleted.settings.routes.clear();
+    let mut newest = baseline.settings.routes[0].clone();
+    newest.id = "33333333-3333-4333-8333-333333333333".into();
+    newest.hostname = "newest.example.com".into();
+    deleted.settings.routes.push(newest.clone());
+    let restored = restore_service_setting(
+        deleted,
+        &baseline,
+        "routes.22222222-2222-4222-8222-222222222222",
+    )
+    .unwrap();
+    assert_eq!(
+        restored.settings.routes,
+        vec![baseline.settings.routes[1].clone(), newest]
+    );
+}

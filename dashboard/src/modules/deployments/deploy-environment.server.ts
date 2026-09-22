@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { servicePublicDomain } from "#/modules/environment-design/managed-service-exports";
 import { Effect } from "effect";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
 import { resolveVariableParts, type ResolvedVariableProducer } from "#/modules/environment-design/variable-resolution";
@@ -8,8 +9,9 @@ import { Validation } from "#/server/public-error";
 
 /**
  * Resolve a deployment's snapshot env to concrete strings at apply time: decrypt
- * sealed values and resolve `${{ }}` templates against the environment's current
- * producers. Cycles fail; missing references resolve to "". Core's lowerDeployment
+ * sealed values and resolve `${{ }}` templates against the deployment's frozen
+ * producers and public domains selected from its captured configuration.
+ * Cycles fail; missing references resolve to "". Core's lowerDeployment
  * applies service defaults after this step, so authored values always take precedence.
  */
 export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
@@ -18,9 +20,10 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
   encryption: SecretEncryptionService,
   snapshots: Array<{
     serviceId: string;
-    config: Pick<ServiceDeploymentConfig, "env">;
+    config: Pick<ServiceDeploymentConfig, "env" | "routes" | "managedHostnames">;
   }>,
   frozenProducers: EnvironmentSnapshotVariableProducer[] | null,
+  hostedDnsHostname: string | null = null,
 ) {
   const envByServiceId = new Map<string, Record<string, string>>(
     snapshots.map((snapshot) => [snapshot.serviceId, {}]),
@@ -39,6 +42,13 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
   }
 
   const producers: ResolvedVariableProducer[] = [];
+  for (const snapshot of snapshots) {
+    const domain = servicePublicDomain(snapshot.config, hostedDnsHostname);
+    if (!domain) continue;
+    envByServiceId.set(snapshot.serviceId, { PLOYZ_PUBLIC_DOMAIN: domain });
+    const owner = frozenProducers?.find((producer) => producer.ownerScope === "service" && producer.ownerId === snapshot.serviceId);
+    if (owner) producers.push({ ...owner, key: "PLOYZ_PUBLIC_DOMAIN", value: { kind: "literal", value: domain } });
+  }
   for (const producer of frozenProducers ?? []) {
     const frozenValue = producer.value;
     const value = frozenValue.kind === "secret"

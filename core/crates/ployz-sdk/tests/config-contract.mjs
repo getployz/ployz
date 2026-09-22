@@ -24,6 +24,14 @@ for (const api of [native, browser]) {
   const restored = api.restoreServiceSetting(current, baseline, 'source.repository');
   assert.equal(restored.source.access.installationId, 7);
   assert.equal(restored.startCommand, 'npm start');
+  const domains = api.parseServiceConfig({ ...baseline, routes: [
+    { id: '11111111-1111-4111-8111-111111111111', hostname: 'first.example.test', targetPort: 3000 },
+    { id: '22222222-2222-4222-8222-222222222222', hostname: 'last.example.test', targetPort: 3000 },
+  ] });
+  const editedDomains = structuredClone(domains);
+  editedDomains.routes[0].targetPort = 8080;
+  assert.deepEqual(api.restoreServiceSetting(editedDomains, domains, `routes.${domains.routes[0].id}`).routes, domains.routes);
+
   assert.throws(() => api.parseServiceSetting('replicas', 51));
   assert.throws(() => api.parseServiceSetting('privateDns', 'Invalid_DNS'));
   assert.throws(() => api.restoreServiceSetting(current, baseline, 'unknown'));
