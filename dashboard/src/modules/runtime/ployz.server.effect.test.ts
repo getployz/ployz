@@ -272,7 +272,7 @@ it.effect("distinguishes rejected preparation input from a disconnected preparat
   }
 }));
 
-it.effect("retains sanitized terminal diagnosis after build output is truncated", () => Effect.gen(function* () {
+it.effect("retains sanitized terminal diagnosis when the SDK reports dropped output", () => Effect.gen(function* () {
   const { preparationProgressCollector } = yield* Effect.promise(() => import("#/modules/deployments/preparation-progress"));
   const progress = preparationProgressCollector();
   const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
@@ -282,7 +282,8 @@ it.effect("retains sanitized terminal diagnosis after build output is truncated"
       } } });
       void finished.catch(() => undefined);
       return { abort: () => undefined, finished, async *[Symbol.asyncIterator]() {
-        for (let n = 0; n < 300; n++) yield { Build: { Output: Array.from(Buffer.alloc(1024, 65)) } };
+        yield { Build: { Output: Array.from(Buffer.alloc(1024, 65)) } };
+        yield { phase: "truncated", dropped: 1 };
       } };
     },
     close: async () => undefined,
