@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/target
+**/.output
+**/dist
+**/.env
+**/.env.*
+**/*.log
+**/coverage
+**/playwright-report
+**/test-results
+core/crates/ployz-sdk/*.node
+core/crates/ployz-testkit/prebuilt
