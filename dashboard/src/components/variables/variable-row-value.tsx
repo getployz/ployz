@@ -1,5 +1,6 @@
+import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
 import { CopyButton } from "#/components/copy-button";
-import { EyeIcon, EyeOffIcon } from "lucide-react";
+import { AlertTriangleIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   Tooltip,
@@ -17,6 +18,7 @@ export function VariableRowValue({
   isSaving,
   isSealed,
   plainValue,
+  unresolvedReferences = [],
   revealed,
   valueTargets,
   onCancelEdit,
@@ -29,6 +31,7 @@ export function VariableRowValue({
   isSaving: boolean;
   isSealed: boolean;
   plainValue: string;
+  unresolvedReferences?: readonly string[];
   revealed: boolean;
   valueTargets?: ReferenceTarget[];
   onCancelEdit: () => void;
@@ -64,6 +67,14 @@ export function VariableRowValue({
       <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
         {isSealed || !revealed ? MASK : plainValue}
       </span>
+      {!isSealed && unresolvedReferences.length > 0 ? (
+        <Popover>
+          <PopoverTrigger openOnHover render={<Button type="button" variant="ghost" size="icon-sm" aria-label="Unresolved variable reference" />}>
+            <AlertTriangleIcon className="text-warning" />
+          </PopoverTrigger>
+          <PopoverContent>Unknown reference: {unresolvedReferences.join(", ")}</PopoverContent>
+        </Popover>
+      ) : null}
       {!isSealed ? (
         <Button
           type="button"

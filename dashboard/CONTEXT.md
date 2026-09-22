@@ -111,6 +111,8 @@ _Avoid_: Saved State, deployable revision, client diff ledger
 **Variable Group**:
 A Cloud-owned collection of variables that can be attached to Services. Cloud resolves its values into Service configuration before requesting Engine operations; the Engine has no Variable Group identity or lifecycle.
 
+Unknown named variable references may be saved as literal text. The variable list derives a non-blocking warning for reference-like text naming an absent Service or Variable Group; the raw editor does not warn. Saving does not create a deferred reference or automatically bind it when a producer later appears.
+
 **Saved State**:
 The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save and Deploy both plan against a selected Working State revision and obtain any required approval before publishing it; Save stops at publication without building images or changing running resources, while Deploy starts an attempt against that exact Saved revision.
 _Avoid_: Applied state, frozen attempt target, unsaved draft

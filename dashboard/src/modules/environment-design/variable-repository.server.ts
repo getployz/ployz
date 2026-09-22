@@ -12,14 +12,7 @@ export function validateVariableValue(
   },
 ) {
   if (value.type !== "plain") return null;
-  const { parts, unresolved } = parseDisplayToParts(value.value, context.lookupLineage);
-  if (unresolved.length > 0) {
-    const names = [...new Set(unresolved)].join(", ");
-    return new Validation({
-      field: "value",
-      message: `Unknown variable reference${unresolved.length > 1 ? "s" : ""}: ${names}. Check the producer name.`,
-    });
-  }
+  const { parts } = parseDisplayToParts(value.value, context.lookupLineage);
   if (
     context.ownerScope === "variable_group" &&
     parts.some((part) => part.kind === "ref" && part.owner.scope !== "self")

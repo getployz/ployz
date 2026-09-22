@@ -123,6 +123,7 @@ export function VariableRow({
         isSaving={state.isSaving}
         isSealed={isSealed}
         plainValue={plainValue}
+        unresolvedReferences={variable.unresolvedReferences}
         revealed={state.revealed}
         valueTargets={valueTargets}
         onCancelEdit={() => dispatch({ type: "editCancelled" })}

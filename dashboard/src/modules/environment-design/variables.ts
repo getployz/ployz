@@ -109,6 +109,7 @@ export const environmentVariableGroupSelectSchema = Schema.Struct({
 });
 
 export const variableSelectSchema = Schema.Struct({
+  unresolvedReferences: Schema.optionalKey(Schema.Array(Schema.String)),
   id: variableDbSelectSchema.fields.id,
   serviceId: variableDbSelectSchema.fields.serviceId,
   variableGroupId: variableDbSelectSchema.fields.variableGroupId,

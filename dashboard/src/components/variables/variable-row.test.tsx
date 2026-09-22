@@ -64,6 +64,14 @@ describe("VariableRow", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows a subtle reference icon whose message opens on tap", async () => {
+    render(<VariableRow variable={plainVariable({ unresolvedReferences: ["Postgres"] })} collection={collection} onSealVariable={vi.fn()} />);
+    expect(screen.queryByText("Unknown reference: Postgres")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Unresolved variable reference" }));
+    expect(await screen.findByText("Unknown reference: Postgres")).toBeTruthy();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it("shows a seal action for plain variables and confirms without plaintext", async () => {
     const onSealVariable = vi.fn().mockResolvedValue(undefined);
 

@@ -197,7 +197,7 @@ it.live(
               key: "PORT",
               description: null,
               exported: false,
-              value: { type: "plain", value: "3000" },
+              value: { type: "plain", value: "${{ Postgres.PORT }}" },
             },
           ],
           updates: [
@@ -210,7 +210,7 @@ it.live(
           deletes: [],
         });
         assert.deepStrictEqual(bulk.data.intent.services[0]?.variables.map((variable) => [variable.key, variable.value]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), [
-          ["HOST", { kind: "literal", value: "127.0.0.1" }], ["PORT", { kind: "literal", value: "3000" }],
+          ["HOST", { kind: "literal", value: "127.0.0.1" }], ["PORT", { kind: "literal", value: "${{ Postgres.PORT }}" }],
         ]);
         assert.strictEqual(
           (yield* loadEnvironmentDocument(environmentRecord.id)).revision,

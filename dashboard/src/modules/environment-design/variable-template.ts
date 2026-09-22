@@ -40,7 +40,7 @@ export type LookupLineage = (
 
 export type ParseDisplayResult = {
   parts: ValuePart[];
-  /** Slugs that could not be resolved to a producer; the caller should block. */
+  /** Slugs that could not be resolved to a producer; their tokens remain literal text. */
   unresolved: string[];
 };
 
@@ -125,7 +125,7 @@ export function partsToDisplay(
 /**
  * Parse a display/input string into canonical parts, resolving owner slugs to
  * lineage ids. Unresolvable slugs are kept as literal text and reported in
- * `unresolved` so the caller can reject the save.
+ * `unresolved` for callers that need diagnostics.
  */
 export function parseDisplayToParts(
   text: string,
