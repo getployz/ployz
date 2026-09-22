@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "bash ../core/scripts/build-cloud-sdk.sh && portless ployz-cloud vite dev",
     "build": "bash ../core/scripts/build-cloud-sdk.sh && pnpm build:app",
-    "start": "node .output/server/index.mjs",
+    "start": "node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import @opentelemetry/auto-instrumentations-node/register .output/server/index.mjs",
     "preview": "vite preview",
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
     "db:generate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs generate",
@@ -32,9 +32,13 @@
   "dependencies": {
     "@base-ui/react": "^1.4.1",
     "@better-auth/drizzle-adapter": "^1.6.6",
+    "@effect/opentelemetry": "4.0.0-rc.112",
     "@effect/sql-pg": "4.0.0-rc.112",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.80.0",
+    "@opentelemetry/instrumentation": "^0.222.0",
     "@ployz/sdk": "link:../core/crates/ployz-sdk",
     "@polar-sh/better-auth": "^1.8.4",
     "@polar-sh/checkout": "^0.3.0",

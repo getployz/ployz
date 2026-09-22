@@ -1,4 +1,6 @@
 import "@tanstack/react-start/server-only";
+import * as OtelTracer from "@effect/opentelemetry/OtelTracer";
+import * as Resource from "@effect/opentelemetry/Resource";
 import { Layer, ManagedRuntime } from "effect";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
@@ -25,9 +27,15 @@ const RuntimeLive = OrganizationRuntimeLive.pipe(
   Layer.provideMerge(InfrastructureLive),
 );
 
+// Effect spans go through the OpenTelemetry SDK the start command registers,
+// so they nest under the HTTP server span and share its exporter. Without the
+// SDK the global provider is a no-op and this costs nothing.
+const TracingLive = OtelTracer.layerGlobal.pipe(Layer.provide(Resource.layerEmpty));
+
 export const AppLive = AuthLive.pipe(
   Layer.provideMerge(InfrastructureLive),
   Layer.merge(RuntimeLive),
+  Layer.provideMerge(TracingLive),
 );
 
 export type AppServices = Layer.Success<typeof AppLive>;

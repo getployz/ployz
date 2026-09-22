@@ -39,4 +39,5 @@ COPY --from=dashboard /app/dashboard/node_modules node_modules
 RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
 COPY dashboard/package.json dashboard/drizzle.config.ts ./
 COPY dashboard/drizzle/ drizzle/
-CMD ["node", ".output/server/index.mjs"]
+# Load the OpenTelemetry SDK before the app; it reads Railway's OTEL_* variables.
+CMD ["node", "--experimental-loader=@opentelemetry/instrumentation/hook.mjs", "--import", "@opentelemetry/auto-instrumentations-node/register", ".output/server/index.mjs"]

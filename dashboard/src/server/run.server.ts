@@ -1,4 +1,6 @@
 import "@tanstack/react-start/server-only";
+import * as OtelTracer from "@effect/opentelemetry/OtelTracer";
+import { context as otelContext, trace as otelTrace } from "@opentelemetry/api";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { ManagedRuntime } from "effect";
@@ -61,7 +63,13 @@ export function makeEffectRunner<R, ER>(runtime: Runtime<R, ER>) {
     program: Effect.Effect<A, E, R>,
     options?: Effect.RunOptions,
   ): Promise<A> => {
-    const exit = await runtime.runPromiseExit(program, options);
+    // Fibers run on Effect's scheduler, outside the request's async context,
+    // so the OpenTelemetry parent (the HTTP server span) is captured here.
+    const parent = otelTrace.getSpanContext(otelContext.active());
+    const exit = await runtime.runPromiseExit(
+      parent === undefined ? program : OtelTracer.withSpanContext(program, parent),
+      options,
+    );
     if (Exit.isSuccess(exit)) return exit.value;
 
     const failure = Cause.findErrorOption(exit.cause);
