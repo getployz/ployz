@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
@@ -104,11 +104,11 @@ export const loadEnvironmentSavedIntentById = Effect.fn(
   return { ...row, intent, volumeDeletionAuthorizations };
 });
 
-export const listLatestEnvironmentSavedStates = Effect.fn(
-  "EnvironmentDesign.listLatestEnvironmentSavedStates",
-)(function* () {
+export const listLatestEnvironmentSavedStatesForGithubBranch = Effect.fn(
+  "EnvironmentDesign.listLatestEnvironmentSavedStatesForGithubBranch",
+)(function* (branch: { installationId: number; repositoryId: number; ref: string }) {
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle
+  const latest = drizzle
     .selectDistinctOn(
       [schemaEnvironmentSavedStateSnapshot.environmentId],
       savedStateColumns,
@@ -119,5 +119,15 @@ export const listLatestEnvironmentSavedStates = Effect.fn(
       desc(schemaEnvironmentSavedStateSnapshot.createdAt),
       desc(schemaEnvironmentSavedStateSnapshot.id),
     );
+  // Select latest first: an older matching snapshot must never revive a disconnected source.
+  const snapshots = latest.as("latest_saved_states");
+  const source = {
+    type: "git", access: { type: "github-installation", installationId: branch.installationId },
+    repositoryId: branch.repositoryId,
+    branch: { type: "connected", name: branch.ref.slice("refs/heads/".length) },
+  };
+  const rows = yield* drizzle.select().from(snapshots).where(
+    sql`${snapshots.intent} @> ${JSON.stringify({ services: [{ config: { source } }] })}::jsonb`,
+  );
   return yield* Effect.forEach(rows, decodeSavedState);
 });

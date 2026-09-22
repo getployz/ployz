@@ -41,7 +41,7 @@ import {
 } from "#/modules/deployments/admission.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
 import {
-  listLatestEnvironmentSavedStates,
+  listLatestEnvironmentSavedStatesForGithubBranch,
 } from "#/modules/environment-design/saved-state-repository.server";
 import {
   serviceDeploymentConfigSchema,
@@ -202,7 +202,7 @@ const selectLatestGithubTriggers = Effect.fn("Github.selectLatestTriggers")(
     input: Extract<ApplyGithubBranchEvaluationInput["plan"], { kind: "active" }> &
       GithubBranchIdentity,
   ) {
-    const savedStates = yield* listLatestEnvironmentSavedStates();
+    const savedStates = yield* listLatestEnvironmentSavedStatesForGithubBranch(input);
     const candidates = (
       yield* Effect.forEach(savedStates, (saved) =>
         savedStateCandidates(saved, input),
@@ -256,7 +256,7 @@ export const listGithubServiceCandidates = Effect.fn(
     if (!validIdentity(input)) {
       return yield* repositoryError("invalid_input", false);
     }
-    const savedStates = yield* listLatestEnvironmentSavedStates();
+    const savedStates = yield* listLatestEnvironmentSavedStatesForGithubBranch(input);
     const candidates = (
       yield* Effect.forEach(savedStates, (saved) =>
         savedStateCandidates(saved, input),

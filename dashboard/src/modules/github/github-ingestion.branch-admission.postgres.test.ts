@@ -312,6 +312,26 @@ describe("GitHub branch deployment admission", () => {
     expect(await harness.db.select().from(schema.environmentDeployment)).toEqual([]);
   });
 
+  it("admits a push despite an invalid saved service in an unrelated repository", async () => {
+    await harness.db.insert(schema.environment).values({
+      id: laterEnvironmentId, projectId, organizationId, name: "Unrelated", namespace: "unrelated",
+      intent: emptyEnvironmentIntent("unrelated"),
+    });
+    await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+      environmentId: laterEnvironmentId, organizationId, actorId: userId,
+      volumeDeletionAuthorizations: [], message: "Stale unrelated source",
+      intent: { ...emptyEnvironmentIntent("unrelated"), services: [{
+        id: laterServiceId, lineageId: laterLineageId, slug: "stale",
+        config: { source: { type: "git", version: 2, repositoryId: 999, installationId } },
+      }] },
+    });
+    const admitted = await admitPush({ deliveryId: "isolated-push", headSha: "a".repeat(40), cursor: null });
+    expect(EffectResult.isSuccess(admitted)).toBe(true);
+    const deployments = await harness.db.select().from(schema.environmentDeployment);
+    expect(deployments).toHaveLength(1);
+    expect(deployments[0]?.environmentId).toBe(environmentId);
+  });
+
   it("save then Git compiles the queued target from Saved, excluding later Working edits", async () => {
     const headSha = "a".repeat(40);
     const admitted = await admitPush({
