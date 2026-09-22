@@ -44,11 +44,12 @@ export function CanvasInspectorHeader({ params, children }: {
   return (
     <div className="canvas-inspector-header flex shrink-0 items-center gap-3 border-b px-4">
       {returnLink}
-      <div className="min-w-0 flex-1">{children}</div>
-      <div className="flex items-center gap-3 min-wf-nav:hidden">
+      <div className="min-w-0">{children}</div>
+      <div className="flex shrink-0 items-center gap-3">
         <span aria-hidden className="text-muted-foreground">/</span>
         <DashboardNavigationPicker scope={{ kind: "environment", ...params }} />
       </div>
+      <div className="ml-auto flex shrink-0 items-center gap-3">
         <Button
           variant="ghost"
           size="icon"
@@ -59,21 +60,22 @@ export function CanvasInspectorHeader({ params, children }: {
         >
           {takeover ? <Minimize2Icon /> : <Maximize2Icon />}
         </Button>
-      {!takeover ? (
-        <Link
-          to={ENVIRONMENT_INDEX_ROUTE_TO}
-          params={params}
-          search={(previous) => ({ ...previous, tab: undefined })}
-          viewTransition={{ types: ["canvas-inspector-close"] }}
-          className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-close")}
-          data-canvas-inspector-exit
-          data-canvas-inspector-desktop-control
-          aria-label="Close inspector"
-          title="Close inspector"
-        >
-          <XIcon />
-        </Link>
-      ) : null}
+        {!takeover ? (
+          <Link
+            to={ENVIRONMENT_INDEX_ROUTE_TO}
+            params={params}
+            search={(previous) => ({ ...previous, tab: undefined })}
+            viewTransition={{ types: ["canvas-inspector-close"] }}
+            className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-close")}
+            data-canvas-inspector-exit
+            data-canvas-inspector-desktop-control
+            aria-label="Close inspector"
+            title="Close inspector"
+          >
+            <XIcon />
+          </Link>
+        ) : null}
+      </div>
     </div>
   );
 }

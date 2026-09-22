@@ -3,16 +3,18 @@ import { cachedByCollectionScope, type CollectionScope } from "#/collections/sco
 import { listDeploymentProgressLogsServerFn } from "./deployment.functions";
 
 type EventRow = Awaited<ReturnType<typeof listDeploymentProgressLogsServerFn>>["events"][number];
-function createLogs(organizationSlug: string, deploymentId: string, scope: CollectionScope) {
+export function createDeploymentLogsCollection(organizationSlug: string, deploymentId: string, scope: CollectionScope,
+  readPage: (input: Parameters<typeof listDeploymentProgressLogsServerFn>[0]) => ReturnType<typeof listDeploymentProgressLogsServerFn>,
+) {
   return createApiCollection<EventRow>({
     queryClient: scope.queryClient,
     queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "deployment_logs", deploymentId],
     refetchInterval: false,
     queryFn: async ({ signal }) => {
       const rows: EventRow[] = [];
-      let afterSequence: string | null = "0";
+      let afterSequence: string | null | undefined;
       while (afterSequence !== null) {
-        const page = await listDeploymentProgressLogsServerFn({ data: { organizationSlug, deploymentId, afterSequence, limit: 50 }, signal });
+        const page = await readPage({ data: { organizationSlug, deploymentId, afterSequence, limit: 50 }, signal });
         rows.push(...page.events);
         afterSequence = page.nextSequence;
       }
@@ -21,12 +23,12 @@ function createLogs(organizationSlug: string, deploymentId: string, scope: Colle
     getKey: (row) => row.id,
   });
 }
-const cache = cachedByCollectionScope(() => new Map<string, ReturnType<typeof createLogs>>());
+const cache = cachedByCollectionScope(() => new Map<string, ReturnType<typeof createDeploymentLogsCollection>>());
 export function getDeploymentLogsCollection(organizationSlug: string, deploymentId: string, scope: CollectionScope) {
   const collections = cache(organizationSlug, scope);
   let collection = collections.get(deploymentId);
   if (!collection) {
-    collection = createLogs(organizationSlug, deploymentId, scope);
+    collection = createDeploymentLogsCollection(organizationSlug, deploymentId, scope, listDeploymentProgressLogsServerFn);
     collections.set(deploymentId, collection);
   }
   return collection;
