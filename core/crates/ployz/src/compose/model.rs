@@ -47,6 +47,7 @@ impl ComposeProject {
         name: String,
         services: BTreeMap<String, RequestedServiceSpec>,
         builds: BTreeMap<String, BuildSpec>,
+        dependencies: BTreeMap<String, Vec<ServiceDependency>>,
     ) -> Self {
         Self {
             name,
@@ -54,7 +55,7 @@ impl ComposeProject {
             context: None,
             services,
             builds,
-            dependencies: BTreeMap::new(),
+            dependencies,
             warnings: Vec::new(),
             service_profiles: BTreeMap::new(),
             secrets: BTreeMap::new(),

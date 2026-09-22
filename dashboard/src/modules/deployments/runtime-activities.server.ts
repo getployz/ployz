@@ -81,6 +81,7 @@ function compileRuntimeIntent(context: DeploymentContext) {
             resolvedEnv: resolvedEnv.get(snapshot.serviceId),
           })),
           volumes: context.volumes,
+          variableProducers: context.deployment.variableProducers ?? [],
         }),
       catch: (cause) => {
         return new DeploymentRuntimeInvalid({

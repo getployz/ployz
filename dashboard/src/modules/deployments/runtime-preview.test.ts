@@ -226,3 +226,43 @@ it.each(["incomplete_snapshot", "selected_services", "filtered_profiles", "guess
     expect(parseSdkDeployPreview({ ...rustPreview, prune_refusal }).prune_refusal).toBe(prune_refusal);
   },
 );
+
+function referencedSnapshots(edges: Record<string, string[]>) {
+  const snapshots = Object.entries(edges).map(([name, dependencies]) => {
+    const snapshot = imageSnapshot({ privateDns: name });
+    snapshot.serviceId = `id-${name}`;
+    snapshot.config.env = Object.fromEntries(dependencies.map((dependency, index) => [
+      `REF_${index}`, { kind: "literal" as const, value: "display-only", parts: [
+        { kind: "ref" as const, owner: { scope: "service" as const, lineageId: `lineage-${dependency}` }, key: "PORT" },
+      ] },
+    ]));
+    return snapshot;
+  });
+  const variableProducers = Object.keys(edges).map((name) => ({
+    ownerScope: "service" as const, ownerId: `id-${name}`, ownerLineageId: `lineage-${name}`,
+    key: "PORT", value: { kind: "literal" as const, value: "3000" },
+  }));
+  return { projectName: "production", snapshots, variableProducers };
+}
+
+it("lowers frozen references to runtime dependencies using identity, not display text", () => {
+  const input = referencedSnapshots({ app: ["postgres", "postgres", "app", "absent"], postgres: [] });
+  const [app, postgres] = input.snapshots;
+  if (!app || !postgres) throw new Error("Missing test services");
+  app.config.env["LITERAL"] = { kind: "literal", value: "${{unknown.PORT}}" };
+  expect(compileSdkDeployIntent(input).dependencies).toEqual({
+    app: [{ service: "postgres", condition: "service_started" }],
+  });
+  postgres.config.healthcheck = { type: "http", path: "/health", timeoutSeconds: 10 };
+  expect(compileSdkDeployIntent(input).dependencies["app"]).toEqual([{ service: "postgres", condition: "service_healthy" }]);
+  postgres.config.source = createEmptyServiceSource();
+  expect(compileSdkDeployIntent(input).dependencies).toEqual({});
+});
+
+it("ignores all intra-cycle edges while preserving incoming and outgoing dependencies", () => {
+  const input = referencedSnapshots({ app: ["a"], a: ["b", "db"], b: ["c"], c: ["a"], db: [] });
+  expect(compileSdkDeployIntent(input).dependencies).toEqual({
+    app: [{ service: "a", condition: "service_started" }],
+    a: [{ service: "db", condition: "service_started" }],
+  });
+});

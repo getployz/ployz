@@ -109,6 +109,11 @@ pub(super) fn capture(
         serde_json::from_value(input.deployment).map_err(invalid)?,
     )
     .map_err(invalid)?;
+    let dependencies = intent
+        .dependencies()
+        .iter()
+        .map(|(name, edges)| (name.to_string(), edges.clone()))
+        .collect();
     let services = intent
         .target
         .into_iter()
@@ -116,8 +121,12 @@ pub(super) fn capture(
         .collect::<BTreeMap<_, _>>();
     // Explicit empty provider environment prevents capture from reading Cloud's HOME,
     // Docker credentials or process variables. Runtime variables are already resolved.
-    let project =
-        ComposeProject::from_frozen_services(intent.project_name.to_string(), services, builds);
+    let project = ComposeProject::from_frozen_services(
+        intent.project_name.to_string(),
+        services,
+        builds,
+        dependencies,
+    );
     crate::preparation::capture(
         project,
         intent.project_name,
@@ -144,6 +153,36 @@ fn contained(root: &Path, base: &Path, setting: &str) -> Result<PathBuf, RpcErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_preserves_cloud_dependencies() {
+        let deployment = json!({
+            "projectName": "app",
+            "snapshots": (["web", "db"].map(|name| json!({"config": {
+                "version": 2, "privateDns": name,
+                "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+                "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}}
+            }}))),
+            "dependencies": {"web": [{"service": "db", "condition": "service_started"}]}
+        });
+        let (captured, build) = capture(PreparationInput {
+            deployment,
+            sources: BTreeMap::new(),
+        })
+        .unwrap();
+        assert!(build.is_none());
+        let dependencies = captured.intent().dependencies();
+        assert_eq!(
+            dependencies
+                .get(&ServiceName::parse("web").unwrap())
+                .unwrap()
+                .first()
+                .unwrap()
+                .service
+                .as_str(),
+            "db"
+        );
+    }
+
     #[test]
     fn repository_paths_cannot_escape_through_parent_or_symlink() {
         let temp = tempfile::tempdir().unwrap();

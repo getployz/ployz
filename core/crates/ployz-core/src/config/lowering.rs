@@ -10,8 +10,8 @@ use crate::{
     ByteQuantity, ContainerResources, CpuNanos, DeployIntent, HealthcheckSpec, HttpHealthcheck,
     HttpProtocol, IngressHostname, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook,
     ProjectName, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy, ServiceAttempt,
-    ServiceContainerSpec, ServiceMode, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-    VolumeDriver,
+    ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeGraph, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -38,6 +38,8 @@ pub struct LowerDeploymentInput {
     snapshots: Vec<LowerDeploymentSnapshot>,
     #[serde(default)]
     volumes: Vec<LowerDeploymentVolume>,
+    #[serde(default)]
+    dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
 }
 
 #[derive(Deserialize)]
@@ -286,7 +288,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             placement_seed: 0,
             selected,
         },
-    ))
+    )
+    .with_dependencies(input.dependencies))
 }
 
 fn lowering_error(_: impl std::fmt::Display) -> ConfigError {
