@@ -1,6 +1,6 @@
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
-import type { RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
+import { runtimeContainerStateSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
 
 /**
  * The browser needs only enough of the Engine's additive SDK payload to retain
@@ -13,6 +13,7 @@ const runtimeWatchContainerSchema = Schema.Struct({
   machine_id: Schema.String,
   project_name: Schema.String,
   kind: Schema.String,
+  runtime: Schema.optionalKey(runtimeContainerStateSchema),
 });
 
 const runtimeWatchMachineSchema = Schema.Struct({
@@ -205,27 +206,25 @@ export function runtimeSnapshotFromWatchFrame(
 function runtimeContainerRecordFromWatch(
   container: RuntimeWatchFrame["containers"][number],
 ) {
-  return {
+  const record = {
     id: container.container_id,
     displayName: container.display_name,
     machineId: container.machine_id,
     projectName: container.project_name,
     kind: container.kind,
   };
+  return container.runtime ? { ...record, runtime: container.runtime } : record;
 }
 
-function runtimeWatchContainerForTransport(container: {
-  container_id: string;
-  display_name: string;
-  machine_id: string;
-  project_name: string;
-  kind: string;
-}) {
+function runtimeWatchContainerForTransport(container: RuntimeWatchView["containers"][number]) {
   return {
     container_id: container.container_id,
     display_name: container.display_name,
     machine_id: container.machine_id,
     project_name: container.project_name,
     kind: container.kind,
+    runtime: container.runtime.state === "running"
+      ? { state: container.runtime.state, health: container.runtime.health }
+      : { state: container.runtime.state },
   };
 }

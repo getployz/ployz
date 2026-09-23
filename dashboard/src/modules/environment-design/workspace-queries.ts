@@ -3,7 +3,7 @@ import { environmentManager, queryOptions, type QueryClient } from "@tanstack/re
 import { useLiveQuery } from "@tanstack/react-db";
 import { useSyncExternalStore } from "react";
 import { notFound } from "@tanstack/react-router";
-import { getProjectsCollection, getEnvironmentSummariesCollection, getProjectPreferencesCollection, type EnvironmentSummary } from "#/collections/collections";
+import { getProjectsCollection, getEnvironmentsCollection, getEnvironmentSummariesCollection, getProjectPreferencesCollection, type EnvironmentSummary } from "#/collections/collections";
 import { preloadCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -42,6 +42,17 @@ export async function preloadWorkspace(organizationSlug: string, scope: Collecti
   const collections = workspaceCollections(organizationSlug, scope);
   await Promise.all(Object.values(collections).map(preloadCollection));
   return collections;
+}
+
+export function projectPreviewsOptions(organizationSlug: string, scope: CollectionScope) {
+  return queryOptions({
+    queryKey: ["project-previews", scope.sessionId, scope.userId, organizationSlug],
+    staleTime: Infinity,
+    queryFn: async () => {
+      await preloadCollection(getEnvironmentsCollection(organizationSlug, scope));
+      return true;
+    },
+  });
 }
 
 function resolveProjects(

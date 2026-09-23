@@ -21,7 +21,7 @@ describe("dashboard navigation model", () => {
     });
 
     expect(items.map((item) => item.label)).toEqual([
-      "Overview",
+      "Projects",
       "Servers",
       "Server Settings",
       "Billing",

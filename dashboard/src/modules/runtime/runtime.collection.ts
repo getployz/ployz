@@ -22,14 +22,19 @@ export type RuntimeLensStatus = typeof runtimeLensStatusSchema.Type;
 
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-/** A directly observed container identity and display detail. It deliberately
- * omits runtime-health interpretation and historical resolved specs. */
+export const runtimeContainerStateSchema = Schema.Struct({
+  state: Schema.String,
+  health: Schema.optionalKey(Schema.String),
+});
+
+/** Direct container evidence, without historical specs or inferred Service state. */
 export const runtimeContainerRecordSchema = Schema.Struct({
   id: Schema.String,
   displayName: Schema.String,
   machineId: Schema.String,
   projectName: Schema.String,
   kind: Schema.String,
+  runtime: Schema.optionalKey(runtimeContainerStateSchema),
 });
 
 export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;

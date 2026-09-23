@@ -1,33 +1,41 @@
-import { useDeferredValue, useState } from "react";
+import { Suspense, useDeferredValue, useState } from "react";
+import { environmentManager, useSuspenseQuery } from "@tanstack/react-query";
+import { useLiveQuery } from "@tanstack/react-db";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { preloadWorkspace, readWorkspace, useWorkspace } from "#/modules/environment-design/workspace-queries";
+import { preloadWorkspace, projectPreviewsOptions, readWorkspace, useWorkspace } from "#/modules/environment-design/workspace-queries";
+import { getEnvironmentsCollection } from "#/collections/collections";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { getRuntimeCollections } from "#/modules/runtime/runtime.collection";
+import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
-  CardFooter,
+  CardContent,
   CardHeader,
-  CardTitle,
 } from "#/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Skeleton } from "#/components/ui/skeleton";
-import { cn } from "#/lib/utils";
 import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
 import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
+import { ProjectCard } from "../-components/project-card";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
-    const projects = readWorkspace(await preloadWorkspace(params.organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }));
-    // No projects means nothing to overview: go straight to project creation.
+    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
+    const options = projectPreviewsOptions(params.organizationSlug, scope);
+    void context.queryClient.prefetchQuery(options);
+    const projects = readWorkspace(await preloadWorkspace(params.organizationSlug, scope));
     if (projects.length === 0) {
       throw redirect({
         to: NewProjectRoute.to,
         params: { organizationSlug: params.organizationSlug },
       });
     }
+    if (environmentManager.isServer()) await context.queryClient.ensureQueryData(options);
   },
   pendingComponent: ProjectsPending,
   errorComponent: ProjectsError,
@@ -37,23 +45,28 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
 function ProjectsPending() {
   return (
     <DashboardPage>
+      <Skeleton className="h-7 w-24" />
       <div className="flex items-center justify-between gap-3">
         <Skeleton className="h-9 w-full max-w-md" />
         <Skeleton className="h-9 w-28" />
       </div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <ProjectsGridPending />
+    </DashboardPage>
+  );
+}
+
+function ProjectsGridPending() {
+  return (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-label="Loading projects">
         {Array.from({ length: 3 }, (_, index) => (
           <Card key={index}>
             <CardHeader>
               <Skeleton className="h-5 w-36" />
             </CardHeader>
-            <CardFooter>
-              <Skeleton className="h-3 w-24" />
-            </CardFooter>
+            <CardContent><Skeleton className="h-56 w-full" /></CardContent>
           </Card>
         ))}
       </div>
-    </DashboardPage>
   );
 }
 
@@ -77,7 +90,7 @@ function CreateProjectButton({
     <Link
       to={NewProjectRoute.to}
       params={{ organizationSlug }}
-      className={buttonVariants({ size: "lg" })}
+      className={buttonVariants({ variant: "ink" })}
     >
       <PlusIcon data-icon="inline-start" />
       New project
@@ -89,8 +102,38 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
+
+  return (
+    <DashboardPage>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">Projects</h1>
+        <CreateProjectButton organizationSlug={organizationSlug} />
+      </div>
+      <div className="w-full sm:max-w-xs">
+        <ResourcePageControls
+          controlsLabel="Projects controls"
+          searchAriaLabel="Search projects"
+          searchPlaceholder="Search projects"
+          searchValue={query}
+          onSearchValueChange={setQuery}
+        />
+      </div>
+      <Suspense fallback={<ProjectsGridPending />}>
+        <ProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
+      </Suspense>
+    </DashboardPage>
+  );
+}
+
+function ProjectsGrid({ organizationSlug, query }: { organizationSlug: string; query: string }) {
+  const scope = useCollectionScope();
+  useSuspenseQuery(projectPreviewsOptions(organizationSlug, scope));
+  const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
+  const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
+  const { lensStatus, incompleteIds } = useRuntimeStatus();
+  const runtimeStatus = incompleteIds.machines.length || incompleteIds.containers.length ? "unavailable" : lensStatus;
   const { projects } = useWorkspace(organizationSlug);
-  const normalizedQuery = deferredQuery.trim().toLowerCase();
+  const normalizedQuery = query.trim().toLowerCase();
   const filteredProjects = normalizedQuery
     ? projects.filter((project) => {
         const haystack = `${project.name} ${project.slug}`.toLowerCase();
@@ -98,25 +141,12 @@ function RouteComponent() {
       })
     : projects;
 
-  return (
-    <DashboardPage>
-      <h1 className="sr-only">Projects</h1>
-
-      <ResourcePageControls
-        controlsLabel="Projects controls"
-        searchAriaLabel="Search projects"
-        searchPlaceholder="Search projects"
-        searchValue={query}
-        onSearchValueChange={setQuery}
-        action={<CreateProjectButton organizationSlug={organizationSlug} />}
-      />
-
-      {filteredProjects.length === 0 ? (
+  return filteredProjects.length === 0 ? (
         <Empty variant="no-results">
           <EmptyHeader>
             <EmptyTitle>No matching projects</EmptyTitle>
             <EmptyDescription>
-              No projects match “{deferredQuery.trim()}”.
+              No projects match “{query.trim()}”.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -124,36 +154,19 @@ function RouteComponent() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {filteredProjects.map((project) => {
             const resolvedEnvironment = project.resolvedEnvironment;
+            const document = environments.find(environment => environment.id === resolvedEnvironment?.id);
             const card = (
-              <Card>
-                <CardHeader>
-                  <CardTitle>{project.name}</CardTitle>
-                </CardHeader>
-                <CardFooter>
-                  <div className="flex items-center gap-2">
-                  {resolvedEnvironment ? (
-                    <>
-                      <span className="size-2 shrink-0 rounded-full bg-primary" />
-                      <span className="text-xs text-muted-foreground">
-                        {resolvedEnvironment.name.toLowerCase()}
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="size-2 shrink-0 rounded-full bg-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">
-                        No services
-                      </span>
-                    </>
-                  )}
-                  </div>
-                </CardFooter>
-              </Card>
+              <ProjectCard
+                name={project.name}
+                environment={document ? { name: document.name, namespace: document.namespace, services: document.intent.services } : null}
+                runtimeServices={runtimeServices}
+                runtimeStatus={runtimeStatus}
+              />
             );
 
             if (!resolvedEnvironment) {
               return (
-                <div key={project.id} className={cn("pointer-events-none")}>
+                <div key={project.id}>
                   {card}
                 </div>
               );
@@ -168,14 +181,12 @@ function RouteComponent() {
                   projectSlug: project.slug,
                   environmentSlug: resolvedEnvironment.namespace,
                 }}
-                className="block"
+                className="group/project block min-w-0 rounded-xl outline-none focus-visible:ring-3 focus-visible:ring-ring"
               >
                 {card}
               </Link>
             );
           })}
         </div>
-      )}
-    </DashboardPage>
-  );
+      );
 }

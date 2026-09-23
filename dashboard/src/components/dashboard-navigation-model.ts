@@ -56,7 +56,7 @@ interface DashboardSectionDefinition {
 
 const sectionDefinitions = {
   overview: {
-    label: "Overview",
+    label: "Projects",
     icon: LayoutGridIcon,
     allPath: "/cloud/$organizationSlug/~",
     environmentPath:

@@ -228,6 +228,14 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 - **Shadow Strategy:** flat by default; use a one-pixel structural ring. Floating containers follow the Elevation section.
 - **Internal Padding:** 16px by default, 12px for compact variants, and 24px only for focused resource nodes or dialogs.
 
+### Projects
+
+- Label the organization destination and page **Projects**. Keep search visible and use an ink **New project** action.
+- Use three columns on desktop, two on tablet, and one on mobile.
+- Each project card shows the remembered Environment's Working State Services as centered icons on a subtle dotted surface. Reuse existing source icons; do not use canvas positions, connections, Volumes, or Variable Groups.
+- The whole card opens that Environment. Keep card controls out of the preview.
+- Footer: `● production · 2/3 services online`; an empty Environment shows `production · No services`. Count a Service once when it has a running container whose health is healthy or not configured. Exclude hooks. When runtime evidence is disconnected or incomplete, show only the service count.
+
 ### Inputs / Fields
 
 - **Style:** 32px controls, 12px corners, transparent or canvas background, one-pixel Structural Rule border, and 10px horizontal padding.

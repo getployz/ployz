@@ -93,6 +93,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
               machineId: "machine-a",
               projectName: "production",
               kind: "service_container",
+              runtime: { state: "running", health: "healthy" },
             },
           ],
           hookContainers: [
@@ -102,6 +103,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
               machineId: "machine-b",
               projectName: "production",
               kind: "service_container",
+              runtime: { state: "running", health: "healthy" },
             },
           ],
           observedAt: OBSERVED_AT,
