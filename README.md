@@ -19,4 +19,7 @@ Run Cargo commands from `core/` and pnpm commands from `dashboard/`.
 Dashboard links `@ployz/sdk` directly from `core/crates/ployz-sdk`; its dev and
 build commands compile that SDK. Changes across the boundary land together.
 
+Core is licensed under [Apache-2.0](core/LICENSE). Dashboard is licensed under
+[AGPL-3.0](dashboard/LICENSE).
+
 See the [context map](CONTEXT-MAP.md) for ownership and terminology.

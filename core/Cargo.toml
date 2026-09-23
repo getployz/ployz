@@ -8,6 +8,7 @@ version = "0.1.2-beta.41"
 edition = "2024"
 rust-version = "1.97.1"
 repository = "https://github.com/getployz/ployz2"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 ployz-build = { path = "crates/ployz-build" }
