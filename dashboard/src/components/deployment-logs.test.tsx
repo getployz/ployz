@@ -6,7 +6,7 @@ import { BuildLogs, clock, formatDuration, splitStepName, stripAnsi, type BuildO
 const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
 const at = (seconds: number) => new Date(Date.UTC(2026, 8, 22, 21, 9, seconds));
 const step = (id: number, name: string, extra: Partial<BuildStepRow> = {}): BuildStepRow => ({
-  id, deploymentId, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
+  id, deploymentId, build: 1, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
 });
 const line = (id: number, stepId: number, text: string, stderr = false): BuildOutputRow => ({ id, deploymentId, stepId, stderr, text, createdAt: at(id) });
 
@@ -30,11 +30,41 @@ it("renders started steps as rows, tails the running step, and opens only the fa
   expect(html).toContain(">   Compiling ployz</pre>");
   expect(html).not.toContain("[32m");
   expect(html).toContain("exit code: 1");
-  expect(html).toContain("border-destructive");
+  expect(html).toContain('aria-label="Failed"');
   expect(html).toContain(clock(at(3)));
   expect(html).toContain(">0ms<");
   expect(html).toContain(">1s<");
   expect(html).toContain(">6s<");
+});
+
+it("heads each BuildKit run only when the attempt ran more than one", () => {
+  const heading = (id: number, build: number, name: string) => step(id, name, { build, key: "stage:Building", completedAt: at(id) });
+  const one = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: true, steps: [heading(1, 1, "web, api"), step(2, "[sdk 1/1] RUN true", { completedAt: at(2) })], output: [] }));
+  expect(one).not.toContain("Building web, api");
+  const two = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: true, steps: [heading(1, 1, "web"), step(2, "[1/1] RUN true", { completedAt: at(2) }), heading(3, 2, "worker"), step(4, "[1/1] RUN true", { build: 2, completedAt: at(4) })], output: [] }));
+  expect(two).toContain("Building web");
+  expect(two).toContain("Building worker");
+});
+
+it("keeps the target heading when a single run has a failed vertex", () => {
+  const heading = step(1, "web, api", { key: "stage:Building", completedAt: at(2) });
+  const html = renderToStaticMarkup(createElement(BuildLogs, {
+    hasBuild: true, finished: true, output: [], steps: [heading, step(2, "RUN false", { completedAt: at(2), error: "exit code: 1" })],
+  }));
+  expect(html).toContain("Building web, api");
+  expect(html).toContain("exit code: 1");
+});
+
+it("hides normal cleanup and shows cleanup failures", () => {
+  for (const completedAt of [null, at(2)]) {
+    const cleanup = step(2, "Cleaning up", { key: "stage:Cleanup", completedAt });
+    const render = (error: string | null) => renderToStaticMarkup(createElement(BuildLogs, {
+      hasBuild: true, finished: completedAt !== null, steps: [step(1, "RUN true"), { ...cleanup, error }], output: [],
+    }));
+    expect(render(null)).not.toContain("Cleaning up");
+    expect(render("builder removal failed")).toContain("Cleaning up");
+    expect(render("builder removal failed")).toContain("builder removal failed");
+  }
 });
 
 it("names the empty states", () => {

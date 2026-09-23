@@ -95,7 +95,7 @@ export type BuildStep = { id: string; name: string; started: string | null; comp
 export type PreparationEvent =
   | { Platforms: string[] }
   | { Selected: { machine: import("./generated/payloads").Machine; rejections: string[] } }
-  | { Build: { Stage: string } | { Output: number[] } | { Step: BuildStep } | { StepOutput: { step: string; stderr: boolean; text: string } } | { Timing: unknown } | { Target: unknown } }
+  | { Build: { Stage: string } | { Output: number[] } | { Step: BuildStep } | { StepOutput: { step: string; stderr: boolean; text: string } } | { Timing: unknown } | { Target: { name: string; outcome: unknown } } }
   | "Transfer"
   | { Delivered: { image: string; machine_id: MachineId } };
 

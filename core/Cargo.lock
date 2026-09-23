@@ -3322,6 +3322,7 @@ name = "ployz-build"
 version = "0.1.2-beta.37"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "oci-client",
  "ployz-core",
  "rustix",

@@ -455,11 +455,12 @@ describe("deployment runtime persistence", () => {
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
     const started = new Date("2026-09-22T21:09:06Z");
-    const running = { key: "sha256:a", name: "[sdk 5/6] RUN cargo build", startedAt: started, completedAt: null, cached: false, error: null };
+    const running = { build: 1, key: "sha256:a", name: "[sdk 5/6] RUN cargo build", startedAt: started, completedAt: null, cached: false, error: null };
     // Output may arrive for a step that has not been reported yet.
-    await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ step: "sha256:a", stderr: true, text: "Compiling\n" }] }));
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ build: 1, step: "sha256:a", stderr: true, text: "Compiling\n" }] }));
     await harness.runEffect(persistBuildLog(admitted.id, { steps: [running], output: [] }));
-    await harness.runEffect(persistBuildLog(admitted.id, { steps: [{ ...running, completedAt: new Date("2026-09-22T21:11:28Z") }], output: [{ step: "sha256:a", stderr: false, text: "Finished\n" }] }));
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [{ ...running, completedAt: new Date("2026-09-22T21:11:28Z") }], output: [{ build: 1, step: "sha256:a", stderr: false, text: "Finished\n" }] }));
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ build: 1, step: "sha256:a", stderr: false, text: "Later output\n" }] }));
     const page = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 1 }));
     expect(page.steps.map(({ key, name, startedAt, completedAt }) => ({ key, name, startedAt, completedAt }))).toEqual([
       { key: "sha256:a", name: "[sdk 5/6] RUN cargo build", startedAt: started, completedAt: new Date("2026-09-22T21:11:28Z") },
@@ -467,7 +468,8 @@ describe("deployment runtime persistence", () => {
     expect(page.output.map((row) => [row.stepId, row.stderr, row.text])).toEqual([[page.steps[0]?.id, true, "Compiling\n"]]);
     expect(page.nextSequence).toBe(String(page.output[0]?.id));
     const rest = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: Number(page.nextSequence), limit: 100 }));
-    expect(rest.output.map((row) => row.text)).toEqual(["Finished\n"]);
+    expect(rest.output.map((row) => row.text)).toEqual(["Finished\n", "Later output\n"]);
+    expect(rest.output.every((row) => row.stepId === page.steps[0]?.id)).toBe(true);
     expect(rest.nextSequence).toBeNull();
     await expect(harness.runEffect(loadDeploymentBuildLog({ organizationId: userId, deploymentId: admitted.id, after: 0, limit: 100 }))).rejects.toThrow();
   });

@@ -153,33 +153,37 @@ impl<'a> Builder<'a> {
         arguments: &[String],
         started: impl FnOnce(),
     ) -> Result<(), BuildError> {
-        let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
         let Some(progress) = self.docker.progress else {
             return self
                 .docker
                 .run_started("the build", &borrowed, Streams::Inherited, started)
                 .map(|_| ());
         };
-        // Bake runs with rawjson progress; parse it here so unattributed output
-        // from other Docker commands stays plain.
+        // Structured progress: every consumer sees BuildKit's own step tree.
+        // The flag and its parser live together so they cannot drift apart;
+        // Buildx accepts flags after the targets.
+        borrowed.push("--progress=rawjson");
         let parser = std::sync::Mutex::new(crate::solve::SolveParser::default());
         let structured = |event| {
             if let crate::Progress::Output(bytes) = event {
                 parser
                     .lock()
-                    .expect("solve parser lock")
+                    .expect("parsing never panics while holding the parser")
                     .feed(&bytes, progress);
             } else {
                 progress(event);
             }
         };
-        let result = self.docker.with_progress(&structured).run_started(
-            "the build",
-            &borrowed,
-            Streams::Inherited,
-            started,
-        );
-        parser.lock().expect("solve parser lock").finish(progress);
+        let result = Docker {
+            progress: Some(&structured),
+            ..*self.docker
+        }
+        .run_started("the build", &borrowed, Streams::Inherited, started);
+        parser
+            .lock()
+            .expect("parsing never panics while holding the parser")
+            .finish(progress);
         result.map(|_| ())
     }
 

@@ -143,16 +143,17 @@ export const listDeploymentOperationEvidence = Effect.fn(
     });
 });
 
-export const listDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
+const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
   const organization = yield* requireOrganization(actor, input.organizationSlug);
   const after = Number(input.afterSequence ?? 0);
   if (!Number.isSafeInteger(after) || after < 0) return yield* new Validation({ message: "Invalid log cursor." });
-  return yield* loadDeploymentBuildLog({ organizationId: organization.id, deploymentId: input.deploymentId, after, limit: input.limit ?? 100 });
+  return { organizationId: organization.id, deploymentId: input.deploymentId, after };
+});
+
+export const listDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
+  return yield* loadDeploymentBuildLog({ ...yield* logCursor(actor, input), limit: input.limit ?? 100 });
 });
 
 export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
-  const organization = yield* requireOrganization(actor, input.organizationSlug);
-  const after = Number(input.afterSequence ?? 0);
-  if (!Number.isSafeInteger(after) || after < 0) return yield* new Validation({ message: "Invalid log cursor." });
-  return yield* loadDeploymentEvents({ organizationId: organization.id, deploymentId: input.deploymentId, after });
+  return yield* loadDeploymentEvents(yield* logCursor(actor, input));
 });

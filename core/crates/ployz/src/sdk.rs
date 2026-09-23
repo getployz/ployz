@@ -303,9 +303,11 @@ impl Session {
                 |progress| {
                     let frame = budget
                         .lock()
-                        .expect("output budget lock")
+                        .expect("budgeting never panics while holding the marker flag")
                         .frame(progress, &producer_buffered);
-                    let _ = events.send(frame);
+                    if let Some(frame) = frame {
+                        let _ = events.send(frame);
+                    }
                 },
             )
             .await
@@ -696,55 +698,44 @@ fn invalid_argument(message: String) -> RpcError {
 /// Most build output retained ahead of a slow consumer before it is dropped.
 const OUTPUT_BUDGET: usize = 64 * 1024 * 1024;
 
-/// Replaces output beyond the budget with one marker per step until the
-/// consumer catches up. Structured progress always passes.
+const DROPPED_MARKER: &str = "… output dropped: the consumer fell behind\n";
+
+/// Drops output beyond the budget, marking the first drop on the step it hit,
+/// until the consumer is back under half the budget. Structured progress
+/// always passes.
 #[derive(Default)]
 struct OutputBudget {
-    marked: std::collections::HashSet<(String, bool)>,
+    dropping: bool,
 }
 
 impl OutputBudget {
+    /// The frame to send with its accounted size, or none when dropped.
     fn frame(
         &mut self,
-        progress: crate::preparation::Progress,
+        mut progress: crate::preparation::Progress,
         buffered: &AtomicUsize,
-    ) -> (usize, Value) {
+    ) -> Option<(usize, Value)> {
         use crate::preparation::Progress;
         use ployz_build::Progress as Build;
         let held = buffered.load(Ordering::Relaxed);
         if held < OUTPUT_BUDGET / 2 {
-            self.marked.clear();
+            self.dropping = false;
         }
-        let progress = match progress {
-            Progress::Build(Build::StepOutput { step, stderr, text })
-                if held + text.len() > OUTPUT_BUDGET =>
-            {
-                if !self.marked.insert((step.clone(), stderr)) {
-                    return (0, Value::Null);
+        let size = match &mut progress {
+            Progress::Build(Build::StepOutput { text, .. }) => {
+                match self.admit(held, text.len())? {
+                    Admitted::Marker => *text = DROPPED_MARKER.into(),
+                    Admitted::Output => {}
                 }
-                Progress::Build(Build::StepOutput {
-                    step,
-                    stderr,
-                    text: "… output dropped: the consumer fell behind\n".into(),
-                })
+                text.len()
             }
-            Progress::Build(Build::Output(bytes)) if held + bytes.len() > OUTPUT_BUDGET => {
-                if !self.marked.insert((String::new(), false)) {
-                    return (0, Value::Null);
+            Progress::Build(Build::Output(bytes)) => {
+                match self.admit(held, bytes.len())? {
+                    Admitted::Marker => *bytes = DROPPED_MARKER.as_bytes().to_vec(),
+                    Admitted::Output => {}
                 }
-                Progress::Build(Build::Output(
-                    b"\xe2\x80\xa6 output dropped: the consumer fell behind\n".to_vec(),
-                ))
+                bytes.len()
             }
-            other @ (Progress::Platforms(_)
-            | Progress::Selected(_)
-            | Progress::Build(_)
-            | Progress::Transfer
-            | Progress::Delivered { .. }) => other,
-        };
-        let size = match &progress {
-            Progress::Build(Build::StepOutput { text, .. }) => text.len(),
-            Progress::Build(Build::Output(bytes)) => bytes.len(),
             Progress::Build(
                 Build::Stage(_) | Build::Step(_) | Build::Timing { .. } | Build::Target { .. },
             )
@@ -755,8 +746,27 @@ impl OutputBudget {
         };
         buffered.fetch_add(size, Ordering::Relaxed);
         let value = serde_json::to_value(progress).expect("preparation progress serializes");
-        (size, value)
+        Some((size, value))
     }
+
+    /// Whether output of `len` bytes may be sent, or none while dropping.
+    /// Dropping continues until the consumer is under half the budget so the
+    /// stream cannot alternate between passing and silently dropping.
+    fn admit(&mut self, held: usize, len: usize) -> Option<Admitted> {
+        if self.dropping {
+            return None;
+        }
+        if held + len > OUTPUT_BUDGET {
+            self.dropping = true;
+            return Some(Admitted::Marker);
+        }
+        Some(Admitted::Output)
+    }
+}
+
+enum Admitted {
+    Output,
+    Marker,
 }
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
@@ -773,14 +783,9 @@ impl RunningPreparation {
     }
     /// Read one progress frame; frames are retained until read, within the budget.
     pub async fn next(&self) -> Option<Value> {
-        let mut events = self.events.lock().await;
-        loop {
-            let (size, value) = events.recv().await?;
-            self.buffered.fetch_sub(size, Ordering::Relaxed);
-            if !value.is_null() {
-                return Some(value);
-            }
-        }
+        let (size, value) = self.events.lock().await.recv().await?;
+        self.buffered.fetch_sub(size, Ordering::Relaxed);
+        Some(value)
     }
     /// Await preparation without draining or blocking on progress consumption.
     ///
@@ -898,7 +903,7 @@ mod preparation_tests {
         assert_eq!(running.buffered.load(Ordering::Relaxed), 0);
     }
     #[test]
-    fn output_beyond_the_budget_becomes_one_marker_per_step_until_the_consumer_catches_up() {
+    fn output_beyond_the_budget_becomes_one_marker_until_the_consumer_catches_up() {
         use crate::preparation::Progress;
         use ployz_build::Progress as Build;
         let buffered = AtomicUsize::new(OUTPUT_BUDGET);
@@ -910,18 +915,23 @@ mod preparation_tests {
                 text: text.into(),
             })
         };
-        let (size, marker) = budget.frame(output("cargo output\n"), &buffered);
+        let (size, marker) = budget.frame(output("cargo output\n"), &buffered).unwrap();
         assert!(marker.to_string().contains("output dropped"), "{marker}");
         assert!(size > 0);
-        assert_eq!(budget.frame(output("more\n"), &buffered), (0, Value::Null));
+        assert!(budget.frame(output("more\n"), &buffered).is_none());
         // Structured state always passes.
-        let (_, step) = budget.frame(
-            Progress::Build(Build::Step(ployz_build::BuildStep::default())),
-            &buffered,
-        );
+        let (_, step) = budget
+            .frame(
+                Progress::Build(Build::Step(ployz_build::BuildStep::default())),
+                &buffered,
+            )
+            .unwrap();
         assert!(step.get("Build").is_some());
+        // Still dropping above half the budget, even though this frame would fit.
+        buffered.store(OUTPUT_BUDGET / 2 + 1, Ordering::Relaxed);
+        assert!(budget.frame(output("between\n"), &buffered).is_none());
         buffered.store(0, Ordering::Relaxed);
-        let (size, value) = budget.frame(output("after\n"), &buffered);
+        let (size, value) = budget.frame(output("after\n"), &buffered).unwrap();
         assert_eq!(size, "after\n".len());
         assert!(value.to_string().contains("after"), "{value}");
     }

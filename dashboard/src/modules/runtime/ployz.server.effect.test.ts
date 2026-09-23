@@ -292,7 +292,7 @@ it.effect("retains sanitized terminal diagnosis alongside builder output", () =>
     const session = yield* (yield* Ployz).connect(options);
     return yield* session.prepare({ deployment: { projectName: "test", snapshots: [asTestDouble<Parameters<Client["prepare"]>[0]["deployment"]["snapshots"][number]>()({ resolvedEnv: { SECRET: "deployment-private-value" } })] }, sources: {} }, async (event) => { output.push(...progress.event(event).output); }, new AbortController().signal);
   })).pipe(Effect.provide(layer), Effect.flip);
-  assert.deepEqual(output, [{ step: "build-output", stderr: false, text: "A".repeat(1024) }]);
+  assert.deepEqual(output, [{ build: 0, step: "build-output", stderr: false, text: "A".repeat(1024) }]);
   assert.instanceOf(failure, PloyzPreparationError);
   assert.include(failure.message, "executor exited with code 42");
   for (const secret of ["hidden", "ployz1:capability", "deployment-private-value"]) assert.notInclude(failure.message, secret);

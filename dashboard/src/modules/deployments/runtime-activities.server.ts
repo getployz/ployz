@@ -259,11 +259,14 @@ export const executeEnvironmentDeployment = Effect.fn(
           if (writes.progress) await persistPreparation(writes.progress);
         }, cancellation.signal).pipe(
           Effect.tap(() => persistBuildLog(context.deployment.id, { steps: collector.finish(), output: [] })),
-          Effect.tapError((error) => persistBuildLog(context.deployment.id, { steps: collector.finish(error instanceof PloyzPreparationError ? error.message : "Preparation failed", error instanceof PloyzPreparationError ? error.stage ?? null : null), output: [] })),
-          Effect.tapError((error) => error instanceof PloyzPreparationError
-          ? persistDeploymentProgress(context.deployment.id, { completed: 0, total: 0, rows: [], outcome: null, compensation: [],
-              preparation: { ...collector.current(), message: error.message, failureCode: error.failureCode, stage: error.stage, work: error.work } })
-          : Effect.void));
+          Effect.tapError((error) => {
+            const failure = error instanceof PloyzPreparationError ? error : null;
+            return persistBuildLog(context.deployment.id, { steps: collector.finish(failure?.message ?? "Preparation failed", failure?.stage ?? null), output: [] }).pipe(
+              Effect.andThen(failure
+                ? persistDeploymentProgress(context.deployment.id, { completed: 0, total: 0, rows: [], outcome: null, compensation: [],
+                    preparation: { ...collector.current(), message: failure.message, failureCode: failure.failureCode, stage: failure.stage, work: failure.work } })
+                : Effect.void));
+          }));
     if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
     const prepared = { prepared: native, preview: yield* decodeSdkDeployPreview(preparedPreviewInput(native)) };
     yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview: prepared.preview });

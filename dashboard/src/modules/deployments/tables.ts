@@ -15,7 +15,7 @@ import { type ServiceMode } from "#/modules/services/deploy-compile-types";
 
 import { sql } from "drizzle-orm";
 
-import { type AnyPgColumn, bigint, bigserial, boolean, check, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, bigint, bigserial, boolean, check, foreignKey, index, integer, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -214,7 +214,9 @@ export const environmentDeploymentEvent = pgTable("environment_deployment_event"
 export const environmentDeploymentBuildStep = pgTable("environment_deployment_build_step", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
-  /** BuildKit digest or `stage:<Stage>`; stable across repeated reports. */
+  /** Which BuildKit run of the attempt the step belongs to; 0 before the first. One attempt may run several. */
+  build: integer("build").notNull().default(0),
+  /** BuildKit digest or `stage:<Stage>`; stable across repeated reports within one run. */
   key: text("key").notNull(),
   name: text("name").notNull(),
   startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
@@ -223,7 +225,7 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   error: text("error"),
   createdAt,
   updatedAt,
-}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.key)]);
+}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.build, table.key)]);
 
 /** Append-only output attributed to one build step. */
 export const environmentDeploymentBuildOutput = pgTable("environment_deployment_build_output", {
