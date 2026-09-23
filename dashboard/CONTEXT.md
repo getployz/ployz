@@ -97,8 +97,16 @@ An explicit local action that removes Ployz substrate and machine-local Ployz ma
 _Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
 **Self-hosted Cloud**:
-A Cloud instance an operator runs on their own infrastructure from the released image: Cloud web, Cloud worker, Inngest, Redis and Postgres, with their own GitHub apps. Billing is optional — with no Polar token every Organization runs unlimited. It still uses the Ployz-hosted relay, Hosted DNS, installer and release binaries.
+A Cloud instance an operator runs on their own infrastructure from the released image: Cloud web, Cloud worker, Inngest, Redis and Postgres, with their own GitHub apps. It has no billing: Polar is never configured and every Organization runs unlimited, meaning every Custom Domain Capability check is granted. It still uses the Ployz-hosted relay, Hosted DNS, installer and release binaries.
 _Avoid_: Standalone Cluster, on-prem control plane, self-hosted relay
+
+**Billing Plan**:
+The single paid Ployz Cloud subscription an Organization holds through Polar. Holding it is the plan; there is no plan column, no free tier, and no second tier at launch. Its display name is product copy, not a stored value. A Self-hosted Cloud has no Billing Plan.
+_Avoid_: Free plan, Teams plan, plan slug, subscription tier
+
+**Custom Domain Capability**:
+Whether an Organization may link a custom hostname to a Service. Granted when the Cloud is self-hosted or the Organization holds an active Billing Plan, judged from Cloud's cached subscription state, never from a live billing call. It is the only plan-gated capability at 1.0.
+_Avoid_: Entitlement, feature flag, paid feature check
 
 **Cloud Lens**:
 Cloud's role after bootstrap is to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
