@@ -115,6 +115,7 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
       {deployment.deployPreview?.warnings.length ? <details className="mx-6 my-2 text-xs"><summary className="cursor-pointer text-warning">{deployment.deployPreview.warnings.length} planning warnings</summary>{deployment.deployPreview.warnings.map((w, i) => <p key={i} className="mt-2 break-words">{JSON.stringify(w)}</p>)}</details> : null}
       {children}
     </div> : null}
+    {progress?.logsIncomplete ? <p className="px-4 py-2 text-sm text-muted-foreground sm:px-6">Logs incomplete. Some progress or output could not be recorded.</p> : null}
     {showLogs ? <section id={`${id}-logs`} className="mt-1">{logsPanel}</section> : null}
   </article>;
 }

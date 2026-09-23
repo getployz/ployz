@@ -1,3 +1,4 @@
+import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
@@ -14,11 +15,13 @@ import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-run
 import { executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
 import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
 import { loadDeploymentBuildLog, loadDeploymentEvents, persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import { Database } from "#/server/database.server";
 import { Effect, Layer, Redacted } from "effect";
 import type { Client, PreparedDeploy, ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
 import { resolvedServiceSpecFixture, runtimeWatchMachineFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { readCollection } from "#/collections/read.server";
 import { collectionReadInput } from "#/collections/read.contract";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
@@ -125,6 +128,13 @@ describe("deployment runtime persistence", () => {
     await harness?.stop();
   });
 
+  afterEach(async () => {
+    await harness.pool.query("ALTER TABLE environment_deployment_event DROP CONSTRAINT IF EXISTS reject_test_event");
+    await harness.pool.query("ALTER TABLE environment_deployment_build_step DROP CONSTRAINT IF EXISTS reject_test_step");
+    await harness.pool.query("DROP TRIGGER IF EXISTS stall_reporting ON environment_deployment_event");
+    await harness.pool.query("DROP FUNCTION IF EXISTS stall_reporting()");
+  });
+
   beforeEach(async () => {
     await harness.pool.query(`
       truncate table "user", organization cascade;
@@ -163,8 +173,16 @@ describe("deployment runtime persistence", () => {
     ]);
   });
 
-  it.each(["valid", "corrupt ciphertext", "invalid JSON", "incompatible schema", "rotated key"])(
+  it.each(["valid", "corrupt ciphertext", "invalid JSON", "incompatible schema", "rotated key", "reporting unavailable", "reporting stalls", "reporting recovers"])(
     "recovers and retains private build receipts across Git deployments: %s", async (evidence) => {
+    if (evidence === "reporting unavailable" || evidence === "reporting recovers") {
+      await harness.pool.query("ALTER TABLE environment_deployment_event ADD CONSTRAINT reject_test_event CHECK (false)");
+      await harness.pool.query("ALTER TABLE environment_deployment_build_step ADD CONSTRAINT reject_test_step CHECK (false)");
+    }
+    if (evidence === "reporting stalls") {
+      await harness.pool.query("CREATE FUNCTION stall_reporting() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$");
+      await harness.pool.query("CREATE TRIGGER stall_reporting BEFORE INSERT ON environment_deployment_event FOR EACH ROW EXECUTE FUNCTION stall_reporting()");
+    }
     const receipt = { api: {
       fingerprint: "b".repeat(64), machine_id: runtimeWatchMachineFixture("a".repeat(32), "builder").id,
       image: { reference: `sha256:${"c".repeat(64)}`, tags: [], platforms: ["linux/amd64"], location: "unix:///var/run/docker.sock" },
@@ -184,7 +202,7 @@ describe("deployment runtime persistence", () => {
     const client = asTestDouble<Client>()({
       prepare: (input: Parameters<Client["prepare"]>[0]) => {
         expect(input.source_commits).toEqual({ api: "a".repeat(40) });
-        expect(input.build_receipts).toEqual(attempt === 0 || (attempt === 1 && evidence !== "valid") ? {} : receipt);
+        expect(input.build_receipts).toEqual(attempt === 0 || (attempt === 1 && (evidence !== "valid" && !evidence.startsWith("reporting"))) ? {} : receipt);
         const prepared = asTestDouble<PreparedDeploy>()({
           ...preview(), buildReceipts: receipt, close: () => undefined,
           confirm: () => {
@@ -193,7 +211,15 @@ describe("deployment runtime persistence", () => {
               async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; } };
           },
         });
-        return { abort: () => undefined, finished: Promise.resolve(prepared), async *[Symbol.asyncIterator]() { yield* []; } };
+        return { abort: () => undefined, finished: Promise.resolve(prepared), async *[Symbol.asyncIterator]() {
+          if (evidence === "reporting recovers" && attempt === 0) {
+            await harness.pool.query("ALTER TABLE environment_deployment_event DROP CONSTRAINT reject_test_event");
+            await harness.pool.query("ALTER TABLE environment_deployment_build_step DROP CONSTRAINT reject_test_step");
+            await new Promise((resolve) => setTimeout(resolve, 1_100));
+          }
+          yield { Build: { Stage: "Upload" } };
+          yield { Build: { Stage: "Building" } };
+        } };
       },
       close: async () => undefined,
     });
@@ -217,6 +243,14 @@ describe("deployment runtime persistence", () => {
           archive: () => Effect.succeed(new Response(archive)),
         }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption),
       ));
+      const [completed] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+      expect(completed?.status).toBe("applied");
+      if (evidence.startsWith("reporting") && attempt === 0) expect(completed?.runtimeProgress?.logsIncomplete).toBe(true);
+      expect(completed?.runtimeProgress?.outcome).toBe("success");
+      if (evidence === "reporting recovers") {
+        const logs = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 50 }));
+        expect(logs.steps.some((step) => step.key === "stage:Upload")).toBe(true);
+      }
       const [secret] = await harness.db.select().from(schema.environmentDeploymentSecret).where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, admitted.id));
       expect(secret?.encryptedBuildReceipts).toBeTruthy();
       if (!secret?.encryptedBuildReceipts) throw new Error("Missing build evidence");
@@ -226,7 +260,7 @@ describe("deployment runtime persistence", () => {
       await expect(harness.runEffect(persistBuildReceipts(context, receipt).pipe(Effect.provideService(SecretEncryption, encryption))))
         .rejects.toMatchObject({ failureCode: "build_receipts_not_owned" });
       expect(await harness.runEffect(loadBuildReceipts({ ...context, organization: { id: userId, slug: "other" } }).pipe(Effect.provideService(SecretEncryption, encryption)))).toEqual({});
-      if (attempt === 0 && evidence !== "valid") {
+      if (attempt === 0 && (evidence !== "valid" && !evidence.startsWith("reporting"))) {
         const unreadable = evidence === "invalid JSON" ? encryption.encrypt("{")
           : evidence === "incompatible schema" ? encryption.encrypt(JSON.stringify({ api: { ...receipt.api, version: 2 } }))
           : evidence === "rotated key" ? makeSecretEncryption("previous-encryption-secret").encrypt(JSON.stringify(receipt))
@@ -302,9 +336,9 @@ describe("deployment runtime persistence", () => {
     expect(checkout).toBeDefined();
     if (checkout) await expect(access(checkout)).rejects.toThrow();
     const [attempt] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
-    expect(attempt?.status).toBe(kind === "cancelled" ? "cancelled" : "failed");
-    expect(attempt?.failureCode).toBe(`sdk_preparation_${kind === "progress-storage" ? "failed" : kind}`);
-    if (kind === "progress-storage") expect(attempt?.failureMessage).toBe("Could not save build progress.");
+    expect(attempt?.status).toBe(kind === "cancelled" || kind === "progress-storage" ? "cancelled" : "failed");
+    expect(attempt?.failureCode).toBe(`sdk_preparation_${kind === "progress-storage" ? "cancelled" : kind}`);
+    if (kind === "progress-storage") expect(attempt?.runtimeProgress?.logsIncomplete).toBe(true);
     expect(attempt?.finishedAt).toBeInstanceOf(Date);
     expect(attempt?.deployPreview).toBeNull();
     if (kind !== "progress-storage") expect(attempt?.runtimeProgress?.preparation?.phase).toBe("build");
@@ -437,15 +471,56 @@ describe("deployment runtime persistence", () => {
     expect(terminal?.status).toBe(resultKind === "success" ? "applied" : "cancelled");
   });
 
-  it("updates current state and retained logs atomically, and scopes log reads to the organization", async () => {
+  it("drops reporting promptly when its pool is full while the lifecycle pool remains usable", async () => {
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let ready: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    let connected = 0;
+    const holders = [0, 1].map(() => Effect.runPromise(harness.reportingDatabase.transaction(Effect.gen(function* () {
+      if (++connected === 2) ready();
+      yield* Effect.promise(() => released);
+    }))));
+    try {
+      await started;
+      const reporting = deploymentReporting();
+      const start = Date.now();
+      await harness.runEffect(reporting.write(Effect.gen(function* () {
+        const database = yield* Database;
+        yield* database.transaction(database.drizzle.execute(sql`select 1`));
+      })));
+      expect(Date.now() - start).toBeLessThan(2_000);
+      expect(reporting.incomplete).toBe(true);
+      await harness.pool.query("select 1");
+    } finally {
+      release();
+      await Promise.all(holders);
+    }
+  });
+
+  it("retains live progress without updating the lifecycle row and scopes reads to the organization", async () => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
     const progress = { completed: 0, total: 0, rows: [], outcome: null, compensation: [] };
-    await harness.runEffect(persistDeploymentProgress(admitted.id, progress));
+    const owner = await harness.pool.connect();
+    try {
+      await owner.query("BEGIN");
+      await owner.query("UPDATE environment_deployment SET failure_message = failure_message WHERE id = $1", [admitted.id]);
+      await harness.runEffect(deploymentReporting().write(persistDeploymentProgress(admitted.id, progress)));
+    } finally {
+      await owner.query("ROLLBACK");
+      owner.release();
+    }
     const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
-    expect(row?.runtimeProgress).toEqual(progress);
+    expect(row?.runtimeProgress).toBeNull();
+    await harness.pool.query('insert into member(user_id,organization_id) values($1,$2)', [userId, organizationId]);
+    const read = () => harness.runEffect(readCollection({ userId }, { table: "environment_deployment", userId, organizationSlug: "runtime" }));
+    expect(await read()).toEqual(expect.arrayContaining([expect.objectContaining({ id: admitted.id, runtimeProgress: progress })]));
+    const terminal = { ...progress, outcome: "success" as const, logsIncomplete: true };
+    await harness.db.update(schema.environmentDeployment).set({ runtimeProgress: terminal }).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(await read()).toEqual(expect.arrayContaining([expect.objectContaining({ id: admitted.id, runtimeProgress: terminal })]));
     const page = await harness.runEffect(loadDeploymentEvents({ organizationId, deploymentId: admitted.id, after: 0 }));
     expect(page.events).toHaveLength(1);
     expect(page.events[0]?.progress).toEqual(progress);

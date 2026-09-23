@@ -98,3 +98,14 @@ it("keeps Deploy pending while Git preparation has not reported progress", () =>
   expect(html).toContain("Waiting to prepare images");
   expect(html).not.toContain("Waiting for runtime progress");
 });
+
+it("shows service success alongside incomplete logs from terminal evidence", () => {
+  const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: ["web"], status: "applied", createdAt: new Date(), serviceCount: 1 });
+  const progress = { completed: 1, total: 1, outcome: "success" as const, rows: [row("web", "completed")], compensation: [], logsIncomplete: true };
+  const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress, serviceId: "web", expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
+  expect(html).toContain("Service applied");
+  expect(html).toContain("Logs incomplete");
+  expect(html).toContain("Images prepared");
+  expect(html).toContain("Applied state recorded");
+  expect(html).not.toContain("Deployment failed");
+});

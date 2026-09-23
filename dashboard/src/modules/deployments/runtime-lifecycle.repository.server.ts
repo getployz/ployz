@@ -27,6 +27,7 @@ import { loadEnvironmentSnapshotProjection } from "./environment-state.repositor
 import { coreOperationWatch } from "#/modules/operations/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import type { DeploymentProgress } from "./deployment-progress";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
 
@@ -49,6 +50,7 @@ function dispatchReleasedVolumeRemoveAttempts(
 }
 
 interface EnvironmentDeploymentStatusPatch {
+  runtimeProgress?: DeploymentProgress;
   status: EnvironmentDeploymentStatus;
   updatedAt: Date;
   failureMessage?: string;
@@ -68,6 +70,7 @@ function lockDeploymentEnvironment(environmentDeploymentId: string) {
 }
 
 type DeploymentRunStatusChange = {
+  runtimeProgress?: DeploymentProgress;
   environmentDeploymentId: string;
   status: Exclude<EnvironmentDeploymentStatus, "queued">;
   message?: string;
@@ -111,6 +114,7 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
           status: input.status,
           updatedAt,
         };
+        if ("runtimeProgress" in input) patch.runtimeProgress = input.runtimeProgress;
         if (input.message) patch.failureMessage = input.message;
         if ("failureCode" in input && input.failureCode) patch.failureCode = input.failureCode;
         if (input.status === "cancelled") patch.cancellationRequestedAt = updatedAt;
@@ -254,6 +258,7 @@ export const persistSdkDeployOutcome = Effect.fn(
 )(function* (input: {
   environmentDeploymentId: string;
   outcome: Redacted.Redacted<Schema.Json>;
+  runtimeProgress?: DeploymentProgress;
   expectedInngestRunId?: string;
 }) {
   const database = yield* Database;
@@ -291,6 +296,7 @@ export const persistSdkDeployOutcome = Effect.fn(
     const released = yield* markEnvironmentDeploymentStatus({
       kind: "run", environmentDeploymentId: input.environmentDeploymentId,
       expectedInngestRunId: input.expectedInngestRunId,
+      runtimeProgress: input.runtimeProgress,
       status: outcome.type === "success" ? "applied" : outcome.reason === "cancelled" ? "cancelled" : "failed",
       message: outcome.type === "failed" ? `Deployment stopped (${outcome.reason}): ${outcome.completed} operations completed; ${outcome.unexecuted} not attempted. The failed operation may have additional effects.` : undefined,
       failureCode: outcome.type === "failed" ? "sdk_deploy_failed" : undefined,

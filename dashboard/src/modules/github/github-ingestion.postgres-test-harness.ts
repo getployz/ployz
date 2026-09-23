@@ -9,6 +9,8 @@ import * as Reactivity from "effect/unstable/reactivity/Reactivity";
 import { Pool } from "pg";
 import {
   Database,
+  ReportingDatabase,
+  makeReportingDatabase,
   makeDatabaseService,
   subscribeDatabaseNotifications,
 } from "#/server/database.server";
@@ -149,15 +151,16 @@ export async function startGithubPostgresTestHarness() {
           );
           return makeDatabaseService(effectDatabase, (channel) => subscribeDatabaseNotifications(pool, channel));
         }),
-      ).pipe(Layer.provide(Reactivity.layer)),
+      ).pipe(Layer.merge(Layer.effect(ReportingDatabase, makeReportingDatabase(databaseUrl))), Layer.provide(Reactivity.layer)),
     );
     const database = await databaseRuntime.runPromise(Database);
     return {
       databaseUrl,
+      reportingDatabase: await databaseRuntime.runPromise(ReportingDatabase),
       db,
       database,
       runEffect<Success, Failure>(
-        operation: Effect.Effect<Success, Failure, Database>,
+        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase>,
       ) {
         return databaseRuntime.runPromise(operation);
       },
@@ -210,7 +213,7 @@ export type GithubPostgresTestHarness = Awaited<
 
 export function runGithubRepositoryResult<Success, Failure>(
   harness: GithubPostgresTestHarness,
-  operation: Effect.Effect<Success, Failure, Database>,
+  operation: Effect.Effect<Success, Failure, Database | ReportingDatabase>,
 ): Promise<Result.Result<Success, Failure>> {
   return harness.runEffect(Effect.result(operation));
 }

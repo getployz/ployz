@@ -29,6 +29,7 @@ export const preparationProgressSchema = Schema.Struct({
 });
 export type PreparationProgress = typeof preparationProgressSchema.Type;
 export const deploymentProgressSchema = Schema.Struct({
+  logsIncomplete: Schema.optional(Schema.Boolean),
   preparation: Schema.optional(preparationProgressSchema),
   completed: Schema.Number,
   total: Schema.Number,

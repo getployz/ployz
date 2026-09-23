@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
-import type { Database } from "#/server/database.server";
+import type { Database, ReportingDatabase } from "#/server/database.server";
 import { materializeGithubSource, resolveGithubSourceSha, GithubSourceError } from "#/modules/github/github-source.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { persistDeploymentSourcePin } from "./source-pins.server";
 
 export const acquireDeploymentSources = Effect.fn("Deployments.acquireSources")(function* (
   context: DeploymentContext,
-  onSource: (serviceId: string) => Effect.Effect<void, Error, Database>,
+  onSource: (serviceId: string) => Effect.Effect<void, Error, Database | ReportingDatabase>,
 ) {
   const sources: Record<string, string> = {};
   const source_commits: Record<string, string> = {};

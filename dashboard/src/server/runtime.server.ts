@@ -9,7 +9,7 @@ import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { InngestLive } from "#/modules/inngest/client";
 import { AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
-import { DatabaseLive } from "#/server/database.server";
+import { DatabaseLive, ReportingDatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 
 const InfrastructureLive = Layer.mergeAll(
@@ -17,6 +17,7 @@ const InfrastructureLive = Layer.mergeAll(
   PolarLive,
   InngestLive,
   GithubApiLive,
+  ReportingDatabaseLive,
 ).pipe(
   Layer.provideMerge(DatabaseLive),
   Layer.provideMerge(PloyzLive),

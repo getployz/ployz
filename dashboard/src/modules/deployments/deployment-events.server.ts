@@ -6,7 +6,7 @@ import { NotFound } from "#/server/public-error";
 import { environmentDeployment, environmentDeploymentBuildOutput, environmentDeploymentBuildStep, environmentDeploymentEvent } from "./tables";
 import type { BuildOutputWrite, BuildStepWrite } from "./preparation-progress";
 
-/** Logs are fetched only when opened. Current progress lives on the deployment. */
+/** Logs are fetched only when opened. Live progress is the latest event; terminal progress lives on the deployment. */
 export const loadDeploymentEvents = Effect.fn("Deployments.events")(function* (input: {
   organizationId: string; deploymentId: string; after: number;
 }) {
@@ -72,11 +72,6 @@ export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function
 });
 
 export const persistDeploymentProgress = Effect.fn("Deployments.persistProgress")(function* (deploymentId: string, progress: typeof environmentDeploymentEvent.$inferInsert.progress) {
-  const database = yield* Database;
-  yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* drizzle.update(environmentDeployment).set({ runtimeProgress: progress, updatedAt: new Date() })
-      .where(eq(environmentDeployment.id, deploymentId));
-    yield* drizzle.insert(environmentDeploymentEvent).values({ deploymentId, progress });
-  }));
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(environmentDeploymentEvent).values({ deploymentId, progress });
 });

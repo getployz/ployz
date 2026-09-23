@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
@@ -91,7 +91,14 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
           .where(and(eq(tables.environmentCanvasNodePosition.organizationId, scopeId), environmentFilter(tables.environmentCanvasNodePosition.environmentId)));
       case "environment_deployment":
-        return yield* database.drizzle.select().from(tables.environmentDeployment)
+        return yield* database.drizzle.select({
+          ...getTableColumns(tables.environmentDeployment),
+          runtimeProgress: sql<typeof tables.environmentDeployment.$inferSelect.runtimeProgress>`coalesce(
+            ${tables.environmentDeployment.runtimeProgress},
+            (select progress from ${tables.environmentDeploymentEvent}
+             where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
+          )`,
+        }).from(tables.environmentDeployment)
           .where(and(eq(tables.environmentDeployment.organizationId, scopeId), environmentFilter(tables.environmentDeployment.environmentId)));
       case "environment_node_config_snapshot":
         return yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)

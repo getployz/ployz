@@ -18,7 +18,7 @@ import {
   compileSdkPreparationInput,
   parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
-import { Database } from "#/server/database.server";
+import { Database, ReportingDatabase } from "#/server/database.server";
 import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
 import { deploymentProgressForEvent, type DeploymentProgress } from "./deployment-progress";
@@ -26,6 +26,7 @@ import { PloyzPreparationError } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
 import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
+import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -215,6 +216,13 @@ export const executeEnvironmentDeployment = Effect.fn(
   if (!started) return yield* Effect.interrupt;
   const cancellation = new AbortController();
   let remoteStarted = false;
+  const reporting = deploymentReporting();
+  let latestProgress: DeploymentProgress = { completed: 0, total: 0, outcome: null, rows: [], compensation: [] };
+  const terminalProgress = () => ({ ...latestProgress, logsIncomplete: reporting.incomplete });
+  const reportProgress = (progress: DeploymentProgress) => {
+    latestProgress = { ...progress, logsIncomplete: reporting.incomplete };
+    return persistDeploymentProgress(context.deployment.id, latestProgress);
+  };
   return yield* Effect.gen(function* () {
     const database = yield* Database;
     const readStatus = database.drizzle.select({ status: environmentDeployment.status, cancellationRequestedAt: environmentDeployment.cancellationRequestedAt })
@@ -226,21 +234,20 @@ export const executeEnvironmentDeployment = Effect.fn(
     }
     const watchCancellation = watchDeploymentCancellation(readStatus, cancellation);
     return yield* Effect.gen(function* () {
-    const progressContext = yield* Effect.context<Database>();
-    const persistProgress = Effect.runPromiseWith(progressContext);
+    const progressContext = yield* Effect.context<Database | ReportingDatabase>();
+    const runReport = Effect.runPromiseWith(progressContext);
+    const persistProgress = <A, E>(program: Effect.Effect<A, E, Database>) => runReport(reporting.write(program));
     const collector = preparationProgressCollector();
-    const persistPreparation = (preparation: import("./deployment-progress").PreparationProgress) =>
-      persistProgress(persistDeploymentProgress(context.deployment.id, { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation }));
     const cancelled = Effect.callback<never>((resume) => {
       const abort = () => resume(Effect.interrupt);
       if (cancellation.signal.aborted) abort();
       else cancellation.signal.addEventListener("abort", abort, { once: true });
       return Effect.sync(() => cancellation.signal.removeEventListener("abort", abort));
     });
-    const { sources, source_commits } = yield* acquireDeploymentSources(context, (serviceId) => persistDeploymentProgress(context.deployment.id, {
+    const { sources, source_commits } = yield* acquireDeploymentSources(context, (serviceId) => reporting.write(reportProgress({
       completed: 0, total: 0, outcome: null, rows: [], compensation: [],
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
-    })).pipe(Effect.raceFirst(cancelled));
+    }))).pipe(Effect.raceFirst(cancelled));
     const sdk = yield* connectedRuntime(context.organization.id);
     const needsHostedDomain = context.snapshots.some(({ config }) => config.routes.length === 0 && config.managedHostnames.length > 0);
     const hostedDnsHostname = needsHostedDomain ? (yield* sdk.watchFirstFrame(10_000)).hosted_dns_hostname : null;
@@ -255,19 +262,20 @@ export const executeEnvironmentDeployment = Effect.fn(
         }).pipe(Effect.flatMap((intent) => sdk.preview(intent)))
       : yield* sdk.prepare({ deployment: input, sources, source_commits, build_receipts }, async (event) => {
           const writes = collector.event(event);
-          await persistProgress(persistBuildLog(context.deployment.id, writes));
-          if (writes.progress) await persistPreparation(writes.progress);
+          const progress = writes.progress
+            ? reportProgress({ completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: writes.progress })
+            : Effect.void;
+          await persistProgress(persistBuildLog(context.deployment.id, writes).pipe(Effect.andThen(progress)));
         }, cancellation.signal).pipe(
-          Effect.tap(() => persistBuildLog(context.deployment.id, { steps: collector.finish(), output: [] })),
+          Effect.tap(() => reporting.write(persistBuildLog(context.deployment.id, { steps: collector.finish(), output: [] }))),
           Effect.tapError((error) => {
             const failure = error instanceof PloyzPreparationError ? error : null;
-            return persistBuildLog(context.deployment.id, { steps: collector.finish(failure?.message ?? "Preparation failed", failure?.stage ?? null), output: [] }).pipe(
+            return reporting.write(persistBuildLog(context.deployment.id, { steps: collector.finish(failure?.message ?? "Preparation failed", failure?.stage ?? null), output: [] }).pipe(
               Effect.andThen(failure
-                ? persistDeploymentProgress(context.deployment.id, { completed: 0, total: 0, rows: [], outcome: null, compensation: [],
+                ? reportProgress({ completed: 0, total: 0, rows: [], outcome: null, compensation: [],
                     preparation: { ...collector.current(), message: failure.message, failureCode: failure.failureCode, stage: failure.stage, work: failure.work } })
                 : Effect.void),
-              Effect.catch((cause) => Effect.logError("Could not record preparation failure", cause)),
-            );
+            ));
           }));
     if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
     const prepared = { prepared: native, preview: yield* decodeSdkDeployPreview(preparedPreviewInput(native)) };
@@ -276,14 +284,13 @@ export const executeEnvironmentDeployment = Effect.fn(
     if (!beforeConfirm || beforeConfirm.status !== "deploying" || beforeConfirm.cancellationRequestedAt || cancellation.signal.aborted) {
       return { outcome: { type: "failed" as const, completed: 0, unexecuted: native.operations.length, reason: "cancelled" as const }, evidence: null };
     }
-    let previous: DeploymentProgress | null = null;
     // The SDK reports progress through a Promise callback. Run each persist with
     // this fiber's services (database, tracer, span, log annotations) instead of
     // a fresh default runtime.
     const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
       const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
       const progress: DeploymentProgress = { ...raw, preparation: Object.keys(sources).length ? { ...collector.current(), phase: "ready" } : undefined, rows: raw.rows.map((row) => {
-        const prior = previous?.rows.find((candidate) => candidate.index === row.index);
+        const prior = latestProgress.rows.find((candidate) => candidate.index === row.index);
         const projected = {
           ...row,
           serviceId: context.snapshots.find((snapshot) => snapshot.config.privateDns === row.serviceName)?.serviceId ?? null,
@@ -291,17 +298,16 @@ export const executeEnvironmentDeployment = Effect.fn(
         if (row.status === "failed" && prior) return { ...projected, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health };
         return projected;
       }) };
-      previous = progress;
-      await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
+      await persistProgress(reportProgress(progress));
     }, cancellation.signal, context.deployment.id);
     return { outcome, evidence };
     }).pipe(Effect.raceFirst(watchCancellation));
   }).pipe(Effect.scoped, Effect.flatMap(({ outcome, evidence }) => Effect.gen(function* () {
     // Only release the Environment slot after native and source finalizers settle.
     if (evidence) {
-      yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, outcome: evidence });
+      yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, outcome: evidence, runtimeProgress: terminalProgress() });
     } else {
-      yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, status: "cancelled", message: "Cancelled before application execution." });
+      yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, status: "cancelled", runtimeProgress: terminalProgress(), message: "Cancelled before application execution." });
     }
     return outcome;
   })), Effect.onExit(exit => {
@@ -312,6 +318,7 @@ export const executeEnvironmentDeployment = Effect.fn(
     const confirmedCancelled = failure.failureCode === "sdk_preparation_cancelled" || (!remoteStarted && cancellation.signal.aborted);
     return markDeploymentStatus({
       environmentDeploymentId: context.deployment.id, expectedInngestRunId,
+      runtimeProgress: terminalProgress(),
       status: confirmedCancelled ? "cancelled" : "failed", failureCode: failure.failureCode ?? (remoteStarted ? "sdk_deploy_outcome_unknown" : "source_acquisition_failed"),
       message: confirmedCancelled ? "Cancelled before application execution." : failure.message || (remoteStarted ? "Runtime execution ended without a complete outcome; effects are unknown." : "Could not acquire deployment source."),
     }).pipe(Effect.asVoid);

@@ -14,7 +14,7 @@ import {
   isSqlErrorReason,
   SqlError,
 } from "effect/unstable/sql/SqlError";
-import { escapeIdentifier, Pool, type Notification } from "pg";
+import { escapeIdentifier, Pool, type PoolConfig, type Notification } from "pg";
 import { AppConfig } from "#/server/config.server";
 
 export interface DatabaseService {
@@ -171,37 +171,65 @@ function reportIdlePoolError(cause: Error) {
   Effect.runFork(Effect.logError("An idle PostgreSQL client failed.", cause));
 }
 
+function acquirePool(options: PoolConfig) {
+  return Effect.gen(function* () {
+    const pool = yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const pool = new Pool(options);
+        pool.on("error", reportIdlePoolError);
+        return pool;
+      }),
+      (pool) =>
+        Effect.tryPromise({
+          try: () => pool.end(),
+          catch: (cause) => new DatabasePoolCloseFailure({ cause }),
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => pool.off("error", reportIdlePoolError)),
+          ),
+          Effect.orDie,
+        ),
+    );
+    return pool;
+  });
+}
+
+function effectDatabase(pool: Pool) {
+  return Effect.gen(function* () {
+    const client = yield* PgClient.fromPool({
+      acquire: Effect.succeed(pool),
+      applicationName: "ployz-cloud",
+    }).pipe(Effect.provide(Reactivity.layer));
+    const applicationDatabase = yield* makeWithDefaults().pipe(
+      Effect.provideService(PgClient.PgClient, client),
+    );
+    return makeDatabaseService(applicationDatabase, (channel) => subscribeDatabaseNotifications(pool, channel));
+  });
+}
+
+
+/** Optional reporting cannot exhaust the pool used by ownership, cancellation and outcomes. */
+export class ReportingDatabase extends Context.Service<ReportingDatabase, DatabaseService>()("ployz/ReportingDatabase") {}
+
+export const makeReportingDatabase = (connectionString: string) => Effect.gen(function* () {
+  const pool = yield* acquirePool({
+    connectionString, max: 2, connectionTimeoutMillis: 200, query_timeout: 200,
+    statement_timeout: 200, lock_timeout: 100,
+  });
+  return yield* effectDatabase(pool);
+});
+
+export const ReportingDatabaseLive = Layer.effect(ReportingDatabase, Effect.gen(function* () {
+  return yield* makeReportingDatabase((yield* AppConfig).database.url.href);
+}));
+
 const makeDatabaseViews = Effect.gen(function* () {
   const config = yield* AppConfig;
-  const pool = yield* Effect.acquireRelease(
-    Effect.sync(() => {
-      const pool = new Pool({
-        connectionString: config.database.url.href,
-      });
-      pool.on("error", reportIdlePoolError);
-      return pool;
-    }),
-    (pool) =>
-      Effect.tryPromise({
-        try: () => pool.end(),
-        catch: (cause) => new DatabasePoolCloseFailure({ cause }),
-      }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => pool.off("error", reportIdlePoolError)),
-        ),
-        Effect.orDie,
-      ),
-  );
-  const client = yield* PgClient.fromPool({
-    acquire: Effect.succeed(pool),
-    applicationName: "ployz-cloud",
-  }).pipe(Effect.provide(Reactivity.layer));
-  const applicationDatabase = yield* makeWithDefaults().pipe(
-    Effect.provideService(PgClient.PgClient, client),
-  );
+  const pool = yield* acquirePool({ connectionString: config.database.url.href });
+  const applicationDatabase = yield* effectDatabase(pool);
   const betterAuthDatabase = drizzle({ client: pool });
 
-  return Context.make(Database, makeDatabaseService(applicationDatabase, (channel) => subscribeDatabaseNotifications(pool, channel))).pipe(
+  return Context.make(Database, applicationDatabase).pipe(
     Context.add(BetterAuthDatabase, { drizzle: betterAuthDatabase }),
   );
 });
