@@ -3277,7 +3277,7 @@ dependencies = [
 
 [[package]]
 name = "ployz"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3319,7 +3319,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-build"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config-wasm"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "ployz-core",
  "serde_json",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-core"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "base64 0.22.1",
  "ipnet",
@@ -3365,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "napi",
  "napi-build",
@@ -3380,7 +3380,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-testkit"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3399,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.1.2-beta.37"
+version = "0.1.2-beta.41"
 dependencies = [
  "async-trait",
  "axum",
