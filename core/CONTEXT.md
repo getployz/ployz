@@ -168,7 +168,8 @@ _Avoid_: Current service spec, canonical service spec, desired Global state
 
 **Deploy Intent**:
 The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.
-_Avoid_: leftover filtered Compose project, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
+It is the only authored model: Cloud authors it today and the CLI will read it from a file later. Compose files are not an input.
+_Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.
@@ -282,18 +283,6 @@ _Avoid_: Edge, public ingress as a process
 A validated routing configuration made available to a Machine's Ingress Proxy. Publication records the daemon's completed handoff; it does not claim that the Ingress Proxy has adopted the configuration or successfully served traffic from it.
 _Avoid_: Activated configuration, accepted configuration
 
-**Ingress Request ID**:
-An opaque correlation value for one request observed by an Ingress Proxy. It connects the public response to internal diagnostic evidence; it is not authenticated identity or a durable request record.
-_Avoid_: Request identity, trace as proof of identity
-
-**Public Ingress Diagnosis**:
-An evidence-based classification of the earliest proven failure stage for one public request. It may remain Unknown and may name insufficient capacity only when direct capacity evidence exists; a 503 alone is not capacity evidence.
-_Avoid_: Root cause as certainty, 503 as capacity failure
-
-**Ingress Access Event**:
-A Machine-local structured observation of one request handled by an Ingress Proxy, correlated by its Ingress Request ID. It excludes request and response bodies, credentials, cookies, and query strings, and is evidence for diagnosis rather than a durable request record.
-_Avoid_: Request archive, audit record, Public Ingress Diagnosis as certainty
-
 **Internal DNS Answer**:
 An observer-local, TTL-zero A answer derived from Serving Containers and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, Cluster-wide endpoint set
@@ -342,6 +331,18 @@ _Avoid_: Advertised Endpoint, globally current endpoint
 Cloud's Organization-scoped association with one Cluster generation. It scopes enrollment and connection candidates; it is neither Cluster membership nor evidence of reachability.
 _Avoid_: live connection, Cluster authority, per-Machine identity
 
+**Standalone Cluster**:
+A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. It is fully operable but receives no Cloud-driven features; a Management Capability is only minted through a Cloud Pairing today.
+_Avoid_: self-hosted cluster, offline mode, unpaired as a fault
+
+**Release Channel**:
+One of exactly two names a daemon or installer may follow: `stable` or `beta`. A build from `main` is addressable by tag or commit, never by a channel.
+_Avoid_: latest, nightly, dev channel
+
+**Hosted DNS**:
+The Ployz-run service that grants a Cluster Domain and serves its public records. It is shared infrastructure separate from Cloud; a Cluster stores which endpoint granted its reservation and an encrypted reservation token.
+_Avoid_: Uncloud DNS, Cloud DNS, generated domain as Cloud state
+
 **Pairing Credential**:
 The secret identifying the current Cloud Pairing and authenticating enrollment callbacks for that attempt. It is distinct from a Machine's Management Capability.
 _Avoid_: Management Capability, Machine identity, presence proof
@@ -356,8 +357,8 @@ The Machine's iroh public key, identifying its management plane to Cloud and the
 _Avoid_: Machine ID, WireGuard key, Advertised Endpoint, management endpoint
 
 **Ployz Relay**:
-The self-hosted iroh relay through which clients reach a Management Identity behind NAT. It carries ciphertext only and is never a mesh peer; public relays are not configured.
-_Avoid_: DERP, public relay, hosted relay protocol, mesh peer
+The Ployz-hosted iroh relay through which clients reach a Management Identity behind NAT. It is shared infrastructure, not part of a Self-hosted Cloud. It carries ciphertext only and is never a mesh peer; public relays are not configured.
+_Avoid_: DERP, public relay, self-hosted relay, hosted relay protocol, mesh peer
 
 **Connection Candidate**:
 An Organization's protected access descriptor for one Machine in its current Cloud Pairing. It is a way to attempt a connection, not membership or live presence.

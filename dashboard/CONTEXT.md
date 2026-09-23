@@ -1,6 +1,6 @@
 # Ployz Cloud
 
-Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../core/CONTEXT.md) and are mirrored here for Cloud product language. Enrollment follows the [protected connection candidate decision](../docs/adr/0005-management-connection-candidates.md).
+Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../core/CONTEXT.md) and are mirrored here for Cloud product language.
 
 ## Language
 
@@ -21,7 +21,7 @@ Current encrypted authentication material owned by a Service identity, with a ne
 _Avoid_: Saved credential contents, credential revision as configuration
 
 **Environment Resource**:
-A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Variable Groups and Volumes are the current Environment Resource types; effects on a Service's container template remain Service-owned.
+A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Volumes are the current Environment Resource type; effects on a Service's container template remain Service-owned.
 _Avoid_: Generic canvas item, Service subtype
 
 **Cloud Bootstrap Invite**:
@@ -96,6 +96,10 @@ _Avoid_: Install residue, failed attempt evidence, abandoned session evidence, C
 An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success.
 _Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
+**Self-hosted Cloud**:
+A Cloud instance an operator runs on their own infrastructure from the released image: Cloud web, Cloud worker, Inngest, Redis and Postgres, with their own GitHub apps. Billing is optional — with no Polar token every Organization runs unlimited. It still uses the Ployz-hosted relay, Hosted DNS, installer and release binaries.
+_Avoid_: Standalone Cluster, on-prem control plane, self-hosted relay
+
 **Cloud Lens**:
 Cloud's role after bootstrap is to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
 _Avoid_: Cloud control plane, cloud authority, hosted source of truth
@@ -111,15 +115,6 @@ _Avoid_: Saved State, deployable revision, client diff ledger
 **Public Domain Variable**:
 `PLOYZ_PUBLIC_DOMAIN` is the last linked custom domain in a Service's captured route list, otherwise the last generated hostname expanded against the observed Cluster Domain during deployment preparation. DNS and certificate health do not affect selection. Domain lists retain link order; port edits retain position, removal falls back to the preceding domain, and relinking appends. With no public hostname the managed variable is absent. Cloud exposes it for references and injects it into the deployment environment; authored overrides retain the usual variable precedence. Running containers keep the value captured for their deployment.
 
-**Variable Group**:
-A Cloud-owned collection of variables that can be attached to Services. Cloud resolves its values into Service configuration before requesting Engine operations; the Engine has no Variable Group identity or lifecycle.
-
-Unknown named variable references may be saved as literal text. The variable list derives a non-blocking warning for reference-like text naming an absent Service or Variable Group; the raw editor does not warn. Saving does not create a deferred reference or automatically bind it when a producer later appears.
-
-**Saved State**:
-The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save and Deploy both plan against a selected Working State revision and obtain any required approval before publishing it; Save stops at publication without building images or changing running resources, while Deploy starts an attempt against that exact Saved revision.
-_Avoid_: Applied state, frozen attempt target, unsaved draft
-
 **Environment Publication Review**:
 Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Save and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
@@ -129,7 +124,7 @@ One atomic mutation of Saved State that names the exact Saved revision it was co
 _Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
 
 **Derived Service Configuration**:
-The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Variable Groups and Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
+The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
 At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
 _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 

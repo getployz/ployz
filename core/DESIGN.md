@@ -1,8 +1,9 @@
 # Ployz design
 
 Ployz is the distributed deployment engine behind Ployz Cloud. Cloud is the
-primary product surface; the CLI, SDK, and Compose integration are adapters into
-the same system.
+primary product surface; the CLI and SDK are adapters into the same system. The
+Deploy Intent authored in Cloud is the only authored model; there is no second
+authoring format.
 
 Ployz runs containerized services across a Cluster of user-owned Docker Machines
 joined by a flat WireGuard mesh. There is no central control plane: every Machine
@@ -17,19 +18,30 @@ meanings defined in [CONTEXT.md](CONTEXT.md).
 
 Judge every new feature against the bets below before designing it. Each bet states
 the position, why Ployz holds it, and the red flags that signal a design fighting
-it. A change that fights a bet needs an ADR in `../docs/adr/` justifying the
-exception — or a redesign. A red flag is not an automatic no; it is a demand for
+it. A change that fights a bet needs a new bet here justifying the exception —
+or a redesign. A red flag is not an automatic no; it is a demand for
 that justification. The Boundaries section at the end lists what Ployz
 deliberately does not provide; a feature that needs one of those is fighting the
 design, not filling a gap.
 
-## Development-phase compatibility
+## Stable promise
 
-While Ployz is greenfield and under active development, backward compatibility
-is not required. Contracts, persisted state, CLI interfaces, and SDK payloads
-may change together without migrations or compatibility shims. This policy
-explicitly overrides existing backward compatibility guarantees until it is
-retired. Retirement must define the supported compatibility baseline.
+From 1.0: a 1.0 daemon keeps working, and can be upgraded, across every 1.x
+release without re-enrolling or reinstalling. The promise covers what a daemon
+carries or speaks — the replicated store, the local Machine record, Machine RPC
+within `PROTOCOL_MAJOR`, the enrollment protocol, and the release source. The CLI
+surface is a client courtesy with ordinary deprecation, not a guarantee.
+
+Frozen formats evolve **additively with tolerant readers**: rows and bodies only
+gain fields; every new field is optional with a default; nothing is renamed or
+repurposed; readers ignore unknown fields. Replicated bodies never use
+`deny_unknown_fields` — a newer Machine's row must remain readable by an older
+one in the same Cluster. There are no version gates and no store migrations;
+a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
+
+**Red flags:** a required new field, a migration step, a reader that rejects
+unknown fields on replicated data, a daemon behaviour that depends on every
+peer being upgraded.
 
 ## 1. Observer-relative truth
 
