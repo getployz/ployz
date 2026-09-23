@@ -46,9 +46,14 @@ export class PloyzProviderError extends Data.TaggedError(
 export class PloyzPreparationError extends Data.TaggedError("PloyzPreparationError")<{
   readonly failureCode: "sdk_preparation_failed" | "sdk_preparation_unknown" | "sdk_preparation_cancelled";
   readonly message: string;
+  readonly cause?: unknown;
   readonly stage?: string | undefined;
   readonly work?: Record<string, string> | undefined;
 }> { readonly retriable = false as const; }
+class PreparationProgressError extends Data.TaggedError("PreparationProgressError")<{
+  readonly cause: unknown;
+}> {}
+
 const preparationFailureSchema = Schema.Struct({ details: Schema.Struct({ preparation: Schema.Struct({
   kind: Schema.Literals(["failed", "unknown", "cancelled"]),
   stage: Schema.optional(Schema.Literals(["Selection", "Observation", "Admission", "Queued", "Upload", "Preparation", "Building", "Output", "Cleanup"])),
@@ -169,6 +174,7 @@ function safePreparationDiagnosis(message: string, secrets: readonly string[]) {
 }
 
 function asSdkFailure(operation: string, cause: unknown, secrets: readonly string[] = []): PloyzSdkError {
+  if (cause instanceof PloyzPreparationError) return cause;
   if (operation === "prepare") {
     const failure = Schema.decodeUnknownOption(preparationFailureSchema)(cause);
     if (Option.isSome(failure)) {
@@ -183,7 +189,7 @@ function asSdkFailure(operation: string, cause: unknown, secrets: readonly strin
     if (Schema.is(Schema.Struct({ code: Schema.Literal("invalid_argument") }))(cause)) {
       return new PloyzPreparationError({ failureCode: "sdk_preparation_failed", message: "Preparation input is invalid; no build was started." });
     }
-    return new PloyzPreparationError({ failureCode: "sdk_preparation_unknown", message: "Preparation ended without a confirmed result; remote work outcome is unknown." });
+    return new PloyzPreparationError({ failureCode: "sdk_preparation_unknown", message: "Preparation ended without a confirmed result; remote work outcome is unknown.", cause });
   }
   const missingDataLoss = missingDataLossFromSdkError(cause);
   if (missingDataLoss !== null) return missingDataLoss;
@@ -292,11 +298,27 @@ function wrapClient(client: Client): PloyzSession {
       );
       return yield* sdkPromise("prepare", async () => {
         try {
-          for await (const event of running) await onEvent(event);
+          for await (const event of running) {
+            try { await onEvent(event); }
+            catch (cause) { throw new PreparationProgressError({ cause }); }
+          }
           return wrapPrepared(await running.finished);
         } catch (cause) {
           running.abort();
-          await running.finished.then((prepared) => prepared.close(), () => undefined);
+          const confirmed = await running.finished.then(async (prepared) => {
+            await prepared.close();
+            return true;
+          }, (error) => {
+            const failure = asSdkFailure("prepare", error, secrets);
+            return failure instanceof PloyzPreparationError && failure.failureCode !== "sdk_preparation_unknown";
+          });
+          if (cause instanceof PreparationProgressError) {
+            throw new PloyzPreparationError({
+              failureCode: confirmed ? "sdk_preparation_failed" : "sdk_preparation_unknown",
+              message: "Could not save build progress." + (confirmed ? "" : " Remote work outcome is unknown."),
+              cause: cause.cause,
+            });
+          }
           throw cause;
         }
       }, secrets);

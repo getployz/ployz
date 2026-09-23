@@ -265,7 +265,9 @@ export const executeEnvironmentDeployment = Effect.fn(
               Effect.andThen(failure
                 ? persistDeploymentProgress(context.deployment.id, { completed: 0, total: 0, rows: [], outcome: null, compensation: [],
                     preparation: { ...collector.current(), message: failure.message, failureCode: failure.failureCode, stage: failure.stage, work: failure.work } })
-                : Effect.void));
+                : Effect.void),
+              Effect.catch((cause) => Effect.logError("Could not record preparation failure", cause)),
+            );
           }));
     if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
     const prepared = { prepared: native, preview: yield* decodeSdkDeployPreview(preparedPreviewInput(native)) };

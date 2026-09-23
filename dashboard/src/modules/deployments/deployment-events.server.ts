@@ -50,7 +50,8 @@ export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function
     const ids = new Map<string, number>();
     if (writes.steps.length) {
       const excluded = (column: { name: string }) => sql.raw(`excluded."${column.name}"`);
-      const upserted = yield* drizzle.insert(table).values(writes.steps.map((step) => ({ deploymentId, ...step })))
+      const steps = new Map(writes.steps.map((step) => [`${step.build}:${step.key}`, step]));
+      const upserted = yield* drizzle.insert(table).values([...steps.values()].map((step) => ({ deploymentId, ...step })))
         .onConflictDoUpdate({ target, set: { name: excluded(table.name), startedAt: excluded(table.startedAt), completedAt: excluded(table.completedAt), cached: excluded(table.cached), error: excluded(table.error), updatedAt: new Date() } })
         .returning({ id: table.id, build: table.build, key: table.key });
       for (const step of upserted) ids.set(`${step.build}:${step.key}`, step.id);

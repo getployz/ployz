@@ -297,3 +297,35 @@ it.effect("retains sanitized terminal diagnosis alongside builder output", () =>
   assert.include(failure.message, "executor exited with code 42");
   for (const secret of ["hidden", "ployz1:capability", "deployment-private-value"]) assert.notInclude(failure.message, secret);
 }));
+
+it("retains progress persistence failures and waits for the remote cleanup result", async () => {
+  for (const confirmed of [true, false]) {
+    const storageError = new Error("private SQL parameters");
+    let release: () => void = () => undefined;
+    let notifyAbort: () => void = () => undefined;
+    const aborted = new Promise<void>((resolve) => { notifyAbort = resolve; });
+    const finished = new Promise<import("@ployz/sdk").PreparedDeploy>((_resolve, reject) => {
+      release = () => reject(confirmed ? { details: { preparation: { kind: "cancelled" } } } : new Error("connection lost"));
+    });
+    void finished.catch(() => undefined);
+    let closed = false;
+    const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
+      prepare: () => ({ abort: notifyAbort, finished, async *[Symbol.asyncIterator]() { yield { Build: { Stage: "Upload" as const } }; } }),
+      close: async () => { closed = true; },
+    }) });
+    const result = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* Ployz).connect(options);
+      return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => { throw storageError; }, new AbortController().signal);
+    })).pipe(Effect.provide(layer), Effect.flip));
+    await aborted;
+    assert.isFalse(closed);
+    release();
+    const failure = await result;
+    assert.instanceOf(failure, PloyzPreparationError);
+    assert.propertyVal(failure, "cause", storageError);
+    assert.propertyVal(failure, "failureCode", confirmed ? "sdk_preparation_failed" : "sdk_preparation_unknown");
+    assert.strictEqual(failure.message, "Could not save build progress." + (confirmed ? "" : " Remote work outcome is unknown."));
+    assert.isFalse(failure.message.includes("private SQL"));
+    assert.isTrue(closed);
+  }
+});

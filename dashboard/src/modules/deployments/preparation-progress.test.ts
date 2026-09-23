@@ -95,3 +95,16 @@ it("closes output from every build run while blaming only the final run", () => 
     expect(progress.finish()).toEqual([]);
   }
 });
+
+it("keeps repeated stages open with their original start time", () => {
+  let time = 1_000;
+  const collector = preparationProgressCollector(() => new Date(time));
+  collector.event({ Build: { Stage: "Upload" } });
+  time = 2_000;
+  expect(collector.event({ Build: { Stage: "Upload" } }).steps).toEqual([]);
+  expect(collector.event({ Build: { Stage: "Preparation" } }).steps[0]).toMatchObject({
+    key: "stage:Upload", startedAt: new Date(1_000), completedAt: new Date(2_000),
+  });
+  collector.event({ Build: { Stage: "Building" } });
+  expect(collector.event({ Build: { Stage: "Building" } }).steps.map((row) => row.build)).toEqual([1, 2]);
+});

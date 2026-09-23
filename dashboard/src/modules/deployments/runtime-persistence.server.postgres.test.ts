@@ -1,3 +1,4 @@
+import { preparationProgressCollector } from "./preparation-progress";
 import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { resolveLogFilter } from "#/modules/runtime/container-logs.server";
@@ -249,7 +250,7 @@ describe("deployment runtime persistence", () => {
     }))).rejects.toThrow("Environment was not found");
   });
 
-  it.each(["failed", "unknown", "cancelled"] as const)("preparation %s cleans source and never confirms or applies", async (kind) => {
+  it.each(["failed", "unknown", "cancelled", "progress-storage"] as const)("preparation %s cleans source and never confirms or applies", async (kind) => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
@@ -258,6 +259,9 @@ describe("deployment runtime persistence", () => {
     await harness.pool.query('insert into member(user_id,organization_id) values($1,$2)', [userId, organizationId]);
     await harness.pool.query("insert into github_installation(user_id,installation_id,account_login,account_type) values($1,17,'owner','User')", [userId]);
     await harness.pool.query("insert into github_repository_cache(user_id,installation_id,repository_id,name,full_name,default_branch,private,html_url,repo_updated_at) values($1,17,42,'repo','owner/repo','main',true,'https://github.com/owner/repo',now())", [userId]);
+    if (kind === "progress-storage") {
+      await harness.pool.query(`ALTER TABLE environment_deployment_build_step ADD CONSTRAINT reject_test_progress CHECK (key <> 'stage:Upload')`);
+    }
     const header = new Header({ path: "root/Dockerfile", size: 0, mode: 0o644, type: "File" });
     header.encode();
     if (!header.block) throw new Error("Archive fixture failed");
@@ -269,12 +273,12 @@ describe("deployment runtime persistence", () => {
       prepare: (input: Parameters<Client["prepare"]>[0]) => {
         expect(input.deployment.snapshots[0]?.resolvedEnv?.["PLOYZ_PUBLIC_DOMAIN"]).toBe("api.cluster.example.test");
         checkout = Object.values(input.sources)[0];
-        const finished = Promise.reject({ code: "internal", details: { preparation: { kind, stage: "Building" } } });
+        const finished = Promise.reject({ code: "internal", details: { preparation: { kind: kind === "progress-storage" ? "cancelled" : kind, stage: "Building" } } });
         void finished.catch(() => undefined);
         return {
           abort: () => undefined,
           finished,
-          async *[Symbol.asyncIterator]() { yield { Build: { Stage: "Building" } }; },
+          async *[Symbol.asyncIterator]() { yield { Build: { Stage: kind === "progress-storage" ? "Upload" : "Building" } }; },
         };
       },
       preview: async () => { confirmed += 1; throw new Error("Preparation failure must never preview/confirm"); },
@@ -293,15 +297,17 @@ describe("deployment runtime persistence", () => {
         json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo" }).pipe(Effect.orDie),
         archive: () => Effect.succeed(new Response(archive)),
       }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.result));
+    if (kind === "progress-storage") await harness.pool.query("ALTER TABLE environment_deployment_build_step DROP CONSTRAINT reject_test_progress");
     expect(confirmed).toBe(0);
     expect(checkout).toBeDefined();
     if (checkout) await expect(access(checkout)).rejects.toThrow();
     const [attempt] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(attempt?.status).toBe(kind === "cancelled" ? "cancelled" : "failed");
-    expect(attempt?.failureCode).toBe(`sdk_preparation_${kind}`);
+    expect(attempt?.failureCode).toBe(`sdk_preparation_${kind === "progress-storage" ? "failed" : kind}`);
+    if (kind === "progress-storage") expect(attempt?.failureMessage).toBe("Could not save build progress.");
     expect(attempt?.finishedAt).toBeInstanceOf(Date);
     expect(attempt?.deployPreview).toBeNull();
-    expect(attempt?.runtimeProgress?.preparation?.phase).toBe("build");
+    if (kind !== "progress-storage") expect(attempt?.runtimeProgress?.preparation?.phase).toBe("build");
   });
 
   it.each(["outcome", "rejection"])("settles a cancelled quiet runner after runtime %s", async (completion) => {
@@ -459,7 +465,7 @@ describe("deployment runtime persistence", () => {
     // Output may arrive for a step that has not been reported yet.
     await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ build: 1, step: "sha256:a", stderr: true, text: "Compiling\n" }] }));
     await harness.runEffect(persistBuildLog(admitted.id, { steps: [running], output: [] }));
-    await harness.runEffect(persistBuildLog(admitted.id, { steps: [{ ...running, completedAt: new Date("2026-09-22T21:11:28Z") }], output: [{ build: 1, step: "sha256:a", stderr: false, text: "Finished\n" }] }));
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [running, { ...running, completedAt: new Date("2026-09-22T21:11:28Z") }], output: [{ build: 1, step: "sha256:a", stderr: false, text: "Finished\n" }] }));
     await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ build: 1, step: "sha256:a", stderr: false, text: "Later output\n" }] }));
     const page = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 1 }));
     expect(page.steps.map(({ key, name, startedAt, completedAt }) => ({ key, name, startedAt, completedAt }))).toEqual([
@@ -472,6 +478,24 @@ describe("deployment runtime persistence", () => {
     expect(rest.output.every((row) => row.stepId === page.steps[0]?.id)).toBe(true);
     expect(rest.nextSequence).toBeNull();
     await expect(harness.runEffect(loadDeploymentBuildLog({ organizationId: userId, deploymentId: admitted.id, after: 0, limit: 100 }))).rejects.toThrow();
+  });
+
+  it("persists repeated client and daemon upload stages without restarting the clock", async () => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    let time = 1_000;
+    const collector = preparationProgressCollector(() => new Date(time));
+    await harness.runEffect(persistBuildLog(admitted.id, collector.event({ Build: { Stage: "Upload" } })));
+    time = 2_000;
+    await harness.runEffect(persistBuildLog(admitted.id, collector.event({ Build: { Stage: "Upload" } })));
+    time = 3_000;
+    await harness.runEffect(persistBuildLog(admitted.id, collector.event({ Build: { Stage: "Preparation" } })));
+    const page = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 100 }));
+    expect(page.steps.filter((row) => row.key === "stage:Upload")).toMatchObject([
+      { build: 0, startedAt: new Date(1_000), completedAt: new Date(3_000) },
+    ]);
   });
 
   it("retains a normally admitted outcome and applies the deployment", async () => {

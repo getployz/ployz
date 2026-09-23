@@ -61,6 +61,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
     return [{ ...row }];
   };
   const begin = (key: string, name: string): BuildStepWrite[] => {
+    if (open === rowId(build, key)) return [];
     const closed = close(open);
     open = rowId(build, key);
     return [...closed, { ...create(key, name) }];
