@@ -780,9 +780,7 @@ mod serving_shape;
 pub use serving_shape::ServingShape;
 
 mod comparison;
-pub use comparison::{
-    COMPARED_SERVICE_SETTINGS, SettingChange, SpecComparison, compare_specs, compare_specs_detailed,
-};
+pub use comparison::compare_specs;
 
 #[cfg(test)]
 mod tests {

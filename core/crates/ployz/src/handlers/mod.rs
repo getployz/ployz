@@ -6,11 +6,9 @@ use clap_complete::{Shell, generate};
 
 use crate::failure::Failure;
 
-mod build;
 mod cloud;
 mod context;
 mod data_loss;
-mod deploy;
 mod dns;
 mod image;
 mod ingress;
@@ -176,22 +174,8 @@ where
         &'a mut crate::connect::Client,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
 {
-    with_client_context(root, None, work)
-}
-
-fn with_client_context<F>(
-    root: &ArgMatches,
-    context_override: Option<&str>,
-    work: F,
-) -> Result<(), Error>
-where
-    F: for<'a> FnOnce(
-        &'a mut crate::connect::Client,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
-{
     let leaf = leaf_matches(root);
-    let context =
-        context_override.or_else(|| leaf.get_one::<String>("context").map(String::as_str));
+    let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(leaf, context).await?;
         work(&mut client).await
@@ -202,7 +186,6 @@ type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
 fn handler_for(path: &str) -> Option<Handler> {
     let handler: Handler = match path {
-        "build" => build::run,
         "ingress config" => ingress::config,
         "ingress deploy" => ingress::deploy,
         "ingress logs" => operator::ingress_logs,
@@ -226,8 +209,6 @@ fn handler_for(path: &str) -> Option<Handler> {
                     .map(String::as_str),
             )
         },
-        "deploy" => deploy::deploy,
-        "changes" => deploy::changes,
         "dns release" => dns::release,
         "dns reserve" => dns::reserve,
         "dns show" => dns::show,
@@ -241,7 +222,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         "ls" => service::list,
         "machine add" => machine::add,
         "machine init" => machine::init,
-        "machine build-cache-clear" => build::clear_cache,
+        "machine build-cache-clear" => machine::clear_build_cache,
         "machine inspect" => machine::inspect,
         "machine logs" => operator::machine_logs,
         "machine ls" => machine::list,
@@ -256,15 +237,13 @@ fn handler_for(path: &str) -> Option<Handler> {
         "project rm" => project::remove,
         "ps" => service::processes,
         "rm" => service::remove,
-        "run" => deploy::run,
-        "scale" => deploy::scale,
+        "scale" => service::scale,
         "service exec" => operator::exec,
         "service inspect" => service::inspect,
         "service logs" => operator::service_logs,
         "service ls" => service::list,
         "service rm" => service::remove,
-        "service run" => deploy::run,
-        "service scale" => deploy::scale,
+        "service scale" => service::scale,
         "service start" => |root| service::change(root, ployz_core::ContainerAction::Start),
         "service stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
         "start" => |root| service::change(root, ployz_core::ContainerAction::Start),
@@ -719,40 +698,9 @@ mod tests {
     #[test]
     fn reserved_and_invalid_project_names_fail_before_connecting() {
         let mut command = command();
-        let reserved = command
-            .clone()
-            .try_get_matches_from(["ployz", "run", "--project-name", "ployz-system", "alpine"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&reserved, &mut command).unwrap_err().to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
-        let deploy = command
-            .clone()
-            .try_get_matches_from(["ployz", "deploy", "--project-name", "ployz-system"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&deploy, &mut command).unwrap_err().to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
-        let scale = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "scale",
-                "--project-name",
-                "ployz-system",
-                "web",
-                "2",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&scale, &mut command).unwrap_err().to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
         let invalid = command
             .clone()
-            .try_get_matches_from(["ployz", "deploy", "--project-name", "My_App"])
+            .try_get_matches_from(["ployz", "rm", "--project-name", "My_App", "web"])
             .unwrap();
         assert_eq!(
             dispatch(&invalid, &mut command).unwrap_err().to_string(),
@@ -782,16 +730,6 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
-        let implicit_default = command
-            .clone()
-            .try_get_matches_from(["ployz", "run", "alpine"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&implicit_default, &mut command)
-                .unwrap_err()
-                .to_string(),
-            crate::context::ContextError::NoConfig.to_string(),
         );
         let project_remove = command
             .clone()

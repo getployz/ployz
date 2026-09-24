@@ -8,13 +8,12 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS = {"contracts", "rust-lint", "rust-tests", "compose", "sdk-types", "macos-cli", "cloud", "release-contracts"}
+JOBS = {"contracts", "rust-lint", "rust-tests", "sdk-types", "macos-cli", "cloud", "release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
     "check-layer3-runner.sh",
     "run-layer3-tests.sh", "test-cli-installer.sh", "test-daemon-lifecycle.sh",
-    "test-qualify-release.sh", "test-qualify-clean-init.sh", "qualify-release.sh",
-    "qualify-clean-init.sh", "uninstall.sh", "stage-ployz-sh-site.sh",
+    "test-qualify-clean-init.sh", "qualify-clean-init.sh", "uninstall.sh", "stage-ployz-sh-site.sh",
     "check-release-tag.sh", "release-tag.sh", "promote-release.sh",
     "publish-github-release.sh",
 }
@@ -43,9 +42,7 @@ def select(paths):
                 return JOBS.copy()
             if not relative.startswith("tests/") or crate == "ployz-sdk":
                 selected |= {"cloud", "sdk-types"}
-            if relative.startswith("compose-helper/"):
-                selected.add("compose")
-        elif path == "core/install.sh" or path.startswith(("core/scripts/qualify-release/", "core/relay/")):
+        elif path == "core/install.sh" or path.startswith("core/relay/"):
             continue
         elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh"}:
             selected.add("cloud")

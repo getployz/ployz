@@ -1,7 +1,7 @@
 //! The client-side adapter: one captured Build, one already-selected Machine,
 //! one submission. It never opens Docker or inspects a local image.
 
-use super::build_inputs::BuildInputs;
+use super::inputs::BuildInputs;
 use crate::connect::Client;
 use ployz_build::{
     Progress, Stage,
@@ -69,22 +69,10 @@ impl Client {
 
 pub(super) enum Completion {
     Images {
-        machine_id: MachineId,
         images: Vec<ployz_build::BuiltImage>,
         stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
     },
     Report(Outcome),
-}
-impl Completion {
-    /// Explicitly release temporary image retention when only a terminal report is needed.
-    pub(super) fn into_outcome(self) -> Outcome {
-        match self {
-            Self::Images {
-                machine_id, images, ..
-            } => Outcome::Images { machine_id, images },
-            Self::Report(outcome) => outcome,
-        }
-    }
 }
 
 pub(super) async fn execute(
@@ -225,7 +213,6 @@ async fn execute_attempt(
             return failed(Stage::Preparation, error.to_string()).with_work(evidence);
         }
         let expected = definition.targets.len();
-        let output = definition.output;
         let Admitted { sender, mut responses, active_timeout } = match open_and_admit(
             client,
             Input::Start(definition),
@@ -273,7 +260,7 @@ async fn execute_attempt(
                             progress(event);
                         }
                         Ok(Event::Finished(outcome)) => {
-                            let outcome = validate_outcome(outcome, machine_id, expected, output, evidence);
+                            let outcome = validate_outcome(outcome, machine_id, expected, evidence);
                             if matches!(outcome, Outcome::Images { .. }) { retained = Some(responses); }
                             return outcome;
                         },
@@ -307,8 +294,7 @@ async fn execute_attempt(
         }
     }.await;
     match outcome {
-        Outcome::Images { machine_id, images } => Completion::Images {
-            machine_id,
+        Outcome::Images { images, .. } => Completion::Images {
             images,
             stream: Arc::new(Mutex::new(
                 retained.expect("validated loaded images retain their response stream"),
@@ -336,14 +322,11 @@ fn validate_outcome(
     mut outcome: Outcome,
     expected: MachineId,
     count: usize,
-    output: ployz_build::Output,
     evidence: ployz_build::WorkEvidence,
 ) -> Outcome {
     match &outcome {
         Outcome::Images { machine_id, images }
-            if *machine_id == expected
-                && images.len() == count
-                && output == ployz_build::Output::Load =>
+            if *machine_id == expected && images.len() == count =>
         {
             if images.iter().any(|image| {
                 !image
@@ -366,10 +349,6 @@ fn validate_outcome(
                 .with_work(evidence);
             }
         }
-        Outcome::Validated { machine_id }
-            if *machine_id == expected && output == ployz_build::Output::Validate => {}
-        Outcome::Published { machine_id }
-            if *machine_id == expected && output == ployz_build::Output::Registry => {}
         Outcome::Failed { .. } | Outcome::Unknown { .. } => {}
         Outcome::CapabilitiesChecked { .. }
         | Outcome::Images { .. }
@@ -390,7 +369,7 @@ fn validate_outcome(
     outcome
 }
 
-fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
+pub(super) fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
     Outcome::Failed {
         work: Default::default(),
         stage,
@@ -411,7 +390,7 @@ mod tests {
 
     #[test]
     fn terminal_validation_keeps_observed_work_and_accepts_linux_cross_builds() {
-        use ployz_build::{BuiltImage, Output, TargetEvidence, WorkEvidence};
+        use ployz_build::{BuiltImage, TargetEvidence, WorkEvidence};
         let machine_id = MachineId::random();
         let image = BuiltImage {
             reference: format!("sha256:{}", "1".repeat(64)),
@@ -443,7 +422,7 @@ mod tests {
             },
         ] {
             let Outcome::Unknown { work: retained, .. } =
-                validate_outcome(outcome, machine_id, 1, Output::Load, work.clone())
+                validate_outcome(outcome, machine_id, 1, work.clone())
             else {
                 panic!("malformed success was accepted")
             };
@@ -457,7 +436,6 @@ mod tests {
                 },
                 machine_id,
                 1,
-                Output::Load,
                 work
             ),
             Outcome::Images { .. }

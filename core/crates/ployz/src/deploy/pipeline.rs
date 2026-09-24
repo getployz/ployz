@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    compose::{BuiltService, CapturedCompose},
+    build::BuiltService,
     connect::{Client, ConnectError},
     dns::{IngressDnsWarning, resolve_ingress_dns_warnings_for_ports},
     failure::Failure,
@@ -26,24 +26,16 @@ use crate::{
 };
 
 use super::{
-    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview,
-    DeploySnapshot, DeployWarning, ExecutionError, IngressContext, ObservationKind, PlanError,
-    PlanOptions, exec::execute_operation_sequence, plan_deploy, planning,
+    DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview, DeploySnapshot,
+    DeployWarning, ExecutionError, IngressContext, ObservationKind, PlanError, PlanOptions,
+    exec::execute_operation_sequence, plan_deploy, planning,
 };
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ReconciliationHints {
-    pub requested_profiles: Vec<String>,
-    pub compose_refusal: Option<ComposePruneRefusal>,
-}
 
 /// Snapshot or planning failure before a Deploy executes.
 ///
 /// Execution failure is a [`DeployOutcome::Failed`], not this error.
 #[derive(Debug, Error)]
 pub enum DeployError {
-    #[error("{0}. No Service, hook, or volume change was attempted.")]
-    Build(#[from] crate::compose::ComposeError),
     #[error(transparent)]
     Connect(#[from] ConnectError),
     #[error(transparent)]
@@ -244,7 +236,6 @@ impl From<DeployError> for RpcError {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into_rpc_error(),
             DeployError::Project(error) => invalid_argument(error.to_string()),
-            DeployError::Build(error) => invalid_argument(error.to_string()),
         }
     }
 }
@@ -283,13 +274,13 @@ pub(crate) async fn push_project_images(
     machines: &[MachineObservation],
     preview: &DeployPlan,
     cancellation: &CancellationToken,
-) -> Result<PushOutcome, crate::preparation::PreparationError> {
+) -> Result<PushOutcome, crate::sdk::prepare::PreparationError> {
     let mut pushed = Vec::new();
     let mut failures = Vec::new();
     // Check every actual destination before any image or application changes.
     let deliveries = builds.iter().map(|service| {
         let targets = preview.operations.iter()
-            .filter(|row| row.operation.spec().is_some_and(|spec| spec.name.as_str() == service.name))
+            .filter(|row| row.operation.spec().is_some_and(|spec| spec.name == service.name))
             .map(|row| row.machine_id).collect::<BTreeSet<_>>();
         for target in &targets {
             let architecture = machines.iter().find(|machine| machine.machine.id == *target)
@@ -297,11 +288,11 @@ pub(crate) async fn push_project_images(
             let compatible = architecture.is_some_and(|architecture|
                 service.built.platforms.iter().any(|platform| crate::image::platform_compatible(platform, architecture)));
             if !compatible {
-                return Err(crate::preparation::PreparationError::Delivery(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
+                return Err(crate::sdk::prepare::PreparationError::Delivery(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
             }
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
-    }).collect::<Result<Vec<_>, crate::preparation::PreparationError>>()?;
+    }).collect::<Result<Vec<_>, crate::sdk::prepare::PreparationError>>()?;
     for (service, targets) in deliveries {
         if targets.is_empty() {
             continue;
@@ -319,10 +310,9 @@ pub(crate) async fn push_project_images(
 
 pub(crate) async fn plan_project(
     client: &mut Client,
-    candidate: &CapturedCompose,
+    intent: &DeployIntent,
     machines: Vec<MachineObservation>,
 ) -> Result<DeployPlan, DeployError> {
-    let intent = candidate.intent();
     let (snapshot, warnings) = gather_deploy_snapshot(client, machines, intent).await?;
     preview_gathered(client, snapshot, warnings, intent).await
 }
@@ -332,17 +322,14 @@ pub(super) async fn plan_scale(
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     options: PlanOptions,
-) -> Result<(DeployPlan, ProjectName), Failure> {
+) -> Result<DeployPlan, Failure> {
     let machines = client.machines().await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let choice = choose_scale_spec(&snapshot, selector, replicas)?;
     let Some(requested) = choice.requested else {
-        return Ok((
-            DeployPlan::empty(choice.project_name.clone(), warnings),
-            choice.project_name,
-        ));
+        return Ok(DeployPlan::empty(choice.project_name, warnings));
     };
-    let intent = DeployIntent::apply_one(choice.project_name.clone(), requested, options);
+    let intent = DeployIntent::apply_one(choice.project_name, requested, options);
     let (snapshot, warnings) = if intent
         .target
         .iter()
@@ -352,10 +339,7 @@ pub(super) async fn plan_scale(
     } else {
         (snapshot, warnings)
     };
-    Ok((
-        preview_gathered(client, snapshot, warnings, &intent).await?,
-        choice.project_name,
-    ))
+    Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
 }
 
 async fn preview_gathered(
@@ -552,40 +536,16 @@ async fn push_image(
     targets: &[String],
     cancellation: &CancellationToken,
 ) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
-    let result = match service.location {
-        crate::compose::BuildLocation::Local => {
-            // Retain each digest even when multiple Services requested one tag.
-            let tag = service
-                .built
-                .repository_reference(&service.image)
-                .map_err(|error| crate::image::PushError::InvalidReference {
-                    reference: service.built.reference.clone(),
-                    message: error.to_string(),
-                })?
-                .replace("@sha256:", ":ployz-sha256-");
-            crate::image::push_using_machines(
-                client,
-                crate::image::ImageContent::built(&tag, &service.built.reference),
-                None,
-                targets,
-                machines,
-                cancellation,
-            )
-            .await?
-        }
-        crate::compose::BuildLocation::Machine(source) => {
-            crate::image::push_from_machine_using_machines(
-                client,
-                &service.built,
-                &service.image,
-                source,
-                targets,
-                machines,
-                cancellation,
-            )
-            .await?
-        }
-    };
+    let result = crate::image::push_from_machine_using_machines(
+        client,
+        &service.built,
+        &service.image,
+        service.machine_id,
+        targets,
+        machines,
+        cancellation,
+    )
+    .await?;
     let pushed = result
         .successes
         .iter()

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ComposePruneRefusal, ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure,
-    PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure, PruneRefusal,
+    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
     VolumeObservationFailure,
 };
 
@@ -57,50 +57,6 @@ fn selected_services_list_obsolete_services_and_remove_nothing() {
         [QualifiedService::parse("app/debug").unwrap()]
     );
     assert_eq!(plan.prune_refusal, Some(PruneRefusal::SelectedServices));
-    assert!(!removes(&plan, 'd'));
-}
-
-#[test]
-fn filtered_profiles_list_obsolete_services_and_remove_nothing() {
-    let (web, snapshot) = shop_with_obsolete_debug();
-    let plan = preview_deploy(
-        &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
-            [&web],
-            PlanOptions::default(),
-        )
-        .with_compose_refusal(Some(ComposePruneRefusal::FilteredProfiles)),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        plan.would_remove,
-        [QualifiedService::parse("app/debug").unwrap()]
-    );
-    assert_eq!(plan.prune_refusal, Some(PruneRefusal::FilteredProfiles));
-    assert!(!removes(&plan, 'd'));
-}
-
-#[test]
-fn guessed_project_name_lists_obsolete_services_and_removes_nothing() {
-    let (web, snapshot) = shop_with_obsolete_debug();
-    let plan = preview_deploy(
-        &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
-            [&web],
-            PlanOptions::default(),
-        )
-        .with_compose_refusal(Some(ComposePruneRefusal::GuessedProjectName)),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        plan.would_remove,
-        [QualifiedService::parse("app/debug").unwrap()]
-    );
-    assert_eq!(plan.prune_refusal, Some(PruneRefusal::GuessedProjectName));
     assert!(!removes(&plan, 'd'));
 }
 
@@ -165,45 +121,6 @@ fn down_machine_omissions_do_not_make_the_snapshot_incomplete() {
         ..Default::default()
     };
     assert!(snapshot.is_observer_complete());
-}
-
-#[test]
-fn full_reconciliation_keeps_profiled_services_in_the_target_without_starting_them() {
-    let web = spec("web");
-    let worker = spec("worker");
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![
-            container('c', '1', &web, &service_id('a')),
-            container('e', '1', &worker, &service_id('b')),
-        ],
-        ..Default::default()
-    };
-    let plan = preview_deploy(
-        &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
-            [&web, &worker],
-            PlanOptions::default(),
-        )
-        .with_service_profiles(BTreeMap::from([(
-            ServiceName::parse("worker").unwrap(),
-            vec!["tools".into()],
-        )])),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(plan.would_remove.is_empty());
-    assert!(plan.prune_refusal.is_none());
-    assert!(!removes(&plan, 'e'));
-    assert!(!plan.operations.iter().any(|row| {
-        matches!(
-            &row.operation,
-            DeployOperation::RunContainer { spec, .. }
-                | DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })
-                if spec.name.as_str() == "worker"
-        )
-    }));
 }
 
 #[test]

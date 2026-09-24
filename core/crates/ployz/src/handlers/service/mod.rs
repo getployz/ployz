@@ -10,7 +10,10 @@ use ployz_core::{
 
 use crate::cluster::ContainerObservationCondition;
 
-use super::{Error, cancellation_on_ctrl_c, data_loss, leaf_matches, with_client};
+use super::{
+    Error, cancellation_on_ctrl_c, connect_client, data_loss, leaf_matches, required, runtime,
+    with_client,
+};
 
 /// List the observed Services.
 ///
@@ -543,15 +546,40 @@ async fn apply_service_action(
     })
 }
 
+pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let replicas = required(matches, "replicas")?
+        .parse::<u32>()
+        .ok()
+        .and_then(std::num::NonZeroU32::new)
+        .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
+    let selector = ServiceSelector::parse(required(matches, "service")?)?;
+    let context = matches.get_one::<String>("context").map(String::as_str);
+    runtime()?.block_on(async {
+        let mut client = connect_client(root, context).await?;
+        crate::deploy::deploy_scale(
+            &mut client,
+            &selector,
+            replicas,
+            matches.get_flag("skip-health"),
+            crate::deploy::ConfirmGate {
+                auto_confirm: matches.get_flag("yes"),
+                context: context.unwrap_or("default"),
+            },
+        )
+        .await
+    })
+}
+
 fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
-    let project = crate::project::resolve_explicit(matches)?;
+    let project = crate::project::explicit(matches)?;
     matches
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
         .map(|selector| {
             let selector = ServiceSelector::parse(selector.as_str())?;
             match project.as_ref() {
-                Some(project) => selector.with_project(&project.name).map_err(Into::into),
+                Some(project) => selector.with_project(project).map_err(Into::into),
                 None => Ok(selector),
             }
         })

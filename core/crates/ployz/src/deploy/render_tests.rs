@@ -16,7 +16,7 @@ use super::*;
 #[test]
 fn empty_preview_prints_no_changes_without_a_prompt_body() {
     let preview = DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("app").unwrap());
-    assert_eq!(plan_text(&preview, "default", None), "No changes.\n");
+    assert_eq!(plan_text(&preview, "default"), "No changes.\n");
     assert_eq!(
         confirm_prompt("default"),
         "Proceed with deployment to default? [y/N] "
@@ -138,7 +138,7 @@ fn plan_identifies_a_provisioned_volume_and_its_bound() {
         )),
     }];
 
-    let text = plan_text(&preview, "default", None);
+    let text = plan_text(&preview, "default");
 
     assert!(text.contains("Volumes to create\n"), "{text}");
     assert!(
@@ -165,7 +165,7 @@ fn replace_plan_matches_tree_shape() {
         Some(ServiceName::parse("excalidraw").unwrap()),
     );
     let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("app").unwrap());
-    let text = plan_text(&preview, "default", None);
+    let text = plan_text(&preview, "default");
     assert!(text.contains("Deployment plan\ncontext: default\nproject: app\n"));
     assert!(text.contains("~ update service excalidraw\n"));
     assert!(text.contains("  │   image: excalidraw/excalidraw:latest\n"));
@@ -190,8 +190,7 @@ fn plan_shows_dependency_health_wait() {
     let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("app").unwrap());
 
     assert!(
-        plan_text(&preview, "default", None)
-            .contains("~ wait for app/db to be healthy before app/web")
+        plan_text(&preview, "default").contains("~ wait for app/db to be healthy before app/web")
     );
 }
 
@@ -201,11 +200,8 @@ fn plan_lists_would_remove_with_observer_relative_refusal() {
         DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
     preview.would_remove = vec![QualifiedService::parse("shop/debug").unwrap()];
     preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
-    let text = plan_text(&preview, "default", Some("top-level Compose name"));
-    assert!(
-        text.contains("project: shop (top-level Compose name)"),
-        "{text}"
-    );
+    let text = plan_text(&preview, "default");
+    assert!(text.contains("project: shop\n"), "{text}");
     assert!(text.contains("would remove shop/debug"), "{text}");
     assert!(
         text.contains("incomplete relative to this Machine's current visible fan-out"),
@@ -231,7 +227,7 @@ fn plan_lists_preserved_volumes_instead_of_no_changes() {
         },
         machine_name: Some(MachineName::parse("edge").unwrap()),
     }];
-    let text = plan_text(&preview, "default", None);
+    let text = plan_text(&preview, "default");
     assert!(
         text.contains("would preserve volume shop_data on edge"),
         "{text}"
@@ -255,7 +251,7 @@ fn plan_shows_prune_as_remove_operations_before_confirm() {
     let mut preview =
         DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
     preview.would_remove = vec![QualifiedService::parse("shop/debug").unwrap()];
-    let text = plan_text(&preview, "default", None);
+    let text = plan_text(&preview, "default");
     assert!(text.contains("- remove service debug\n"), "{text}");
     assert!(
         text.contains("- remove container debug/fde7ac7f11ad on machine-dc3c"),
@@ -286,7 +282,7 @@ fn replica_shrink_still_prints_update_not_service_remove() {
         Some(ServiceName::parse("web").unwrap()),
     );
     let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
-    let text = plan_text(&preview, "default", None);
+    let text = plan_text(&preview, "default");
     assert!(text.contains("~ update service web\n"), "{text}");
     assert!(
         text.contains("- remove container web/fde7ac7f11ad on machine-dc3c"),

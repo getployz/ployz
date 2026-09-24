@@ -6,7 +6,6 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-base64 = "0.22.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["env"] }
 clap_complete = "4.6.9"
@@ -20,6 +19,7 @@ iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 oci-client = "0.17.0"
 ployz-build.workspace = true
 ployz-core.workspace = true
+regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -43,6 +43,7 @@ unicode-width = { version = "0.2.2", default-features = false }
 uuid = { version = "1.24.0", features = ["v4"] }
 
 [dev-dependencies]
+base64 = "0.22.1"
 ployz-testkit.workspace = true
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio = { version = "1.53.1", features = ["test-util"] }

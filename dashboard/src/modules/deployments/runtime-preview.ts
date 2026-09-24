@@ -14,7 +14,7 @@ export const runtimeDeployPreviewSchema = Schema.Struct({
   storage: Schema.optional(Schema.mutable(Schema.Array(Schema.Json))),
   project_name: Schema.String.check(Schema.isNonEmpty()),
   prune_refusal: Schema.optionalKey(Schema.NullOr(Schema.Literals([
-    "incomplete_snapshot", "selected_services", "filtered_profiles", "guessed_project_name",
+    "incomplete_snapshot", "selected_services",
   ]))),
   operations: Schema.mutable(Schema.Array(Schema.Json)),
   warnings: Schema.mutable(Schema.Array(Schema.Json)),

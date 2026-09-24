@@ -235,6 +235,8 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
         )
     );
     assert_eq!(parse_log_time("2m30s", now).unwrap(), Some(1_799_999_850));
+    // A duration past the timestamp range is refused, not wrapped into the future.
+    assert!(parse_log_time("10000000000000000000s", now).is_err());
     assert_eq!(
         parse_log_time("notatime", now).unwrap_err().to_string(),
         "invalid log time \"notatime\": expected a relative duration, RFC 3339 date, or Unix timestamp"

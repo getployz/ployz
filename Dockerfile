@@ -1,11 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM node:24.18.1-bookworm-slim AS node
 
-FROM golang:1.26.1-bookworm AS go
-
 FROM rust:1.97.1-bookworm AS sdk
-COPY --from=go /usr/local/go /usr/local/go
-ENV PATH="/usr/local/go/bin:${PATH}"
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 WORKDIR /app
 # Dashboard edits must not invalidate this layer.

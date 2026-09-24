@@ -83,33 +83,3 @@ fn cycle_reports_only_owner_keys_even_after_a_secret_was_resolved() {
         assert!(result["path"].as_array().unwrap().contains(&json!("db::A")));
     }
 }
-
-#[test]
-fn environment_review_never_treats_metadata_or_an_unresolved_provider_as_live_evidence() {
-    use ployz_core::config::{EnvironmentEvidence, EnvironmentUncheckedReason, review_environment};
-    use std::collections::BTreeMap;
-    let requested = BTreeMap::from([
-        ("TOKEN".into(), "secret://provider".into()),
-        ("PLAIN".into(), "private-live-value".into()),
-    ]);
-    let previous = BTreeMap::from([("PLAIN".into(), "stale-value".into())]);
-    let live = BTreeMap::from([("PLAIN".into(), "private-live-value".into())]);
-    let rows = review_environment(&requested, &previous, Some(&live));
-    assert_eq!(rows[0].evidence, EnvironmentEvidence::Same);
-    assert_eq!(
-        rows[1].evidence,
-        EnvironmentEvidence::NotChecked {
-            reason: EnvironmentUncheckedReason::ProviderUnresolved
-        }
-    );
-    assert!(
-        !serde_json::to_string(&rows)
-            .unwrap()
-            .contains("private-live-value")
-    );
-    assert!(
-        review_environment(&requested, &previous, None)
-            .iter()
-            .all(|row| matches!(row.evidence, EnvironmentEvidence::NotChecked { .. }))
-    );
-}

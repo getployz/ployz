@@ -4,11 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::compose::{
-    BuildOptions, BuildSpec, CapturedBuild, CapturedCompose, ComposeProject, LoadOptions,
-};
+use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
-    RpcError, RpcErrorCode, ServiceName,
+    DeployIntent, RpcError, RpcErrorCode, ServiceName,
     config::{ServiceBuilder, ServiceSource},
 };
 use serde::{Deserialize, Serialize};
@@ -39,29 +37,26 @@ pub struct BuildReceipt {
 }
 
 pub(super) struct CapturedPreparation {
-    pub candidate: CapturedCompose,
-    pub build: Option<CapturedBuild>,
+    pub intent: DeployIntent,
+    pub build: CapturedBuild,
     pub fingerprints: BTreeMap<ServiceName, String>,
-    pub reusable: Vec<crate::compose::BuiltService>,
+    pub reusable: Vec<BuiltService>,
 }
 
 pub(super) fn receipts(
     fingerprints: &BTreeMap<ServiceName, String>,
-    builds: &[crate::compose::BuiltService],
+    builds: &[BuiltService],
 ) -> BTreeMap<ServiceName, BuildReceipt> {
     fingerprints
         .iter()
         .filter_map(|(name, fingerprint)| {
-            let build = builds.iter().find(|build| build.name == name.as_str())?;
-            let crate::compose::BuildLocation::Machine(machine_id) = build.location else {
-                return None;
-            };
+            let build = builds.iter().find(|build| &build.name == name)?;
             Some((
                 name.clone(),
                 BuildReceipt {
                     fingerprint: fingerprint.clone(),
                     image: build.built.clone(),
-                    machine_id,
+                    machine_id: build.machine_id,
                 },
             ))
         })
@@ -76,7 +71,7 @@ fn invalid(message: impl ToString) -> RpcError {
     }
 }
 
-/// Capture authorized checkouts using exactly the existing Compose build machinery.
+/// Capture authorized checkouts as Builds.
 pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
     for receipt in input.build_receipts.values() {
         if !lower_hex(&receipt.fingerprint, 64)
@@ -128,41 +123,26 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             if !context.is_dir() {
                 return Err(invalid("source root must be a directory"));
             }
-            let mut build = json!({ "context": context, "x-recipe": match config.settings.build.builder {
-                ServiceBuilder::Dockerfile => "dockerfile",
-                ServiceBuilder::Railpack => "railpack",
-            }});
-            if config.settings.build.builder == ServiceBuilder::Dockerfile {
-                let dockerfile = config
-                    .settings
-                    .build
-                    .dockerfile_path
-                    .as_deref()
-                    .unwrap_or("Dockerfile");
-                let dockerfile = contained(&repository, &context, dockerfile)?;
-                if !dockerfile.is_file() {
-                    return Err(invalid("Dockerfile must be a file"));
+            let recipe = match config.settings.build.builder {
+                ServiceBuilder::Dockerfile => {
+                    let dockerfile = config
+                        .settings
+                        .build
+                        .dockerfile_path
+                        .as_deref()
+                        .unwrap_or("Dockerfile");
+                    let dockerfile = contained(&repository, &context, dockerfile)?;
+                    if !dockerfile.is_file() {
+                        return Err(invalid("Dockerfile must be a file"));
+                    }
+                    Recipe::Dockerfile(dockerfile)
                 }
-                build
-                    .as_object_mut()
-                    .expect("build object")
-                    .insert("dockerfile".into(), json!(dockerfile));
-            }
-            if config.settings.build.builder == ServiceBuilder::Railpack
-                && let Some(command) = &config.settings.build.command
-            {
-                build
-                    .as_object_mut()
-                    .expect("build object")
-                    .insert("args".into(), json!({"RAILPACK_BUILD_CMD": command}));
-            }
-            builds.insert(
-                name.to_string(),
-                BuildSpec {
-                    raw: serde_norway::to_value(build).map_err(invalid)?,
+                ServiceBuilder::Railpack => Recipe::Railpack {
+                    command: config.settings.build.command.clone(),
                 },
-            );
-            // This tag never escapes preparation: bind_builds replaces it with verified content.
+            };
+            builds.insert(name.clone(), BuildSpec { context, recipe });
+            // This tag never escapes preparation: binding replaces it with verified content.
             snapshot
                 .get_mut("config")
                 .and_then(Value::as_object_mut)
@@ -181,36 +161,8 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         serde_json::from_value(input.deployment).map_err(invalid)?,
     )
     .map_err(invalid)?;
-    let dependencies = intent
-        .dependencies()
-        .iter()
-        .map(|(name, edges)| (name.to_string(), edges.clone()))
-        .collect();
-    let services = intent
-        .target
-        .into_iter()
-        .map(|s| (s.name.to_string(), s))
-        .collect::<BTreeMap<_, _>>();
-    // Explicit empty provider environment prevents capture from reading Cloud's HOME,
-    // Docker credentials or process variables. Runtime variables are already resolved.
-    let project = ComposeProject::from_frozen_services(
-        intent.project_name.to_string(),
-        services,
-        builds,
-        dependencies,
-    );
-    let (candidate, build) = crate::preparation::capture(
-        project,
-        intent.project_name,
-        intent.options,
-        &LoadOptions::default(),
-        &BuildOptions::default(),
-        false,
-        None,
-    )
-    .map_err(invalid)?;
-    let fingerprints: BTreeMap<_, _> = candidate
-        .intent()
+    let build = crate::build::capture(&intent, builds).map_err(invalid)?;
+    let fingerprints: BTreeMap<_, _> = intent
         .target
         .iter()
         .filter_map(|service| {
@@ -220,8 +172,7 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             Some((service.name.clone(), hex::encode(Sha256::digest(bytes))))
         })
         .collect();
-    let reusable = candidate
-        .intent()
+    let reusable = intent
         .target
         .iter()
         .filter_map(|service| {
@@ -231,18 +182,18 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             {
                 return None;
             }
-            Some(crate::compose::BuiltService {
-                name: service.name.to_string(),
+            Some(BuiltService {
+                name: service.name.clone(),
+                machine_id: receipt.machine_id,
                 image: service.container.image.clone(),
                 placement: service.placement.clone(),
-                location: crate::compose::BuildLocation::Machine(receipt.machine_id),
                 built: receipt.image,
                 _retention: None,
             })
         })
         .collect();
     Ok(CapturedPreparation {
-        candidate,
+        intent,
         build,
         fingerprints,
         reusable,
@@ -268,6 +219,10 @@ fn contained(root: &Path, base: &Path, setting: &str) -> Result<PathBuf, RpcErro
 }
 
 #[cfg(test)]
+#[path = "preparation_tests.rs"]
+mod flow_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -288,8 +243,8 @@ mod tests {
             build_receipts: BTreeMap::new(),
         })
         .unwrap();
-        assert!(captured.build.is_none());
-        let dependencies = captured.candidate.intent().dependencies();
+        assert!(captured.build.targets().next().is_none());
+        let dependencies = captured.intent.dependencies();
         assert_eq!(
             dependencies
                 .get(&ServiceName::parse("web").unwrap())

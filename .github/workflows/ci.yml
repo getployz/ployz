@@ -61,7 +61,6 @@ jobs:
       - run: bash core/scripts/test-cli-installer.sh
       - run: bash core/scripts/test-release-packaging.sh
       - run: bash core/scripts/test-daemon-lifecycle.sh
-      - run: bash core/scripts/test-qualify-release.sh
       - run: bash core/scripts/test-qualify-clean-init.sh
       - uses: dtolnay/rust-toolchain@1.97.1
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
@@ -70,24 +69,6 @@ jobs:
       - run: cargo fmt --all -- --check
         working-directory: core
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
-
-  compose:
-    needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'compose')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: core/crates/ployz/compose-helper/go.mod
-          cache-dependency-path: core/crates/ployz/compose-helper/go.sum
-      - name: Check Compose helper
-        working-directory: core/crates/ployz/compose-helper
-        run: |
-          test -z "$(gofmt -l ./*.go)"
-          go vet ./...
-          go test ./...
 
   rust-lint:
     defaults:
@@ -212,7 +193,7 @@ jobs:
   ready:
     name: CI ready
     if: always()
-    needs: [changes, contracts, compose, rust-lint, rust-tests, sdk-types, macos-cli, cloud, release-contracts]
+    needs: [changes, contracts, rust-lint, rust-tests, sdk-types, macos-cli, cloud, release-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

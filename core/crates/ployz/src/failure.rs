@@ -8,7 +8,6 @@ use ployz_core::{
 
 use crate::{
     cloud_enroll,
-    compose::ComposeError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
@@ -152,9 +151,6 @@ from_error!(
     ServiceSelectorError,
     ContainerSelectorError,
     PlanError,
-    ComposeError,
-    crate::preparation::PreparationError,
-    crate::changes::ChangesError,
     MachineUpdateError,
     DomainRequired,
     IngressLabelTooLong,
@@ -210,8 +206,6 @@ impl From<DeployError> for Failure {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
             DeployError::Project(error) => error.into(),
-            // A failed Build is a library error, not a usage mistake.
-            error @ DeployError::Build(_) => Self::command(error),
         }
     }
 }

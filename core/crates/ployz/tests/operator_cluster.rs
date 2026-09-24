@@ -220,17 +220,9 @@ async fn assert_service_logs(
         containers: Vec::new(),
     }];
     let entries = collect_logs(
-        open_service_logs(
-            client,
-            &args,
-            &[],
-            log_options(),
-            false,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap()
-        .inputs,
+        open_service_logs(client, &args, &[], log_options(), CancellationToken::new())
+            .await
+            .unwrap(),
     )
     .await;
     let actual = entries
@@ -270,37 +262,15 @@ async fn assert_service_logs(
         );
     }
 
-    let compose_opened = open_service_logs(
-        client,
-        &[
-            args[0].clone(),
-            ServiceArg {
-                service: ServiceSelector::parse("disabled-but-undeployed").unwrap(),
-                containers: Vec::new(),
-            },
-        ],
-        &[],
-        log_options(),
-        true,
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        compose_opened.skipped_services,
-        [ServiceSelector::parse("disabled-but-undeployed").unwrap()]
-    );
-    assert_eq!(compose_opened.inputs.len(), 3);
     assert!(
         open_service_logs(
             client,
             &[ServiceArg {
-                service: ServiceSelector::parse("disabled-but-undeployed").unwrap(),
+                service: ServiceSelector::parse("undeployed").unwrap(),
                 containers: Vec::new(),
             }],
             &[],
             log_options(),
-            true,
             CancellationToken::new(),
         )
         .await
@@ -321,12 +291,10 @@ async fn assert_service_logs(
             }],
             &[],
             log_options(),
-            false,
             CancellationToken::new(),
         )
         .await
-        .unwrap()
-        .inputs;
+        .unwrap();
         assert_eq!(inputs.len(), 1);
     }
     assert!(
@@ -338,7 +306,6 @@ async fn assert_service_logs(
             }],
             &[],
             log_options(),
-            false,
             CancellationToken::new(),
         )
         .await
@@ -349,19 +316,17 @@ async fn assert_service_logs(
         &args,
         &[FanoutSelector::parse(machines[0].name.as_str()).unwrap()],
         log_options(),
-        false,
         CancellationToken::new(),
     )
     .await
     .unwrap();
-    assert_eq!(selected_machine.inputs.len(), 2);
+    assert_eq!(selected_machine.len(), 2);
     assert!(
         open_service_logs(
             client,
             &args,
             &[FanoutSelector::parse("missing").unwrap()],
             log_options(),
-            false,
             CancellationToken::new(),
         )
         .await

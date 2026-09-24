@@ -528,7 +528,7 @@ impl ProjectName {
         self.as_str() == Self::SYSTEM
     }
 
-    /// Physical Docker Volume name for a Compose-declared volume owned by this Project.
+    /// Physical Docker Volume name for a declared volume owned by this Project.
     #[must_use]
     pub fn volume_name(&self, logical: &DockerVolumeName) -> DockerVolumeName {
         DockerVolumeName::parse(format!("{self}_{logical}"))

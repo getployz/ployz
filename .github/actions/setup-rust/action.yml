@@ -1,5 +1,5 @@
 name: Prepare Rust build
-description: Install the bundled Compose toolchain and reuse the shared compiler cache
+description: Install the Rust toolchain and reuse the shared compiler cache
 inputs:
   cache-key:
     description: Build workload whose manifest should be prefetched
@@ -10,10 +10,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v5
-      with:
-        go-version-file: core/crates/ployz/compose-helper/go.mod
-        cache-dependency-path: core/crates/ployz/compose-helper/go.sum
     - uses: dtolnay/rust-toolchain@1.97.1
       with:
         components: ${{ inputs.components }}

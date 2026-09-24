@@ -14,7 +14,6 @@ use ployz_core::{
 use tokio::io::copy_bidirectional;
 
 use crate::{
-    compose::{LoadOptions, load_project},
     context::Transport,
     operator::{
         ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
@@ -23,7 +22,7 @@ use crate::{
     },
 };
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, string_values, with_client_context};
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, string_values, with_client};
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
@@ -50,7 +49,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             std::io::stdin().is_terminal(),
         )?,
     );
-    with_client_context(root, None, |client| {
+    with_client(root, |client| {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
@@ -105,57 +104,16 @@ pub(super) fn ingress_logs(root: &ArgMatches) -> Result<(), Error> {
 fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let options = log_options(leaf)?;
-    let (args, context, compose_selection) = if explicit.is_empty() {
-        let project = load_project(&LoadOptions {
-            command: "logs".into(),
-            files: string_values(leaf, "file")
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            all_profiles: true,
-            ..Default::default()
-        })?;
-        for warning in &project.warnings {
-            eprintln!("WARNING: {warning}");
-        }
-        if project.services.is_empty() {
-            return Err(Error::usage("no Services found in Compose file(s)"));
-        }
-        let mut args = Vec::new();
-        for service in project.services.keys() {
-            args.push(crate::operator::ServiceArg {
-                service: ServiceSelector::parse(service.as_str())?,
-                containers: vec![],
-            });
-        }
-        let direct = leaf.get_one::<String>("connect").map(String::as_str);
-        let explicit_context = leaf.get_one::<String>("context").map(String::as_str);
-        let context = project
-            .selected_context(explicit_context, direct)
-            .map(ToOwned::to_owned);
-        (args, context, true)
-    } else {
-        (parse_service_args(&explicit)?, None, false)
-    };
+    let args = parse_service_args(&explicit)?;
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
-    with_client_context(root, context.as_deref(), |client| {
+    with_client(root, |client| {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let opened = open_service_logs(
-                client,
-                &args,
-                &machines,
-                options,
-                compose_selection,
-                cancellation.clone(),
-            )
-            .await?;
-            for service in opened.skipped_services {
-                eprintln!("WARNING: Service {service} is not in the Cluster; skipping");
-            }
-            print_logs(merge_logs(opened.inputs, cancellation), utc).await
+            let inputs =
+                open_service_logs(client, &args, &machines, options, cancellation.clone()).await?;
+            print_logs(merge_logs(inputs, cancellation), utc).await
         })
     })
 }
@@ -169,7 +127,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let options = log_options(leaf)?;
     let utc = leaf.get_flag("utc");
-    with_client_context(root, None, |client| {
+    with_client(root, |client| {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
@@ -192,7 +150,7 @@ pub fn proxy(root: &ArgMatches) -> Result<(), Error> {
         leaf.get_one::<String>("port")
             .ok_or_else(|| Error::usage("proxy port is required"))?,
     )?;
-    with_client_context(root, None, |client| {
+    with_client(root, |client| {
         Box::pin(async move { run_proxy(client, &service, ports).await })
     })
 }

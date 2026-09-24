@@ -98,24 +98,6 @@ pub(crate) async fn push_from_machine_using_machines(
     Ok(result)
 }
 
-/// Open the actual complete Build source for either delivery or a later Build.
-///
-/// # Errors
-/// Reports an unusable store, a partial Build host, and a failed ingest start.
-pub(crate) async fn serve_build_image(
-    client: &mut Client,
-    image: &BuiltImage,
-    source: MachineId,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<ImageIngestDestination, PushError> {
-    Ok(
-        Source::open(client, source, &mut Cancellation::new(cancellation))
-            .await?
-            .require_complete(image)?
-            .destination,
-    )
-}
-
 /// A Machine whose actual image store was read and whose image server is open.
 /// It serves a destination only a variant that store demonstrably holds.
 #[derive(Debug)]

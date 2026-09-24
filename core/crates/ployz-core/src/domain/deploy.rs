@@ -53,12 +53,6 @@ pub struct DeployIntent {
     pub options: PlanOptions,
     #[serde(default)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
-    #[serde(default)]
-    service_profiles: BTreeMap<ServiceName, Vec<String>>,
-    #[serde(default)]
-    requested_profiles: Vec<String>,
-    #[serde(default)]
-    compose_refusal: Option<ComposePruneRefusal>,
 }
 
 impl DeployIntent {
@@ -78,9 +72,6 @@ impl DeployIntent {
             target,
             options,
             dependencies: BTreeMap::new(),
-            service_profiles: BTreeMap::new(),
-            requested_profiles: Vec::new(),
-            compose_refusal: None,
         }
     }
 
@@ -141,30 +132,6 @@ impl DeployIntent {
         self
     }
 
-    /// Compose `profiles:` per Service Name in `target`.
-    #[must_use]
-    pub fn with_service_profiles(
-        mut self,
-        service_profiles: BTreeMap<ServiceName, Vec<String>>,
-    ) -> Self {
-        self.service_profiles = service_profiles;
-        self
-    }
-
-    /// Profiles requested for this command. They decide what starts, not what exists.
-    #[must_use]
-    pub fn with_requested_profiles(mut self, requested_profiles: Vec<String>) -> Self {
-        self.requested_profiles = requested_profiles;
-        self
-    }
-
-    /// Compose-side reason pruning is refused, if any.
-    #[must_use]
-    pub fn with_compose_refusal(mut self, compose_refusal: Option<ComposePruneRefusal>) -> Self {
-        self.compose_refusal = compose_refusal;
-        self
-    }
-
     /// Planner `depends_on` edges used to expand and order `selected`.
     #[must_use]
     pub fn dependencies(&self) -> &BTreeMap<ServiceName, Vec<ServiceDependency>> {
@@ -175,12 +142,7 @@ impl DeployIntent {
     #[must_use]
     pub fn applied_names(&self) -> BTreeSet<&ServiceName> {
         if self.options.selected.is_empty() {
-            return self
-                .target
-                .iter()
-                .filter(|spec| self.service_starts(&spec.name))
-                .map(|spec| &spec.name)
-                .collect();
+            return self.target.iter().map(|spec| &spec.name).collect();
         }
         let present = self
             .target
@@ -210,18 +172,6 @@ impl DeployIntent {
         included
     }
 
-    /// Whether `name` starts given the requested profile list.
-    #[must_use]
-    pub fn service_starts(&self, name: &ServiceName) -> bool {
-        profiles_enable_start(
-            self.service_profiles
-                .get(name)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-            &self.requested_profiles,
-        )
-    }
-
     /// Why pruning is refused for this Intent and Snapshot completeness.
     #[must_use]
     pub fn prune_refusal(&self, snapshot_complete: bool) -> Option<PruneRefusal> {
@@ -230,12 +180,12 @@ impl DeployIntent {
         } else if !self.options.selected.is_empty() {
             Some(PruneRefusal::SelectedServices)
         } else {
-            self.compose_refusal.map(PruneRefusal::from)
+            None
         }
     }
 }
 
-/// Compose condition on one Service dependency edge.
+/// Condition on one Service dependency edge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DependencyCondition {
@@ -252,15 +202,6 @@ pub struct ServiceDependency {
     pub service: ServiceName,
     /// Condition the dependency must satisfy before the dependent starts.
     pub condition: DependencyCondition,
-}
-
-/// Unprofiled Services always start; otherwise any requested profile match starts them.
-#[must_use]
-pub fn profiles_enable_start(service_profiles: &[String], requested_profiles: &[String]) -> bool {
-    service_profiles.is_empty()
-        || service_profiles
-            .iter()
-            .any(|profile| requested_profiles.contains(profile))
 }
 
 /// Evidence from executing a Deploy Plan: every operation completed, or the completed
@@ -466,11 +407,11 @@ pub struct DeployPreview {
     /// provisioned storage preparation appears separately in `operations`.
     #[serde(default)]
     pub volumes_to_create: Vec<VolumeToCreate>,
-    /// Visible Services in the Project that Compose no longer declares.
+    /// Visible Services in the Project that the Deploy Intent no longer declares.
     #[serde(default)]
     pub would_remove: Vec<QualifiedService>,
-    /// Compose-declared Docker Volumes owned by this Project that this Compose
-    /// input no longer declares. They are not deleted.
+    /// Docker Volumes owned by this Project that this Deploy Intent no longer
+    /// declares. They are not deleted.
     #[serde(default)]
     pub preserved_volumes: Vec<PreservedVolume>,
     /// Why pruning will not run. `None` means obsolete Services are removed.
@@ -493,7 +434,7 @@ pub struct VolumeToCreate {
     pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
-/// A Compose-declared Docker Volume this Deploy keeps because it is omitted
+/// A Project-owned Docker Volume this Deploy keeps because it is omitted
 /// from this Deploy's target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PreservedVolume {
@@ -504,25 +445,6 @@ pub struct PreservedVolume {
     pub machine_name: Option<MachineName>,
 }
 
-/// Why a loaded Compose Project is incomplete for reconciliation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum ComposePruneRefusal {
-    /// Profiled Services were removed before planning.
-    FilteredProfiles,
-    /// The Project name was guessed from a directory while a non-default Compose file was named explicitly.
-    GuessedProjectName,
-}
-
-impl From<ComposePruneRefusal> for PruneRefusal {
-    fn from(reason: ComposePruneRefusal) -> Self {
-        match reason {
-            ComposePruneRefusal::FilteredProfiles => Self::FilteredProfiles,
-            ComposePruneRefusal::GuessedProjectName => Self::GuessedProjectName,
-        }
-    }
-}
-
 /// Why a full reconciliation must not remove visible drift.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -531,10 +453,6 @@ pub enum PruneRefusal {
     IncompleteSnapshot,
     /// The command named specific Services, so it is not a full reconciliation.
     SelectedServices,
-    /// Profiled Services were removed before planning.
-    FilteredProfiles,
-    /// The Project name was guessed from a directory while a non-default Compose file was named explicitly.
-    GuessedProjectName,
 }
 
 impl Display for PruneRefusal {
@@ -545,12 +463,6 @@ impl Display for PruneRefusal {
             ),
             Self::SelectedServices => f.write_str(
                 "Pruning is disabled because this command named specific Services, so it is not a full reconciliation.",
-            ),
-            Self::FilteredProfiles => f.write_str(
-                "Pruning is disabled because profiled Services were removed before planning, so the loaded Compose Project is incomplete for reconciliation.",
-            ),
-            Self::GuessedProjectName => f.write_str(
-                "Pruning is disabled because the Project name was guessed from a directory while a non-default Compose file was named explicitly.",
             ),
         }
     }

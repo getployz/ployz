@@ -1,22 +1,19 @@
 //! Attempt-local build inputs isolate Docker execution from later source edits.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     io::{self, Read as _},
-    os::unix::{
-        ffi::OsStringExt as _,
-        fs::{DirBuilderExt as _, PermissionsExt as _, symlink},
-    },
+    os::unix::fs::{DirBuilderExt as _, PermissionsExt as _, symlink},
     path::{Path, PathBuf},
 };
 
-use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
-use super::ComposeError;
-
-mod service;
+use super::{
+    Error,
+    ignore::{Rules, Selection, own_ignore, select},
+};
 
 /// Private, attempt-scoped copies. Never persisted as deployment history.
 pub(super) struct BuildInputs {
@@ -27,14 +24,7 @@ pub(super) struct BuildInputs {
 #[derive(Eq, PartialEq, Ord, PartialOrd)]
 enum Input {
     File(PathBuf),
-    PrivateFile(PathBuf),
-    Context { path: PathBuf, recipe: Recipe },
-}
-
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
-enum Recipe {
-    Dockerfile(Option<PathBuf>),
-    Railpack(PathBuf),
+    Context { path: PathBuf, rules: Rules },
 }
 
 struct CapturedInput {
@@ -42,63 +32,21 @@ struct CapturedInput {
     fingerprint: Vec<u8>,
 }
 
-struct Selection {
-    paths: BTreeSet<PathBuf>,
-    ignore: Option<String>,
-}
-
 impl Input {
     fn path(&self) -> &Path {
         match self {
-            Self::File(path) | Self::PrivateFile(path) | Self::Context { path, .. } => path,
+            Self::File(path) | Self::Context { path, .. } => path,
         }
     }
 
-    fn selection(&self) -> Result<Option<Selection>, ComposeError> {
-        let Self::Context { path, recipe } = self else {
+    fn selection(&self) -> Result<Option<Selection>, Error> {
+        let Self::Context { path, rules } = self else {
             return Ok(None);
         };
-        #[derive(serde::Deserialize)]
-        struct Response {
-            paths: Vec<String>,
-            ignore: Option<String>,
-        }
-        let (dockerfile, railpack_config) = match recipe {
-            Recipe::Dockerfile(path) => (path.as_ref(), None),
-            Recipe::Railpack(path) => (None, Some(path)),
-        };
-        let response: Response = super::loader::helper(&serde_json::json!({
-            "version": 1, "build_context": { "path": path, "dockerfile": dockerfile, "railpack_config": railpack_config }
-        }))?;
-        let paths: BTreeSet<PathBuf> = response
-            .paths
-            .into_iter()
-            .map(|path| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(path)
-                    .map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
-                    .map_err(|error| ComposeError::Io(format!("decode context path: {error}")))
-            })
-            .collect::<Result<_, _>>()?;
-        if paths.iter().any(|path| {
-            path.components().any(|part| {
-                !matches!(
-                    part,
-                    std::path::Component::Normal(_) | std::path::Component::CurDir
-                )
-            })
-        }) {
-            return Err(ComposeError::Invalid(
-                "build context path escapes staging".into(),
-            ));
-        }
-        Ok(Some(Selection {
-            paths,
-            ignore: response.ignore,
-        }))
+        select(path, rules).map(Some)
     }
 
-    fn fingerprint(&self) -> Result<Vec<u8>, ComposeError> {
+    fn fingerprint(&self) -> Result<Vec<u8>, Error> {
         fingerprint(self.path(), self.selection()?.as_ref()).map_err(input_error)
     }
 }
@@ -108,29 +56,32 @@ impl BuildInputs {
     ///
     /// # Errors
     /// Returns an I/O error if the private directory cannot be created.
-    pub(super) fn new() -> Result<Self, ComposeError> {
+    pub(super) fn new() -> Result<Self, Error> {
         let root = std::env::temp_dir().join(format!("ployz-build-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)
             .map_err(input_error)?;
-        for directory in ["source", "private"] {
+        for directory in ["source", "private", "private/docker"] {
             fs::DirBuilder::new()
                 .mode(0o700)
                 .create(root.join(directory))
                 .map_err(input_error)?;
         }
-        Ok(Self {
+        let inputs = Self {
             root,
             captures: BTreeMap::new(),
-        })
+        };
+        // The Build Machine requires registry configuration; these Builds carry no credentials.
+        inputs.private(&inputs.root.join("private/docker/config.json"), b"{}")?;
+        Ok(inputs)
     }
 
     /// Copy a source once, rejecting edits observed during the copy.
     ///
     /// # Errors
     /// Rejects unreadable, unstable, recursive, or unsupported filesystem inputs.
-    pub(super) fn capture(&mut self, path: &Path) -> Result<PathBuf, ComposeError> {
+    fn capture(&mut self, path: &Path) -> Result<PathBuf, Error> {
         self.capture_input(Input::File(path.canonicalize().map_err(input_error)?))
     }
 
@@ -138,14 +89,10 @@ impl BuildInputs {
     ///
     /// # Errors
     /// Rejects invalid ignore patterns and unreadable or unstable included inputs.
-    pub(super) fn context(
-        &mut self,
-        path: &Path,
-        dockerfile: Option<&Path>,
-    ) -> Result<PathBuf, ComposeError> {
+    pub(super) fn context(&mut self, path: &Path, dockerfile: &Path) -> Result<PathBuf, Error> {
         self.capture_input(Input::Context {
             path: path.canonicalize().map_err(input_error)?,
-            recipe: Recipe::Dockerfile(dockerfile.map(Path::to_path_buf)),
+            rules: Rules::Dockerfile(dockerfile.to_owned()),
         })
     }
 
@@ -158,26 +105,16 @@ impl BuildInputs {
         &mut self,
         path: &Path,
         variables: &BTreeMap<String, String>,
-    ) -> Result<PathBuf, ComposeError> {
+    ) -> Result<PathBuf, Error> {
         let config = variables
             .get("RAILPACK_CONFIG_FILE")
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
-            .unwrap_or("railpack.json");
+            .map(PathBuf::from);
         self.capture_input(Input::Context {
             path: path.canonicalize().map_err(input_error)?,
-            recipe: Recipe::Railpack(config.into()),
+            rules: Rules::Railpack(config),
         })
-    }
-
-    /// Freeze a regular credential file outside reusable source with mode 0600.
-    ///
-    /// # Errors
-    /// Rejects unreadable, nonregular, or unstable inputs.
-    pub(super) fn private_file(&mut self, path: &Path) -> Result<PathBuf, ComposeError> {
-        self.capture_input(Input::PrivateFile(
-            path.canonicalize().map_err(input_error)?,
-        ))
     }
 
     /// Paths in the capture describe its layout, never its temporary location.
@@ -187,25 +124,24 @@ impl BuildInputs {
             .to_owned()
     }
 
-    fn capture_input(&mut self, input: Input) -> Result<PathBuf, ComposeError> {
+    fn capture_input(&mut self, input: Input) -> Result<PathBuf, Error> {
         if let Some(captured) = self.captures.get(&input) {
             return Ok(captured.path.clone());
         }
         let source = input.path();
         if self.root.starts_with(source) {
-            return Err(ComposeError::Invalid(
+            return Err(Error::Invalid(
                 "build context contains its capture directory".into(),
             ));
         }
-        let private = matches!(input, Input::PrivateFile(_));
         let target = self
             .root
-            .join(if private { "private" } else { "source" })
+            .join("source")
             .join(self.captures.len().to_string());
         if !matches!(input, Input::Context { .. })
             && !fs::metadata(source).map_err(input_error)?.is_file()
         {
-            return Err(ComposeError::Invalid("build credential or Dockerfile must be a regular file; SSH agent sockets are unsupported".into()));
+            return Err(Error::Invalid("Dockerfile must be a regular file".into()));
         }
         let selection = input.selection()?;
         let before = fingerprint(source, selection.as_ref()).map_err(input_error)?;
@@ -213,12 +149,9 @@ impl BuildInputs {
         if before != input.fingerprint()?
             || before != fingerprint(&target, selection.as_ref()).map_err(input_error)?
         {
-            return Err(ComposeError::Invalid(
+            return Err(Error::Invalid(
                 "build inputs changed during capture; retry when the source is stable".into(),
             ));
-        }
-        if private {
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(input_error)?;
         }
         self.captures.insert(
             input,
@@ -239,10 +172,10 @@ impl BuildInputs {
     ///
     /// # Errors
     /// Fails if a source changed or can no longer be fingerprinted.
-    pub(super) fn verify(&self) -> Result<(), ComposeError> {
+    pub(super) fn verify(&self) -> Result<(), Error> {
         for (input, captured) in &self.captures {
             if input.fingerprint()? != captured.fingerprint {
-                return Err(ComposeError::Invalid(
+                return Err(Error::Invalid(
                     "build inputs changed during capture; retry when the source is stable".into(),
                 ));
             }
@@ -254,16 +187,12 @@ impl BuildInputs {
     ///
     /// # Errors
     /// Propagates capture failures and errors copying the ignore file.
-    pub(super) fn dockerfile(&mut self, source: &Path) -> Result<PathBuf, ComposeError> {
+    pub(super) fn dockerfile(&mut self, source: &Path) -> Result<PathBuf, Error> {
         let captured = self.capture(source)?;
-        let mut ignore = source.as_os_str().to_os_string();
-        ignore.push(".dockerignore");
-        let ignore = PathBuf::from(ignore);
+        let ignore = own_ignore(source);
         if ignore.exists() {
             let captured_ignore = self.capture(&ignore)?;
-            let mut target = captured.as_os_str().to_os_string();
-            target.push(".dockerignore");
-            fs::copy(captured_ignore, target).map_err(input_error)?;
+            fs::copy(captured_ignore, own_ignore(&captured)).map_err(input_error)?;
         }
         Ok(captured)
     }
@@ -272,130 +201,22 @@ impl BuildInputs {
     ///
     /// # Errors
     /// Fails if the private file cannot be written.
-    pub(super) fn railpack(&self, recipes: &[ployz_build::Railpack]) -> Result<(), ComposeError> {
-        if recipes.is_empty() {
-            return Ok(());
-        }
+    pub(super) fn railpack(&self, recipe: &ployz_build::Railpack) -> Result<(), Error> {
+        // The Build Machine reads a list of recipes.
         let bytes =
-            serde_json::to_vec(recipes).map_err(|error| input_error(io::Error::other(error)))?;
+            serde_json::to_vec(&[recipe]).map_err(|error| input_error(io::Error::other(error)))?;
         self.private(&self.root.join("private/railpack.json"), &bytes)
     }
 
-    /// Write the captured Compose file beside its sources.
+    /// Write the captured Buildx file beside its sources.
     ///
     /// # Errors
     /// Fails if the private file cannot be written.
-    pub(super) fn compose(&self, yaml: &str) -> Result<PathBuf, ComposeError> {
-        let path = self.root.join("compose.yaml");
-        self.private(&path, yaml.as_bytes())?;
-        Ok(path)
+    pub(super) fn recipe(&self, yaml: &str) -> Result<(), Error> {
+        self.private(&self.root.join("compose.yaml"), yaml.as_bytes())
     }
 
-    /// Write one resolved secret to an owner-readable file for Docker.
-    ///
-    /// # Errors
-    /// Fails if the index is already used or the private file cannot be written.
-    pub(super) fn secret(&self, index: usize, value: &str) -> Result<PathBuf, ComposeError> {
-        let path = self.root.join("private").join(format!("secret-{index}"));
-        self.private(&path, value.as_bytes())?;
-        Ok(path)
-    }
-
-    /// Snapshot explicitly supplied registry auth and proxies. Never import the host's
-    /// default Docker login or credential helpers. Keep CLI plugin discovery
-    /// pointed at the caller's tool installation, just like PATH.
-    ///
-    /// # Errors
-    /// Rejects unreadable/invalid configuration and host-specific helpers/contexts, or
-    /// fails when private configuration cannot be staged.
-    pub(super) fn docker_config(
-        &mut self,
-        environment: &BTreeMap<String, String>,
-        directory: &Path,
-    ) -> Result<(), ComposeError> {
-        let mut config = serde_json::Map::new();
-        let mut plugin_dirs = Vec::<PathBuf>::new();
-        let explicit_config = environment
-            .get("DOCKER_CONFIG")
-            .filter(|path| !path.is_empty());
-        let original_config = explicit_config
-            .map(|path| directory.join(path))
-            .or_else(|| {
-                environment
-                    .get("HOME")
-                    .map(|home| directory.join(home).join(".docker"))
-            });
-        if let Some(path) = &original_config {
-            let path = path.join("config.json");
-            let supplied: serde_json::Value = if path.try_exists().map_err(input_error)? {
-                let path = if explicit_config.is_some() {
-                    self.private_file(&path)?
-                } else {
-                    path
-                };
-                serde_json::from_slice(&fs::read(path).map_err(input_error)?)
-                    .map_err(|_| ComposeError::Invalid("Docker config.json is invalid".into()))?
-            } else {
-                serde_json::json!({})
-            };
-            if supplied
-                .get("currentContext")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|context| !matches!(context, "" | "default"))
-                && !environment
-                    .get("DOCKER_HOST")
-                    .is_some_and(|host| !host.is_empty())
-            {
-                return Err(ComposeError::Invalid(
-                    "Docker currentContext is host-specific; supply DOCKER_HOST explicitly".into(),
-                ));
-            }
-            if explicit_config.is_some() {
-                if supplied
-                    .get("credsStore")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
-                    || supplied
-                        .get("credHelpers")
-                        .and_then(serde_json::Value::as_object)
-                        .is_some_and(|value| !value.is_empty())
-                {
-                    return Err(ComposeError::Invalid("DOCKER_CONFIG credential helpers are host-specific; supply explicit registry auths".into()));
-                }
-                for key in ["auths", "proxies"] {
-                    if let Some(value) = supplied.get(key) {
-                        config.insert(key.into(), value.clone());
-                    }
-                }
-                if let Some(dirs) = supplied.get("cliPluginsExtraDirs") {
-                    let dirs: Vec<PathBuf> =
-                        serde_json::from_value(dirs.clone()).map_err(|_| {
-                            ComposeError::Invalid(
-                                "DOCKER_CONFIG cliPluginsExtraDirs must be an array of paths"
-                                    .into(),
-                            )
-                        })?;
-                    plugin_dirs.extend(dirs.into_iter().map(|path| directory.join(path)));
-                }
-            }
-        }
-        if let Some(original_config) = original_config {
-            plugin_dirs.push(original_config.join("cli-plugins"));
-        }
-        config.insert("cliPluginsExtraDirs".into(), serde_json::json!(plugin_dirs));
-        let directory = self.root.join("private/docker");
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&directory)
-            .map_err(input_error)?;
-        self.private(
-            &directory.join("config.json"),
-            &serde_json::to_vec(&config)
-                .map_err(|_| ComposeError::Invalid("invalid registry auths".into()))?,
-        )
-    }
-
-    fn private(&self, path: &Path, content: &[u8]) -> Result<(), ComposeError> {
+    fn private(&self, path: &Path, content: &[u8]) -> Result<(), Error> {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
         fs::OpenOptions::new()
@@ -431,8 +252,8 @@ fn make_removable(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn input_error(error: io::Error) -> ComposeError {
-    ComposeError::Io(format!("capture build inputs: {error}"))
+fn input_error(error: io::Error) -> Error {
+    Error::Io(format!("capture build inputs: {error}"))
 }
 
 fn entries(path: &Path, root: &Path, selection: Option<&Selection>) -> io::Result<Vec<PathBuf>> {
@@ -494,9 +315,9 @@ fn fingerprint(path: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>
         Ok(())
     }
     let mut digest = Sha256::new();
-    if let Some(ignore) = selection.and_then(|selection| selection.ignore.as_ref()) {
-        digest.update(ignore.len().to_le_bytes());
-        digest.update(ignore.as_bytes());
+    if let Some(selection) = selection {
+        digest.update(selection.ignore.len().to_le_bytes());
+        digest.update(&selection.ignore);
     }
     visit(path, path, selection, &mut digest)?;
     Ok(digest.finalize().to_vec())
@@ -635,122 +456,6 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
-    fn default_docker_context_is_checked_without_importing_credentials() {
-        let fixture = BuildInputs::new().unwrap();
-        fs::create_dir(fixture.root.join(".docker")).unwrap();
-        for (context, host, accepted) in [
-            ("remote", "", false),
-            ("remote", "ssh://builder@host", true),
-            ("default", "", true),
-            ("", "", true),
-        ] {
-            fs::write(
-                fixture.root.join(".docker/config.json"),
-                serde_json::json!({
-                    "currentContext": context,
-                    "credsStore": "desktop",
-                    "auths": {"example.test": {"auth": "ambient-token"}},
-                    "proxies": {"default": {"httpProxy": "http://ambient-proxy"}}
-                })
-                .to_string(),
-            )
-            .unwrap();
-            let environment = BTreeMap::from([
-                ("HOME".into(), fixture.root.to_string_lossy().into_owned()),
-                ("DOCKER_HOST".into(), host.into()),
-            ]);
-            let mut inputs = BuildInputs::new().unwrap();
-            let result = inputs.docker_config(&environment, &fixture.root);
-            assert_eq!(result.is_ok(), accepted, "{context}, {host}");
-            if let Err(error) = result {
-                assert!(error.to_string().contains("currentContext"));
-            } else {
-                let staged: serde_json::Value = serde_json::from_slice(
-                    &fs::read(inputs.root.join("private/docker/config.json")).unwrap(),
-                )
-                .unwrap();
-                for key in ["auths", "proxies", "credsStore", "currentContext"] {
-                    assert!(staged.get(key).is_none(), "imported {key}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn selected_docker_context_is_not_silently_discarded() {
-        let fixture = BuildInputs::new().unwrap();
-        let config = fixture.root.join("config.json");
-        for (context, host, accepted) in [
-            ("remote", "", false),
-            ("remote", "ssh://builder@host", true),
-            ("default", "", true),
-            ("", "", true),
-        ] {
-            fs::write(
-                &config,
-                serde_json::json!({"currentContext": context}).to_string(),
-            )
-            .unwrap();
-            let environment = BTreeMap::from([
-                (
-                    "DOCKER_CONFIG".into(),
-                    fixture.root.to_string_lossy().into_owned(),
-                ),
-                ("DOCKER_HOST".into(), host.into()),
-            ]);
-            let mut inputs = BuildInputs::new().unwrap();
-            let result = inputs.docker_config(&environment, &fixture.root);
-            assert_eq!(result.is_ok(), accepted, "{context}, {host}");
-            if let Err(error) = result {
-                assert!(error.to_string().contains("currentContext"));
-            }
-        }
-    }
-
-    #[test]
-    fn docker_plugin_search_paths_survive_private_config_staging() {
-        let fixture = BuildInputs::new().unwrap();
-        fs::write(
-            fixture.root.join("config.json"),
-            r#"{"cliPluginsExtraDirs":["extra-plugins"]}"#,
-        )
-        .unwrap();
-        for (explicit, present) in [(false, true), (true, true), (true, false)] {
-            if !present {
-                fs::remove_file(fixture.root.join("config.json")).unwrap();
-            }
-            let mut environment =
-                BTreeMap::from([("HOME".into(), fixture.root.to_string_lossy().into_owned())]);
-            if explicit {
-                environment.insert(
-                    "DOCKER_CONFIG".into(),
-                    fixture.root.to_string_lossy().into_owned(),
-                );
-            }
-            let mut inputs = BuildInputs::new().unwrap();
-            inputs.docker_config(&environment, &fixture.root).unwrap();
-            let config: serde_json::Value = serde_json::from_slice(
-                &fs::read(inputs.root.join("private/docker/config.json")).unwrap(),
-            )
-            .unwrap();
-            let expected = if explicit && present {
-                vec![
-                    fixture.root.join("extra-plugins"),
-                    fixture.root.join("cli-plugins"),
-                ]
-            } else if explicit {
-                vec![fixture.root.join("cli-plugins")]
-            } else {
-                vec![fixture.root.join(".docker/cli-plugins")]
-            };
-            assert_eq!(
-                config.get("cliPluginsExtraDirs"),
-                Some(&serde_json::json!(expected))
-            );
-        }
-    }
-
-    #[test]
     fn ignored_special_files_do_not_enter_capture() {
         let fixture = BuildInputs::new().unwrap();
         let source = fixture.root.join("source");
@@ -778,7 +483,7 @@ mod tests {
         )
         .unwrap();
         let mut inputs = BuildInputs::new().unwrap();
-        let target = inputs.context(&source, None).unwrap();
+        let target = inputs.context(&source, &source.join("Dockerfile")).unwrap();
         assert!(!target.join("ignored").exists());
         assert_eq!(
             fs::read_to_string(target.join("included")).unwrap(),
@@ -818,9 +523,9 @@ mod tests {
         // An empty Dockerfile-specific file overrides the root ignore file too.
         fs::write(source.join("second.Dockerfile.dockerignore"), "").unwrap();
         let mut inputs = BuildInputs::new().unwrap();
-        let one = inputs.context(source, Some(&first)).unwrap();
-        let two = inputs.context(source, Some(&second)).unwrap();
-        let root = inputs.context(source, None).unwrap();
+        let one = inputs.context(source, &first).unwrap();
+        let two = inputs.context(source, &second).unwrap();
+        let root = inputs.context(source, &source.join("Dockerfile")).unwrap();
         assert_ne!(one, two);
         assert!(one.join("cache/keep").exists());
         assert!(!one.join("cache/drop").exists());
@@ -832,15 +537,13 @@ mod tests {
     }
 
     #[test]
-    fn the_captured_compose_file_and_secrets_stay_private() {
+    fn the_captured_recipe_stays_private() {
         let inputs = BuildInputs::new().unwrap();
-        let compose = inputs.compose("services: {}\n").unwrap();
-        let secret = inputs.secret(0, "private-token").unwrap();
-        for path in [&compose, &secret] {
-            let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "{}", path.display());
-        }
-        assert_eq!(fs::read_to_string(&compose).unwrap(), "services: {}\n");
+        inputs.recipe("services: {}\n").unwrap();
+        let recipe = inputs.root().join("compose.yaml");
+        let mode = fs::metadata(&recipe).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read_to_string(&recipe).unwrap(), "services: {}\n");
         let root = inputs.root().to_owned();
         drop(inputs);
         assert!(!root.exists());
@@ -854,7 +557,7 @@ mod tests {
         let mut inputs = BuildInputs::new().unwrap();
         assert!(
             inputs
-                .context(source, None)
+                .context(source, &source.join("Dockerfile"))
                 .unwrap_err()
                 .to_string()
                 .contains("special file")
@@ -862,12 +565,12 @@ mod tests {
         fs::write(source.join(".dockerignore"), "socket\n!socket\n").unwrap();
         assert!(
             inputs
-                .context(source, None)
+                .context(source, &source.join("Dockerfile"))
                 .unwrap_err()
                 .to_string()
                 .contains("special file")
         );
         fs::write(source.join(".dockerignore"), "[\n").unwrap();
-        assert!(inputs.context(source, None).is_err());
+        assert!(inputs.context(source, &source.join("Dockerfile")).is_err());
     }
 }

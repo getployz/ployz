@@ -37,8 +37,6 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ComposePruneRefusal = "filtered_profiles" | "guessed_project_name";
-
 export type ConfigMount = { config_name: string,
 /**
  * Omission defaults to `/{config_name}`. Admitted specs retain the canonical target.
@@ -115,7 +113,7 @@ target: Array<RequestedServiceSpec>,
 /**
  * Planner knobs for this Deploy, including the selected Service list.
  */
-options: PlanOptions, dependencies: { [key in ServiceName]: Array<ServiceDependency> }, service_profiles: { [key in ServiceName]: Array<string> }, requested_profiles: Array<string>, compose_refusal: ComposePruneRefusal | null, };
+options: PlanOptions, dependencies: { [key in ServiceName]: Array<ServiceDependency> }, };
 
 export type DeployOperation = { "type": "prepare_volumes",
 /**
@@ -153,12 +151,12 @@ warnings: Array<DeployWarning>,
  */
 volumes_to_create: Array<VolumeToCreate>,
 /**
- * Visible Services in the Project that Compose no longer declares.
+ * Visible Services in the Project that the Deploy Intent no longer declares.
  */
 would_remove: Array<QualifiedService>,
 /**
- * Compose-declared Docker Volumes owned by this Project that this Compose
- * input no longer declares. They are not deleted.
+ * Docker Volumes owned by this Project that this Deploy Intent no longer
+ * declares. They are not deleted.
  */
 preserved_volumes: Array<PreservedVolume>,
 /**
@@ -532,7 +530,7 @@ export type ProjectName = string;
 
 export type ProvisionedVolumeMaximumBytes = number;
 
-export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
+export type PruneRefusal = "incomplete_snapshot" | "selected_services";
 
 export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
 

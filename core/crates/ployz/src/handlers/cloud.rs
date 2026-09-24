@@ -326,7 +326,7 @@ where
         && let Some(requested) = ingress
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
-        crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
+        crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
             let error: Error = error.into();
             Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;

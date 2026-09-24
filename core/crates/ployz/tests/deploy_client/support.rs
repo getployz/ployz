@@ -50,7 +50,6 @@ pub(super) struct DeployService {
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
     created_specs: Arc<Mutex<Vec<ResolvedServiceSpec>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
-    failed_container_listing: Option<MachineId>,
     mutating_rpcs: Arc<AtomicUsize>,
     observation_rpcs: Arc<AtomicUsize>,
     observation_delays: Arc<Mutex<BTreeMap<MachineId, usize>>>,
@@ -75,7 +74,6 @@ impl DeployService {
             created_projects: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
-            failed_container_listing: None,
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -100,7 +98,6 @@ impl DeployService {
             created_projects: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
-            failed_container_listing: None,
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_rpcs: Arc::new(AtomicUsize::new(0)),
             observation_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -155,11 +152,6 @@ impl DeployService {
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = machines;
-        self
-    }
-
-    pub(super) fn fail_container_listing(mut self, machine: MachineId) -> Self {
-        self.failed_container_listing = Some(machine);
         self
     }
 
@@ -308,13 +300,6 @@ impl MachineRpc for DeployService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine_id = machine_from_metadata(&request)?;
-        if self.failed_container_listing == Some(machine_id) {
-            return encoded(RpcResponse::from(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "inspection failed".into(),
-                details: Value::Null,
-            }));
-        }
         encoded(RpcResponse::from(ContainerList {
             containers: self
                 .listed_containers

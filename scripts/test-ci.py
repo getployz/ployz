@@ -32,7 +32,6 @@ class CiTest(unittest.TestCase):
         for path in ["core/Cargo.lock", ".github/workflows/ci.yml", "core/crates/ployzd/Cargo.toml", "core/crates/new-config", "unknown.config"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
-        self.assertIn("compose", ci["select"](["core/crates/ployz/compose-helper/main.go"]))
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
 
     def test_renames_and_deletions_include_the_old_production_path(self):

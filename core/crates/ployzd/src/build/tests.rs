@@ -126,7 +126,7 @@ impl Fixture {
             .into_inner();
         (sender, response)
     }
-    fn capture(&self) -> ployz::compose::CapturedBuild {
+    fn capture(&self) -> ployz::build::CapturedBuild {
         let project_root = self.root.join("project");
         fs::create_dir_all(&project_root).unwrap();
         fs::write(
@@ -137,10 +137,28 @@ impl Fixture {
         fs::write(project_root.join("payload"), "captured-before-edit").unwrap();
         fs::write(project_root.join("ignored"), "excluded-private-value").unwrap();
         fs::write(project_root.join(".dockerignore"), "ignored\n").unwrap();
-        let mut project = ployz::compose::parse_normalized("name: demo\nservices:\n  api:\n    image: example.test/api:built\n    environment:\n      PRIVATE_VALUE: secret-value\n    build:\n      context: .\n", &project_root).unwrap();
-        let options = ployz::compose::BuildOptions::default();
-        let plan = ployz::compose::plan_build(&project, &options).unwrap();
-        ployz::compose::capture_build(&plan, &options, &mut project).unwrap()
+        let intent = ployz_core::config::lower_deployment(
+            serde_json::from_value(serde_json::json!({"projectName": "demo", "snapshots": [{
+                "config": {"version": 2, "privateDns": "api", "healthcheck": {"type": "none"},
+                    "restartPolicy": "on-failure", "source": {"type": "image", "version": 1,
+                    "image": "example.test/api:built", "credentials": {"type": "none"}}},
+                "resolvedEnv": {"PRIVATE_VALUE": "secret-value"}
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        ployz::build::capture(
+            &intent,
+            [(
+                ployz_core::ServiceName::parse("api").unwrap(),
+                ployz::build::BuildSpec {
+                    recipe: ployz::build::Recipe::Dockerfile(project_root.join("Dockerfile")),
+                    context: project_root,
+                },
+            )]
+            .into(),
+        )
+        .unwrap()
     }
 }
 impl Drop for Fixture {
@@ -164,6 +182,15 @@ async fn terminal(response: &mut tonic::Streaming<OpaquePayload>) -> Outcome {
         if let Event::Finished(outcome) = event(response).await {
             return outcome;
         }
+    }
+}
+
+fn failure(
+    result: Result<Vec<ployz::build::BuiltService>, ployz::build::Error>,
+) -> ployz::build::RemoteBuildFailure {
+    match result {
+        Err(ployz::build::Error::RemoteBuild { outcome }) => *outcome,
+        other => panic!("expected remote Build failure evidence: {other:?}"),
     }
 }
 
@@ -339,21 +366,20 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
     .await
     .unwrap();
     let events = Mutex::new(Vec::new());
-    let result = capture
-        .execute_remote(
+    let images = capture
+        .execute_remote_images(
             &client,
             fixture.machine.id,
             tokio_util::sync::CancellationToken::new(),
             |event| events.lock().unwrap().push(event),
         )
-        .await;
-    let Outcome::Images { machine_id, images } = result else {
-        panic!("{result:?}")
-    };
-    assert_eq!(machine_id, fixture.machine.id);
-    let [image] = images.as_slice() else {
+        .await
+        .unwrap();
+    let [built] = images.as_slice() else {
         panic!("expected one image: {images:?}")
     };
+    assert_eq!(built.machine_id, fixture.machine.id);
+    let image = &built.built;
     assert_eq!(image.reference, format!("sha256:{}", "1".repeat(64)));
     assert_eq!(image.platforms, ["linux/amd64"]);
     assert_eq!(
@@ -435,15 +461,17 @@ async fn oversized_diagnostics_still_return_a_definite_terminal_failure() {
     )
     .await
     .unwrap();
-    let result = capture
-        .execute_remote(
-            &client,
-            fixture.machine.id,
-            tokio_util::sync::CancellationToken::new(),
-            |_| {},
-        )
-        .await;
-    let Outcome::Failed {
+    let result = failure(
+        capture
+            .execute_remote_images(
+                &client,
+                fixture.machine.id,
+                tokio_util::sync::CancellationToken::new(),
+                |_| {},
+            )
+            .await,
+    );
+    let ployz::build::RemoteBuildFailure::Failed {
         stage,
         message,
         work,
@@ -480,18 +508,6 @@ case "$1 $2" in
   'buildx bake')
     : > "$root/executed"
     while [ -f "$root/hold-build" ]; do sleep 0.01; done
-    if [ -f "$root/registry-attempt" ]; then
-      for arg in "$@"; do
-        case "$arg" in
-          api) : > "$root/published-api" ;;
-          web)
-            if [ -f "$root/cancel-publication" ]; then printf 'publishing web\n'; exec sleep 30; fi
-            exit 1 ;;
-          zzz) : > "$root/published-zzz" ;;
-        esac
-      done
-      exit 0
-    fi
     find source -type f > "$root/source-list"
     find source -name payload -exec cp '{{}}' "$root/received-payload" \;
     if [ -f "$root/slow" ]; then printf 'building\n'; exec sleep 30; fi
@@ -533,21 +549,26 @@ async fn active_cancellation_confirms_cleanup_or_quarantines_uncertain_terminati
         .unwrap();
         let cancellation = tokio_util::sync::CancellationToken::new();
         let cancel = cancellation.clone();
-        let result = capture
-            .execute_remote(&client, fixture.machine.id, cancellation, |progress| {
-                if matches!(progress, Progress::Output(_)) {
-                    cancel.cancel();
-                }
-            })
-            .await;
+        let result = failure(
+            capture
+                .execute_remote_images(&client, fixture.machine.id, cancellation, |progress| {
+                    if matches!(progress, Progress::Output(_)) {
+                        cancel.cancel();
+                    }
+                })
+                .await,
+        );
         if uncertain {
-            assert!(matches!(result, Outcome::Unknown { .. }), "{result:?}");
+            assert!(
+                matches!(result, ployz::build::RemoteBuildFailure::Unknown { .. }),
+                "{result:?}"
+            );
             assert!(
                 matches!(Admission::try_acquire_with(&fixture.policy), Err(error) if error.is_unknown())
             );
         } else {
             assert!(
-                matches!(result, Outcome::Failed { stage: Stage::Building, message, .. } if message.contains("cancel"))
+                matches!(result, ployz::build::RemoteBuildFailure::Failed { stage: Stage::Building, message, .. } if message.contains("cancel"))
             );
             assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
         }
@@ -608,21 +629,10 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
 
 #[tokio::test]
 async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
-    for failure in ["fail-after-output", "missing-second", "fail-cleanup"] {
+    for failed in ["fail-after-output", "fail-cleanup"] {
         let fixture = Fixture::new().await;
         let capture = fixture.capture();
-        let capture = if failure == "fail-cleanup" {
-            capture
-        } else {
-            drop(capture);
-            let root = fixture.root.join("project");
-            let mut project = ployz::compose::parse_normalized(
-                "name: demo\nservices:\n  api:\n    image: example.test/api:built\n    build: .\n  web:\n    image: example.test/web:built\n    build: .\n", &root).unwrap();
-            let options = ployz::compose::BuildOptions::default();
-            let plan = ployz::compose::plan_build(&project, &options).unwrap();
-            ployz::compose::capture_build(&plan, &options, &mut project).unwrap()
-        };
-        fs::write(fixture.root.join(failure), "").unwrap();
+        fs::write(fixture.root.join(failed), "").unwrap();
         let client = ployz::connect::connect(
             Path::new("/missing-test-config"),
             Some(&fixture.address.replace("http://", "tcp://")),
@@ -630,91 +640,31 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
         )
         .await
         .unwrap();
-        let result = capture
-            .execute_remote(
-                &client,
-                fixture.machine.id,
-                tokio_util::sync::CancellationToken::new(),
-                |_| {},
-            )
-            .await;
+        let result = failure(
+            capture
+                .execute_remote_images(
+                    &client,
+                    fixture.machine.id,
+                    tokio_util::sync::CancellationToken::new(),
+                    |_| {},
+                )
+                .await,
+        );
         let work = match result {
-            Outcome::Unknown { work, .. } if failure == "fail-cleanup" => work,
-            Outcome::Failed { work, .. } if failure != "fail-cleanup" => work,
-            other @ (Outcome::CapabilitiesChecked { .. }
-            | Outcome::Images { .. }
-            | Outcome::Validated { .. }
-            | Outcome::Published { .. }
-            | Outcome::Failed { .. }
-            | Outcome::Unknown { .. }) => panic!("unexpected terminal result: {other:?}"),
+            ployz::build::RemoteBuildFailure::Unknown { work, .. } if failed == "fail-cleanup" => {
+                work
+            }
+            ployz::build::RemoteBuildFailure::Failed { work, .. } if failed != "fail-cleanup" => {
+                work
+            }
+            other @ (ployz::build::RemoteBuildFailure::Failed { .. }
+            | ployz::build::RemoteBuildFailure::Unknown { .. }) => {
+                panic!("unexpected terminal result: {other:?}")
+            }
         };
         assert!(
             matches!(work.0.get("api"), Some(ployz_build::TargetEvidence::Image(image)) if image.reference.ends_with(&"1".repeat(64)))
         );
-        if failure != "fail-cleanup" {
-            assert_eq!(
-                work.0.get("web"),
-                Some(&if failure == "fail-after-output" {
-                    // The next target is never submitted after this step fails.
-                    ployz_build::TargetEvidence::Unattempted
-                } else {
-                    ployz_build::TargetEvidence::Unknown
-                })
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn registry_publication_keeps_completed_and_unattempted_targets() {
-    for cancelled in [false, true] {
-        let fixture = Fixture::new().await;
-        drop(fixture.capture());
-        let root = fixture.root.join("project");
-        let mut project = ployz::compose::parse_normalized(
-            "name: demo\nservices:\n  api:\n    image: example.test/api:built\n    build: .\n  web:\n    image: example.test/web:built\n    build: .\n  zzz:\n    image: example.test/zzz:built\n    build: .\n", &root).unwrap();
-        let options = ployz::compose::BuildOptions {
-            output: Output::Registry,
-            ..Default::default()
-        };
-        let plan = ployz::compose::plan_build(&project, &options).unwrap();
-        let capture = ployz::compose::capture_build(&plan, &options, &mut project).unwrap();
-        fs::write(fixture.root.join("registry-attempt"), "").unwrap();
-        if cancelled {
-            fs::write(fixture.root.join("cancel-publication"), "").unwrap();
-        }
-        let client = ployz::connect::connect(
-            Path::new("/missing-test-config"),
-            Some(&fixture.address.replace("http://", "tcp://")),
-            None,
-        )
-        .await
-        .unwrap();
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let result = capture
-            .execute_remote(&client, fixture.machine.id, cancellation.clone(), |event| {
-                if cancelled && matches!(event, Progress::Output(_)) {
-                    cancellation.cancel();
-                }
-            })
-            .await;
-        let Outcome::Failed { work, .. } = result else {
-            panic!("{result:?}")
-        };
-        assert!(fixture.root.join("published-api").exists());
-        assert_eq!(
-            work.0.get("api"),
-            Some(&ployz_build::TargetEvidence::Published)
-        );
-        assert_eq!(
-            work.0.get("web"),
-            Some(&ployz_build::TargetEvidence::Unknown)
-        );
-        assert_eq!(
-            work.0.get("zzz"),
-            Some(&ployz_build::TargetEvidence::Unattempted)
-        );
-        assert!(!fixture.root.join("published-zzz").exists());
     }
 }
 
@@ -790,16 +740,18 @@ async fn captured_client_cancels_in_queue_without_uploading() {
     .await
     .unwrap();
     let cancellation = tokio_util::sync::CancellationToken::new();
-    let result = capture
-        .execute_remote(&client, fixture.machine.id, cancellation.clone(), |event| {
-            if matches!(event, Progress::Stage(Stage::Queued)) {
-                cancellation.cancel();
-            }
-            assert!(!matches!(event, Progress::Stage(Stage::Upload)));
-        })
-        .await;
+    let result = failure(
+        capture
+            .execute_remote_images(&client, fixture.machine.id, cancellation.clone(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    cancellation.cancel();
+                }
+                assert!(!matches!(event, Progress::Stage(Stage::Upload)));
+            })
+            .await,
+    );
     assert!(
-        matches!(result, Outcome::Failed { stage: Stage::Queued, message, .. } if message.contains("cancelled"))
+        matches!(result, ployz::build::RemoteBuildFailure::Failed { stage: Stage::Queued, message, .. } if message.contains("cancelled"))
     );
     assert!(!fixture.root.join("executed").exists());
 }
@@ -821,7 +773,7 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
     let selected = fixture.machine.id;
     let execution = tokio::spawn(async move {
         capture
-            .execute_remote(&client, selected, Default::default(), |event| {
+            .execute_remote_images(&client, selected, Default::default(), |event| {
                 if matches!(event, Progress::Stage(Stage::Queued)) {
                     waiting.try_send(()).unwrap();
                 }
@@ -840,7 +792,7 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
     );
     drop(active);
     let _ = terminal(&mut response).await;
-    assert!(matches!(execution.await.unwrap(), Outcome::Images { .. }));
+    assert_eq!(execution.await.unwrap().unwrap().len(), 1);
 }
 
 #[tokio::test]

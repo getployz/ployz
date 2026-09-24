@@ -30,6 +30,7 @@ mod deploy;
 mod logs;
 mod payloads;
 mod preparation;
+pub(crate) mod prepare;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{BuildReceipt, PreparationInput};
 
@@ -75,7 +76,7 @@ pub struct PreparedDeploy {
     build_receipts: std::collections::BTreeMap<ployz_core::ServiceName, preparation::BuildReceipt>,
     session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
-    retained: std::sync::Mutex<Option<Vec<crate::compose::BuiltService>>>,
+    retained: std::sync::Mutex<Option<Vec<crate::build::BuiltService>>>,
 }
 
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
@@ -292,15 +293,14 @@ impl Session {
                 .map_err(|_| invalid_argument("source capture task failed".into()))??;
             if token.is_cancelled() {
                 return Err(preparation_error(
-                    crate::preparation::PreparationError::Cancelled,
+                    crate::sdk::prepare::PreparationError::Cancelled,
                     true,
                 ));
             }
-            let prepared = crate::preparation::prepare(
+            let prepared = crate::sdk::prepare::prepare(
                 &mut client,
-                captured.candidate,
+                captured.intent,
                 captured.build,
-                crate::preparation::BuildLocation::Remote(None),
                 &captured.reusable,
                 &token,
                 |progress| {
@@ -715,10 +715,10 @@ impl OutputBudget {
     /// The frame to send with its accounted size, or none when dropped.
     fn frame(
         &mut self,
-        mut progress: crate::preparation::Progress,
+        mut progress: crate::sdk::prepare::Progress,
         buffered: &AtomicUsize,
     ) -> Option<(usize, Value)> {
-        use crate::preparation::Progress;
+        use crate::sdk::prepare::Progress;
         use ployz_build::Progress as Build;
         let held = buffered.load(Ordering::Relaxed);
         if held < OUTPUT_BUDGET / 2 {
@@ -814,11 +814,10 @@ impl Drop for RunningPreparation {
     }
 }
 fn preparation_error(
-    error: crate::preparation::PreparationError,
+    error: crate::sdk::prepare::PreparationError,
     cancellation_requested: bool,
 ) -> RpcError {
-    use crate::compose::ComposeError;
-    use crate::preparation::PreparationError;
+    use crate::sdk::prepare::PreparationError;
     let message = error.to_string();
     match error {
         PreparationError::Selection(error) => {
@@ -844,9 +843,9 @@ fn preparation_error(
             details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
                 "message":"Could not read Machine observations during preparation."}}),
         },
-        PreparationError::Compose(ComposeError::RemoteBuild { outcome }) => {
+        PreparationError::Build(crate::build::Error::RemoteBuild { outcome }) => {
             let cancelled = cancellation_requested
-                && matches!(*outcome, crate::compose::RemoteBuildFailure::Failed { .. });
+                && matches!(*outcome, crate::build::RemoteBuildFailure::Failed { .. });
             let mut details = serde_json::json!({"preparation": outcome});
             // Failed confirms termination; a cancellation request alone cannot erase Unknown.
             if cancelled {
@@ -866,13 +865,13 @@ fn preparation_error(
             message,
             details: serde_json::json!({"preparation":{"kind":"cancelled"}}),
         },
-        PreparationError::Compose(_)
-        | PreparationError::Plan(_)
-        | PreparationError::Delivery(_) => RpcError {
-            code: RpcErrorCode::Internal,
-            details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
-            message,
-        },
+        PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
+            RpcError {
+                code: RpcErrorCode::Internal,
+                details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
+                message,
+            }
+        }
     }
 }
 
@@ -907,7 +906,7 @@ mod preparation_tests {
     }
     #[test]
     fn output_beyond_the_budget_becomes_one_marker_until_the_consumer_catches_up() {
-        use crate::preparation::Progress;
+        use crate::sdk::prepare::Progress;
         use ployz_build::Progress as Build;
         let buffered = AtomicUsize::new(OUTPUT_BUDGET);
         let mut budget = OutputBudget::default();
@@ -941,7 +940,7 @@ mod preparation_tests {
     #[test]
     fn selection_failure_is_known_and_does_not_expose_provider_details() {
         let error = preparation_error(
-            crate::preparation::PreparationError::Selection(ConnectError::Remote(RpcError {
+            crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(RpcError {
                 code: RpcErrorCode::Unsupported,
                 message: "provider token=secret".into(),
                 details: serde_json::json!({"rejections":{"builds disabled":2}}),
@@ -966,15 +965,13 @@ mod preparation_tests {
     #[test]
     fn requested_cancellation_preserves_unknown_stage_and_evidence() {
         let error = preparation_error(
-            crate::preparation::PreparationError::Compose(
-                crate::compose::ComposeError::RemoteBuild {
-                    outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
-                        stage: ployz_build::Stage::Building,
-                        message: "lost stream".into(),
-                        work: ployz_build::WorkEvidence::default(),
-                    }),
-                },
-            ),
+            crate::sdk::prepare::PreparationError::Build(crate::build::Error::RemoteBuild {
+                outcome: Box::new(crate::build::RemoteBuildFailure::Unknown {
+                    stage: ployz_build::Stage::Building,
+                    message: "lost stream".into(),
+                    work: ployz_build::WorkEvidence::default(),
+                }),
+            }),
             true,
         );
         assert_eq!(

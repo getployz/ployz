@@ -23,7 +23,6 @@ const featureMenu = [
     group: "The shipyard",
     items: [
       ["Canvas", "Drop a box. Get a service.", "#ways"],
-      ["Compose import", "Bring compose.yaml. Keep it.", "#ways"],
       ["CLI", "One binary, every action", "#ways"],
       ["Agents", "Real power, short leash", "#agents"],
     ],
@@ -63,7 +62,6 @@ const specs = [
 
 // ponytail: snippets are deliberately tiny. They prove there are many ways in, not teach the API.
 const ways = [
-  ["Compose", "terminal", `ployz deploy -f compose.yaml`],
   ["CLI", "terminal", `ployz host bootstrap  # add a server`],
   ["Agent", "transcript", `> promote review-42 → production\n  awaiting your approval…`],
 ] as const;
@@ -265,7 +263,7 @@ export function HomePage() {
         </section>
 
         <section className="pirate-section pirate-frame" id="ways">
-          <SectionHead eyebrow="BUILD" title="Drop a box. Get a service." line="Canvas, Compose, CLI or an agent. One model underneath, your call on the way in." />
+          <SectionHead eyebrow="BUILD" title="Drop a box. Get a service." line="Canvas, CLI or an agent. One model underneath, your call on the way in." />
           <div className="pirate-ways">
             <figure className="pirate-way pirate-way--canvas">
               <figcaption><strong>Canvas</strong><span className="pirate-caption">dashboard</span></figcaption>

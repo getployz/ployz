@@ -123,23 +123,15 @@ The exact service configuration attached to a Service Container when it is creat
 _Avoid_: Current service spec, canonical service spec
 
 **Project**:
-An observer-derived ownership namespace. It is not a persisted resource, a workflow, or the loaded Compose input. `ployz-system` is reserved for Ployz infrastructure.
-_Avoid_: ComposeProject, Compose project, deployment resource
-
-**ComposeProject**:
-The loaded Compose input for one command. It is not a Cluster-side Project.
-_Avoid_: Project
-
-**Compose Working State**:
-The user's local Compose sources as currently edited, independent of Git staging or commit status. It is authored and restored with the user's editor and version control, with no separate Ployz Save step.
-_Avoid_: Ployz-managed draft, Git index, Saved State
+An observer-derived ownership namespace. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure.
+_Avoid_: Compose project, deployment resource
 
 **Direct Image Transfer**:
 A bounded operation that makes a local Docker image available on selected Machines without requiring an external registry. It preserves layer-aware transfer and may use a Machine that already holds the image as the source for other Machines.
 _Avoid_: Unregistry, image ingest as a product term
 
 **Build**:
-The work to produce one container image from source and a build recipe. A Compose project with three buildable Services has three Builds.
+The work to produce one container image from source and a build recipe. A Deploy with three Git-sourced Services has three Builds.
 _Avoid_: Deploy, whole-project build as one Build
 
 **Build Receipt**:
@@ -220,7 +212,7 @@ A ZFS storage budget on one storage-ready Machine. Provisioned Volumes live on i
 _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster
 
 **Provisioned Volume**:
-A Docker Volume backed by a dataset on a Machine Pool, with a maximum size declared in Compose under `x-volumes`. A name declared only under `volumes:` is not one and is unaffected.
+A Docker Volume backed by a dataset on a Machine Pool, with a declared maximum size. An ordinary named Docker Volume is not one and is unaffected.
 _Avoid_: Managed Volume, Managed ZFS Volume, cluster volume, storage class, CSI volume
 
 **Service Volume Reference**:

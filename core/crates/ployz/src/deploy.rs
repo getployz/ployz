@@ -12,10 +12,7 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-use crate::{
-    compose::ComposeProject,
-    dns::{DomainRequired, ExpandIngressError},
-};
+use crate::dns::{DomainRequired, ExpandIngressError};
 
 mod apply;
 mod exec;
@@ -25,21 +22,18 @@ mod progress;
 mod render;
 mod report;
 
-pub(crate) use apply::{
-    ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec, remove_project,
-};
+pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, remove_project};
 pub use pipeline::DeployError;
-pub(crate) use pipeline::{ReconciliationHints, plan_options};
+pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
     DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
     preview_deploy,
 };
-pub(crate) use planning::{capacity::endpoint_capacity_error, obsolete_services};
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
-    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
-    DeployWarning, ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction,
-    ObservationKind, OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
+    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
+    ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
+    OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, StopAttempt,
 };
 
@@ -580,21 +574,6 @@ impl fmt::Display for MachineNames<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_machine_names(f, self.0)
     }
-}
-
-/// Plan a Compose project.
-///
-/// # Errors
-///
-/// Returns when placement, volumes, service identity, hostname assignment, or
-/// the apply-set dependency graph cannot produce a preview.
-pub fn plan_compose(
-    project: &ComposeProject,
-    snapshot: &DeploySnapshot,
-    project_name: ProjectName,
-) -> Result<DeployPreview, PlanError> {
-    let intent = project.deploy_intent(project_name, PlanOptions::default());
-    preview_deploy(&intent, snapshot, IngressContext::default())
 }
 
 impl PlanError {

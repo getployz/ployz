@@ -102,9 +102,6 @@ describe("compileSdkDeployIntent", () => {
     expect(intent).toEqual({
       project_name: "production",
       dependencies: {},
-      service_profiles: {},
-      requested_profiles: [],
-      compose_refusal: null,
       target: [
         {
           name: "api",
@@ -221,7 +218,7 @@ describe("parseSdkDeployPreview", () => {
 
 });
 
-it.each(["incomplete_snapshot", "selected_services", "filtered_profiles", "guessed_project_name"] as const)(
+it.each(["incomplete_snapshot", "selected_services"] as const)(
   "preserves SDK prune refusal %s", (prune_refusal) => {
     expect(parseSdkDeployPreview({ ...rustPreview, prune_refusal }).prune_refusal).toBe(prune_refusal);
   },

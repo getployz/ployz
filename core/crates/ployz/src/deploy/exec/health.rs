@@ -383,10 +383,7 @@ pub(crate) fn parse_monitor_period(value: &str) -> Option<Duration> {
     if value == "0" {
         return Some(Duration::ZERO);
     }
-    crate::compose::duration_millis(Some(value))
-        .ok()
-        .flatten()
-        .map(Duration::from_millis)
+    crate::operator::go_duration(value)
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {

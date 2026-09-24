@@ -2,8 +2,6 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
-    pub const COMPOSE_FILE: &str = "COMPOSE_FILE";
-    pub const COMPOSE_PROJECT_NAME: &str = "COMPOSE_PROJECT_NAME";
     pub const CONFIG: &str = "PLOYZ_CONFIG";
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
@@ -16,25 +14,21 @@ pub mod env {
 pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
-        .subcommand(build())
-        .subcommand(changes())
         .subcommand(ingress())
         .subcommand(ctx())
-        .subcommand(deploy())
         .subcommand(dns())
         .subcommand(exec("exec"))
         .subcommand(image())
         .subcommand(images())
         .subcommand(cloud())
         .subcommand(inspect("inspect"))
-        .subcommand(logs("logs", true))
+        .subcommand(logs("logs"))
         .subcommand(service_ls("ls"))
         .subcommand(machine())
         .subcommand(project())
         .subcommand(proxy())
         .subcommand(ps())
         .subcommand(service_rm("rm"))
-        .subcommand(run("run"))
         .subcommand(scale("scale"))
         .subcommand(service())
         .subcommand(start("start"))
@@ -122,71 +116,6 @@ fn trailing(name: &'static str) -> Arg {
         .trailing_var_arg(true)
 }
 
-fn project_name(short: Option<char>) -> Arg {
-    value("project-name", short).env(env::COMPOSE_PROJECT_NAME)
-}
-
-fn build_remote() -> Arg {
-    Arg::new("remote")
-        .long("remote")
-        .num_args(0..=1)
-        .require_equals(true)
-        .default_missing_value("")
-        .value_name("MACHINE")
-        .help("Build remotely: choose automatically, or pin with --remote=MACHINE")
-        .conflicts_with("local")
-}
-
-fn build() -> Command {
-    base("build", "Build service images")
-        .arg(build_remote())
-        .arg(switch("local", None))
-        .arg(repeated("build-arg"))
-        .arg(switch("check", None))
-        .arg(switch("deps", None))
-        .arg(many("file", Some('f')).default_value("compose.yaml"))
-        .arg(many("machine", Some('m')).requires("push"))
-        .arg(switch("no-cache", None))
-        .arg(many("profile", Some('p')))
-        .arg(switch("pull", None))
-        .arg(switch("push", None).conflicts_with("push-registry"))
-        .arg(switch("push-registry", None))
-        .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
-}
-
-fn deploy() -> Command {
-    base("deploy", "Deploy services from a Compose file")
-        .arg(build_remote().conflicts_with("no-build"))
-        .arg(
-            switch("local", None)
-                .conflicts_with("no-build")
-                .help("Build on this CLI host instead of an automatically selected Machine"),
-        )
-        .arg(repeated("build-arg"))
-        .arg(switch("build-pull", None))
-        .arg(many("file", Some('f')).default_value("compose.yaml"))
-        .arg(switch("no-build", None))
-        .arg(switch("no-cache", None))
-        .arg(many("profile", None))
-        .arg(project_name(Some('p')))
-        .arg(switch("recreate", None))
-        .arg(switch("skip-health", None))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-        .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
-}
-
-fn changes() -> Command {
-    base(
-        "changes",
-        "Review captured Compose settings against live observations (command only)",
-    )
-    .arg(many("file", Some('f')).default_value("compose.yaml"))
-    .arg(many("profile", None))
-    .arg(project_name(Some('p')))
-    .arg(json_output())
-    .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
-}
-
 fn ingress() -> Command {
     base("ingress", "Manage the Ingress Proxy")
         .arg_required_else_help(true)
@@ -201,7 +130,7 @@ fn ingress() -> Command {
                 .arg(switch("recreate", None))
                 .arg(switch("skip-health", None)),
         )
-        .subcommand(log_flags(base("logs", "Show Ingress Proxy logs"), false).visible_alias("log"))
+        .subcommand(log_flags(base("logs", "Show Ingress Proxy logs")).visible_alias("log"))
 }
 
 fn ctx() -> Command {
@@ -308,12 +237,7 @@ fn inspect(name: &'static str) -> Command {
     base(name, "Inspect a service").arg(positional("service", true))
 }
 
-fn log_flags(command: Command, include_file: bool) -> Command {
-    let command = if include_file {
-        command.arg(many("file", None).default_value("compose.yaml"))
-    } else {
-        command
-    };
+fn log_flags(command: Command) -> Command {
     command
         .arg(switch("follow", Some('f')))
         .arg(many("machine", Some('m')))
@@ -323,10 +247,11 @@ fn log_flags(command: Command, include_file: bool) -> Command {
         .arg(switch("utc", None))
 }
 
-fn logs(name: &'static str, include_file: bool) -> Command {
-    log_flags(base(name, "Show logs"), include_file).arg(
+fn logs(name: &'static str) -> Command {
+    log_flags(base(name, "Show logs")).arg(
         Arg::new("service-or-container")
-            .num_args(0..)
+            .required(true)
+            .num_args(1..)
             .action(ArgAction::Append),
     )
 }
@@ -341,11 +266,7 @@ fn machine() -> Command {
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(base("inspect", "Inspect a machine").arg(positional("machine", true)))
         .subcommand(
-            log_flags(
-                base("logs", "Show machine logs").visible_alias("log"),
-                false,
-            )
-            .arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
+            log_flags(base("logs", "Show machine logs").visible_alias("log")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
         )
         .subcommand(
             base("ls", "List machines")
@@ -509,7 +430,7 @@ fn volume_acceptance() -> Arg {
 
 fn service_rm(name: &'static str) -> Command {
     base(name, "Remove services")
-        .arg(project_name(Some('p')))
+        .arg(value("project-name", Some('p')))
         .arg(switch("volumes", None).help(
             "Also remove this Service's named Docker Volumes after the containers are removed",
         ))
@@ -523,34 +444,8 @@ fn service_rm(name: &'static str) -> Command {
         )
 }
 
-fn run(name: &'static str) -> Command {
-    base(name, "Run a service")
-        .arg(value("caddyfile", None).value_hint(ValueHint::FilePath))
-        .arg(value("cpu", None))
-        .arg(value("entrypoint", None))
-        .arg(many("env", Some('e')))
-        .arg(many("constraint", None))
-        .arg(value("memory", None))
-        .arg(value("mode", None).default_value("replicated"))
-        .arg(value("name", Some('n')))
-        .arg(switch("privileged", None))
-        .arg(project_name(None))
-        .arg(many("publish", Some('p')))
-        .arg(value("pull", None).default_value("missing"))
-        .arg(value("replicas", None).default_value("1"))
-        .arg(value("shm-size", None))
-        .arg(many("ulimit", None))
-        .arg(switch("recreate", None))
-        .arg(switch("skip-health", None))
-        .arg(value("user", Some('u')))
-        .arg(many("volume", Some('v')))
-        .arg(positional("image", true))
-        .arg(trailing("command"))
-}
-
 fn scale(name: &'static str) -> Command {
     base(name, "Scale a service")
-        .arg(project_name(Some('p')))
         .arg(switch("skip-health", None))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
         .arg(positional("service", true))
@@ -580,9 +475,8 @@ fn service() -> Command {
         .subcommand(exec("exec"))
         .subcommand(inspect("inspect"))
         .subcommand(service_ls("ls").visible_alias("list"))
-        .subcommand(logs("logs", true).visible_alias("log"))
+        .subcommand(logs("logs").visible_alias("log"))
         .subcommand(service_rm("rm").visible_aliases(["remove", "delete"]))
-        .subcommand(run("run"))
         .subcommand(scale("scale"))
         .subcommand(start("start"))
         .subcommand(stop("stop"))
@@ -681,63 +575,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn build_push_destinations_are_validated() {
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "build", "--push", "--push-registry"])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "build", "--machine", "machine-1"])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "build", "--push", "--machine", "machine-1"])
-                .is_ok()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "build", "--check", "--push"])
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn compose_short_flags_are_bound_per_command() {
-        let deploy = super::command()
-            .try_get_matches_from(["ployz", "deploy", "-p", "shop", "--profile", "prod"])
-            .unwrap();
-        let deploy = deploy.subcommand().unwrap().1;
-        assert_eq!(
-            deploy.get_one::<String>("project-name").map(String::as_str),
-            Some("shop")
-        );
-        assert_eq!(
-            deploy
-                .get_many::<String>("profile")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["prod"]
-        );
-
-        let run = super::command()
-            .try_get_matches_from(["ployz", "run", "-p", "8080/https", "alpine"])
-            .unwrap();
-        let run = run.subcommand().unwrap().1;
-        assert!(run.get_one::<String>("project-name").is_none());
-        assert_eq!(
-            run.get_many::<String>("publish")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["8080/https"]
-        );
     }
 
     #[test]

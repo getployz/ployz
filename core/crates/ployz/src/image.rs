@@ -27,7 +27,6 @@ use built::Source;
 pub use built::push_from_machine;
 pub(crate) use built::{
     available_variant, holds_platform, platform_compatible, push_from_machine_using_machines,
-    serve_build_image,
 };
 
 #[must_use]

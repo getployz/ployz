@@ -35,9 +35,7 @@ Protected `main` pushes populate the shared R2 compiler cache through the checks
 
 `ci.yml` selects checks for PR and `main` changes and reports one `CI ready` result. Require that check in branch protection after the workflow lands. Rust lint and tests run independently; Cloud static checks, SDK preparation, frontend builds, and tests have separate results. The ignored cluster suite runs through `cluster.yml` nightly or by manual dispatch, with per-suite logs, five-minute suite limits, and no whole-batch retries. It is informing: a red nightly does not block a tag or Publish.
 
-Before Publish, run `scripts/qualify-release.sh` against real Linux Machines using two draft musl archive sets: `PLOYZ_ARTIFACT_DIR` is the source release and `PLOYZ_UPGRADE_ARTIFACT_DIR` is the target release. The versions must differ. The script does not pick a cloud vendor. You pass SSH targets. Those hosts must be uninitialized Machines unless you set `PLOYZ_QUALIFY_RESET=1`, which accepts a reset and destroys managed containers. Pass a qualification key with `PLOYZ_QUALIFY_SSH_KEY`; the normal `ployz machine init`/`add` path installs the verified source, then the qualifier proves a target upgrade through client disconnection, persistent ZFS-backed traffic, corrupt preflight rejection, failed activation evidence, and explicit previous-binary repair.
-
-When the informing cluster suite and that run disagree, the real Machines are the authority. Testkit bugs do not block a release.
+Before Publish, use the beta on real Machines through Cloud: enrol, deploy, attach a domain and certificate, and upgrade. There is no scripted qualification; when the informing cluster suite and those Machines disagree, the real Machines are the authority. Testkit bugs do not block a release.
 
 ## What Publish does
 

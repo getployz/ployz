@@ -29,6 +29,19 @@ pub(super) use inspect::{inspect, list, rtt, wireguard_show};
 pub(super) use remove::remove;
 pub(super) use upgrade::{inspect as inspect_upgrade, upgrade};
 
+pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
+    let leaf = leaf_matches(matches);
+    if leaf.get_one::<String>("connect").is_some() || leaf.get_one::<String>("context").is_some() {
+        return Err(Error::usage(
+            "cache clearing runs on this execution host; run it there as the builder user without --connect or --context",
+        ));
+    }
+    ployz_build::clear_cache(&ployz_build::HostPolicy::default())
+        .map_err(|error| Error::usage(error.to_string()))?;
+    println!("Cleared this host user's Ployz build cache.");
+    Ok(())
+}
+
 pub(super) struct ConnectionOptions {
     config_path: PathBuf,
     context: Option<String>,

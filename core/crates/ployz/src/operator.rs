@@ -148,8 +148,6 @@ pub enum OperatorError {
     NoHealthyContainer,
     #[error("no containers for Service \"{service}\" found on the selected Machines")]
     NoContainersOnMachines { service: ServiceSelector },
-    #[error("none of the selected Services exist in the Cluster")]
-    NoSelectedServices,
     #[error("no Machines found")]
     NoMachines,
     #[error("selected Machine disappeared from the snapshot")]
@@ -309,13 +307,18 @@ pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>,
                 .and_then(|time| Local.from_local_datetime(&time).single())
                 .map(|time| time.timestamp())
         })
-        .or_else(|| parse_log_duration(value).map(|duration| now_unix_seconds - duration));
+        .or_else(|| {
+            go_duration(value)
+                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                .map(|seconds| now_unix_seconds - seconds)
+        });
     timestamp
         .map(Some)
         .ok_or_else(|| OperatorError::InvalidLogTime(value.to_owned()))
 }
 
-fn parse_log_duration(value: &str) -> Option<i64> {
+/// Go duration syntax, such as `1m30s` or `500ms`.
+pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
     let mut remaining = value;
     let mut seconds = 0_f64;
     while !remaining.is_empty() {
@@ -339,7 +342,7 @@ fn parse_log_duration(value: &str) -> Option<i64> {
         seconds += number * multiplier;
         remaining = rest;
     }
-    (seconds.is_finite() && seconds >= 0.0).then_some(seconds as i64)
+    std::time::Duration::try_from_secs_f64(seconds).ok()
 }
 
 pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
@@ -376,11 +379,6 @@ pub struct ExecSession {
 pub struct LogInput {
     pub identity: String,
     pub stream: LogSource,
-}
-
-pub struct ServiceLogInputs {
-    pub inputs: Vec<LogInput>,
-    pub skipped_services: Vec<ServiceSelector>,
 }
 
 pub async fn open_exec(
@@ -421,9 +419,8 @@ pub async fn open_service_logs(
     args: &[ServiceArg],
     machine_selectors: &[FanoutSelector],
     options: LogsOptions,
-    compose_selection: bool,
     cancellation: CancellationToken,
-) -> Result<ServiceLogInputs, OperatorError> {
+) -> Result<Vec<LogInput>, OperatorError> {
     let machines = client.machines().await?;
     let selected_machines = select_machines(&machines, machine_selectors)?;
     let machine_ids = selected_machines
@@ -433,16 +430,8 @@ pub async fn open_service_logs(
     let live = client.live_services().await?;
     let services = live.services();
     let mut inputs = Vec::new();
-    let mut skipped_services = Vec::new();
     for arg in args {
-        let service = match select_service(&services, &arg.service) {
-            Ok(service) => service,
-            Err(ployz_core::ServiceSelectorError::NotFound { .. }) if compose_selection => {
-                skipped_services.push(arg.service.clone());
-                continue;
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let service = select_service(&services, &arg.service)?;
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
@@ -480,13 +469,7 @@ pub async fn open_service_logs(
             }
         }
     }
-    if inputs.is_empty() {
-        return Err(OperatorError::NoSelectedServices);
-    }
-    Ok(ServiceLogInputs {
-        inputs,
-        skipped_services,
-    })
+    Ok(inputs)
 }
 
 pub async fn open_machine_logs(

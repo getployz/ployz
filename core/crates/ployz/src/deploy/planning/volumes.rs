@@ -419,7 +419,7 @@ impl VolumePlan<'_> {
     }
 }
 
-/// Owned Compose-declared Docker Volumes omitted from this Deploy's target.
+/// Owned declared Docker Volumes omitted from this Deploy's target.
 pub(super) fn preserved_owned_volumes(
     project_name: &ProjectName,
     target: &[RequestedServiceSpec],

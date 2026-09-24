@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{connect::Client, failure::Failure, project::ResolvedProject};
+use crate::{connect::Client, failure::Failure};
 
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
@@ -20,36 +20,13 @@ use super::{
     report::{self, Ink},
 };
 
-pub(crate) async fn deploy_spec(
+/// Apply one Ployz infrastructure Service in the reserved system Project.
+pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
     force_recreate: bool,
     skip_health_monitor: bool,
-    project_name: &ProjectName,
     context: &str,
-    project: Option<&ResolvedProject>,
-) -> Result<(), Failure> {
-    apply_spec(
-        client,
-        requested,
-        force_recreate,
-        skip_health_monitor,
-        project_name,
-        context,
-        project,
-    )
-    .await
-    .map_err(Into::into)
-}
-
-async fn apply_spec(
-    client: &mut Client,
-    requested: &RequestedServiceSpec,
-    force_recreate: bool,
-    skip_health_monitor: bool,
-    project_name: &ProjectName,
-    context: &str,
-    project: Option<&ResolvedProject>,
 ) -> Result<(), ApplyError> {
     let preview = crate::setup_retry::run(
         client,
@@ -59,7 +36,7 @@ async fn apply_spec(
         async |client| {
             client
                 .preview(DeployIntent::apply_one(
-                    project_name.clone(),
+                    ProjectName::system(),
                     requested.clone(),
                     plan_options(force_recreate, skip_health_monitor),
                 ))
@@ -70,11 +47,7 @@ async fn apply_spec(
     .map_err(|error| ApplyError::Prepare(error.into()))?;
     print_warnings(&preview);
     if preview.noop() {
-        let source = project.map(|project| project.source.to_string());
-        print!(
-            "{}",
-            render::plan_text(&preview, context, source.as_deref())
-        );
+        print!("{}", render::plan_text(&preview, context));
         return Ok(());
     }
     let cancellation = crate::cancellation::on_ctrl_c();
@@ -91,22 +64,6 @@ async fn apply_spec(
         &format!("Deployed to {context}"),
         preview.cluster_domain.as_deref(),
     )
-}
-
-pub(crate) async fn apply_requested(
-    client: &mut Client,
-    requested: &RequestedServiceSpec,
-) -> Result<(), ApplyError> {
-    apply_spec(
-        client,
-        requested,
-        false,
-        false,
-        &ProjectName::system(),
-        "default",
-        None,
-    )
-    .await
 }
 
 /// Keep execution evidence available for the closing deployment report.
@@ -146,19 +103,6 @@ impl From<ApplyError> for Failure {
 pub(crate) struct ConfirmGate<'a> {
     pub auto_confirm: bool,
     pub context: &'a str,
-    pub project: &'a ResolvedProject,
-}
-
-pub(crate) async fn deploy_project(
-    client: &mut Client,
-    candidate_id: &str,
-    prepared: crate::preparation::Prepared,
-    cancellation: &CancellationToken,
-    gate: ConfirmGate<'_>,
-) -> Result<(), Failure> {
-    println!("Captured candidate {candidate_id}");
-    print_warnings(&prepared.plan);
-    confirm_and_execute(client, &prepared.plan, gate, cancellation).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -168,7 +112,7 @@ pub(crate) async fn deploy_scale(
     skip_health_monitor: bool,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    let (preview, project_name) = plan_scale(
+    let preview = plan_scale(
         client,
         selector,
         replicas,
@@ -176,23 +120,9 @@ pub(crate) async fn deploy_scale(
     )
     .await?;
     print_warnings(&preview);
-    let project = ResolvedProject {
-        name: project_name,
-        source: gate.project.source,
-    };
     let cancellation = crate::cancellation::on_ctrl_c();
     let _stop_listener = cancellation.clone().drop_guard();
-    confirm_and_execute(
-        client,
-        &preview,
-        ConfirmGate {
-            auto_confirm: gate.auto_confirm,
-            context: gate.context,
-            project: &project,
-        },
-        &cancellation,
-    )
-    .await
+    confirm_and_execute(client, &preview, gate, &cancellation).await
 }
 
 async fn confirm_and_execute(
@@ -201,11 +131,7 @@ async fn confirm_and_execute(
     gate: ConfirmGate<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), Failure> {
-    let source = Some(gate.project.source.to_string());
-    print!(
-        "{}",
-        render::plan_text(preview, gate.context, source.as_deref())
-    );
+    print!("{}", render::plan_text(preview, gate.context));
     if preview.noop() {
         return Ok(());
     }

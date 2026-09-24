@@ -33,28 +33,18 @@ Run Cargo and engine script commands from `core/`.
 
 Each release archive ships one binary. The remote management transport (iroh, via the self-hosted Ployz Relay) is in-process in `ployz`, `ployzd`, and the SDK; there is no helper process.
 
-Building `ployz` also requires Go 1.24 or newer. Cargo builds and embeds the Compose helper; installed users need neither Go nor the Docker Compose plugin. Local builds require Docker with Buildx and the containerd image store.
-
-`ployz build` and `ployz deploy` prefer a declared or existing default Dockerfile.
-Buildable Services without one use Railpack; image-only Services are unchanged.
-Set `build.x-recipe` to `dockerfile`, `railpack`, or `auto` (the default) to control
-selection. A failed recipe never falls back to another.
+Cloud builds each Git Service on one Build Machine. The Service's build settings
+select a Dockerfile or Railpack; a failed recipe never falls back to another.
 
 Railpack uses matching pinned 0.39.0 preparation/frontend tooling with BuildKit
-0.26.2, provisioned through Docker. Builds default to the native Linux AMD64 or
-ARM64 platform. Set `build.platforms: [linux/amd64, linux/arm64]` to build both;
-the execution host must provide native or emulated support for each platform.
-Separate solves are assembled locally with pinned regctl 0.11.6 into one immutable
-image in Docker’s containerd store, with every platform’s content verified.
-Multi-platform builds currently require local output. Railpack rejects
-`build.provenance` and `build.sbom` because assembly cannot carry attestations;
-Dockerfiles pass them to BuildKit and remain limited to one platform.
+0.26.2, provisioned through Docker. Preparation derives each Railpack Service's
+platforms from the Machines it may be placed on, read from the current Cluster
+Observation, before building; the Build Machine must provide native or emulated
+support for each. Separate solves are assembled with pinned regctl 0.11.6 into one
+immutable image in Docker’s containerd store, with every platform’s content
+verified. Dockerfile Builds produce the Build Machine's native platform.
 
-`ployz deploy` derives each Railpack Service's platforms from the Machines it may
-be placed on, read from the current Cluster Observation, before building; explicit
-`build.platforms` must cover them, and `DOCKER_DEFAULT_PLATFORM` is replaced
-because it describes this client, not the Cluster. Standalone `ployz build`
-keeps the native default. After every Build succeeds, the completed platforms are checked against
+After every Build succeeds, the completed platforms are checked against
 the fresh Deploy plan's destinations; a Machine no variant runs stops the Deploy
 before any Service, hook, or volume change, and the fix is a rerun, never an
 automatic rebuild or a moved placement. Images travel by exact content digest
@@ -68,18 +58,14 @@ The [prototype findings](https://github.com/getployz/ployz2/blob/c3ca5519a460725
 preserve the evidence for this assembly approach. They used shipped beta binaries
 and emulated ARM64; they do not qualify this implementation or native ARM64.
 
-Service variables default build variables; Compose `build.args` and then
-`--build-arg` override them without changing runtime values. Values travel as
+Service variables become build variables without changing runtime values; a
+Railpack build command is passed as `RAILPACK_BUILD_CMD`. Values travel as
 private secret mounts. Docker ignore patterns and Railpack's configured
 exclusions apply before source transfer. Recipes can still print or embed values.
 
-Railpack refuses `--check` and unsupported frontend settings by name. On this
-pinned frontend, `--no-cache` and `--pull` force a cold build by clearing the
-exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
-
-Remote Builds (`ployz build --remote`) use one active
-slot per Machine and a FIFO of eight waiting attempts. Source and secrets stay
-on the client until admission. Configure the daemon environment and restart it:
+Builds use one active slot per Machine and a FIFO of eight waiting attempts.
+Source and secrets stay on the client until admission. Configure the daemon
+environment and restart it:
 
 | Setting | Default | Accepted values |
 | --- | --- | --- |
@@ -94,23 +80,14 @@ restart. Bounded abandoned-builder teardown does not clear that uncertainty:
 an operator must confirm the builder and its host processes have stopped before
 clearing the lock marker named in the error. Work is never replayed.
 
-`ployz build` stays local by default. `ployz build --remote` and connected
-`ployz deploy` choose one responsive, Build-accepting Machine randomly and run all
-of the command's Builds there. Use `--remote=<Machine>` to pin a builder or
-`deploy --local` to build on the CLI host. `--local` conflicts with `--remote`
-and `--no-build`. A rejected or failed Build is never moved to another host.
+Preparation chooses one responsive, Build-accepting Machine randomly and runs all
+of its Builds there. A rejected or failed Build is never moved to another host.
 
-The selected Machine runs Dockerfile or native-platform Railpack Builds and
-supplies the build resource policy; source uploads cannot change it. Application
-placement constraints select image destinations, independently of the builder.
+The selected Machine supplies the build resource policy; source uploads cannot
+change it. Application placement selects image destinations, independently of
+the builder.
 
-Local Builds use local Docker: remote `DOCKER_HOST` endpoints and non-default
-Docker contexts are rejected by the shared executor before builder mutation.
-Use a selected Machine for remote builds so policy and ownership are enforced
-on the execution host.
-
-Configure the execution user on each build host in `~/.ployz/build.yaml` (the daemon
-user for selected-Machine Builds). If `HOME` is unset or empty, the user's account
+Configure the daemon user on each Build Machine in `~/.ployz/build.yaml`. If `HOME` is unset or empty, the user's account
 home is used. The file is read once at admission. All fields
 are optional; omitted CPU/memory limits are disabled and unconfigured GC keeps
 BuildKit 0.26.2 defaults:
@@ -127,7 +104,7 @@ bytes. Cache targets are positive byte counts; byte counts must fit a signed
 64-bit integer. CPU and memory ceilings apply to the BuildKit worker (including
 its solve processes) and the separate Railpack preparation container. Memory
 limits also disable container swap. These settings are independent of Service
-runtime limits and are not build/deploy flags. Unsupported Docker resource
+runtime limits. Unsupported Docker resource
 controls and observed launch failures stop the attempt.
 
 `cache_bytes` and `min_free_bytes` are retention/GC targets, **not hard peak disk
@@ -143,7 +120,7 @@ unrelated Docker data, requires no running daemon, and refuses active or
 quarantined ownership. It does not accept a remote connection/context; use host
 administration to run it on the selected Machine. Docker must use its default
 context and a local Unix socket; remote `DOCKER_HOST` and non-default Docker
-contexts are refused before builder mutation. Local CLI and daemon Builds
+contexts are refused before builder mutation. Daemon Builds and cache clearing
 share a stable per-user lock under `/var/tmp/ployz-build-<uid>`, even with different
 home or Docker configuration directories. There is still one active Build per
 builder; no configurable concurrency or cache replication is introduced.

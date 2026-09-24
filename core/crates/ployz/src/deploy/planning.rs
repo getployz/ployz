@@ -207,7 +207,7 @@ fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
 ///
 /// Matching and replacement use only Containers owned by
 /// [`DeployIntent::project_name`]. Empty `options.selected` is a full
-/// reconciliation of `target` (profile-enabled Services start). Non-empty
+/// reconciliation of `target`. Non-empty
 /// `selected` is partial: those names expand through dependencies that are also
 /// in `target`. Other target Services are unchanged. Visible obsolete Services
 /// owned by that user Project are removed after desired work when pruning is
@@ -476,7 +476,7 @@ fn reject_hostname_conflicts(
 
 /// Find observed Services absent from the full target, excluding reserved projects.
 /// The caller must apply the intent's prune refusal before deleting them.
-pub(crate) fn obsolete_services(
+fn obsolete_services(
     intent: &DeployIntent,
     services: &[ServiceObservation],
 ) -> Vec<QualifiedService> {

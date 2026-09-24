@@ -756,38 +756,6 @@ fn colocated_global_services_reject_conflicting_provisioned_labels() {
 }
 
 #[test]
-fn profile_filtered_service_still_contributes_to_bound_conflicts() {
-    let first = global_service("first", "first", 1_073_741_824);
-    let second = global_service("second", "first", 2_147_483_648);
-    let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
-        [&first, &second],
-        PlanOptions::default(),
-    )
-    .with_service_profiles(BTreeMap::from([(
-        second.name.clone(),
-        vec!["tools".into()],
-    )]));
-
-    let result = preview_deploy(
-        &intent,
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..storage_snapshot()
-        },
-        IngressContext::default(),
-    );
-    assert!(
-        matches!(
-            &result,
-            Err(PlanError::Service { source, .. })
-                if matches!(source.as_ref(), PlanError::ConflictingDockerVolumeDefinitions { .. })
-        ),
-        "unexpected result: {result:?}"
-    );
-}
-
-#[test]
 fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");

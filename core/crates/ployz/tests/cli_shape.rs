@@ -8,7 +8,6 @@ use clap_complete::{Shell, generate};
 #[test]
 fn listing_json_output_accepts_only_json_in_long_and_short_forms() {
     let paths: &[&[&str]] = &[
-        &["changes"],
         &["ls"],
         &["ps"],
         &["service", "ls"],
@@ -169,60 +168,19 @@ fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {
 }
 
 #[test]
-fn remote_build_target_requires_equals_and_preserves_positional_service() {
-    for (args, target, service) in [
-        (
-            vec!["ployz", "build", "--remote=tower", "api"],
-            "tower",
-            "api",
-        ),
-        (vec!["ployz", "build", "--remote", "api"], "", "api"),
-        (
-            vec!["ployz", "deploy", "--remote=tower", "api"],
-            "tower",
-            "api",
-        ),
-        (vec!["ployz", "deploy", "--remote", "api"], "", "api"),
-    ] {
-        let command = *args.get(1).unwrap();
-        let matches = ployz::cli::command().try_get_matches_from(&args).unwrap();
-        let build = matches.subcommand_matches(command).unwrap();
-        assert_eq!(
-            build.get_one::<String>("remote").map(String::as_str),
-            Some(target)
-        );
-        assert_eq!(
-            build
-                .get_many::<String>("service")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            [service]
-        );
-    }
-    // Both commands define --local, so the refusals below are conflicts rather
-    // than an unknown flag.
-    for command in ["build", "deploy"] {
-        let matches = ployz::cli::command()
-            .try_get_matches_from(["ployz", command, "--local", "api"])
-            .unwrap();
-        assert!(
-            matches
-                .subcommand_matches(command)
-                .unwrap()
-                .get_flag("local")
-        );
-    }
-    for conflicting in [
-        vec!["ployz", "build", "--local", "--remote=tower"],
-        vec!["ployz", "deploy", "--local", "--remote=tower"],
-        vec!["ployz", "deploy", "--no-build", "--remote=tower"],
+fn compose_workflows_and_inputs_are_not_accepted() {
+    for args in [
+        &["ployz", "deploy"][..],
+        &["ployz", "changes"],
+        &["ployz", "build"],
+        &["ployz", "run", "nginx"],
+        &["ployz", "service", "run", "nginx"],
+        &["ployz", "logs", "--file", "compose.yaml", "api"],
+        &["ployz", "scale", "-p", "shop", "api", "2"],
     ] {
         assert!(
-            ployz::cli::command()
-                .try_get_matches_from(&conflicting)
-                .is_err(),
-            "{conflicting:?}"
+            ployz::cli::command().try_get_matches_from(args).is_err(),
+            "{args:?}"
         );
     }
 }
@@ -309,34 +267,4 @@ fn ingress_deploy_accepts_repeated_constraints_and_rejects_legacy_machine_select
             .try_get_matches_from(["ployz", "ingress", "deploy", "--machine", "edge",])
             .is_err()
     );
-}
-
-#[test]
-fn deploy_build_choices_preserve_services_and_reject_conflicting_overrides() {
-    for choice in ["--remote", "--remote=tower", "--local"] {
-        let matches = ployz::cli::command()
-            .try_get_matches_from(["ployz", "deploy", choice, "api"])
-            .unwrap();
-        let deploy = matches.subcommand_matches("deploy").unwrap();
-        assert_eq!(
-            deploy
-                .get_many::<String>("service")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["api"]
-        );
-    }
-    for choices in [
-        ["--local", "--remote"],
-        ["--local", "--no-build"],
-        ["--remote", "--no-build"],
-    ] {
-        assert!(
-            ployz::cli::command()
-                .try_get_matches_from(["ployz", "deploy", choices[0], choices[1]])
-                .is_err(),
-            "{choices:?}"
-        );
-    }
 }

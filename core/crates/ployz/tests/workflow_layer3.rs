@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     process::Command,
     sync::Arc,
     time::Duration,
@@ -9,15 +8,15 @@ use std::{
 use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
+    sdk::Session,
 };
-use ployz_core::{ListMachinesRequest, PortPublication, op};
+use ployz_core::{DeployIntent, DeployOutcome, ListMachinesRequest, op};
 use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
 
-/// L3-005..L3-007, L3-009..L3-010, L3-014, L3-029..L3-030,
-/// L3-040..L3-041, and L3-045..L3-046.
+/// L3-009..L3-010, L3-014, and L3-045..L3-046.
 #[tokio::test]
-#[ignore = "informing: requires the privileged Ployz testkit image and Docker Compose"]
-async fn run_deploy_and_scale_execute_through_the_real_cli() {
+#[ignore = "informing: requires the privileged Ployz testkit image"]
+async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
     let plan = ClusterPlan::new(&format!("l3-workflows-{}", std::process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.initialize_two().await.unwrap();
@@ -32,6 +31,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
     )
     .await
     .unwrap();
+    let session = session(address).await;
     let machines = client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await
@@ -42,37 +42,22 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         .map(|machine| (machine.machine.name.to_string(), machine.machine.id))
         .collect::<BTreeMap<_, _>>();
     let machine_1 = machine_ids.get("machine-1").unwrap();
-    let machine_2 = machine_ids.get("machine-2").unwrap();
+    let on_machine_1 = format!("node.id=={machine_1}");
 
-    assert_success(ployz(
-        address,
-        [
-            "run",
-            "--mode",
-            "global",
-            "--constraint",
-            &format!("node.id=={machine_1}"),
-            SERVICE_CONTAINER_IMAGE,
-            "sleep",
-            "60",
-        ],
-    ));
-    assert_success(ployz(
-        address,
-        [
-            "run",
-            "--name",
-            "scaled-workflow",
-            "--constraint",
-            &format!("node.id=={machine_1}"),
-            SERVICE_CONTAINER_IMAGE,
-            "sleep",
-            "60",
-        ],
-    ));
+    let scaled = intent("scaled-workflow", &on_machine_1, None);
+    let outcome = session.run(scaled.clone(), None).await.unwrap();
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    wait_for_services(&mut client, &["scaled-workflow"], 1).await;
+    // An unchanged Deploy Intent plans nothing, so its Containers stay.
+    let unchanged = session.preview(scaled).await.unwrap();
+    assert!(unchanged.noop(), "{:?}", unchanged.preview());
+    unchanged.close();
     assert_success(ployz(address, ["scale", "--yes", "scaled-workflow", "2"]));
 
-    let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 3).await;
+    let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 2).await;
     let scaled = observed_service(&initial_run, "scaled-workflow");
     assert_eq!(scaled.containers.len(), 2);
     assert!(
@@ -81,176 +66,25 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
             .iter()
             .all(|container| &container.as_observation().machine_id == machine_1)
     );
-    let generated_global = initial_run
-        .services()
-        .into_iter()
-        .find(|service| {
-            service.containers.first().is_some_and(|container| {
-                container
-                    .as_observation()
-                    .service_name()
-                    .as_str()
-                    .starts_with("alpine-")
-            })
-        })
-        .unwrap();
-    assert_eq!(generated_global.containers.len(), 1);
-    assert_eq!(
-        &generated_global
-            .containers
-            .first()
-            .unwrap()
-            .as_observation()
-            .machine_id,
-        machine_1
-    );
     assert_machine_rename_preserves_containers(address, &mut client, machine_1, &initial_run).await;
 
-    let root = std::env::temp_dir().join(format!("ployz-l3-workflows-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("message.txt"), "hello\n").unwrap();
-    fs::write(
-        root.join("basic.yaml"),
-        format!(
-            "services:\n  basic:\n    image: {SERVICE_CONTAINER_IMAGE}\n    command: [sleep, '60']\n    x-ports: [18081:8080/tcp@host]\n"
-        ),
-    )
-    .unwrap();
-    let basic = deploy(address, &root, "basic.yaml", true, false);
-    assert_success(basic);
-    wait_for_ids(&mut client, &["basic"], None).await;
-
-    fs::write(
-        root.join("blocked.yaml"),
-        format!(
-            "services:\n  blocked:\n    image: {SERVICE_CONTAINER_IMAGE}\n    command: [sleep, '60']\n    x-pre_deploy: {{command: [sh, -c, 'exit 17']}}\n"
-        ),
-    )
-    .unwrap();
-    let blocked = deploy(address, &root, "blocked.yaml", true, false);
-    assert!(!blocked.status.success());
+    let blocked = session
+        .run(intent("blocked", &on_machine_1, Some("exit 17")), None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(blocked, DeployOutcome::Failed { .. }),
+        "{blocked:?}"
+    );
     let blocked = wait_for_hook_only(&mut client, "blocked").await;
     assert!(blocked.containers.is_empty());
     assert!(!blocked.hook_containers.is_empty());
-
-    fs::write(
-        root.join("missing.yaml"),
-        format!(
-            "services:\n  impossible:\n    image: {SERVICE_CONTAINER_IMAGE}\n    deploy: {{placement: {{constraints: [node.labels.missing==true]}}}}\n"
-        ),
-    )
-    .unwrap();
-    let impossible = deploy(address, &root, "missing.yaml", true, false);
-    assert!(!impossible.status.success());
-    fs::write(
-        root.join("compose.yaml"),
-        format!(
-            r#"name: workflow
-services:
-  database:
-    image: {SERVICE_CONTAINER_IMAGE}
-    command: [sleep, "60"]
-    deploy: {{placement: {{constraints: [node.id=={machine_1}]}}}}
-  api:
-    image: {SERVICE_CONTAINER_IMAGE}
-    command: [sleep, "60"]
-    depends_on: [database]
-    deploy: {{placement: {{constraints: [node.id=={machine_2}]}}}}
-    x-ports: [18080:8080/tcp@host]
-    x-pre_deploy: {{command: [sh, -c, "exit 0"]}}
-    configs: [{{source: message, target: /message.txt}}]
-    volumes: [{{type: volume, source: data, target: /data}}]
-configs:
-  message: {{file: message.txt}}
-volumes:
-  data: {{name: workflow_data}}
-"#
-        ),
-    )
-    .unwrap();
-
-    let declined = deploy(address, &root, "compose.yaml", false, false);
-    assert!(!declined.status.success());
-    assert!(String::from_utf8_lossy(&declined.stderr).contains("confirmation requires a terminal"));
-    assert!(
-        service_ids(&mut client, &["api", "database"])
-            .await
-            .is_empty()
-    );
-    assert!(
-        client
-            .list_volumes(&machines)
-            .await
-            .successes
-            .iter()
-            .flat_map(|success| &success.value.volumes)
-            .all(|volume| volume.id.name.as_str() != "data")
-    );
-
-    assert_success(deploy(address, &root, "compose.yaml", true, false));
-    let first_ids = wait_for_ids(&mut client, &["api", "database"], None).await;
-    assert_success(deploy(address, &root, "compose.yaml", true, false));
-    let unchanged_ids = wait_for_ids(&mut client, &["api", "database"], None).await;
-    assert_eq!(unchanged_ids, first_ids);
-    assert_success(deploy(address, &root, "compose.yaml", true, true));
-    let recreated_ids = wait_for_ids(&mut client, &["api", "database"], Some(&first_ids)).await;
-    assert_ne!(recreated_ids, first_ids);
-
-    let deployed = wait_for_services(
-        &mut client,
-        &["api", "basic", "database", "scaled-workflow"],
-        6,
-    )
-    .await;
-    let api = observed_service(&deployed, "api");
-    let api_container = api.containers.first().unwrap().as_observation();
-    assert_eq!(api.containers.len(), 1);
-    assert_eq!(&api_container.machine_id, machine_2);
-    assert!(!api.hook_containers.is_empty());
-    assert_eq!(
-        api_container
-            .resolved_spec
-            .configs()
-            .first()
-            .unwrap()
-            .content,
-        b"hello\n"
-    );
-    assert!(matches!(
-        api_container.resolved_spec.ports.as_slice(),
-        [PortPublication::Host { .. }]
-    ));
-    let database = observed_service(&deployed, "database");
-    assert_eq!(
-        &database
-            .containers
-            .first()
-            .unwrap()
-            .as_observation()
-            .machine_id,
-        machine_1
-    );
-    let current_machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await
-        .unwrap()
-        .machines;
-    let volumes = client.list_volumes(&current_machines).await;
-    assert!(
-        volumes
-            .successes
-            .iter()
-            .flat_map(|success| &success.value.volumes)
-            .any(|volume| volume.id.name.as_str() == "workflow_data"),
-        "{volumes:?}"
-    );
-    fs::remove_dir_all(root).unwrap();
+    session.close().await;
 }
 
 /// #474: both successful removal paths warn instead of silently losing replicas.
 #[tokio::test]
-#[ignore = "informing: requires the privileged Ployz testkit image and Docker Compose"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
     for no_reset in [false, true] {
         let plan = ClusterPlan::new(
@@ -273,20 +107,19 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
             ],
         ));
 
-        assert_success(ployz(
-            address,
-            [
-                "run",
-                "--name",
-                "replicated",
-                "--constraint",
-                "node.labels.fixture==machine-2",
-                "--skip-health",
-                SERVICE_CONTAINER_IMAGE,
-                "sleep",
-                "60",
-            ],
-        ));
+        let session = session(address).await;
+        let outcome = session
+            .run(
+                intent("replicated", "node.labels.fixture==machine-2", None),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, DeployOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        session.close().await;
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
         command
@@ -302,7 +135,7 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         );
         let stderr = String::from_utf8_lossy(&removed.stderr);
         assert!(
-            stderr.contains("Replicated Services may now be under-replicated: default/replicated"),
+            stderr.contains("Replicated Services may now be under-replicated: workflow/replicated"),
             "{stderr}"
         );
         assert!(
@@ -312,23 +145,40 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
     }
 }
 
-fn deploy(
-    address: std::net::SocketAddr,
-    root: &std::path::Path,
-    file: &str,
-    yes: bool,
-    recreate: bool,
-) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
-    command
-        .args(["--connect", &format!("tcp://{address}"), "deploy"])
-        .args(["--file", file])
-        .args(recreate.then_some("--recreate"))
-        .args(["--no-build", "--skip-health"])
-        .args(yes.then_some("--yes"))
-        .current_dir(root)
-        .env_remove("PLOYZ_AUTO_CONFIRM");
-    command.output().unwrap()
+async fn session(address: std::net::SocketAddr) -> Session {
+    ployz::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap()
+}
+
+/// One image Service in Project `workflow`, lowered as Cloud authors it.
+/// Cloud authors no placement; these scenarios pin one to observe it.
+fn intent(name: &str, constraint: &str, pre_deploy: Option<&str>) -> DeployIntent {
+    let mut intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(
+            serde_json::json!({"projectName": "workflow", "snapshots": [{
+                "config": {"version": 2, "privateDns": name, "source": {
+                    "type": "image", "version": 1, "image": SERVICE_CONTAINER_IMAGE,
+                    "credentials": {"type": "none"}
+                }, "startCommand": "sleep 60", "preDeployCommand": pre_deploy,
+                "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"}
+            }]}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    intent.options.skip_health_monitor = true;
+    intent
+        .target
+        .first_mut()
+        .unwrap()
+        .placement
+        .constraints
+        .insert(ployz_core::PlacementConstraint::parse(constraint).unwrap());
+    intent
 }
 
 async fn assert_machine_rename_preserves_containers(
@@ -353,7 +203,7 @@ async fn assert_machine_rename_preserves_containers(
         ["machine", "rename", "machine-1", "workflow-renamed"],
     ));
     wait_for_machine_name(client, machine_id, "workflow-renamed").await;
-    let after_rename = wait_for_services(client, &["scaled-workflow"], 3).await;
+    let after_rename = wait_for_services(client, &["scaled-workflow"], 2).await;
     assert_eq!(
         after_rename
             .services()
@@ -413,52 +263,6 @@ async fn wait_for_hook_only(
                     container.as_observation().resolved_spec.name.as_str() == name
                 })
         })
-    })
-    .await
-}
-
-async fn service_ids(
-    client: &mut ployz::connect::Client,
-    names: &[&str],
-) -> BTreeMap<String, BTreeSet<String>> {
-    service_ids_from(client.live_services().await.unwrap(), names)
-}
-
-fn service_ids_from(
-    live: ployz_core::LiveServices<ployz_core::RpcError>,
-    names: &[&str],
-) -> BTreeMap<String, BTreeSet<String>> {
-    live.services()
-        .into_iter()
-        .filter_map(|service| {
-            let name = service
-                .containers
-                .first()?
-                .as_observation()
-                .service_name()
-                .to_string();
-            names.contains(&name.as_str()).then(|| {
-                (
-                    name,
-                    service
-                        .containers
-                        .into_iter()
-                        .map(|container| container.as_observation().container_id.to_string())
-                        .collect(),
-                )
-            })
-        })
-        .collect()
-}
-
-async fn wait_for_ids(
-    client: &mut ployz::connect::Client,
-    names: &[&str],
-    different_from: Option<&BTreeMap<String, BTreeSet<String>>>,
-) -> BTreeMap<String, BTreeSet<String>> {
-    wait_for_live(client, |live| {
-        let ids = service_ids_from(live, names);
-        (ids.len() == names.len() && different_from.is_none_or(|old| old != &ids)).then_some(ids)
     })
     .await
 }

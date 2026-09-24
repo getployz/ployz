@@ -63,16 +63,15 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         let requested = crate::ingress::service_spec(image, constraints, fragment).await?;
-        crate::deploy::deploy_spec(
+        crate::deploy::apply_requested(
             &mut client,
             &requested,
             force_recreate,
             skip_health_monitor,
-            &ployz_core::ProjectName::system(),
             context,
-            None,
         )
-        .await?;
+        .await
+        .map_err(Error::from)?;
         crate::dns::update_records_if_reserved(&mut client).await.map_err(|error| Error::usage(format!("Ingress deployment completed; DNS publication pending: {error}; allow outbound access if blocked, then rerun the same ployz ingress deploy command")))?;
         Ok(())
     })
