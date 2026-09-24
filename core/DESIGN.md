@@ -41,6 +41,12 @@ repurposed; readers ignore unknown fields. Replicated bodies never use
 one in the same Cluster. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
 
+A breaking release protects older Clusters from its own side. Daemons follow
+their own line's channel pointer (`ployz.sh/v0/stable`), so a new line never
+reaches them unasked. The breaking release's CLI refuses to init or add a
+Machine into a Cluster on another line, and its daemon rejects older-line
+joiners. An older release never has to know about a newer one.
+
 **Red flags:** a required new field, a migration step, a reader that rejects
 unknown fields on replicated data, a daemon behaviour that depends on every
 peer being upgraded.

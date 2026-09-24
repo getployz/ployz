@@ -336,7 +336,7 @@ A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. It 
 _Avoid_: self-hosted cluster, offline mode, unpaired as a fault
 
 **Release Channel**:
-One of exactly two names a daemon or installer may follow: `stable` (the highest published `vX.Y.Z`) or `beta` (the highest published release, `vX.Y.Z-beta.N` or stable). A channel only moves forward, and upgrading through one never downgrades a Machine; only an exact version does. A build from `main` is addressable by tag or commit, never by a channel.
+One of exactly two names a daemon or installer may follow: `stable` (the highest published `vX.Y.Z`) or `beta` (the highest published release, `vX.Y.Z-beta.N` or stable). A channel is scoped to a release line (a major version): a daemon resolves `ployz.sh/v<its major>/<channel>`, so it never crosses a breaking release through a channel. Only the live installer reads the unscoped `ployz.sh/<channel>`, which points at the newest line. A channel only moves forward, and upgrading through one never downgrades a Machine; only an exact version crosses a line or moves backwards. A build from `main` is addressable by tag or commit, never by a channel.
 _Avoid_: latest, nightly, dev channel
 
 **Hosted DNS**:
