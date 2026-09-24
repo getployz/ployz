@@ -13,7 +13,7 @@ No `next` branch. Features and fixes both land on `main`. Beta is a tag.
 
 ## Cut a release
 
-1. From `core/`, set `[workspace.package] version` in `Cargo.toml` and `crates/ployz-sdk/package.json` to the version you will tag (`0.2.0` or `0.2.0-beta.1`). Update native-binding pins in `../dashboard/package.json` to the same version and refresh `../dashboard/pnpm-lock.yaml` against the published packages; retain the local `@ployz/sdk` link. Fast CI checks binding versions. `check-release-tag.sh` rejects a tag if the Cargo or SDK package version is missing or differs.
+1. From `core/`, set `[workspace.package] version` in `Cargo.toml` to the version you will tag (`0.2.0` or `0.2.0-beta.1`). `check-release-tag.sh` rejects a tag if the Cargo version is missing or differs.
 2. Merge that commit to `main`.
 3. Tag and push:
 
@@ -27,9 +27,9 @@ Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and oth
 4. Wait for the Release workflow. The tag run validates the tag and commit, builds the six CLI and daemon archives using the shared kache/R2 cache, and opens a **draft** GitHub release (`--prerelease` on beta tags).
 5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
 
-Automatic releases run the workflow version stored in the tagged commit. For recovery using the current workflow, dispatch `release.yml` from `main` with `tag` and its expected commit `sha`; dispatch `publish-sdk.yml` from `main` with `tag` to retry SDK publication.
+Automatic releases run the workflow version stored in the tagged commit. For recovery using the current workflow, dispatch `release.yml` from `main` with `tag` and its expected commit `sha`.
 
-Protected `main` pushes populate the shared R2 compiler cache through the checks selected for that change. Release archive checks run for packaging inputs and conservative full checks; SDK npm builds run only when publishing a release. Cloud reuses a native SDK and browser WASM artifact only when their source-input hash matches exactly, and builds from source on a miss. These checks do not publish releases or npm packages. Only protected `main` pushes receive R2 write credentials. PR, tag, release, scheduled, and manual runs use separate R2 read-only credentials. GitHub Actions variables `KACHE_S3_BUCKET`, `KACHE_S3_ENDPOINT`, and `KACHE_S3_REGION` select the bucket; secrets `KACHE_S3_ACCESS_KEY_ID` and `KACHE_S3_SECRET_ACCESS_KEY` provide write access. Create a separate R2 token with **Object Read only** permission scoped to the cache bucket, and store its credentials as `KACHE_S3_READ_ACCESS_KEY_ID` and `KACHE_S3_READ_SECRET_ACCESS_KEY`. Same-repository PRs reuse the shared cache with these read-only keys. Both credential pairs must be configured. GitHub does not expose these secrets to fork PRs.
+Protected `main` pushes populate the shared R2 compiler cache through the checks selected for that change. Release archive checks run for packaging inputs and conservative full checks. Cloud reuses a native SDK and config WASM artifact only when their source-input hash matches exactly, and builds from source on a miss. These checks do not publish releases. Only protected `main` pushes receive R2 write credentials. PR, tag, release, scheduled, and manual runs use separate R2 read-only credentials. GitHub Actions variables `KACHE_S3_BUCKET`, `KACHE_S3_ENDPOINT`, and `KACHE_S3_REGION` select the bucket; secrets `KACHE_S3_ACCESS_KEY_ID` and `KACHE_S3_SECRET_ACCESS_KEY` provide write access. Create a separate R2 token with **Object Read only** permission scoped to the cache bucket, and store its credentials as `KACHE_S3_READ_ACCESS_KEY_ID` and `KACHE_S3_READ_SECRET_ACCESS_KEY`. Same-repository PRs reuse the shared cache with these read-only keys. Both credential pairs must be configured. GitHub does not expose these secrets to fork PRs.
 
 ## Confidence before Publish
 
@@ -47,8 +47,6 @@ When the informing cluster suite and that run disagree, the real Machines are th
 - Stable only: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
 
 Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
-
-The same `release: published` event runs `publish-sdk.yml`, which builds the tagged SDK directly using the shared kache/R2 cache and publishes `@ployz/sdk` to npm (`beta` dist-tag on beta tags, `latest` on stable). `@ployz/sdk` itself is JavaScript only; each native binding ships as its own package (`@ployz/sdk-linux-x64`, `@ployz/sdk-linux-arm64`, `@ployz/sdk-darwin-arm64`, `@ployz/sdk-darwin-x64`, built by the workflow's matrix; the linux bindings are cross-linked by `cargo-zigbuild` against a glibc 2.28 floor, so they are not musl builds) and is listed as an optional dependency, so npm installs just the one matching the host. The `optionalDependencies` are generated by `scripts/pack-sdk-package.sh` from the bindings it is handed, so the matrix is the only place the platform list lives, and the bindings publish before `@ployz/sdk`. npm trusted publishing is configured for `getployz/ployz2` workflow `publish-sdk.yml` (no `NPM_TOKEN`); each binding package needs the same trusted publisher entry. To publish a tag whose GitHub Release already exists, dispatch `publish-sdk.yml` from `main` with that tag (the job checks out the tag).
 
 ## Install
 

@@ -1,4 +1,4 @@
-//! Strict service-setting admission and normalization for native and browser callers.
+//! Strict service-setting admission and normalization for SDK callers in Node and the browser.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -10,6 +10,6 @@ case "$(uname -s)" in
 esac
 # Replace, don't overwrite: macOS caches the code signature per inode and SIGKILLs a stale one.
 rm -f crates/ployz-sdk/ployz-sdk.node && cp "$binding" crates/ployz-sdk/ployz-sdk.node
-bash scripts/build-config-browser.sh
+bash scripts/build-config-wasm.sh
 node crates/ployz-sdk/tests/config-contract.mjs
 node --test crates/ployz-sdk/tests/node_logs.js

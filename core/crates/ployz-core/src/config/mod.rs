@@ -123,7 +123,7 @@ enum ConfigRequest {
     },
 }
 
-/// The JSON ABI is shared by native and browser exports; both validate before policy.
+/// The JSON ABI behind the SDK's WASM config export; it validates before policy.
 ///
 /// # Errors
 /// Returns ConfigError for an unknown request or any failed admission or restore operation.

@@ -103,11 +103,5 @@
     "typescript": "7.0.1-rc",
     "vite": "8.2.2",
     "vitest": "^4.1.5"
-  },
-  "optionalDependencies": {
-    "@ployz/sdk-darwin-arm64": "0.1.2-beta.41",
-    "@ployz/sdk-darwin-x64": "0.1.2-beta.41",
-    "@ployz/sdk-linux-arm64": "0.1.2-beta.41",
-    "@ployz/sdk-linux-x64": "0.1.2-beta.41"
   }
 }

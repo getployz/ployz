@@ -28,7 +28,7 @@ retain it with `docker compose -p <existing-name>`.
 
 ## Build and deploy
 
-`pnpm build` compiles the native SDK and browser WASM, then builds the web and
+`pnpm build` compiles the native SDK and config WASM, then builds the web and
 Connect worker into `.output/`. The root Dockerfile packages both in one image:
 
 | Process | Start command | Healthcheck |

@@ -27,7 +27,7 @@ Run Cargo and engine script commands from `core/`.
 
 - `crates/ployz-core`: domain and wire contracts shared by both binaries
 - `crates/ployz`: CLI for Linux, macOS, and Windows through WSL
-- `crates/ployz-sdk`: napi package `@ployz/sdk` (linux and macOS x64/arm64 gnu bindings; published on GitHub Release Publish). Its TypeScript declarations are derived from the Rust wire types by `cargo test -p ployz --test sdk_payloads`
+- `crates/ployz-sdk`: internal workspace package `@ployz/sdk`, never published. napi serves Machine RPC; config runs on the `ployz-config-wasm` build in Node and the browser. Its TypeScript declarations are derived from the Rust wire types by `cargo test -p ployz --test sdk_payloads`
 - `crates/ployzd`: Linux-only daemon
 - `crates/ployz-testkit`: unpublished support crate used only by tests
 
@@ -153,5 +153,4 @@ and [BuildKit 0.26.2 GC policy](https://github.com/moby/buildkit/blob/v0.26.2/cm
 
 Run the fast local gate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 
-`site/` serves the ployz.sh installer CDN. Dashboard links the local SDK; run
-`python3 ../scripts/check-cloud-sdk-version.py` to check its binding version pins.
+`site/` serves the ployz.sh installer CDN. Dashboard links the workspace SDK.

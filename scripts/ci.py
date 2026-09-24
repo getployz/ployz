@@ -11,12 +11,12 @@ ROOT = Path(__file__).resolve().parent.parent
 JOBS = {"contracts", "rust-lint", "rust-tests", "compose", "sdk-types", "macos-cli", "cloud", "release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
-    "check-cloud-sdk-version.py", "test-cloud-sdk-version.py", "check-layer3-runner.sh",
+    "check-layer3-runner.sh",
     "run-layer3-tests.sh", "test-cli-installer.sh", "test-daemon-lifecycle.sh",
     "test-qualify-release.sh", "test-qualify-clean-init.sh", "qualify-release.sh",
     "qualify-clean-init.sh", "uninstall.sh", "stage-ployz-sh-site.sh",
     "check-release-tag.sh", "release-tag.sh", "promote-release.sh",
-    "publish-github-release.sh", "pack-sdk-package.sh", "publish-sdk-package.sh",
+    "publish-github-release.sh",
 }
 
 
@@ -47,7 +47,7 @@ def select(paths):
                 selected.add("compose")
         elif path == "core/install.sh" or path.startswith(("core/scripts/qualify-release/", "core/relay/")):
             continue
-        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-browser.sh"}:
+        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh"}:
             selected.add("cloud")
         elif path == "core/scripts/check-sdk-types.sh":
             selected.add("sdk-types")

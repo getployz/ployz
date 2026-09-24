@@ -58,8 +58,6 @@ jobs:
       - name: Check routing and the required result
         run: python3 scripts/test-ci.py
       - run: bash core/scripts/check-layer3-runner.sh
-      - run: python3 scripts/test-cloud-sdk-version.py
-      - run: python3 scripts/check-cloud-sdk-version.py
       - run: bash core/scripts/test-cli-installer.sh
       - run: bash core/scripts/test-release-packaging.sh
       - run: bash core/scripts/test-daemon-lifecycle.sh

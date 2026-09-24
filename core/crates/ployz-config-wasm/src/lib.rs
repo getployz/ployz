@@ -1,7 +1,7 @@
-//! Browser ABI only. All policy lives in ployz-core, also called by the native SDK.
+//! The SDK's only config ABI, for Node and the browser. All policy lives in ployz-core.
 use wasm_bindgen::prelude::*;
 
-/// Decode a JSON request and invoke the same pure configuration API as the native SDK.
+/// Decode a JSON request and invoke the pure configuration API in ployz-core.
 ///
 /// # Errors
 /// Rejects malformed requests, invalid configuration, and unserializable results.

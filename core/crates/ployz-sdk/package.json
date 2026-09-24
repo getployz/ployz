@@ -1,12 +1,7 @@
 {
   "name": "@ployz/sdk",
-  "version": "0.1.2-beta.41",
-  "description": "Ployz Cloud SDK. Public payloads are generated from Rust.",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/getployz/ployz2.git",
-    "directory": "crates/ployz-sdk"
-  },
+  "private": true,
+  "description": "Ployz Cloud SDK, consumed from the workspace. Public payloads are generated from Rust.",
   "main": "index.js",
   "types": "index.d.ts",
   "exports": {
@@ -19,8 +14,7 @@
     "./index.d.ts": "./index.d.ts",
     "./config": {
       "types": "./config.d.ts",
-      "browser": "./config-browser.mjs",
-      "node": "./config.js"
+      "default": "./config.mjs"
     }
   },
   "files": [
@@ -29,17 +23,10 @@
     "index.d.ts",
     "browser.mjs",
     "generated",
-    "config.js",
-    "config.d.ts",
-    "config-browser.mjs"
+    "config.mjs",
+    "config.d.ts"
   ],
-  "engines": {
-    "node": ">=18"
-  },
   "devDependencies": {
     "typescript": "^5.9.2"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

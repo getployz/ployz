@@ -9,7 +9,6 @@ function fail() {
 export const connect = fail;
 export const applyAll = fail;
 export const applyOne = fail;
-export const packageName = fail;
 export const Client = fail;
 export const RpcError = fail;
 

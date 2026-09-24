@@ -1,25 +1,8 @@
 "use strict";
 
-// ponytail: specifiers are computed so bundlers cannot follow require into the
+// ponytail: the specifier is computed so bundlers cannot follow require into the
 // .node binary. Nitro/Vinxi emit this file as ESM without CJS module globals.
-const localBinding = [".", "ployz-sdk.node"].join("/"); // tests
-const bindingPackage = `@ployz/sdk-${process.platform}-${process.arch}`;
-let native;
-for (const specifier of [localBinding, bindingPackage]) {
-  try {
-    native = require(specifier);
-    break;
-  } catch (error) {
-    if (error.code !== "MODULE_NOT_FOUND") {
-      throw error;
-    }
-  }
-}
-if (!native) {
-  throw new Error(
-    `@ployz/sdk has no native binding for ${process.platform}-${process.arch}: install ${bindingPackage}`,
-  );
-}
+const native = require([".", "ployz-sdk.node"].join("/"));
 
 class RpcError extends Error {
   constructor({ code, message, details }, options) {
@@ -300,12 +283,10 @@ async function connect(options) {
 }
 
 module.exports = {
-  configRequest: native.configRequest,
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
   connect,
-  packageName: native.packageName,
   Client,
   RpcError,
   applyAll,

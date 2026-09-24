@@ -1,6 +1,5 @@
 minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
-  - "@ployz/*"
   - "@tanstack/*"
 blockExoticSubdeps: false
 

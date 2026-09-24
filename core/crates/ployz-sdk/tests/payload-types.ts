@@ -44,7 +44,6 @@ import {
   applyOne,
   Client,
   connect,
-  packageName,
   allocateEnrollment,
   RpcError,
 } from "../index";
@@ -250,7 +249,6 @@ watchFrame.services satisfies ServiceObservation[];
 // @ts-expect-error a pre-deploy command has at least one argument
 [] satisfies PreDeployCommand;
 
-packageName() satisfies "@ployz/sdk";
 
 declare const enrollmentSnapshot: EnrollmentSnapshot;
 const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfies EnrollmentAssignment;
