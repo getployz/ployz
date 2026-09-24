@@ -1,18 +1,8 @@
-import { preloadCollection } from "#/collections/query-collection";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { createFileRoute } from "@tanstack/react-router";
 import { RocketIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
 import { DeploymentRow } from "#/components/deployment-row";
-import { DeploymentHistorySkeleton } from "#/components/deployment-history-skeleton";
-import {
-  getEnvironmentDeploymentsCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
-  getEnvironmentsCollection,
-  getProjectsCollection,
-  getRawEnvironmentResourcesCollection,
-  getVolumeRemoveAttemptsCollection,
-} from "#/collections/collections";
 import {
   Empty,
   EmptyDescription,
@@ -25,19 +15,6 @@ import { useDeploymentsCollection } from "#/modules/services/services.collection
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/deployments",
 )({
-  loader: async ({ params, context }) => {
-    const organizationSlug = params.organizationSlug;
-    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    await Promise.all([
-      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
-      preloadCollection(getProjectsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
-      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
-      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
-    ]);
-  },
-  pendingComponent: () => <DashboardPage density="compact"><DeploymentHistorySkeleton /></DashboardPage>,
   component: RouteComponent,
 });
 

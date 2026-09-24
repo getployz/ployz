@@ -4,11 +4,11 @@ import type { ServiceGitAccess } from "@ployz/sdk";
 import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
-import { useLoaderData } from "@tanstack/react-router";
 import {
   type ReactNode,
   Suspense,
   useDeferredValue,
+  useEffect,
   useState,
 } from "react";
 import {
@@ -21,10 +21,9 @@ import {
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import {
   useMutation,
-  useQuery,
   useQueryClient,
+  useSuspenseQueries,
   useSuspenseQuery,
-  skipToken,
 } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -49,6 +48,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "#/components/ui/command";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import {
   githubBranchesQueryOptions,
@@ -56,8 +56,9 @@ import {
   githubRepoAccessQueryOptions,
   githubKeys,
 } from "#/modules/github/github.queries";
-import { getGithubReposCollection, getRawGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
+import { getGithubReposCollection, getRawGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
 
@@ -130,8 +131,8 @@ function SelectorEmpty({ children }: { children: ReactNode }) {
 
 function SelectorLoading() {
   return (
-    <div className="flex items-center justify-center py-6">
-      <Spinner />
+    <div role="status" aria-label="Loading options" className="flex flex-col gap-2 p-2">
+      {[0, 1, 2].map((row) => <Skeleton key={row} className="h-8 w-full" />)}
     </div>
   );
 }
@@ -218,12 +219,10 @@ function SelectorCommandDialog({
 
 function GitRepoSelectorActions() {
   const queryClient = useQueryClient();
-  const { data: installUrlData } = useSuspenseQuery(
-    githubInstallUrlQueryOptions()
-  );
-  const { data: accessState } = useSuspenseQuery(
-    githubRepoAccessQueryOptions()
-  );
+  // Read together: sequential suspense would fetch these in series.
+  const [{ data: installUrlData }, { data: accessState }] = useSuspenseQueries({
+    queries: [githubInstallUrlQueryOptions(), githubRepoAccessQueryOptions()],
+  });
   const { mutateAsync: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
       mutationKey: [...githubKeys.repos(), "refresh"],
@@ -305,15 +304,10 @@ function GitRepoSelectorResults({
   disabled = false,
   onSelectRepo,
 }: GitRepoSelectorProps) {
-  const queryClient = useQueryClient();
-  const { session } = useLoaderData({ from: "__root__" });
-  if (!session) throw new Error("Authentication is required.");
-  const scope = { queryClient, userId: session.user.id, sessionId: session.session.id };
+  const scope = useCollectionScope();
   const raw = getRawGithubReposCollection(scope);
   // Query errors must repaint even when the collection retains identical rows.
-  const { isError, dataUpdatedAt } = useQuery({
-    queryKey: githubReposQueryKey(scope), queryFn: skipToken,
-  });
+  const { isError, dataUpdatedAt } = useGithubReposReadState(scope);
   const { isReady: rawReady } = useLiveQuery(raw);
   const githubRepos = rawReady ? getGithubReposCollection(scope) : undefined;
   const { data: accessState } = useSuspenseQuery(
@@ -358,7 +352,7 @@ function GitRepoSelectorResults({
   });
 
   if (isError && dataUpdatedAt === 0) return <GithubRepositoryRefreshNotice initial />;
-  if (!rawReady || isLoading) return <SelectorEmpty><Spinner /></SelectorEmpty>;
+  if (!rawReady || isLoading) return <SelectorLoading />;
 
   if (selectorState === "not-configured") {
     return (
@@ -429,6 +423,11 @@ function GitRepoSelectorResults({
 }
 
 export function GitRepoSelector(props: GitRepoSelectorProps) {
+  const { queryClient, sessionId, userId } = useCollectionScope();
+  // The results below suspend on access before subscribing to repositories; start both together.
+  useEffect(() => {
+    preloadGithubRepos({ queryClient, sessionId, userId });
+  }, [queryClient, sessionId, userId]);
   const publicName = normalizePublicGithubRepository(props.query);
   const connectPublic = useMutation({
     mutationFn: async () => {

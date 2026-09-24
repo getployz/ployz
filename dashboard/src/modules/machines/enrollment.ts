@@ -187,6 +187,19 @@ export type MintedMachineEnrollment = {
 
 export type OrganizationEnrollmentStatus = "unclaimed" | "pending" | "ready";
 
+/** The organization's pairing row (at most one) as seen by Cloud. */
+export type OrganizationEnrollmentRow = { id: string; status: Exclude<OrganizationEnrollmentStatus, "unclaimed"> };
+
+/** A pairing is pending until its founder machine completes the claim. */
+export function pairingEnrollmentStatus(founderMachineId: string | null): OrganizationEnrollmentRow["status"] {
+  return founderMachineId === null ? "pending" : "ready";
+}
+
+/** No pairing row means the organization is unclaimed. */
+export function organizationEnrollmentStatus(row: OrganizationEnrollmentRow | undefined): OrganizationEnrollmentStatus {
+  return row?.status ?? "unclaimed";
+}
+
 export function enrollmentExpiry(now: Date) {
   return new Date(now.getTime() + ENROLLMENT_TOKEN_TTL_MS);
 }

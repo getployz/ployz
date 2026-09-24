@@ -22,7 +22,6 @@ it("retains an inactive stream until DB garbage collection, then reopens it on d
     stream.collection.insert({ id: "1", timestamp: "1", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: "hello" });
     expect(getContainerLogStream(selection, { ...scope, sessionId: "other" })).not.toBe(stream);
     expect(getContainerLogStream(selection, { ...scope, userId: "other" })).not.toBe(stream);
-    expect(getContainerLogStream(selection, { ...scope, environmentSlug: "production" })).toBe(stream);
     expect(getContainerLogStream({ ...selection, organizationSlug: "other" }, scope)).not.toBe(stream);
     expect(getContainerLogStream({ ...selection, serviceId: "other" }, scope)).not.toBe(stream);
     expect(getContainerLogStream({ ...selection, environmentSlug: "production" }, scope)).not.toBe(stream);

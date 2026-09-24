@@ -3,7 +3,7 @@ import { environmentManager, queryOptions, type QueryClient } from "@tanstack/re
 import { useLiveQuery } from "@tanstack/react-db";
 import { useSyncExternalStore } from "react";
 import { notFound } from "@tanstack/react-router";
-import { getProjectsCollection, getEnvironmentsCollection, getEnvironmentSummariesCollection, getProjectPreferencesCollection, type EnvironmentSummary } from "#/collections/collections";
+import { getProjectsCollection, getEnvironmentSummariesCollection, getProjectPreferencesCollection, type EnvironmentSummary } from "#/collections/collections";
 import { preloadCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -19,6 +19,8 @@ export const organizationKeys = {
 export function organizationStateQueryOptions(organizationSlug?: string | null) {
   return queryOptions({
     queryKey: organizationKeys.state(organizationSlug),
+    // Membership and the active organization are authoritative on every mount.
+    staleTime: 0,
     queryFn: ({ signal }) =>
       getOrganizationStateServerFn({
         data: organizationSlug === undefined || organizationSlug === null
@@ -44,17 +46,6 @@ export async function preloadWorkspace(organizationSlug: string, scope: Collecti
   return collections;
 }
 
-export function projectPreviewsOptions(organizationSlug: string, scope: CollectionScope) {
-  return queryOptions({
-    queryKey: ["project-previews", scope.sessionId, scope.userId, organizationSlug],
-    staleTime: Infinity,
-    queryFn: async () => {
-      await preloadCollection(getEnvironmentsCollection(organizationSlug, scope));
-      return true;
-    },
-  });
-}
-
 function resolveProjects(
   projects: Array<{ id: string; organizationId: string; name: string; slug: string }>,
   environments: EnvironmentSummary[],
@@ -68,6 +59,16 @@ function resolveProjects(
   });
 }
 
+/** Org Store rows hold every project's environments, and a namespace is unique only within its project. */
+export function findEnvironment<E extends { projectId: string; namespace: string }>(
+  projects: Iterable<{ id: string; slug: string }>,
+  environments: Iterable<E>,
+  input: { projectSlug?: string; environmentSlug?: string },
+) {
+  const projectId = [...projects].find((project) => project.slug === input.projectSlug)?.id;
+  return [...environments].find((environment) => environment.projectId === projectId && environment.namespace === input.environmentSlug);
+}
+
 export function readWorkspace(collections: ReturnType<typeof workspaceCollections>) {
   return resolveProjects([...collections.projects.values()], [...collections.environments.values()], [...collections.preferences.values()]);
 }
@@ -75,8 +76,7 @@ export function readWorkspace(collections: ReturnType<typeof workspaceCollection
 export async function loadWorkspaceEnvironment(input: EnvironmentBySlug, scope: CollectionScope) {
   const collections = workspaceCollections(input.organizationSlug, scope);
   await Promise.all([preloadCollection(collections.projects), preloadCollection(collections.environments)]);
-  const project = [...collections.projects.values()].find((row) => row.slug === input.projectSlug);
-  const environment = [...collections.environments.values()].find((row) => row.projectId === project?.id && row.namespace === input.environmentSlug);
+  const environment = findEnvironment(collections.projects.values(), collections.environments.values(), input);
   if (!environment) throw notFound();
   return environment;
 }
@@ -106,7 +106,7 @@ export function useWorkspace(organizationSlug: string) {
 export async function rememberSelectedEnvironment(scope: CollectionScope, input: EnvironmentBySlug, selectEnvironment = selectEnvironmentServerFn) {
   const { queryClient } = scope;
   const collections = workspaceCollections(input.organizationSlug, scope);
-  const environment = [...collections.environments.values()].find((row) => row.namespace === input.environmentSlug);
+  const environment = findEnvironment(collections.projects.values(), collections.environments.values(), input);
   if (!environment) return;
   try {
     await queryClient.getMutationCache().build(queryClient, {

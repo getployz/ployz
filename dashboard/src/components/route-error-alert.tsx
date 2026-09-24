@@ -11,9 +11,11 @@ import { Button } from "#/components/ui/button";
 export function RouteErrorAlert({
   title,
   description,
+  onRetry,
 }: {
   title: string;
   description: string;
+  onRetry?: () => void;
 }) {
   const router = useRouter();
 
@@ -27,9 +29,7 @@ export function RouteErrorAlert({
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => {
-            void router.invalidate();
-          }}
+          onClick={onRetry ?? (() => void router.invalidate())}
         >
           Retry
         </Button>

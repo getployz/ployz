@@ -6,10 +6,9 @@ export const collectionReadInput = Schema.Struct({
     "environment_resource", "environment_canvas_node_position",
     "environment_deployment", "environment_saved_state_snapshot",
     "environment_node_config_snapshot", "environment_node_introduction",
-    "volume_remove_attempt", "github_repository_cache",
+    "volume_remove_attempt", "organization_enrollment", "github_repository_cache",
   ]),
   userId: Schema.String,
-  environmentSlug: Schema.optional(Schema.String),
   organizationSlug: Schema.optional(Schema.String),
 });
 

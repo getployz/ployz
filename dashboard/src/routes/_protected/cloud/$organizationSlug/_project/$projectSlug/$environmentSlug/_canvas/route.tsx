@@ -1,7 +1,4 @@
-import { environmentManager, useSuspenseQuery } from "@tanstack/react-query";
 import { Suspense } from "react";
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { environmentCanvasOptions } from "#/modules/environment-design/environment-data";
 import {
   createFileRoute,
   type ErrorComponentProps,
@@ -15,16 +12,6 @@ import {
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
-  loader: async ({ params, context }) => {
-    const scope = { environmentSlug: params.environmentSlug, queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    const options = environmentCanvasOptions(params, scope);
-    if (environmentManager.isServer()) {
-      await context.queryClient.ensureQueryData(options);
-    } else {
-      void context.queryClient.prefetchQuery(options);
-    }
-  },
-  pendingComponent: CanvasPending,
   errorComponent: CanvasError,
   component: CanvasLayout,
 });
@@ -33,21 +20,8 @@ function CanvasLayout() {
   return (
     <div className="h-full overflow-hidden">
       <Suspense fallback={<PendingCanvas />}>
-        <CanvasContent />
+        <EnvironmentCanvasScene />
       </Suspense>
-    </div>
-  );
-}
-
-function CanvasContent() {
-  useSuspenseQuery(environmentCanvasOptions(Route.useParams(), useCollectionScope()));
-  return <EnvironmentCanvasScene />;
-}
-
-function CanvasPending() {
-  return (
-    <div className="h-full overflow-hidden">
-      <PendingCanvas />
     </div>
   );
 }

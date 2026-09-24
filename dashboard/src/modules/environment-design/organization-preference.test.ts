@@ -2,7 +2,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { expect, it, vi } from "vitest";
-import { rememberSelectedOrganization } from "./workspace-queries";
+import { rememberSelectedOrganization } from "./workspace.queries";
 import type { syncOrganizationSlugServerFn } from "./workspace-functions";
 
 it("persists committed organization changes, never preloads, and retries failed writes", async () => {

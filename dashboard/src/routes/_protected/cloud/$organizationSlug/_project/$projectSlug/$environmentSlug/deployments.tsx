@@ -1,11 +1,8 @@
-import { environmentManager } from "@tanstack/react-query";
-import { preloadCollection } from "#/collections/query-collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { Await, createFileRoute } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { RocketIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
 import { DeploymentRow } from "#/components/deployment-row";
-import { DeploymentHistorySkeleton } from "#/components/deployment-history-skeleton";
 import {
   Empty,
   EmptyDescription,
@@ -13,54 +10,31 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "#/components/ui/empty";
-import {
-  getEnvironmentDeploymentsCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
-  getEnvironmentsCollection,
-  getProjectsCollection,
-  getRawEnvironmentResourcesCollection,
-  getVolumeRemoveAttemptsCollection,
-} from "#/collections/collections";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { useDeploymentsCollection } from "#/modules/services/services.collection";
+import { Route as EnvironmentLayoutRoute } from "./route";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments",
 )({
-  loader: async ({ params, context }) => {
-    const organizationSlug = params.organizationSlug;
-    const scope = { environmentSlug: params.environmentSlug, queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    const ready = Promise.all([
-      preloadCollection(getProjectsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
-      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
-      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
-      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
-    ]).then(() => ({
-      projectName: [...getProjectsCollection(organizationSlug, scope).values()].find((project) => project.slug === params.projectSlug)?.name ?? params.projectSlug,
-      environmentName: [...getEnvironmentsCollection(organizationSlug, scope).values()].find((environment) => environment.namespace === params.environmentSlug)?.name ?? params.environmentSlug,
-    }));
-    if (environmentManager.isServer()) await ready;
-    return { ready };
-  },
-  pendingComponent: () => <DashboardPage density="compact" width="content"><DeploymentHistorySkeleton /></DashboardPage>,
   component: RouteComponent,
 });
 
 function RouteComponent() {
-  const { ready } = Route.useLoaderData();
   return (
     <DashboardPage density="compact" width="content">
-      <Await promise={ready} fallback={<DeploymentHistorySkeleton />}>
-        {(names) => <DeploymentHistory {...names} />}
-      </Await>
+      <DeploymentHistory />
     </DashboardPage>
   );
 }
 
-function DeploymentHistory({ projectName, environmentName }: { projectName: string; environmentName: string }) {
+function DeploymentHistory() {
   const params = Route.useParams();
   const { projectSlug, environmentSlug } = params;
+  const { environmentId } = EnvironmentLayoutRoute.useLoaderData();
+  const workspace = useWorkspace(params.organizationSlug);
+  const projectName = workspace.projects.find((project) => project.slug === projectSlug)?.name ?? projectSlug;
+  const environmentName = workspace.environments.find((environment) => environment.id === environmentId)?.name ?? environmentSlug;
   const deployments = useDeploymentsCollection(params.organizationSlug);
 
   const { data: rows } = useLiveSuspenseQuery({

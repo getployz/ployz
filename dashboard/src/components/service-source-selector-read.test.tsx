@@ -3,11 +3,23 @@ import { getDbClient } from "#/collections/scope";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { Command, CommandList } from "#/components/ui/command";
 import { getRawGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
 import { githubKeys } from "#/modules/github/github.queries";
 import { GitRepoSelector } from "./service-source-selector";
+
+/** The selector reads its scope from the authenticated `/_protected` route, as in the app. */
+function selectorRoutes(session: { userId: string; sessionId: string }, render: () => ReactNode) {
+  const rootRoute = createRootRoute();
+  const protectedRoute = createRoute({
+    getParentRoute: () => rootRoute, id: "_protected",
+    beforeLoad: () => ({ session: { user: { id: session.userId }, session: { id: session.sessionId } } }),
+  });
+  const page = createRoute({ getParentRoute: () => protectedRoute, path: "/", component: render });
+  return rootRoute.addChildren([protectedRoute.addChildren([page])]);
+}
 
 afterEach(() => {
   cleanup();
@@ -26,11 +38,8 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
   queryClient.setQueryData(githubKeys.installUrl(), { url: null });
   const failRead = () => queryClient.fetchQuery({ queryKey, queryFn: async () => { throw new Error("offline"); }, staleTime: 0 });
   await expect(failRead()).rejects.toThrow("offline");
-  const rootRoute = createRootRoute({
-    loader: () => ({ session: { user: { id: "user" }, session: { id: "session" } } }),
-    component: () => <Command><CommandList><GitRepoSelector query="" onSelectRepo={() => {}} /></CommandList></Command>,
-  });
-  const router = createRouter({ routeTree: rootRoute, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector query="" onSelectRepo={() => {}} /></CommandList></Command>);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/"] }) });
   try {
     render(<QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -74,11 +83,8 @@ it("offers a public URL without a GitHub installation", async () => {
   queryClient.setQueryData(githubReposQueryKey(scope), []);
   queryClient.setQueryData(githubKeys.access(), { configured: false, hasInstallations: false });
   queryClient.setQueryData(githubKeys.installUrl(), { url: null });
-  const rootRoute = createRootRoute({
-    loader: () => ({ session: { user: { id: scope.userId }, session: { id: scope.sessionId } } }),
-    component: () => <Command><CommandList><GitRepoSelector query="http://github.com/owner/repo.git" onSelectRepo={() => {}} /></CommandList></Command>,
-  });
-  const router = createRouter({ routeTree: rootRoute, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector query="http://github.com/owner/repo.git" onSelectRepo={() => {}} /></CommandList></Command>);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/"] }) });
   try {
     render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
     expect(await screen.findByRole("option", { name: "Deploy owner/repo" })).toBeTruthy();

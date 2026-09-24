@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { cancelEnvironmentDeploymentServerFn } from "#/modules/deployments/deployment.functions";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from "#/components/ui/alert-dialog";

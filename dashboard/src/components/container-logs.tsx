@@ -4,7 +4,6 @@ import { useLogScroll } from "./log-scroll";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { Button } from "#/components/ui/button";
-import { Spinner } from "#/components/ui/spinner";
 import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
 
@@ -70,7 +69,7 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
       {!rows.length && status === "Live" ? <p className="text-muted-foreground">No matching output available.</p> : null}
       <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
         <div className="absolute inset-x-0 top-0">
-          {historyPending ? <div className="flex items-center gap-2"><Spinner aria-label="Loading older logs" /><span>Loading older logs…</span></div> : null}
+          {historyPending ? <p role="status" className="text-muted-foreground">Loading older logs…</p> : null}
           {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
         </div>
         {virtual.getVirtualItems().map(item => {

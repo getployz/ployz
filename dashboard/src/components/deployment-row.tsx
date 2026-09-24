@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
 import { DeploymentStatusCard } from "#/components/deployment-status-card";
 import { DeploymentLogs } from "#/components/deployment-logs";
-import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
 import { Button } from "#/components/ui/button";

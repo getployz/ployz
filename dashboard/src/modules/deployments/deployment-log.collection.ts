@@ -1,5 +1,5 @@
 import { collectionOptions } from "@tanstack/react-db";
-import { type Query } from "@tanstack/react-query";
+import { useQuery, type Query } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { listDeploymentProgressLogsServerFn } from "./deployment.functions";
@@ -10,6 +10,8 @@ export function createDeploymentLogsCollection(organizationSlug: string, deploym
 ) {
   const options = {
     queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "deployment_logs", deploymentId],
+    // A finished log never changes, so reopening it reuses the cache; a running log is refetched and polled.
+    staleTime: (query: Query<{ events: EventRow[]; finished: boolean }>) => query.state.data?.finished ? Infinity : 0,
     refetchInterval: (query: Query<{ events: EventRow[]; finished: boolean }>) => query.state.data?.finished ? false : 2_000,
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       const rows: EventRow[] = [];
@@ -40,4 +42,9 @@ export function getDeploymentLogsCollection(organizationSlug: string, deployment
     collections.set(deploymentId, collection);
   }
   return collection;
+}
+
+/** Query state of a deployment's log read; the collection keeps rows after a failed refresh. */
+export function useDeploymentLogsReadState(collection: ReturnType<typeof getDeploymentLogsCollection>) {
+  return useQuery({ ...collection.queryOptions, enabled: false });
 }

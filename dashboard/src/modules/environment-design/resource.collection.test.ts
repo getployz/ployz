@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
 import { createApiCollection, reconcileCollection, preloadCollection } from "#/collections/query-collection";
-import { createVolumeResourcesCollection } from "./resource-collections";
+import { createVolumeResourcesCollection } from "./resource.collection";
 import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import type { Collection } from "@tanstack/react-db";
 type Sources = Parameters<typeof createVolumeResourcesCollection>[0]["sources"];

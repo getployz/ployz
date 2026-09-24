@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { discardEnvironmentChangesServerFn } from "#/modules/environment-design/working-document-restore.functions";

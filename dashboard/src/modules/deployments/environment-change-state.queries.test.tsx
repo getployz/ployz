@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider, dehydrate, hydrate } from "@tanstack/react-query";
-import { environmentChangeStateOptions, preloadOrganizationEnvironmentChangeStateProjections, useEnvironmentProjectionVersion, useEnvironmentChangeStates } from "./use-environment-state-projection";
+import { environmentChangeStateOptions, preloadOrganizationEnvironmentChangeStateProjections, useEnvironmentProjectionVersion, useEnvironmentChangeStates } from "./environment-change-state.queries";
 
 import { renderToString } from "react-dom/server";
 import { hydrateRoot } from "react-dom/client";
@@ -16,14 +16,14 @@ import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug
 it("hydrates the server projection without an empty-version query or a loading fallback", async () => {
   const serverClient = new QueryClient();
   const browserClient = new QueryClient();
-  const serverScope = { queryClient: serverClient, sessionId: "session", userId: "user", environmentSlug: "production" };
+  const serverScope = { queryClient: serverClient, sessionId: "session", userId: "user" };
   const browserScope = { ...serverScope, queryClient: browserClient };
   const serverMetadata = {
     deployments: getEnvironmentDeploymentsCollection("org", serverScope),
     savedStateRevisions: getEnvironmentSavedStateRevisionsCollection("org", serverScope),
   };
-  serverClient.setQueryData(["collections", "session", "user", "org", "environment_deployment", "production"], []);
-  serverClient.setQueryData(["collections", "session", "user", "org", "environment_saved_state_snapshot", "production"], [
+  serverClient.setQueryData(["collections", "session", "user", "org", "environment_deployment"], []);
+  serverClient.setQueryData(["collections", "session", "user", "org", "environment_saved_state_snapshot"], [
     { id: "saved-1", environmentId: "env", organizationId: "org" },
   ]);
   await Promise.all(Object.values(serverMetadata).map(preloadCollection));
@@ -82,9 +82,9 @@ function comparison(token: string): EnvironmentChangeStateProjection[] {
 
 async function editorFixture() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const scope = { queryClient, sessionId: "session", userId: "user", environmentSlug: "production" };
-  const deploymentKey = ["collections", "session", "user", "org", "environment_deployment", "production"];
-  const savedKey = ["collections", "session", "user", "org", "environment_saved_state_snapshot", "production"];
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  const deploymentKey = ["collections", "session", "user", "org", "environment_deployment"];
+  const savedKey = ["collections", "session", "user", "org", "environment_saved_state_snapshot"];
   const deployment = { id: "deploy", status: "deploying", savedStateSnapshotId: "saved", updatedAt: new Date(0) };
   queryClient.setQueryData(deploymentKey, [deployment]);
   queryClient.setQueryData(savedKey, []);
@@ -184,29 +184,23 @@ it("retains the draft and comparison after a background failure without retrying
   } finally { await test.dispose(); }
 });
 
-it("loads a different environment independently instead of showing the previous comparison", async () => {
+it("serves every environment from one org-wide comparison without refetching", async () => {
   const test = await editorFixture();
-  const other = { ...test.scope, environmentSlug: "staging" };
-  const load = deferred<EnvironmentChangeStateProjection[]>();
   try {
-    for (const table of ["environment_deployment", "environment_saved_state_snapshot"]) {
-      test.queryClient.setQueryData(["collections", "session", "user", "org", table, "staging"], []);
-    }
-    test.read.mockImplementationOnce(() => load.promise);
+    const readsBefore = test.read.mock.calls.length;
     function OtherEnvironment() {
-      const states = useEnvironmentChangeStates("org", other, test.read);
-      return <span>{states[0]?.applied.token}</span>;
+      const states = useEnvironmentChangeStates("org", test.scope, test.read);
+      return <span>{`other:${states[0]?.applied.token}`}</span>;
     }
     test.view.rerender(<QueryClientProvider client={test.queryClient}>
-      <Suspense fallback={<p role="status">Loading staging</p>}><OtherEnvironment /></Suspense>
+      <Suspense fallback={<p role="status">Loading</p>}><OtherEnvironment /></Suspense>
     </QueryClientProvider>);
-    expect(screen.getByRole("status").textContent).toBe("Loading staging");
-    expect(screen.queryByRole("dialog", { name: "Edit service" })).toBeNull();
-    await act(async () => { load.resolve(comparison("staging")); });
-    await screen.findByText("staging");
-    expect(environmentChangeStateOptions("org", { ...other, sessionId: "other-session" }).queryKey)
-      .not.toEqual(environmentChangeStateOptions("org", other).queryKey);
-  } finally { load.resolve([]); await test.dispose(); }
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("other:initial")).toBeTruthy();
+    expect(test.read).toHaveBeenCalledTimes(readsBefore);
+    expect(environmentChangeStateOptions("org", { ...test.scope, sessionId: "other-session" }).queryKey)
+      .not.toEqual(environmentChangeStateOptions("org", test.scope).queryKey);
+  } finally { await test.dispose(); }
 });
 
 it("catches metadata changes during a manual refresh even when its response matches the cache", async () => {

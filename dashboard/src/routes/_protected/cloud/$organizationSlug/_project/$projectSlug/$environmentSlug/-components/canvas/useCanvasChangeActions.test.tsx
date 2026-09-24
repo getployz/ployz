@@ -8,7 +8,7 @@ import { useCanvasChangeActions } from "./useCanvasChangeActions";
 import { createRouter, createRootRoute, createMemoryHistory, RouterContextProvider } from "@tanstack/react-router";
 import { toast } from "sonner";
 import * as commands from "#/modules/deployments/deployment.functions";
-import * as deploymentCollections from "#/modules/deployments/deployment-collection";
+import * as deploymentCollections from "#/modules/deployments/deployment.collection";
 import * as scopes from "#/collections/use-collection-scope";
 import * as collections from "#/collections/collections";
 import * as documents from "#/modules/environment-design/environment-document.collection";

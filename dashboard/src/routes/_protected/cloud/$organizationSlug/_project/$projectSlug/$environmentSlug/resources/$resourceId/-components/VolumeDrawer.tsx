@@ -32,7 +32,6 @@ import {
 } from "#/modules/environment-design/resource-functions";
 import {
   confirmVolumeRemoveServerFn,
-  loadLatestVolumeRemoveAttemptServerFn,
   loadVolumeRemoveDataLossServerFn,
   retryVolumeRemoveServerFn,
 } from "#/modules/runtime/volume-removal.functions";
@@ -229,7 +228,6 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   const loadDataLoss = useServerFn(loadVolumeRemoveDataLossServerFn);
   const confirmRemove = useServerFn(confirmVolumeRemoveServerFn);
   const retryRemove = useServerFn(retryVolumeRemoveServerFn);
-  const loadLatest = useServerFn(loadLatestVolumeRemoveAttemptServerFn);
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -238,9 +236,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
     environmentId: state.environmentId,
     resourceId,
   };
-  const latestQuery = latestVolumeRemoveAttemptQueryOptions(input, () =>
-    loadLatest({ data: input }),
-  );
+  const latestQuery = latestVolumeRemoveAttemptQueryOptions(input);
   const latest = useQuery(latestQuery);
   const attempt = latest.data ?? null;
   const busy = attempt != null && volumeRemoveIsBusy(attempt.status);

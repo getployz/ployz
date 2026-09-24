@@ -17,7 +17,7 @@ import {
   buildEnvironmentServicesViewQuery,
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
-import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
+import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
@@ -238,7 +238,7 @@ export function EnvironmentCanvasScene() {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
       } : null}
-      header={<DashboardPageHeader />}
+      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />}
       canvas={
         <Suspense fallback={<PendingCanvas />}>
           <CanvasWithData key={canvasKey} />

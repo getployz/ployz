@@ -37,20 +37,14 @@ import {
   previewSubscriptionPlanChangeServerFn,
   updateSubscriptionPlanServerFn,
 } from "#/modules/billing/billing.functions";
-import { organizationStateQueryOptions } from "#/modules/environment-design/workspace-queries";
+import { prefetchRemote } from "#/collections/route-data";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/billing"
 )({
-  loader: ({ params, context }) =>
-    Promise.all([
-      context.queryClient.ensureQueryData(
-        billingStateQueryOptions(params.organizationSlug)
-      ),
-      context.queryClient.ensureQueryData(
-        organizationStateQueryOptions(params.organizationSlug)
-      ),
-    ]),
+  loader: async ({ params, context }) => {
+    await prefetchRemote(context, billingStateQueryOptions(params.organizationSlug));
+  },
   pendingComponent: BillingPending,
   errorComponent: BillingError,
   component: RouteComponent,

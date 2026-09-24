@@ -22,12 +22,12 @@ import {
   enrollMachine,
   reserveEnrollmentAssignment,
   hashEnrollmentToken,
-  loadOrganizationEnrollmentStatus,
   mintMachineEnrollment,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
+import { readCollection } from "#/collections/read.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -228,11 +228,9 @@ describe("organization enrollment coordinator", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const status = yield* loadOrganizationEnrollmentStatus(
-            { userId },
-            { organizationSlug: "enroll" },
-          );
-          expect(status).toBe("unclaimed");
+          const enrollment = { table: "organization_enrollment", organizationSlug: "enroll", userId } as const;
+          // No pairing row: the Org Store holds no enrollment row, which reads as unclaimed.
+          expect(yield* readCollection({ userId }, enrollment)).toEqual([]);
 
           const minted = yield* mintMachineEnrollment(
             { userId },
@@ -240,11 +238,15 @@ describe("organization enrollment coordinator", () => {
           );
           expect(minted.command).toContain("ployz cloud enroll 'pmet_");
 
-          const denied = yield* loadOrganizationEnrollmentStatus(
-            { userId: "00000000-0000-4000-8000-000000000499" },
-            { organizationSlug: "enroll" },
-          ).pipe(Effect.exit);
+          const outsider = "00000000-0000-4000-8000-000000000499";
+          const denied = yield* readCollection({ userId: outsider }, { ...enrollment, userId: outsider }).pipe(Effect.exit);
           expect(Exit.isFailure(denied)).toBe(true);
+
+          yield* Effect.promise(() => harness.pool.query(`insert into organization_pairing
+            (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id)
+            values ($1, '{"secret":"never-leaves-the-server"}'::jsonb, 'founder', $2)`, [organizationId, identity(0).machineId]));
+          // Only the derived status leaves the server; the encrypted pairing secret never does.
+          expect(yield* readCollection({ userId }, enrollment)).toEqual([{ id: organizationId, status: "pending" }]);
         }).pipe(Effect.provide(layer)),
       ),
     );

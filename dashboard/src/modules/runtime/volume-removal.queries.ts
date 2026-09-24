@@ -1,6 +1,6 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { volumeRemoveIsBusy } from "#/modules/runtime/volume-removal";
-import type { loadLatestVolumeRemoveAttemptServerFn } from "#/modules/runtime/volume-removal.functions";
+import { loadLatestVolumeRemoveAttemptServerFn } from "#/modules/runtime/volume-removal.functions";
 
 type LatestAttempt = Awaited<
   ReturnType<typeof loadLatestVolumeRemoveAttemptServerFn>
@@ -14,7 +14,7 @@ export function latestVolumeRemoveAttemptQueryOptions(
     environmentId: string;
     resourceId: string;
   },
-  read: () => Promise<LatestAttempt>,
+  read: () => Promise<LatestAttempt> = () => loadLatestVolumeRemoveAttemptServerFn({ data: input }),
 ) {
   return queryOptions({
     queryKey: [
@@ -24,6 +24,8 @@ export function latestVolumeRemoveAttemptQueryOptions(
       input.resourceId,
     ] as const,
     queryFn: read,
+    // Mount reads are authoritative; a busy attempt polls until terminal.
+    staleTime: 0,
     refetchInterval: (query) => {
       const row = query.state.data;
       return row != null && volumeRemoveIsBusy(row.status) ? 2_000 : false;

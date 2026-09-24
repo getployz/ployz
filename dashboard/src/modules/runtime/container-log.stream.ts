@@ -63,6 +63,8 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     try {
       const page = await scope.queryClient.fetchQuery({
         queryKey: [id, "history", before],
+        // Logs older than a fixed boundary never change.
+        staleTime: Infinity,
         queryFn: async ({ signal }) => {
           const response = await fetch(`/api/runtime/logs?${query}&before=${encodeURIComponent(JSON.stringify(before))}`, { signal: AbortSignal.any([signal, streamSignal]) });
           if (!response.ok) throw new Error("Could not load older logs.");
@@ -92,7 +94,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
 
 const streams = cachedByCollectionScope(() => new Map<string, ReturnType<typeof createLogStream>>());
 export function getContainerLogStream(selection: ContainerLogSelection, scope: CollectionScope) {
-  const cache = streams(selection.organizationSlug, { ...scope, environmentSlug: undefined });
+  const cache = streams(selection.organizationSlug, scope);
   const key = JSON.stringify([selection.environmentSlug, selection.deploymentId, selection.serviceId]);
   let stream = cache.get(key);
   if (!stream) {

@@ -16,7 +16,6 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import {
   confirmTeardownServerFn,
-  loadLatestTeardownAttemptServerFn,
   loadTeardownDataLossServerFn,
   retryTeardownServerFn,
 } from "#/modules/runtime/teardown.functions";
@@ -66,7 +65,6 @@ export function TeardownDangerSection({
   const loadDataLoss = useServerFn(loadTeardownDataLossServerFn);
   const confirmTeardown = useServerFn(confirmTeardownServerFn);
   const retryTeardown = useServerFn(retryTeardownServerFn);
-  const loadLatest = useServerFn(loadLatestTeardownAttemptServerFn);
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -76,9 +74,7 @@ export function TeardownDangerSection({
     environmentId,
     projectSlug,
   };
-  const latestQuery = latestTeardownAttemptQueryOptions(input, () =>
-    loadLatest({ data: input }),
-  );
+  const latestQuery = latestTeardownAttemptQueryOptions(input);
   const latest = useQuery(latestQuery);
   const attempt = latest.data ?? null;
   const busy = attempt != null && teardownIsBusy(attempt.status);

@@ -365,10 +365,7 @@ function CloudRowItem({ row }: { row: CloudRowLoss }) {
 function GatheringDataLoss() {
   return (
     <div aria-label="Preparing Data Loss" className="flex flex-col gap-3">
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Spinner />
-        Preparing Data Loss…
-      </div>
+      <p className="text-muted-foreground">Preparing Data Loss…</p>
       <Skeleton className="h-24 w-full" />
     </div>
   );

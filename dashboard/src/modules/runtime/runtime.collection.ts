@@ -301,19 +301,7 @@ export type RuntimeCollections = ReturnType<
   typeof createRuntimeCollections
 >;
 
-const scopedRuntimeCollections = cachedByCollectionScope(createRuntimeCollections);
-export function getRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
-  return scopedRuntimeCollections(organizationSlug, { ...scope, environmentSlug: undefined });
-}
-
-export async function preloadRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
-  const collections = getRuntimeCollections(organizationSlug, scope);
-  await Promise.all([
-    collections.machines.preload(),
-    collections.status.preload(),
-    collections.services.preload(),
-  ]);
-}
+export const getRuntimeCollections = cachedByCollectionScope(createRuntimeCollections);
 
 function replaceRuntimeRows<T extends { id: string }, TKey extends string>(
   collection: Collection<T, TKey>,

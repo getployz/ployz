@@ -1,10 +1,10 @@
 import "@tanstack/react-start/server-only";
-import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { and, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
+import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { Database } from "#/server/database.server";
 
@@ -44,9 +44,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
     scopeId = organization.id;
   }
   const database = yield* Database;
-  const environmentIds = database.drizzle.select({ id: tables.environment.id }).from(tables.environment)
-    .where(and(eq(tables.environment.organizationId, scopeId), eq(tables.environment.namespace, data.environmentSlug ?? "")));
-  const environmentFilter = (column: AnyPgColumn) => data.environmentSlug ? inArray(column, environmentIds) : undefined;
   const read = Effect.gen(function* () {
     switch (data.table) {
       case "github_repository_cache":
@@ -58,7 +55,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           organizationId: tables.environmentSavedStateSnapshot.organizationId,
           environmentId: tables.environmentSavedStateSnapshot.environmentId,
         }).from(tables.environmentSavedStateSnapshot)
-          .where(and(eq(tables.environmentSavedStateSnapshot.organizationId, scopeId), environmentFilter(tables.environmentSavedStateSnapshot.environmentId)));
+          .where(eq(tables.environmentSavedStateSnapshot.organizationId, scopeId));
       case "environment_summary":
         return yield* database.drizzle.select({
           id: tables.environment.id, projectId: tables.environment.projectId, organizationId: tables.environment.organizationId,
@@ -72,24 +69,19 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           .where(eq(tables.project.organizationId, scopeId));
       case "environment":
         return yield* database.drizzle.select().from(tables.environment)
-          .where(and(eq(tables.environment.organizationId, scopeId), environmentFilter(tables.environment.id)));
+          .where(eq(tables.environment.organizationId, scopeId));
       case "service":
         return yield* database.drizzle.select().from(tables.service)
-          .where(and(eq(tables.service.organizationId, scopeId), environmentFilter(tables.service.environmentId)));
+          .where(eq(tables.service.organizationId, scopeId));
       case "resource_lineage":
         return yield* database.drizzle.select().from(tables.resourceLineage)
-          .where(and(eq(tables.resourceLineage.organizationId, scopeId), data.environmentSlug
-            ? or(
-              inArray(tables.resourceLineage.id, database.drizzle.select({ id: tables.environmentResource.lineageId }).from(tables.environmentResource).where(environmentFilter(tables.environmentResource.environmentId))),
-              inArray(tables.resourceLineage.id, database.drizzle.select({ id: tables.service.lineageId }).from(tables.service).where(environmentFilter(tables.service.environmentId))),
-            )
-            : undefined));
+          .where(eq(tables.resourceLineage.organizationId, scopeId));
       case "environment_resource":
         return yield* database.drizzle.select().from(tables.environmentResource)
-          .where(and(eq(tables.environmentResource.organizationId, scopeId), environmentFilter(tables.environmentResource.environmentId)));
+          .where(eq(tables.environmentResource.organizationId, scopeId));
       case "environment_canvas_node_position":
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
-          .where(and(eq(tables.environmentCanvasNodePosition.organizationId, scopeId), environmentFilter(tables.environmentCanvasNodePosition.environmentId)));
+          .where(eq(tables.environmentCanvasNodePosition.organizationId, scopeId));
       case "environment_deployment":
         return yield* database.drizzle.select({
           ...getTableColumns(tables.environmentDeployment),
@@ -99,16 +91,24 @@ export const readCollection = Effect.fn("Collections.read")(function* (
              where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
           )`,
         }).from(tables.environmentDeployment)
-          .where(and(eq(tables.environmentDeployment.organizationId, scopeId), environmentFilter(tables.environmentDeployment.environmentId)));
+          .where(eq(tables.environmentDeployment.organizationId, scopeId));
       case "environment_node_config_snapshot":
         return yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)
-          .where(and(eq(tables.environmentNodeConfigSnapshot.organizationId, scopeId), environmentFilter(tables.environmentNodeConfigSnapshot.environmentId)));
+          .where(eq(tables.environmentNodeConfigSnapshot.organizationId, scopeId));
       case "environment_node_introduction":
         return yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
-          .where(and(eq(tables.environmentNodeIntroduction.organizationId, scopeId), environmentFilter(tables.environmentNodeIntroduction.environmentId)));
+          .where(eq(tables.environmentNodeIntroduction.organizationId, scopeId));
       case "volume_remove_attempt":
         return yield* database.drizzle.select().from(tables.volumeRemoveAttempt)
-          .where(and(eq(tables.volumeRemoveAttempt.organizationId, scopeId), environmentFilter(tables.volumeRemoveAttempt.environmentId)));
+          .where(eq(tables.volumeRemoveAttempt.organizationId, scopeId));
+      case "organization_enrollment": {
+        // The pairing row holds the encrypted pairing secret; expose only the derived status.
+        const pairings = yield* database.drizzle.select({
+          id: tables.organizationPairing.organizationId,
+          founderMachineId: tables.organizationPairing.founderMachineId,
+        }).from(tables.organizationPairing).where(eq(tables.organizationPairing.organizationId, scopeId));
+        return pairings.map((row): OrganizationEnrollmentRow => ({ id: row.id, status: pairingEnrollmentStatus(row.founderMachineId) }));
+      }
     }
   });
   return yield* read.pipe(Effect.mapError((cause) => new CollectionReadFailure({ cause })));

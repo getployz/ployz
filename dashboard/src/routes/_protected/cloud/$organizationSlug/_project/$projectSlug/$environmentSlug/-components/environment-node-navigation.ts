@@ -1,7 +1,6 @@
-import { environmentResourcesOptions } from "#/modules/environment-design/environment-data";
+import { useOrgStoreStatus } from "#/collections/org-store";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
-import { useQuery } from "@tanstack/react-query";
 import { linkOptions } from "@tanstack/react-router";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -55,7 +54,7 @@ export function nodeDestination(
 export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
   const scope = useCollectionScope();
   const { organizationSlug, projectSlug, environmentSlug } = params;
-  const ready = useQuery(environmentResourcesOptions(params, scope));
+  const ready = useOrgStoreStatus(organizationSlug);
   const services = ready.data
     ? getServicesCollection(organizationSlug, scope)
     : null;

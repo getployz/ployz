@@ -1,51 +1,17 @@
 import { useEffect, useState } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getDeploymentLogsCollection } from "#/modules/deployments/deployment-log.collection";
+import { getDeploymentLogsCollection, useDeploymentLogsReadState } from "#/modules/deployments/deployment-log.collection";
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
-import { listDeploymentBuildLogServerFn } from "#/modules/deployments/deployment.functions";
+import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 import { BUILDING_KEY } from "#/modules/deployments/preparation-progress";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
 import { cn } from "#/lib/utils";
-
-type BuildLogPage = Awaited<ReturnType<typeof listDeploymentBuildLogServerFn>>;
-export type BuildStepRow = BuildLogPage["steps"][number];
-export type BuildOutputRow = BuildLogPage["output"][number];
-
-type BuildLog = { steps: BuildStepRow[]; output: BuildOutputRow[]; finished: boolean };
-
-/** Polls the step tree while the attempt runs, resuming output from the last row already held. */
-function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
-  const queryClient = useQueryClient();
-  const queryKey = ["deployment-build-log", organizationSlug, deploymentId];
-  return useQuery<BuildLog>({
-    queryKey,
-    enabled,
-    refetchInterval: (query) => query.state.data?.finished ? false : 2_000,
-    queryFn: async ({ signal }) => {
-      const previous = queryClient.getQueryData<BuildLog>(queryKey);
-      let steps: BuildStepRow[] = [];
-      const output: BuildOutputRow[] = [...previous?.output ?? []];
-      let finished = false;
-      const last = output.at(-1);
-      let afterSequence: string | null | undefined = last ? String(last.id) : undefined;
-      while (afterSequence !== null) {
-        const page = await listDeploymentBuildLogServerFn({ data: { organizationSlug, deploymentId, afterSequence, limit: 100 }, signal });
-        steps = page.steps;
-        output.push(...page.output);
-        finished = page.finished;
-        afterSequence = page.nextSequence;
-      }
-      return { steps, output, finished };
-    },
-  });
-}
 
 /** BuildKit names steps `[stage n/m] instruction`; Ployz-owned steps are plain. */
 export function splitStepName(name: string): { stage: string | null; title: string } {
@@ -159,7 +125,7 @@ export function DeploymentLogs({ organizationSlug, deploymentId, serviceId, hasB
   const collection = getDeploymentLogsCollection(organizationSlug, deploymentId, useCollectionScope());
   const { data: events = [] } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
   const [tab, setTab] = useState<"Build logs" | "Deploy logs">(hasBuild ? "Build logs" : "Deploy logs");
-  const request = useQuery({ ...collection.queryOptions, enabled: false });
+  const request = useDeploymentLogsReadState(collection);
   const build = useBuildLog(organizationSlug, deploymentId, tab === "Build logs");
   const now = useNow(tab === "Build logs" && build.data?.finished === false);
   const logs = lifecycleLogs(events, serviceId);

@@ -40,12 +40,12 @@ export function environmentChangeStateOptions(organizationSlug: string, scope: C
   return queryOptions({
     queryKey: [
       ...serviceDeploymentKeys.environmentChangeStatesOrg(organizationSlug),
-      scope.sessionId, scope.userId, scope.environmentSlug ?? null,
+      scope.sessionId, scope.userId,
     ],
     staleTime: Infinity,
     queryFn: async ({ signal }) => {
       const version = readProjectionVersion(projectionMetadata(organizationSlug, scope));
-      const states = await read({ data: { organizationSlug, environmentSlug: scope.environmentSlug }, signal });
+      const states = await read({ data: { organizationSlug }, signal });
       return { version, states };
     },
   });
@@ -92,14 +92,14 @@ export function useEnvironmentChangeStates(organizationSlug: string, scope: Coll
   const version = useEnvironmentProjectionVersion(projectionMetadata(organizationSlug, scope));
   const options = environmentChangeStateOptions(organizationSlug, scope, read);
   const { data, dataUpdatedAt } = useSuspenseQuery(options);
-  const { queryClient, sessionId, userId, environmentSlug } = scope;
+  const { queryClient, sessionId, userId } = scope;
   useEffect(() => {
     // A manual refresh can finish with the cached version after newer metadata arrived.
     if (data.version !== version) {
-      const { queryKey } = environmentChangeStateOptions(organizationSlug, { queryClient, sessionId, userId, environmentSlug });
+      const { queryKey } = environmentChangeStateOptions(organizationSlug, { queryClient, sessionId, userId });
       void queryClient.invalidateQueries({ queryKey, exact: true }, { cancelRefetch: false });
     }
-  }, [data.version, dataUpdatedAt, version, organizationSlug, queryClient, sessionId, userId, environmentSlug]);
+  }, [data.version, dataUpdatedAt, version, organizationSlug, queryClient, sessionId, userId]);
   return data.states;
 }
 

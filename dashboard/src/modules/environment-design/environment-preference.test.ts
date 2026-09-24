@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import type { selectEnvironmentServerFn } from "./workspace-functions";
-import { preloadWorkspace, rememberSelectedEnvironment } from "./workspace-queries";
+import { preloadWorkspace, rememberSelectedEnvironment } from "./workspace.queries";
 
 it("serializes selections, commits only successful saves, and retries failures", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
@@ -10,7 +10,10 @@ it("serializes selections, commits only successful saves, and retries failures",
   const input = { organizationSlug: "acme", projectSlug: "api" };
   const production = { id: "prod", projectId: "project", organizationId: "org", name: "Production", namespace: "production", createdAt: new Date(0) };
   const staging = { ...production, id: "stage", name: "Staging", namespace: "staging" };
-  for (const [table, data] of Object.entries({ project: [], environment_summary: [production, staging], project_preference: [{ id: "project", environmentId: "prod" }] })) {
+  // Another project's environment shares the namespace; selection must stay within the routed project.
+  const otherStaging = { ...staging, id: "other-stage", projectId: "other-project" };
+  const projects = [{ id: "other-project", organizationId: "org", name: "Web", slug: "web" }, { id: "project", organizationId: "org", name: "API", slug: "api" }];
+  for (const [table, data] of Object.entries({ project: projects, environment_summary: [otherStaging, production, staging], project_preference: [{ id: "project", environmentId: "prod" }] })) {
     queryClient.setQueryData(["collections", "session", "user", "acme", table], data);
   }
   const collections = await preloadWorkspace("acme", scope);

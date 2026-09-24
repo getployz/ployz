@@ -1,30 +1,15 @@
-import { environmentManager } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { rememberSelectedOrganization } from "#/modules/environment-design/workspace-queries";
-import {
-  organizationStateQueryOptions,
-  preloadWorkspace,
-} from "#/modules/environment-design/workspace-queries";
+import { createFileRoute, Outlet, useMatch, useParams } from "@tanstack/react-router";
+import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
+import { DashboardShell } from "#/components/dashboard-shell";
+import type { DashboardScope } from "#/components/dashboard-navigation-model";
+import { rememberSelectedOrganization } from "#/modules/environment-design/workspace.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import {
-  createFileRoute,
-  notFound,
-  Outlet,
-} from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   loader: async ({ params, context }) => {
-    const organization = await context.queryClient.ensureQueryData(
-      organizationStateQueryOptions(params.organizationSlug),
-    );
-    if (organization.activeOrganization?.slug !== params.organizationSlug) throw notFound();
-
-    const navigationReady = preloadWorkspace(params.organizationSlug, {
-      queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id,
-    });
-
-    if (environmentManager.isServer()) await navigationReady;
-    return { navigationReady: navigationReady.then(() => undefined) };
+    await requireOrganization(context, params.organizationSlug);
+    await prefetchOrgStore(context, params.organizationSlug);
   },
   component: RouteComponent,
 });
@@ -38,7 +23,20 @@ function RouteComponent() {
 
   return (
     <RuntimeProvider organizationSlug={params.organizationSlug}>
-      <Outlet />
+      <OrganizationLayout />
     </RuntimeProvider>
   );
+}
+
+/** One shell for every organization page, so navigation never remounts or hides it. */
+function OrganizationLayout() {
+  const { organizationSlug } = Route.useParams();
+  const { projectSlug, environmentSlug } = useParams({ strict: false });
+  const creatingProject = useMatch({ from: "/_protected/cloud/$organizationSlug/_project/new", shouldThrow: false });
+  // Project creation is a focused full-screen flow.
+  if (creatingProject) return <Outlet />;
+  const scope: DashboardScope = projectSlug && environmentSlug
+    ? { kind: "environment", organizationSlug, projectSlug, environmentSlug }
+    : { kind: "all", organizationSlug };
+  return <DashboardShell scope={scope}><Outlet /></DashboardShell>;
 }

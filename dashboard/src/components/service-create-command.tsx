@@ -31,7 +31,7 @@ import {
 } from "#/modules/environment-design/resource-functions";
 import {
   loadWorkspaceEnvironment,
-} from "#/modules/environment-design/workspace-queries";
+} from "#/modules/environment-design/workspace.queries";
 import { createEmptyProjectServerFn } from "#/modules/environment-design/workspace-functions";
 import {
   createEmptyServiceSource,
@@ -190,7 +190,7 @@ function useServiceCreateActions({
     onSuccess: async (receipt) => {
       await Promise.all([
         getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
-        getEnvironmentsCollection(props.organizationSlug, { ...collectionScope, environmentSlug: receipt.data.environment.namespace }).writeCommitted(receipt.data.environment),
+        getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
         getEnvironmentSummariesCollection(props.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data.environment)),
       ]);
       if (props.mode !== "service") {

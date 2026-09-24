@@ -21,7 +21,7 @@ import {
 
 const privateHeaders = { "cache-control": "private, no-store" } as const;
 
-function execute(request: Request, input: { table: string; userId: string; organizationSlug?: string; environmentSlug?: string; sql?: string }) {
+function execute(request: Request, input: { table: string; userId: string; organizationSlug?: string; sql?: string }) {
   return Effect.gen(function* () {
     const auth = yield* Auth;
     const actor = yield* auth.resolveActor(request.headers);
@@ -165,15 +165,11 @@ it.live(
           name: "Staging", namespace: "staging",
           intent: { version: 1, environmentSlug: "staging", services: [], volumes: [], variableGroups: [] },
         });
-        for (const table of ["environment", "environment_summary"]) {
-          const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync", environmentSlug: "staging" });
-          const rows = yield* Effect.promise(() => response.json());
-          assert.strictEqual(rows.length, table === "environment" ? 1 : 2);
-          if (table === "environment") assert.strictEqual(rows[0].namespace, "staging");
-          else for (const row of rows) assert.ok(!("intent" in row));
-        }
-        const absent = yield* execute(request, { table: "environment", userId, organizationSlug: "acme-table-sync", environmentSlug: "missing" });
-        assert.deepStrictEqual(yield* Effect.promise(() => absent.json()), []);
+        // Org Store reads are org-wide: every environment, summaries without intent documents.
+        const summaryResponse = yield* execute(request, { table: "environment_summary", userId, organizationSlug: "acme-table-sync" });
+        const summaries = yield* Effect.promise(() => summaryResponse.json());
+        assert.strictEqual(summaries.length, 2);
+        for (const row of summaries) assert.ok(!("intent" in row));
         const environments = yield* database.drizzle.select().from(environment);
         const savedRows = yield* database.drizzle.insert(environmentSavedStateSnapshot).values(environments.map((row) => ({
           organizationId: row.organizationId, environmentId: row.id, actorId: userId,

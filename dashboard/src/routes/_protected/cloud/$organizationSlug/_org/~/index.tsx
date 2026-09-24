@@ -1,12 +1,12 @@
-import { Suspense, useDeferredValue, useState } from "react";
-import { environmentManager, useSuspenseQuery } from "@tanstack/react-query";
+import { useDeferredValue, useState } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { preloadWorkspace, projectPreviewsOptions, readWorkspace, useWorkspace } from "#/modules/environment-design/workspace-queries";
+import { requireWorkspace } from "#/collections/route-data";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getRuntimeCollections } from "#/modules/runtime/runtime.collection";
@@ -25,17 +25,13 @@ import { ProjectCard } from "../-components/project-card";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
-    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
-    const options = projectPreviewsOptions(params.organizationSlug, scope);
-    void context.queryClient.prefetchQuery(options);
-    const projects = readWorkspace(await preloadWorkspace(params.organizationSlug, scope));
+    const projects = await requireWorkspace(context, params.organizationSlug);
     if (projects.length === 0) {
       throw redirect({
         to: NewProjectRoute.to,
         params: { organizationSlug: params.organizationSlug },
       });
     }
-    if (environmentManager.isServer()) await context.queryClient.ensureQueryData(options);
   },
   pendingComponent: ProjectsPending,
   errorComponent: ProjectsError,
@@ -118,16 +114,13 @@ function RouteComponent() {
           onSearchValueChange={setQuery}
         />
       </div>
-      <Suspense fallback={<ProjectsGridPending />}>
-        <ProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
-      </Suspense>
+      <ProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
     </DashboardPage>
   );
 }
 
 function ProjectsGrid({ organizationSlug, query }: { organizationSlug: string; query: string }) {
   const scope = useCollectionScope();
-  useSuspenseQuery(projectPreviewsOptions(organizationSlug, scope));
   const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
   const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
   const { lensStatus, incompleteIds } = useRuntimeStatus();

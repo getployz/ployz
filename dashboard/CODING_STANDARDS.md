@@ -1,39 +1,46 @@
 # Dashboard coding standards
 
-Apply these rules when changing route loaders, collection readiness, and pending UI. Product design lives in [DESIGN.md](DESIGN.md).
+Apply these rules whenever you read data, write a route loader, or add pending UI. Product design lives in [DESIGN.md](DESIGN.md). Rules marked ✓ are checked by `src/collections/data-boundaries.static.test.ts` and `src/collections/collections.test.ts`; guidance under **Keep** is for review.
 
-## Route loading: complete SSR, responsive client navigation
+## Data: three kinds, one door
 
-Start content preloads in TanStack route loaders on both server and client. Await content readiness during SSR so the initial HTML can contain populated content. For Query-backed content, share query options between the loader and `useSuspenseQuery`; prefetch on client navigation without blocking the route. The hydrated Query cache owns readiness, including errors and pending state.
-
-```tsx
-loader: async ({ context, params }) => {
-  const options = contentOptions(params, context);
-  if (environmentManager.isServer()) {
-    await context.queryClient.ensureQueryData(options);
-  } else {
-    void context.queryClient.prefetchQuery(options);
-  }
-}
-
-function Content() {
-  const { data } = useSuspenseQuery(contentOptions(params, context));
-  return <ContentView data={data} />;
-}
-
-// Keep this boundary around the consuming region.
-<Suspense fallback={<ContentSkeleton />}><Content /></Suspense>
+```
+                 ┌─ data files: src/collections/, *.collection.ts, *.queries.ts, *.stream.ts ─┐
+ Postgres rows ──┤ Org Store     every org table, org-wide, eager, one readiness gate          │
+ core runtime  ──┤ Runtime       SSE into local collections                                    │
+ anything else ──┤ Remote Read   Query with an explicit staleTime                              │
+                 └──────────────────────────────────────────────────────────────────────────────┘
+                                   ▲ hooks and collection getters
+ routes + components ──────────────┘  never fetch, never await data
 ```
 
-Import `environmentManager` and `useSuspenseQuery` from `@tanstack/react-query`, and `Suspense` from React. Do not return an additional loader readiness promise for content already owned by Query. Use Router's `Await` for genuinely deferred loader data without a Query owner.
+Pick the kind with one question each:
 
-- Await route-critical identity, access, redirects, and not-found decisions on both server and client. Reuse cached identity on client navigation; avoid adding network work to `beforeLoad`.
-- Gate only the consuming region. Keep navigation and the surrounding shell usable while page content loads. A route `pendingComponent` alone cannot cover promises returned without awaiting them.
-- Start independent preloads together. Construct and preload derived collections only after their raw dependencies are ready; mount dependent live-query consumers behind that readiness boundary.
-- Share Query options between loaders and component consumers when they prepare the same data. Include authenticated scope and resource scope in cache keys; reuse in-flight work and loaded collections.
-- Keep version calculation and readiness inside the owning data module. Loader and render reads must derive the same query identity from hydrated collections; temporary empty live-query results must not produce a different cache key. Test the SSR-to-hydration handoff for loading fallbacks as well as mismatched HTML.
-- Preserve failures. Return deferred promises to Router and let `Await` propagate rejection to an error boundary, or expose Query's error/retry state locally. Loading and failed reads are not empty collections.
-- Use `useLiveSuspenseQuery` only beneath a readiness/Suspense boundary backed by a route-started preload. Ungated nested consumers use `useLiveQuery` with explicit pending/error states.
-- Keep existing Query/DB hydration integration. Collection rows belong to DB serialization; do not duplicate them in loader payloads or Query dehydration.
+1. A Cloud-owned row with a bounded count per organization? **Org Store.**
+2. Core runtime state? **Runtime.**
+3. Anything else: third-party APIs, unbounded history, logs, on-demand searches? **Remote Read.**
 
-Verify cold SSR waits, cold client navigation commits with a pending region, successful readiness reveals content, and deferred failures reach an error state. Warm navigation should reuse cached data; do not promise instant content for cold reads.
+File names say where a source lives, not its kind: a Query file that projects org rows on the server (`environment-change-state.queries.ts`) is still Org Store. The registry records each file's kind.
+
+### Rules
+
+1. ✓ **One door.** Only data files create collections, call `queryOptions`, or write a `queryFn`. Register each such file with its kind and freshness in `src/collections/data-sources.ts`; the test enforces a complete list, and review checks the kind and freshness text. Components use the hooks and getters those files export. A component may call a read server function only as one step of a user command (a data-loss preview before confirming, waiting on a removal it started); list the file with its reason in the boundary test. Raw `fetch` and `EventSource` belong in data files or server code; exceptions go in the boundary test's network allowlist with a reason.
+2. ✓ **The Org Store is org-wide.** Collection keys hold session, user, and organization only (`CollectionScope` has no environment). Select one environment or project inside a live query with `.where(...)`. Every table getter exported by `src/collections/collections.ts` is an Org Store table and joins the gate automatically.
+3. ✓ **One gate.** The organization layout starts the Org Store with `prefetchOrgStore`. `DashboardShell` gates its content region once with `useOrgStoreGate`. Everything below that gate may read Org Store rows with `useLiveSuspenseQuery` or collection getters without its own loader or boundary. Adding a derived view or server projection means adding it to `orgStoreViews` or `orgStoreProjections`. On the client the gate shows a retryable error; during SSR an Org Store failure fails the organization route.
+4. ✓ **Loaders only decide and prefetch.** Loaders and `beforeLoad` await only `require*` helpers (access, not-found, redirect) and `prefetch*` helpers from `src/collections/route-data.ts`, plus the in-memory `getAuthSession`. `require*` awaits on server and client. `prefetch*` awaits during SSR so HTML is complete, and never blocks client navigation. `prefetchOrgStore` fails the route on an SSR error; `prefetchRemote` leaves the error to the page's boundary.
+5. ✓ **Remote Reads declare freshness.** Every `queryOptions`, and every options object with a `queryFn`, sets `staleTime`; only Org Store tables in `src/collections/` inherit the `createApiCollection` default.
+6. **Freshness is uniform.** Runtime pushes. Org tables poll at the `createApiCollection` default and receive their own writes through `writeCommitted`. A table with a different interval says why in the registry.
+7. ✓ **Spinners mean a write or a running process.** Reads show prefetched content, a skeleton, or nothing. New spinner locations go in the allowlist in the boundary test with a reason.
+8. ✓ **One shell.** Only the organization layout renders `DashboardShell`, so navigation within an organization never remounts or hides it. The one exception is the full-screen project creation flow.
+
+### Keep
+
+- Load a Remote Read with `prefetchRemote` in the loader and `useSuspenseQuery` in the page; the route's `pendingComponent` or a local `Suspense` covers only that page. Reads that only matter after a user action or while something runs (drawer evidence, polling attempts, build logs) may use `useQuery` without a loader prefetch.
+- Warm reads the user is about to need on intent (menu open, hover, focus), and start independent reads together (`useSuspenseQueries`, not sequential `useSuspenseQuery` calls). Links need nothing extra: the router preloads every visible link's loader (`defaultPreload: "viewport"`).
+- Chrome above the gate (sidebar, header) uses `useLiveQuery` or `useOrgStoreStatus` and handles pending state. Project creation (`_project/new`) renders outside the shell and its gate, so it must not use `useLiveSuspenseQuery`.
+- Match an environment with `findEnvironment` (project slug and namespace) or by id; a namespace alone is ambiguous across projects.
+- Preserve failures. Loading and failed reads are not empty collections: the Org Store gate shows a retryable error; Remote Reads expose Query's error state.
+- Collection rows belong to DB serialization; do not duplicate them in loader payloads or Query dehydration.
+- Keep version calculation and readiness inside the owning data module. Test the SSR-to-hydration handoff for loading fallbacks as well as mismatched HTML.
+
+Verify cold SSR waits, cold client navigation commits with a pending region, readiness reveals content, and failures reach an error state. Warm navigation reuses cached data.

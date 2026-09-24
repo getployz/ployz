@@ -85,7 +85,6 @@ export const reviewedPublicationSchema = Schema.Struct({
 
 export const organizationEnvironmentChangeStateQuerySchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
-  environmentSlug: Schema.optional(Schema.String),
 });
 
 export const retryEnvironmentDeploymentSchema = Schema.Struct({

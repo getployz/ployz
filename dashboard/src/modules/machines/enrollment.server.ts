@@ -25,7 +25,6 @@ import {
   type EnrollmentIdentity,
   type EnrollmentCallback,
   type MintMachineEnrollmentInput,
-  type OrganizationEnrollmentStatus,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -91,29 +90,6 @@ export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
     });
   },
 );
-
-export const loadOrganizationEnrollmentStatus = Effect.fn(
-  "MachineEnrollment.loadStatus",
-)(function* (actor: Actor, input: MintMachineEnrollmentInput) {
-  const { drizzle } = yield* Database;
-  const authorization = yield* authorizeEnrollmentOrganization(
-    actor,
-    input.organizationSlug,
-  );
-  const rows = yield* drizzle
-    .select({ founderMachineId: schemaOrganizationPairing.founderMachineId })
-    .from(schemaOrganizationPairing)
-    .where(
-      eq(
-        schemaOrganizationPairing.organizationId,
-        authorization.organization.id,
-      ),
-    )
-    .limit(1);
-  const row = rows[0];
-  if (row === undefined) return "unclaimed" satisfies OrganizationEnrollmentStatus;
-  return row.founderMachineId === null ? "pending" : "ready";
-});
 
 export const resetPendingOrganizationEnrollment = Effect.fn(
   "MachineEnrollment.resetPending",

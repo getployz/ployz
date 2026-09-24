@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-import { environmentResourcesOptions } from "#/modules/environment-design/environment-data";
+import { orgStoreOptions } from "#/collections/org-store";
+import { orgStoreTableNames } from "#/test/org-store-tables";
+import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderOptions } from "@testing-library/react";
 import { Schema } from "effect";
 import { Fragment } from "react";
@@ -15,7 +17,7 @@ import { ThemeProvider } from "./theme-provider";
 import { authClient } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";
-import { organizationKeys } from "#/modules/environment-design/workspace-queries";
+import { organizationKeys } from "#/modules/environment-design/workspace.queries";
 
 // Better Auth captures fetch when the client is created.
 const transport = vi.hoisted(() => {
@@ -78,7 +80,7 @@ function PreferenceProbe() {
   return <><h1>Logs</h1><SidebarTrigger aria-label={open ? "Collapse sidebar" : "Expand sidebar"} /></>;
 }
 
-async function show(ssr = false) {
+async function show(ssr = false, orgStore: "ready" | "pending" | "failed" = "ready") {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
   const environmentData = { intent: { version: 1, environmentSlug: "production", services: [], volumes: [], variableGroups: [] }, createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" };
@@ -86,9 +88,16 @@ async function show(ssr = false) {
   client.setQueryData(["collections", "test-session", "test-user", "acme", "project"], [{ id: "project", slug: "store", name: "Store", resolvedEnvironment: environmentData }]);
   client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], [environmentData]);
   client.setQueryData(["collections", "test-session", "test-user", "acme", "project_preference"], []);
-  for (const table of ["environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt", "environment_deployment"]) {
-    client.setQueryData(["collections", "test-session", "test-user", "acme", table, "production"], table === "environment" ? [environmentData] : []);
+  for (const table of orgStoreTableNames.filter((name) => !["project", "environment_summary", "project_preference"].includes(name))) {
+    client.setQueryData(["collections", "test-session", "test-user", "acme", table], table === "environment" ? [environmentData] : []);
   }
+  const storeScope = { queryClient: client, sessionId: "test-session", userId: "test-user" };
+  client.setQueryData(environmentChangeStateOptions("acme", storeScope).queryKey, { version: "", states: [] });
+  const store = orgStoreOptions("acme", storeScope);
+  let resolveOrgStore = (_ready: boolean) => {};
+  if (orgStore === "ready") client.setQueryData(store.queryKey, true);
+  else if (orgStore === "pending") void client.fetchQuery({ ...store, queryFn: () => new Promise<boolean>((resolve) => { resolveOrgStore = resolve; }) });
+  else await client.fetchQuery({ ...store, queryFn: () => Promise.reject(new Error("offline")) }).catch(() => {});
   RootRoute.updateLoader({ loader: () => ({ theme: "light", session: savedSession }) });
   Object.assign(RootRoute.options, { shellComponent: Fragment });
   const root = RootRoute.update({
@@ -96,15 +105,12 @@ async function show(ssr = false) {
   });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: savedSession }) });
   const cloud = createRoute({ getParentRoute: () => protectedRoute, path: "cloud" });
-  const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug" });
-  const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
-  const project = createRoute({ getParentRoute: () => projectLayout, path: "$projectSlug" });
-  const environment = createRoute({ getParentRoute: () => project, path: "$environmentSlug", loader: () => ({ navigationReady: client.ensureQueryData(environmentResourcesOptions(
-    { organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" },
-    { queryClient: client, sessionId: "test-session", userId: "test-user", environmentSlug: "production" },
-  )) }), component: () => ssr ? <DashboardSidebarProvider><PreferenceProbe /></DashboardSidebarProvider> : (
+  const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug", component: () => ssr ? <Outlet /> : (
     <DashboardShell scope={{ kind: "environment", organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" }}><Outlet /></DashboardShell>
   ) });
+  const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
+  const project = createRoute({ getParentRoute: () => projectLayout, path: "$projectSlug" });
+  const environment = createRoute({ getParentRoute: () => project, path: "$environmentSlug", component: () => ssr ? <DashboardSidebarProvider><PreferenceProbe /></DashboardSidebarProvider> : <Outlet /> });
   const logs = createRoute({ getParentRoute: () => environment, path: "logs", component: () => <div>Log entries</div> });
   const settings = createRoute({ getParentRoute: () => environment, path: "settings", component: () => <div>Environment preferences</div> });
   const create = (isServer: boolean) => createRouter({
@@ -139,10 +145,29 @@ async function show(ssr = false) {
   const options: RenderOptions = { onRecoverableError };
   if (container) { options.container = container; options.hydrate = true; }
   const view = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>, options);
+  if (orgStore !== "ready") return { ...view, router, markup, onRecoverableError, resolveOrgStore };
   await screen.findByRole("heading", { name: "Logs" });
   if (!ssr) await waitFor(() => expect(screen.getAllByRole("button", { name: "Project and environment: Store / Production" }).length).toBeGreaterThan(0));
-  return { ...view, router, markup, onRecoverableError };
+  return { ...view, router, markup, onRecoverableError, resolveOrgStore };
 }
+
+it("keeps the shell usable while the Org Store loads, then reveals the page", async () => {
+  const { resolveOrgStore } = await show(false, "pending");
+  expect(await screen.findByRole("status", { name: "Loading page" })).toBeTruthy();
+  expect(screen.getByRole("complementary", { name: "Dashboard navigation" })).toBeTruthy();
+  expect(screen.queryByText("Log entries")).toBeNull();
+  await act(async () => { resolveOrgStore(true); });
+  expect(await screen.findByText("Log entries")).toBeTruthy();
+});
+
+it("shows a retryable Org Store failure inside the shell and recovers", async () => {
+  await show(false, "failed");
+  expect(await screen.findByText("Organization data couldn’t load")).toBeTruthy();
+  expect(screen.getByRole("complementary", { name: "Dashboard navigation" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("Log entries")).toBeTruthy();
+  expect(screen.queryByText("Organization data couldn’t load")).toBeNull();
+});
 
 it("renders real scope queries and retains named navigation when collapsed", async () => {
   const { router } = await show();

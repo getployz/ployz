@@ -42,10 +42,10 @@ import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "#
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
-import {
+import { findEnvironment,
   organizationStateQueryOptions,
   useWorkspace,
-} from "#/modules/environment-design/workspace-queries";
+} from "#/modules/environment-design/workspace.queries";
 
 type Projection = "desktop" | "mobile" | "rail";
 
@@ -72,8 +72,7 @@ export function ProjectSwitcher({
   const [browsedProjectSlug, setBrowsedProjectSlug] = useState(projectSlug);
   const [createProject, setCreateProject] = useState<string | null>(null);
   const activeProject = projects.find((project) => project.slug === projectSlug);
-  const activeEnvironment = environments.find((environment) =>
-    environment.projectId === activeProject?.id && environment.namespace === environmentSlug);
+  const activeEnvironment = findEnvironment(projects, environments, { projectSlug, environmentSlug });
   const selectedProject = projects.find((project) => project.slug === browsedProjectSlug) ?? activeProject ?? projects[0];
   const projectEnvironments = environments.filter((environment) => environment.projectId === selectedProject?.id);
   const label = triggerLabel ?? (projectSlug ? activeProject?.name ?? projectSlug : "Choose project");
@@ -213,10 +212,7 @@ function CreateEnvironmentDialog({
         },
       }),
     onSuccess: async (receipt, input) => {
-      await getEnvironmentsCollection(
-        input.organizationSlug,
-        { ...collectionScope, environmentSlug: receipt.data.namespace },
-      ).writeCommitted(receipt.data);
+      await getEnvironmentsCollection(input.organizationSlug, collectionScope).writeCommitted(receipt.data);
       await getEnvironmentSummariesCollection(input.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data));
       // A completed creation still belongs to its original scope after navigation.
       if (router.state.location.state.key !== input.locationKey) return;

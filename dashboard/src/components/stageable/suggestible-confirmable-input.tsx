@@ -9,7 +9,6 @@ import {
   ComboboxTrigger,
 } from "#/components/ui/combobox"
 import { InputGroupButton, InputGroupInput } from "#/components/ui/input-group"
-import { Spinner } from "#/components/ui/spinner"
 import {
   ConfirmableInput,
   type ConfirmableInputProps,
@@ -87,7 +86,7 @@ export function SuggestibleConfirmableInput({
         ) : null}
         <ComboboxEmpty>
           {suggestionsLoading ? (
-            <Spinner aria-label="Loading suggestions" />
+            "Loading suggestions…"
           ) : (
             suggestionsMessage ?? "No matches. Enter a custom path."
           )}

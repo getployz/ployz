@@ -11,7 +11,6 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "#/components/ui/empty";
-import { preloadRuntimeCollections } from "#/modules/runtime/runtime.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServerDialog } from "./-components/add-server-dialog";
 import { RuntimeMachineRow } from "./-components/server-list-rows";
@@ -24,14 +23,6 @@ import {
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
-  loader: async ({ params, context }) => {
-    await preloadRuntimeCollections(params.organizationSlug, {
-      queryClient: context.queryClient,
-      sessionId: context.session.session.id,
-      userId: context.session.user.id,
-    });
-  },
-  pendingComponent: ServersSkeleton,
   component: RouteComponent,
 });
 

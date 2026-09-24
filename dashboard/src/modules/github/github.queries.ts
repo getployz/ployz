@@ -39,6 +39,8 @@ export const githubKeys = {
 export function githubRepoAccessQueryOptions() {
   return queryOptions({
     queryKey: githubKeys.access(),
+    // Installation access changes in GitHub; recheck whenever a picker mounts.
+    staleTime: 0,
     queryFn: () => getGithubRepoAccessStateServerFn(),
   });
 }
@@ -57,6 +59,7 @@ export function githubBranchesQueryOptions(input: {
 }) {
   return queryOptions({
     queryKey: githubKeys.branches(input),
+    staleTime: 60_000,
     queryFn: () =>
       listGithubBranchesServerFn({
         data: {

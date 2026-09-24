@@ -23,11 +23,11 @@ import {
   getEnvironmentNodeConfigSnapshotsCollection,
   getVolumeRemoveAttemptsCollection,
 } from "#/collections/collections";
-import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment-collection";
+import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
 import {
   createEnvironmentResourcesCollection,
   createVolumeResourcesCollection,
-} from "#/modules/environment-design/resource-collections";
+} from "#/modules/environment-design/resource.collection";
 import { updateServiceServerFn } from "#/modules/environment-design/service-functions";
 import {
   type ServiceDeploymentFieldSelection,

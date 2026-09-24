@@ -14,7 +14,7 @@ When framework guidance is needed:
 
 ## Route Data Loading
 
-- When changing loaders, collection readiness, or pending UI, follow [CODING_STANDARDS.md](CODING_STANDARDS.md). SSR awaits content readiness; client navigation returns readiness promises and gates only consuming regions.
+- When reading data, changing loaders, or adding pending UI, follow [CODING_STANDARDS.md](CODING_STANDARDS.md): Org Store, Runtime, or Remote Read; data files only; loaders only `require*`/`prefetch*`.
 
 - **For dashboard code, build, or dependency changes, run `pnpm pr:check` as the final local gate.** Reuse passing results until relevant files change; documentation-only or PR metadata updates do not require a rerun. Keep the script aligned with the applicable PR CI checks when those change.
 - **Inngest workflows that own durable rows must not leave ambiguous active state.** If an Inngest function creates or manages a row with statuses like `pending`/`running`, persist the Inngest `runId` on that row and handle `inngest/function.cancelled` so manual cancellation marks the row `cancelled` or another terminal status. Runtime cancellation may not undo remote side effects, but the cloud row must not remain active forever.

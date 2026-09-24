@@ -1,18 +1,17 @@
-import { useParams } from "@tanstack/react-router";
 import {
   getDashboardSectionLabel,
   type DashboardScope,
 } from "./dashboard-navigation-model";
 import { useDashboardSection } from "./use-dashboard-section";
-import { useWorkspace } from "#/modules/environment-design/workspace-queries";
+import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 
 function EnvironmentName({
   scope,
 }: {
   scope: Extract<DashboardScope, { kind: "environment" }>;
 }) {
-  const { environments } = useWorkspace(scope.organizationSlug);
-  const data = environments.find((row) => row.namespace === scope.environmentSlug);
+  const { projects, environments } = useWorkspace(scope.organizationSlug);
+  const data = findEnvironment(projects, environments, scope);
   return (
     <span className="truncate text-muted-foreground">
       {data?.name ?? scope.environmentSlug}
@@ -20,16 +19,8 @@ function EnvironmentName({
   );
 }
 
-export function DashboardPageHeader() {
-  const { organizationSlug, projectSlug, environmentSlug } = useParams({
-    strict: false,
-  });
+export function DashboardPageHeader({ scope }: { scope: DashboardScope }) {
   const section = useDashboardSection();
-  if (!organizationSlug) return null;
-  const scope: DashboardScope =
-    projectSlug && environmentSlug
-      ? { kind: "environment", organizationSlug, projectSlug, environmentSlug }
-      : { kind: "all", organizationSlug };
   return (
     <header
       data-dashboard-header

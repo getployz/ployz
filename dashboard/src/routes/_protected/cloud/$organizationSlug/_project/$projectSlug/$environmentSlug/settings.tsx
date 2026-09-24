@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Separator } from "#/components/ui/separator";
-import { useWorkspace } from "#/modules/environment-design/workspace-queries";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { Route as EnvironmentLayoutRoute } from "./route";
 

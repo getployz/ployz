@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { Suspense, type ReactNode } from "react";
+import { useMutation, useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { authClient } from "#/auth/auth-client";
 import { useAuthSession } from "#/auth/auth.hooks";
-import { useMatch } from "@tanstack/react-router";
+import { CatchBoundary, useMatch, type ErrorComponentProps } from "@tanstack/react-router";
+import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { AppSidebar } from "./app-sidebar";
 import type { DashboardScope } from "./dashboard-navigation-model";
@@ -11,6 +12,8 @@ import { DashboardPageHeader } from "./dashboard-header";
 import { MobileDashboardNavigation } from "./dashboard-navigation";
 import { NavigationProgress } from "./navigation-progress";
 import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
+import { RouteContentSkeleton } from "./route-content-skeleton";
+import { RouteErrorAlert } from "./route-error-alert";
 import { SidebarProvider, useSidebar } from "./ui/sidebar";
 import { cn } from "#/lib/utils";
 
@@ -87,7 +90,7 @@ function DashboardLayout({
           }
           scope={scope}
         />
-        {!canvas ? <DashboardPageHeader /> : null}
+        {!canvas ? <DashboardPageHeader scope={scope} /> : null}
         <NavigationProgress />
         <OrganizationCollectionRefreshNotice
           scope={collectionScope}
@@ -97,9 +100,32 @@ function DashboardLayout({
           data-scroll-restoration-id="wireframe-content"
           className="min-h-0 min-w-0 flex-1 overflow-y-auto"
         >
-          {children}
+          {/* The one Org Store gate: pages below it read org rows synchronously; chrome above it never waits. */}
+          <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={OrgStoreError}>
+            <Suspense fallback={<div className="p-4 md:p-6"><RouteContentSkeleton /></div>}>
+              <OrgStoreGate organizationSlug={scope.organizationSlug}>{children}</OrgStoreGate>
+            </Suspense>
+          </CatchBoundary>
         </div>
       </main>
     </>
+  );
+}
+
+function OrgStoreGate({ organizationSlug, children }: { organizationSlug: string; children: ReactNode }) {
+  useOrgStoreGate(organizationSlug);
+  return children;
+}
+
+function OrgStoreError({ reset }: ErrorComponentProps) {
+  const queries = useQueryErrorResetBoundary();
+  return (
+    <div className="p-4 md:p-6">
+      <RouteErrorAlert
+        title="Organization data couldn’t load"
+        description="Projects, services, and deployments are unavailable right now. Try loading them again."
+        onRetry={() => { queries.reset(); reset(); }}
+      />
+    </div>
   );
 }

@@ -4,7 +4,6 @@ import {
   ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
 import {
-  loadOrganizationEnrollmentStatus,
   mintMachineEnrollment,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
@@ -24,15 +23,6 @@ export const mintMachineEnrollmentServerFn = createServerFn({
   .validator(mintInput)
   .handler(({ context, data }) =>
     runActor(context, mintMachineEnrollment(context.actor, data)),
-  );
-
-export const loadOrganizationEnrollmentStatusServerFn = createServerFn({
-  method: "GET",
-})
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(mintInput)
-  .handler(({ context, data }) =>
-    runActor(context, loadOrganizationEnrollmentStatus(context.actor, data)),
   );
 
 export const resetPendingOrganizationEnrollmentServerFn = createServerFn({

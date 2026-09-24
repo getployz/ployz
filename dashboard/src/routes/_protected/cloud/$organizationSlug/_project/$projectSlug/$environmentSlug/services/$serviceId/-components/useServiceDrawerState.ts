@@ -26,7 +26,7 @@ import {
   useServicesCollection,
   useServiceWriter,
 } from "#/modules/services/services.collection";
-import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
+import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
 import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/environment-node-names";
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { getEnvironmentSummariesCollection } from "#/collections/collections";
-import { organizationKeys } from "#/modules/environment-design/workspace-queries";
+import { organizationKeys } from "#/modules/environment-design/workspace.queries";
 import { NavigationSwitcher } from "./navigation-switcher";
 
 beforeEach(() => {

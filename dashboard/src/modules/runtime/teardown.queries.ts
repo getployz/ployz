@@ -1,8 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { teardownIsBusy, type TeardownScope } from "#/modules/runtime/teardown";
-import type { loadLatestTeardownAttemptServerFn } from "#/modules/runtime/teardown.functions";
-
-type LatestAttempt = Awaited<ReturnType<typeof loadLatestTeardownAttemptServerFn>>;
+import { loadLatestTeardownAttemptServerFn } from "#/modules/runtime/teardown.functions";
 
 export function latestTeardownAttemptQueryOptions(
   input: {
@@ -11,7 +9,6 @@ export function latestTeardownAttemptQueryOptions(
     environmentId?: string;
     projectSlug?: string;
   },
-  read: () => Promise<LatestAttempt>,
 ) {
   return queryOptions({
     queryKey: [
@@ -21,7 +18,9 @@ export function latestTeardownAttemptQueryOptions(
       input.environmentId ?? null,
       input.projectSlug ?? null,
     ] as const,
-    queryFn: read,
+    queryFn: () => loadLatestTeardownAttemptServerFn({ data: input }),
+    // Mount reads are authoritative; a busy attempt polls until terminal.
+    staleTime: 0,
     refetchInterval: (query) => {
       const row = query.state.data;
       return row != null && teardownIsBusy(row.status) ? 2_000 : false;

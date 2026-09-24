@@ -341,10 +341,7 @@ function ServiceRemovals({ services }: { services: string[] }) {
 function GatheringEvidence() {
   return (
     <div aria-label="Preparing destructive review" className="flex flex-col gap-3">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Spinner />
-        Preparing destructive review…
-      </div>
+      <p className="text-sm text-muted-foreground">Preparing destructive review…</p>
       <Skeleton className="h-24 w-full" />
     </div>
   );

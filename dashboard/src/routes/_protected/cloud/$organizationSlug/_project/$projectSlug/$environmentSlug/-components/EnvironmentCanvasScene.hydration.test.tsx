@@ -7,31 +7,26 @@ import { DbProvider } from "@tanstack/react-db";
 import { QueryClient, QueryClientProvider, useSuspenseQuery, dehydrate, hydrate } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
-import { environmentCanvasOptions } from "#/modules/environment-design/environment-data";
-import { environmentChangeStateOptions, preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
-import { getEnvironmentNodeIntroductionsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
+import { orgStoreOptions } from "#/collections/org-store";
+import { orgStoreTableNames } from "#/test/org-store-tables";
+import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
+import { getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
 import { preloadCollection } from "#/collections/query-collection";
-
-const params = { organizationSlug: "acme", projectSlug: "app", environmentSlug: "production" };
 
 it("keeps the SSR canvas visible while hydrated live queries take over", async () => {
   const server = new QueryClient();
   const client = new QueryClient();
-  const scope = { queryClient: server, sessionId: "session", userId: "user", environmentSlug: "production" };
-  for (const table of ["project", "environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt", "environment_deployment", "environment_saved_state_snapshot", "environment_node_introduction"]) {
-    server.setQueryData(["collections", "session", "user", "acme", table, ...(table === "project" ? [] : ["production"])], []);
+  const scope = { queryClient: server, sessionId: "session", userId: "user" };
+  for (const table of orgStoreTableNames) {
+    server.setQueryData(["collections", "session", "user", "acme", table], []);
   }
-  server.setQueryData(["collections", "session", "user", "acme", "environment_saved_state_snapshot", "production"], [{ id: "saved", environmentId: "env", organizationId: "org" }]);
+  server.setQueryData(["collections", "session", "user", "acme", "environment_saved_state_snapshot"], [{ id: "saved", environmentId: "env", organizationId: "org" }]);
   await preloadCollection(getEnvironmentSavedStateRevisionsCollection("acme", scope));
   server.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, { version: "", states: [] });
-  await Promise.all([
-    server.ensureQueryData(environmentCanvasOptions(params, scope)),
-    preloadOrganizationEnvironmentChangeStateProjections(scope, "acme"),
-    preloadCollection(getEnvironmentNodeIntroductionsCollection("acme", scope)),
-  ]);
+  await server.ensureQueryData(orgStoreOptions("acme", scope));
   const pending = vi.fn(() => <div>Loading canvas</div>);
   function Canvas({ queryClient }: { queryClient: QueryClient }) {
-    useSuspenseQuery(environmentCanvasOptions(params, { ...scope, queryClient }));
+    useSuspenseQuery(orgStoreOptions("acme", { ...scope, queryClient }));
     return <div>Loaded canvas</div>;
   }
   function App({ queryClient }: { queryClient: QueryClient }) {

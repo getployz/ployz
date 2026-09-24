@@ -1,4 +1,5 @@
 import type { CollectionReadInput } from "./read.contract";
+import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { createApiCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
@@ -40,14 +41,12 @@ type EnvironmentNodeIntroductionRow =
 type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
 function collectionReadOptions<Row>(table: CollectionReadInput["table"], organizationSlug: string, scope: CollectionScope) {
-  const environmentSlug = ["project", "environment_summary", "project_preference", "github_repository_cache"].includes(table)
-    ? undefined : scope.environmentSlug;
   return {
     queryClient: scope.queryClient,
-    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table, ...(environmentSlug ? [environmentSlug] : [])],
+    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       // SAFETY: each owner below pairs its literal allowlisted table with that table's database row type.
-      return await readCollectionServerFn({ data: { table, organizationSlug, environmentSlug, userId: scope.userId }, signal }) as Row[];
+      return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId }, signal }) as Row[];
     },
   };
 }
@@ -55,7 +54,6 @@ function collectionReadOptions<Row>(table: CollectionReadInput["table"], organiz
 export const getProjectsCollection = cachedByCollectionScope(
   (organizationSlug, scope) => createApiCollection<ProjectRow>({
     ...collectionReadOptions<ProjectRow>("project", organizationSlug, scope),
-    refetchInterval: false,
     getKey: (row) => row.id,
   }),
 );
@@ -136,6 +134,12 @@ export const getVolumeRemoveAttemptsCollection = cachedByCollectionScope(
     }),
 );
 
+export const getOrganizationEnrollmentCollection = cachedByCollectionScope((organizationSlug, scope) =>
+  createApiCollection<OrganizationEnrollmentRow>({
+    ...collectionReadOptions<OrganizationEnrollmentRow>("organization_enrollment", organizationSlug, scope),
+    getKey: (row) => row.id,
+  }));
+
 export type EnvironmentSummary = Pick<EnvironmentRow, "id" | "projectId" | "organizationId" | "name" | "namespace" | "createdAt">;
 export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary {
   const { id, projectId, organizationId, name, namespace, createdAt } = row;
@@ -146,13 +150,11 @@ export type ProjectPreference = { id: string; environmentId: string };
 export const getEnvironmentSummariesCollection = cachedByCollectionScope((organizationSlug, scope) =>
   createApiCollection<EnvironmentSummary>({
     ...collectionReadOptions<EnvironmentSummary>("environment_summary", organizationSlug, scope),
-    refetchInterval: false,
     getKey: row => row.id,
   }));
 
 export const getProjectPreferencesCollection = cachedByCollectionScope((organizationSlug, scope) =>
   createApiCollection<ProjectPreference>({
     ...collectionReadOptions<ProjectPreference>("project_preference", organizationSlug, scope),
-    refetchInterval: false,
     getKey: row => row.id,
   }));
