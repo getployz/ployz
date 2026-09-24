@@ -471,7 +471,7 @@ fn failed_deploy_footer_names_the_service_and_error_without_a_hash_dump() {
     assert!(!footer.contains("cashdash-web"), "{text}");
     assert!(!text.contains("Completed"), "{text}");
     assert!(!text.contains(&"d".repeat(32)), "{text}");
-    assert!(!text.contains("next: ployz logs"), "{text}");
+    assert!(!text.contains("next: ployz service logs"), "{text}");
 }
 
 #[test]
@@ -850,11 +850,11 @@ fn health_failure_offers_logs_when_service_is_known() {
     };
     let text = outcome_text_after(&outcome, &[row]);
     assert!(
-        text.contains("next: ployz logs cashdash-frontend"),
+        text.contains("next: ployz service logs cashdash-frontend"),
         "{text}"
     );
     assert!(
-        !text.contains("next: ployz logs cashdash-frontend/"),
+        !text.contains("next: ployz service logs cashdash-frontend/"),
         "{text}"
     );
     assert!(!text.contains('/'), "{text}");

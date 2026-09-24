@@ -231,7 +231,7 @@ fn stop_options_are_only_read_for_stop_actions() {
         ("rm", ContainerAction::Remove),
     ] {
         let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", command, "api"])
+            .try_get_matches_from(["ployz", "service", command, "api"])
             .unwrap();
         assert_eq!(
             stop_options(leaf_matches(&matches), action).unwrap(),
@@ -240,7 +240,7 @@ fn stop_options_are_only_read_for_stop_actions() {
     }
 
     let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "stop", "api"])
+        .try_get_matches_from(["ployz", "service", "stop", "api"])
         .unwrap();
     assert_eq!(
         stop_options(leaf_matches(&matches), ContainerAction::Stop).unwrap(),
@@ -296,7 +296,7 @@ fn lifecycle_selectors_deduplicate_names_and_ids() {
 #[test]
 fn rm_project_name_removes_an_ambiguous_service_name() {
     let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "rm", "alpha", "--project-name", "st1"])
+        .try_get_matches_from(["ployz", "service", "rm", "alpha", "--project-name", "st1"])
         .unwrap();
     let services = vec![
         service_named('a', "st1", "alpha"),

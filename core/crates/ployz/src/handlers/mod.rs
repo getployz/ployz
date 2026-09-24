@@ -9,8 +9,6 @@ use crate::failure::Failure;
 mod cloud;
 mod context;
 mod data_loss;
-mod dns;
-mod image;
 mod ingress;
 mod machine;
 mod operator;
@@ -67,19 +65,6 @@ fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
         matches = child;
     }
     matches
-}
-
-fn version_text(output: Option<&str>, version: &str) -> Result<String, Error> {
-    let Some(template) = output else {
-        return Ok(version.to_owned());
-    };
-    let rendered = template.replace("{{.Version}}", version);
-    if rendered.contains("{{") {
-        return Err(Error::usage(format!(
-            "unusable output template: {template}"
-        )));
-    }
-    Ok(rendered)
 }
 
 fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
@@ -160,12 +145,18 @@ async fn reconnect_client(
 fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
     let config = config_path(matches).expect("setup already resolved the config path");
     let config = config.to_string_lossy();
-    shell_words::join(
-        ["ployz", "--ployz-config", config.as_ref()]
-            .into_iter()
-            .chain(command.iter().copied())
-            .chain(["--context", context]),
-    )
+    let args = ["ployz", "--ployz-config", config.as_ref()]
+        .into_iter()
+        .chain(command.iter().copied())
+        .chain(["--context", context]);
+    // A hint that names a removed command is worse than no hint.
+    debug_assert!(
+        crate::cli::command()
+            .try_get_matches_from(args.clone())
+            .is_ok(),
+        "recovery hint does not parse: {command:?}"
+    );
+    shell_words::join(args)
 }
 
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
@@ -209,17 +200,7 @@ fn handler_for(path: &str) -> Option<Handler> {
                     .map(String::as_str),
             )
         },
-        "dns release" => dns::release,
-        "dns reserve" => dns::reserve,
-        "dns show" => dns::show,
-        "exec" => operator::exec,
-        "image ls" => image::list,
-        "image push" => image::push,
-        "images" => image::list,
         "cloud enroll" => cloud::enroll,
-        "inspect" => service::inspect,
-        "logs" => operator::service_logs,
-        "ls" => service::list,
         "machine add" => machine::add,
         "machine init" => machine::init,
         "machine build-cache-clear" => machine::clear_build_cache,
@@ -236,8 +217,6 @@ fn handler_for(path: &str) -> Option<Handler> {
         "project ls" => project::list,
         "project rm" => project::remove,
         "ps" => service::processes,
-        "rm" => service::remove,
-        "scale" => service::scale,
         "service exec" => operator::exec,
         "service inspect" => service::inspect,
         "service logs" => operator::service_logs,
@@ -246,25 +225,14 @@ fn handler_for(path: &str) -> Option<Handler> {
         "service scale" => service::scale,
         "service start" => |root| service::change(root, ployz_core::ContainerAction::Start),
         "service stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
-        "start" => |root| service::change(root, ployz_core::ContainerAction::Start),
-        "stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
-        "version" => |root| {
-            println!(
-                "{}",
-                version_text(
-                    leaf_matches(root)
-                        .get_one::<String>("output")
-                        .map(String::as_str),
-                    env!("CARGO_PKG_VERSION"),
-                )?
-            );
+        "version" => |_| {
+            println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         },
         "volume create" => volume::create,
         "volume inspect" => volume::inspect,
         "volume ls" => volume::list,
         "volume rm" => volume::remove,
-        "wg show" => machine::wireguard_show,
         _ => return None,
     };
     Some(handler)
@@ -322,16 +290,13 @@ mod tests {
     }
 
     #[test]
-    fn version_output_template_must_be_usable() {
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from(["ployz", "version", "-o", "{{.Nope}}"])
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "recovery hint does not parse")]
+    fn setup_recovery_refuses_a_command_outside_the_tree() {
+        let matches = command()
+            .try_get_matches_from(["ployz", "machine", "init", "root@host"])
             .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "unusable output template: {{.Nope}}",
-        );
+        recovery_command(leaf_matches(&matches), "staging", &["dns", "show"]);
     }
 
     #[test]
@@ -361,6 +326,7 @@ mod tests {
                     "ployz",
                     "--connect",
                     "tcp://127.0.0.1:1",
+                    "service",
                     "logs",
                     "api",
                     &format!("--{flag}"),
@@ -641,19 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn dns_show_uses_the_real_handler() {
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from(["ployz", "dns", "show"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            crate::context::ContextError::NoConfig.to_string(),
-        );
-    }
-
-    #[test]
     fn malformed_volume_assignments_fail_before_connecting() {
         let mut command = command();
         let matches = command
@@ -684,6 +637,7 @@ mod tests {
                 "ployz",
                 "--connect",
                 "tcp://127.0.0.1:1",
+                "service",
                 "scale",
                 "api",
                 "0",
@@ -700,19 +654,11 @@ mod tests {
         let mut command = command();
         let invalid = command
             .clone()
-            .try_get_matches_from(["ployz", "rm", "--project-name", "My_App", "web"])
+            .try_get_matches_from(["ployz", "service", "rm", "--project-name", "My_App", "web"])
             .unwrap();
         assert_eq!(
             dispatch(&invalid, &mut command).unwrap_err().to_string(),
             "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
-        );
-        let remove = command
-            .clone()
-            .try_get_matches_from(["ployz", "rm", "--project-name", "ployz-system", "web"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&remove, &mut command).unwrap_err().to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
         );
         let service_remove = command
             .clone()

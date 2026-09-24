@@ -2,8 +2,8 @@
 //!
 //! Every image source is selected by one rule, [`available_variant`]: a
 //! Machine serves a destination only the variant its store demonstrably holds
-//! for that destination. Build delivery, the local push peer hop, and Deploy's
-//! peer lookup all route through it.
+//! for that destination. Build delivery and Deploy's peer lookup route through
+//! it.
 
 use ployz_build::BuiltImage;
 use ployz_core::{ImageSummary, ListImagesRequest, MachineObservation};
@@ -47,7 +47,7 @@ pub(crate) async fn push_from_machine_using_machines(
     machines: &[MachineObservation],
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialResult<(), PushError>, PushError> {
-    let selection = list_selection(machines, selectors)?;
+    let selection = delivery_selection(machines, selectors)?;
     let mut result = PartialResult {
         successes: Vec::new(),
         failures: Vec::new(),
@@ -71,9 +71,9 @@ pub(crate) async fn push_from_machine_using_machines(
         let delivery = source
             .deliver(
                 client,
-                ImageContent::built(&reference, &image.reference),
+                &reference,
+                &image.reference,
                 &machine,
-                None,
                 &mut cancellation,
             )
             .await;
@@ -164,29 +164,21 @@ impl Source {
         }
     }
 
-    /// The variant of `image` this source holds for `machine`: `platform` when
-    /// the caller fixed one, otherwise the one the Machine's architecture runs.
+    /// The variant of `image` this source holds that `machine`'s architecture runs.
     ///
     /// # Errors
     /// Names the platform the source does not hold.
-    pub(super) fn variant<'select>(
-        &'select self,
-        image: &str,
-        machine: &Machine,
-        platform: Option<&'select str>,
-    ) -> Result<&'select str, PushError> {
-        let held = match platform {
-            Some(platform) => holds_platform(&self.store, image, platform).then_some(platform),
-            None => available_variant(&self.store, image, &machine.runtime.architecture),
-        };
-        held.ok_or_else(|| PushError::VariantUnavailable {
-            image: image.to_owned(),
-            machine_id: self.machine_id,
-            platform: platform.unwrap_or(&machine.runtime.architecture).to_owned(),
+    pub(super) fn variant(&self, image: &str, machine: &Machine) -> Result<&str, PushError> {
+        available_variant(&self.store, image, &machine.runtime.architecture).ok_or_else(|| {
+            PushError::VariantUnavailable {
+                image: image.to_owned(),
+                machine_id: self.machine_id,
+                platform: machine.runtime.architecture.clone(),
+            }
         })
     }
 
-    /// Have `machine` pull the exact content and publish its requested tag,
+    /// Have `machine` pull the `published` digest reference of `exact`,
     /// naming the variant [`Self::variant`] selected for that content.
     ///
     /// # Errors
@@ -194,21 +186,26 @@ impl Source {
     pub(super) async fn deliver(
         &self,
         client: &mut Client,
-        content: ImageContent<'_>,
+        published: &str,
+        exact: &str,
         machine: &Machine,
-        platform: Option<&str>,
         cancellation: &mut Cancellation<'_>,
     ) -> Result<(), PushError> {
-        let variant = self.variant(content.exact(), machine, platform)?;
-        pull_on_machine(
-            client,
-            content,
-            machine,
-            self.destination,
-            variant,
-            cancellation,
-        )
-        .await
+        let variant = self.variant(exact, machine)?;
+        cancellation
+            .race(client.call::<op::PullImageFromMachine>(
+                PullImageFromMachineRequest {
+                    pull: PeerImagePull::Reference {
+                        image: published.to_owned(),
+                    },
+                    source: self.destination,
+                    platform: variant.to_owned(),
+                },
+                Some(&MachineTarget::from(&machine.id)),
+            ))
+            .await?
+            .map(|_| ())
+            .map_err(|error| PushError::PeerPull(rpc_error(error)))
     }
 }
 

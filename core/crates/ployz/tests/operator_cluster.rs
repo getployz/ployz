@@ -162,7 +162,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
             &first_machine_container,
             "script",
             "-qec",
-            "timeout 60 ployz exec -T app/operator-streams sh -c 'exit 7'; echo CODE:$?",
+            "timeout 60 ployz service exec -T app/operator-streams sh -c 'exit 7'; echo CODE:$?",
             "/dev/null",
         ])
         .output()

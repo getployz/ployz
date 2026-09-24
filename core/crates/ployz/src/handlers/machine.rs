@@ -25,7 +25,7 @@ pub(super) use helpers::{
     confirm, initialize, join, machine_name, readiness_timeout_message, reset,
 };
 pub(super) use init::init;
-pub(super) use inspect::{inspect, list, rtt, wireguard_show};
+pub(super) use inspect::{inspect, list, rtt};
 pub(super) use remove::remove;
 pub(super) use upgrade::{inspect as inspect_upgrade, upgrade};
 

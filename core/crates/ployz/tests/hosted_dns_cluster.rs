@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    CORROSION_API_PORT, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, MachineUpdate,
-    PublicIpUpdate, op,
+    CORROSION_API_PORT, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, GetDomainRequest,
+    MachineUpdate, PublicIpUpdate, ReleaseDomainRequest, ReserveDomainRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use reqwest::{Client as HttpClient, redirect::Policy};
@@ -90,10 +90,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
         .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
         .unwrap();
     let endpoint = format!("http://{}:{port}", gateway.trim());
-    cli(
-        &direct,
-        &["dns", "reserve", "--endpoint", endpoint.as_str()],
-    );
+    reserve_domain(&direct, &endpoint).await.unwrap();
 
     let stored = cluster
         .machine_shell(
@@ -127,22 +124,13 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
 
     let second_direct = cluster.api_address(1).unwrap();
     assert_eq!(
-        cli(&second_direct, &["dns", "show"]).trim(),
+        domain(&second_direct).await.unwrap(),
         "opaque.ployz.example"
     );
     cluster.restart(1).unwrap();
-    assert_eq!(
-        wait_cli_success(&second_direct, &["dns", "show"])
-            .await
-            .trim(),
-        "opaque.ployz.example"
-    );
-    let duplicate = run_cli(
-        &second_direct,
-        &["dns", "reserve", "--endpoint", endpoint.as_str()],
-    );
-    assert!(!duplicate.status.success());
-    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already reserved"));
+    assert_eq!(wait_domain(&second_direct).await, "opaque.ployz.example");
+    let duplicate = reserve_domain(&second_direct, &endpoint).await.unwrap_err();
+    assert!(duplicate.contains("already reserved"), "{duplicate}");
     assert_eq!(domain_requests(&hosted.requests()), 1);
 
     cluster
@@ -177,18 +165,9 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
     assert!(!empty.status.success());
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no publicly reachable"));
     assert_eq!(hosted.requests().len(), before_empty);
-    assert_eq!(
-        cli(&direct, &["dns", "show"]).trim(),
-        "opaque.ployz.example"
-    );
+    assert_eq!(domain(&direct).await.unwrap(), "opaque.ployz.example");
 
-    let mut client = ployz::connect::connect(
-        std::path::Path::new("/missing-ployz-test-config"),
-        Some(&direct),
-        None,
-    )
-    .await
-    .unwrap();
+    let mut client = client(&direct).await.unwrap();
     hosted.reject_record_type("AAAA");
     let error = client
         .call::<op::CreateDomainRecords>(
@@ -233,12 +212,15 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
 
     let before_release = after_rejection.len();
     assert_eq!(
-        cli(&direct, &["dns", "release"]).trim(),
-        "Released Cluster domain: opaque.ployz.example"
+        client
+            .call::<op::ReleaseDomain>(ReleaseDomainRequest {}, None)
+            .await
+            .unwrap()
+            .name,
+        "opaque.ployz.example"
     );
-    let missing = run_cli(&direct, &["dns", "show"]);
-    assert!(!missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
+    let missing = domain(&direct).await.unwrap_err();
+    assert!(missing.contains("was not found"), "{missing}");
     let after_release = hosted.requests();
     assert_eq!(after_release.len(), before_release + 1);
     let purge = after_release.last().unwrap();
@@ -294,10 +276,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
         .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
         .unwrap();
     let endpoint = format!("http://{}:{port}", gateway.trim());
-    cli(
-        &direct,
-        &["dns", "reserve", "--endpoint", endpoint.as_str()],
-    );
+    reserve_domain(&direct, &endpoint).await.unwrap();
     assert_eq!(
         authoritative_wildcard_a(&hosted.requests()),
         vec![
@@ -307,13 +286,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
         ],
     );
 
-    let mut client = ployz::connect::connect(
-        std::path::Path::new("/missing-ployz-test-config"),
-        Some(&direct),
-        None,
-    )
-    .await
-    .unwrap();
+    let mut client = client(&direct).await.unwrap();
     // Same refresh `machine add` runs after membership is saved, including when
     // the add-time Ingress Proxy Deploy failed or was skipped.
     let before_add_refresh = record_requests(&hosted.requests()).len();
@@ -395,10 +368,7 @@ async fn hosted_dns_wildcard_omits_non_ingress_members_after_machine_removal() {
         .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
         .unwrap();
     let endpoint = format!("http://{}:{port}", gateway.trim());
-    cli(
-        &direct,
-        &["dns", "reserve", "--endpoint", endpoint.as_str()],
-    );
+    reserve_domain(&direct, &endpoint).await.unwrap();
     assert_eq!(
         authoritative_wildcard_a(&hosted.requests()),
         vec![first_ip.to_string(), second_ip.to_string()],
@@ -531,18 +501,53 @@ fn run_cli(direct: &str, args: &[&str]) -> Output {
         .unwrap()
 }
 
-async fn wait_cli_success(direct: &str, args: &[&str]) -> String {
+async fn client(direct: &str) -> Result<ployz::connect::Client, String> {
+    ployz::connect::connect(
+        std::path::Path::new("/missing-ployz-test-config"),
+        Some(direct),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Reserve the Cluster domain, then publish ingress records.
+async fn reserve_domain(direct: &str, endpoint: &str) -> Result<(), String> {
+    let mut client = client(direct).await?;
+    client
+        .call::<op::ReserveDomain>(
+            ReserveDomainRequest {
+                endpoint: endpoint.into(),
+            },
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    ployz::dns::update_records_for_ingress(&mut client)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn domain(direct: &str) -> Result<String, String> {
+    client(direct)
+        .await?
+        .call::<op::GetDomain>(GetDomainRequest {}, None)
+        .await
+        .map(|domain| domain.name)
+        .map_err(|error| error.to_string())
+}
+
+async fn wait_domain(direct: &str) -> String {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let output = run_cli(direct, args);
-            if output.status.success() {
-                return String::from_utf8(output.stdout).unwrap();
+            if let Ok(name) = domain(direct).await {
+                return name;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     })
     .await
-    .expect("CLI did not become ready")
+    .expect("Cluster domain did not become readable")
 }
 
 async fn fake_hosted_service() -> (u16, FakeHostedService) {

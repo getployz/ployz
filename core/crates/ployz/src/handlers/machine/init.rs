@@ -132,10 +132,8 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .get_one::<String>("dns-endpoint")
                 .cloned()
                 .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
-            let show = super::super::recovery_command(matches, &context_name, &["dns", "show"]);
-            let reserve = super::super::recovery_command(matches, &context_name, &["dns", "reserve", "--endpoint", &endpoint]);
             let domain = crate::dns::reserve_if_missing(&mut ready, endpoint).await.map_err(|error| {
-                Error::usage(format!("Machine initialized; domain reservation incomplete: {error}\nCheck: {show}\nIf no domain is reserved: {reserve}\nContinue ingress setup with: {ingress_recovery}"))
+                Error::usage(format!("Machine initialized; domain reservation incomplete: {error}\nContinue ingress setup without a Cluster domain: {ingress_recovery}"))
             })?;
             println!("Reserved Cluster domain: {domain}");
         }

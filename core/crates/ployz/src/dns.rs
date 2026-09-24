@@ -18,7 +18,7 @@ mod probe;
 use probe::probe_machines;
 
 /// Default hosted DNS API (`dns.uncloud.run` until Ployz hosts its own).
-/// `dns reserve`, `machine init`, and `cloud enroll` share this.
+/// `machine init` and `cloud enroll` share this.
 pub(crate) const HOSTED_DNS_ENDPOINT: &str = "https://dns.uncloud.run/v1";
 
 #[derive(Debug, Error)]
@@ -34,7 +34,7 @@ pub enum Error {
     #[error("{0}")]
     Setup(String),
     #[error(
-        "Domain reservation was interrupted: {0}; no saved reservation was observed. Check `ployz dns show` before reserving again."
+        "Domain reservation was interrupted: {0}; no saved reservation was observed. Rerun the command; it reads any saved reservation before reserving again."
     )]
     ReservationInterrupted(ConnectError),
 }

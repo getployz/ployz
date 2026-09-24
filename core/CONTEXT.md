@@ -127,7 +127,7 @@ An observer-derived ownership namespace. It is not a persisted resource or a wor
 _Avoid_: Compose project, deployment resource
 
 **Direct Image Transfer**:
-A bounded operation that makes a local Docker image available on selected Machines without requiring an external registry. It preserves layer-aware transfer and may use a Machine that already holds the image as the source for other Machines.
+A bounded operation that makes an image held by one Machine, such as a Build result, available on selected Machines without requiring an external registry. It preserves layer-aware transfer.
 _Avoid_: Unregistry, image ingest as a product term
 
 **Build**:

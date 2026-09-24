@@ -358,7 +358,11 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let (address, server) = serve_discovery(service).await;
 
     let json_cases: &[(&[&str], &str, &str)] = &[
-        (&["ls", "--output", "json"], "/0/identity", "app/api"),
+        (
+            &["service", "ls", "--output", "json"],
+            "/0/identity",
+            "app/api",
+        ),
         (
             &["service", "ls", "-o", "json"],
             "/0/containers/0/resolved_spec/container/image",
@@ -405,7 +409,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         "d".repeat(32)
     );
     let human_cases = [
-        (&["ls"][..], services.clone()),
         (&["service", "ls"][..], services),
         (
             &["ps"][..],

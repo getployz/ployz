@@ -497,11 +497,11 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     match services.len() {
         0 => None,
         1 => Some(format!(
-            "remove the Service first: ployz rm {}",
+            "remove the Service first: ployz service rm {}",
             services.iter().next().expect("checked len")
         )),
         _ => Some(format!(
-            "remove the Services first: ployz rm {}",
+            "remove the Services first: ployz service rm {}",
             services
                 .into_iter()
                 .map(|service| service.to_string())
@@ -600,7 +600,9 @@ mod tests {
             "{summary}"
         );
         assert!(
-            summary.contains("remove the Service first: ployz rm cashdash/cashdash-singlestore"),
+            summary.contains(
+                "remove the Service first: ployz service rm cashdash/cashdash-singlestore"
+            ),
             "{summary}"
         );
     }
@@ -624,7 +626,7 @@ mod tests {
         };
         let summary = removal_failure_summary(&[removal]);
         assert!(
-            summary.contains("remove the Services first: ployz rm app/db app/web"),
+            summary.contains("remove the Services first: ployz service rm app/db app/web"),
             "{summary}"
         );
     }

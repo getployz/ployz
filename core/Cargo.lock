@@ -3303,7 +3303,6 @@ dependencies = [
  "serde_norway",
  "sha2",
  "shell-words",
- "signal-hook",
  "sigpipe",
  "tempfile",
  "thiserror 2.0.20",

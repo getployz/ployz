@@ -260,7 +260,10 @@ pub(crate) fn paint_closing(
     if wants_logs(cause)
         && let Some(service) = &failed_row.service
     {
-        let hint = ink.paint(Role::Neutral, &format!("next: ployz logs {service}"));
+        let hint = ink.paint(
+            Role::Neutral,
+            &format!("next: ployz service logs {service}"),
+        );
         let _ = writeln!(out, "  {hint}");
     }
     out

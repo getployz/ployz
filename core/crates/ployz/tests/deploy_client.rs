@@ -28,7 +28,7 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
         .push(running_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
     let command = format!(
-        "{} --connect tcp://{address} exec -T web true",
+        "{} --connect tcp://{address} service exec -T web true",
         env!("CARGO_BIN_EXE_ployz")
     );
     let mut exec = tokio::process::Command::new("script")

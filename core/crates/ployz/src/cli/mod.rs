@@ -14,28 +14,16 @@ pub mod env {
 pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
-        .subcommand(ingress())
-        .subcommand(ctx())
-        .subcommand(dns())
-        .subcommand(exec("exec"))
-        .subcommand(image())
-        .subcommand(images())
         .subcommand(cloud())
-        .subcommand(inspect("inspect"))
-        .subcommand(logs("logs"))
-        .subcommand(service_ls("ls"))
+        .subcommand(ctx())
+        .subcommand(ingress())
         .subcommand(machine())
         .subcommand(project())
         .subcommand(proxy())
         .subcommand(ps())
-        .subcommand(service_rm("rm"))
-        .subcommand(scale("scale"))
         .subcommand(service())
-        .subcommand(start("start"))
-        .subcommand(stop("stop"))
         .subcommand(version())
         .subcommand(volume())
-        .subcommand(wg())
         .subcommand(completion())
 }
 
@@ -130,73 +118,30 @@ fn ingress() -> Command {
                 .arg(switch("recreate", None))
                 .arg(switch("skip-health", None)),
         )
-        .subcommand(log_flags(base("logs", "Show Ingress Proxy logs")).visible_alias("log"))
+        .subcommand(log_flags(base("logs", "Show Ingress Proxy logs")))
 }
 
 fn ctx() -> Command {
     base("ctx", "Manage local contexts")
-        .visible_alias("context")
         .subcommand(
-            base("connection", "Show or select the default connection")
-                .visible_alias("conn")
-                .arg(
-                    positional("connection", false)
-                        .help("Connection label or 1-based index in the current context"),
-                ),
+            base("connection", "Show or select the default connection").arg(
+                positional("connection", false)
+                    .help("Connection label or 1-based index in the current context"),
+            ),
         )
-        .subcommand(base("ls", "List contexts").visible_alias("list"))
+        .subcommand(base("ls", "List contexts"))
         .subcommand(base("show", "Show a context"))
         .subcommand(base("use", "Select a context").arg(positional("context-name", false)))
-        .subcommand(
-            base("rm", "Remove a local context")
-                .visible_aliases(["remove", "delete"])
-                .arg(positional("context-name", true)),
-        )
+        .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
 }
 
-fn dns() -> Command {
-    base("dns", "Manage the cluster domain")
-        .arg_required_else_help(true)
-        .subcommand(base("release", "Release the cluster domain"))
-        .subcommand(
-            base("reserve", "Reserve a cluster domain")
-                .arg(value("endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT)),
-        )
-        .subcommand(base("show", "Show the cluster domain"))
-}
-
-fn exec(name: &'static str) -> Command {
-    base(name, "Execute a command in a service container")
+fn service_exec() -> Command {
+    base("exec", "Execute a command in a service container")
         .arg(value("container", None))
         .arg(switch("detach", Some('d')))
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))
         .arg(trailing("command"))
-}
-
-fn image() -> Command {
-    base("image", "Manage images")
-        .arg_required_else_help(true)
-        .subcommand(
-            base("ls", "List images")
-                .visible_alias("list")
-                .arg(many("machine", Some('m')))
-                .arg(json_output())
-                .arg(positional("image", false)),
-        )
-        .subcommand(
-            base("push", "Push an image")
-                .arg(many("machine", Some('m')))
-                .arg(value("platform", None))
-                .arg(positional("image", true)),
-        )
-}
-
-fn images() -> Command {
-    base("images", "List images")
-        .arg(many("machine", Some('m')))
-        .arg(value("output", Some('o')).value_parser(["json"]))
-        .arg(positional("image", false))
 }
 
 fn cloud() -> Command {
@@ -233,8 +178,8 @@ fn cloud_enroll() -> Command {
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
-fn inspect(name: &'static str) -> Command {
-    base(name, "Inspect a service").arg(positional("service", true))
+fn service_inspect() -> Command {
+    base("inspect", "Inspect a service").arg(positional("service", true))
 }
 
 fn log_flags(command: Command) -> Command {
@@ -247,8 +192,8 @@ fn log_flags(command: Command) -> Command {
         .arg(switch("utc", None))
 }
 
-fn logs(name: &'static str) -> Command {
-    log_flags(base(name, "Show logs")).arg(
+fn service_logs() -> Command {
+    log_flags(base("logs", "Show logs")).arg(
         Arg::new("service-or-container")
             .required(true)
             .num_args(1..)
@@ -258,7 +203,6 @@ fn logs(name: &'static str) -> Command {
 
 fn machine() -> Command {
     base("machine", "Manage machines")
-        .visible_alias("m")
         .arg_required_else_help(true)
         .subcommand(machine_add())
         .subcommand(machine_init())
@@ -266,11 +210,10 @@ fn machine() -> Command {
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(base("inspect", "Inspect a machine").arg(positional("machine", true)))
         .subcommand(
-            log_flags(base("logs", "Show machine logs").visible_alias("log")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
+            log_flags(base("logs", "Show machine logs")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
         )
         .subcommand(
             base("ls", "List machines")
-                .visible_alias("list")
                 .arg(value("output", Some('o')).value_parser(["json"])),
         )
         .subcommand(
@@ -280,7 +223,6 @@ fn machine() -> Command {
         )
         .subcommand(
             base("rm", "Remove a machine")
-                .visible_aliases(["remove", "delete"])
                 .arg(switch("no-reset", None).help(
                     "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable",
                 ))
@@ -384,12 +326,10 @@ fn project() -> Command {
         .arg_required_else_help(true)
         .subcommand(
             base("ls", "List projects")
-                .visible_alias("list")
                 .arg(json_output()),
         )
         .subcommand(
             base("rm", "Remove a project")
-                .visible_aliases(["remove", "delete"])
                 .arg(switch("volumes", None).help(
                     "Also remove this Project's visible managed volumes after the plan identifies each one",
                 ))
@@ -417,8 +357,8 @@ fn ps() -> Command {
         .arg(json_output())
 }
 
-fn service_ls(name: &'static str) -> Command {
-    base(name, "List services").arg(json_output())
+fn service_ls() -> Command {
+    base("ls", "List services").arg(json_output())
 }
 
 fn volume_acceptance() -> Arg {
@@ -428,62 +368,58 @@ fn volume_acceptance() -> Arg {
         .help("Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this")
 }
 
-fn service_rm(name: &'static str) -> Command {
-    base(name, "Remove services")
+fn service_rm() -> Command {
+    base("rm", "Remove services")
         .arg(value("project-name", Some('p')))
         .arg(switch("volumes", None).help(
             "Also remove this Service's named Docker Volumes after the containers are removed",
         ))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
         .arg(volume_acceptance().requires("volumes"))
-        .arg(
-            Arg::new("service")
-                .required(true)
-                .num_args(1..)
-                .action(ArgAction::Append),
-        )
+        .arg(services())
 }
 
-fn scale(name: &'static str) -> Command {
-    base(name, "Scale a service")
+fn services() -> Arg {
+    Arg::new("service")
+        .required(true)
+        .num_args(1..)
+        .action(ArgAction::Append)
+}
+
+fn service_scale() -> Command {
+    base("scale", "Scale a service")
         .arg(switch("skip-health", None))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
         .arg(positional("service", true))
         .arg(positional("replicas", true))
 }
 
-fn start(name: &'static str) -> Command {
-    base(name, "Start services").arg(
-        Arg::new("service")
-            .required(true)
-            .num_args(1..)
-            .action(ArgAction::Append),
-    )
+fn service_start() -> Command {
+    base("start", "Start services").arg(services())
 }
 
-fn stop(name: &'static str) -> Command {
-    start(name)
-        .about("Stop services")
+fn service_stop() -> Command {
+    base("stop", "Stop services")
+        .arg(services())
         .arg(value("signal", Some('s')).default_value("SIGTERM"))
         .arg(value("timeout", Some('t')).default_value("10"))
 }
 
 fn service() -> Command {
     base("service", "Manage services")
-        .visible_alias("svc")
         .arg_required_else_help(true)
-        .subcommand(exec("exec"))
-        .subcommand(inspect("inspect"))
-        .subcommand(service_ls("ls").visible_alias("list"))
-        .subcommand(logs("logs").visible_alias("log"))
-        .subcommand(service_rm("rm").visible_aliases(["remove", "delete"]))
-        .subcommand(scale("scale"))
-        .subcommand(start("start"))
-        .subcommand(stop("stop"))
+        .subcommand(service_exec())
+        .subcommand(service_inspect())
+        .subcommand(service_ls())
+        .subcommand(service_logs())
+        .subcommand(service_rm())
+        .subcommand(service_scale())
+        .subcommand(service_start())
+        .subcommand(service_stop())
 }
 
 fn version() -> Command {
-    base("version", "Show version information").arg(value("output", Some('o')))
+    base("version", "Show version information")
 }
 
 fn volume() -> Command {
@@ -509,14 +445,12 @@ fn volume() -> Command {
         )
         .subcommand(
             base("ls", "List volumes")
-                .visible_alias("list")
                 .arg(many("machine", Some('m')))
                 .arg(switch("quiet", Some('q')))
                 .arg(json_output()),
         )
         .subcommand(
             base("rm", "Remove volumes")
-                .visible_aliases(["remove", "delete"])
                 .arg(switch("force", Some('f')))
                 .arg(many("machine", Some('m')))
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
@@ -527,12 +461,6 @@ fn volume() -> Command {
                         .action(ArgAction::Append),
                 ),
         )
-}
-
-fn wg() -> Command {
-    base("wg", "Inspect WireGuard")
-        .arg_required_else_help(true)
-        .subcommand(base("show", "Show WireGuard configuration").arg(value("machine", Some('m'))))
 }
 
 fn completion() -> Command {
@@ -620,6 +548,7 @@ mod tests {
             ],
             vec![
                 "ployz",
+                "service",
                 "rm",
                 "app/db",
                 "--volumes",
@@ -695,19 +624,9 @@ mod tests {
     }
 
     #[test]
-    fn project_commands_use_list_remove_aliases_and_long_only_volumes() {
-        let listed = super::command()
-            .try_get_matches_from(["ployz", "project", "list"])
-            .unwrap();
-        assert_eq!(
-            listed
-                .subcommand_matches("project")
-                .unwrap()
-                .subcommand_name(),
-            Some("ls")
-        );
+    fn project_rm_takes_long_only_volumes() {
         let removed = super::command()
-            .try_get_matches_from(["ployz", "project", "delete", "shop", "--volumes", "--yes"])
+            .try_get_matches_from(["ployz", "project", "rm", "shop", "--volumes", "--yes"])
             .unwrap();
         let rm = removed
             .subcommand_matches("project")
@@ -755,17 +674,8 @@ mod tests {
 
     #[test]
     fn service_rm_volumes_takes_long_data_loss_and_yes() {
-        for args in [
-            vec![
-                "ployz",
-                "rm",
-                "db",
-                "--volumes",
-                "--yes",
-                "--accept-volume-loss",
-                "app_data",
-            ],
-            vec![
+        let matches = super::command()
+            .try_get_matches_from([
                 "ployz",
                 "service",
                 "rm",
@@ -774,33 +684,27 @@ mod tests {
                 "--yes",
                 "--accept-volume-loss",
                 "app_data",
-            ],
-        ] {
-            let matches = super::command().try_get_matches_from(args.clone()).unwrap();
-            let mut leaf = &matches;
-            while let Some((_, child)) = leaf.subcommand() {
-                leaf = child;
-            }
-            assert_eq!(
-                leaf.get_one::<String>("service").map(String::as_str),
-                Some("db"),
-                "{args:?}"
-            );
-            assert!(leaf.get_flag("volumes"), "{args:?}");
-            assert!(leaf.get_flag("yes"), "{args:?}");
-            assert_eq!(
-                leaf.get_many::<String>("accept-volume-loss")
-                    .unwrap()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                ["app_data"],
-                "{args:?}"
-            );
-        }
+            ])
+            .unwrap();
+        let rm = rm_matches(&matches);
+        assert_eq!(
+            rm.get_one::<String>("service").map(String::as_str),
+            Some("db")
+        );
+        assert!(rm.get_flag("volumes"));
+        assert!(rm.get_flag("yes"));
+        assert_eq!(
+            rm.get_many::<String>("accept-volume-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app_data"]
+        );
 
         let comma = super::command()
             .try_get_matches_from([
                 "ployz",
+                "service",
                 "rm",
                 "db",
                 "--volumes",
@@ -809,7 +713,7 @@ mod tests {
                 "--yes",
             ])
             .unwrap();
-        let rm = comma.subcommand_matches("rm").unwrap();
+        let rm = rm_matches(&comma);
         assert_eq!(
             rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
@@ -820,23 +724,31 @@ mod tests {
 
         assert!(
             super::command()
-                .try_get_matches_from(["ployz", "rm", "db", "--accept-volume-loss", "app_data"])
+                .try_get_matches_from([
+                    "ployz",
+                    "service",
+                    "rm",
+                    "db",
+                    "--accept-volume-loss",
+                    "app_data"
+                ])
                 .is_err()
         );
         assert!(
             super::command()
-                .try_get_matches_from(["ployz", "start", "db", "--volumes"])
+                .try_get_matches_from(["ployz", "service", "start", "db", "--volumes"])
                 .is_err()
         );
         assert!(
             super::command()
-                .try_get_matches_from(["ployz", "rm", "db", "--volumes", "-v"])
+                .try_get_matches_from(["ployz", "service", "rm", "db", "--volumes", "-v"])
                 .is_err()
         );
 
         let repeated = super::command()
             .try_get_matches_from([
                 "ployz",
+                "service",
                 "rm",
                 "db",
                 "--volumes",
@@ -847,7 +759,7 @@ mod tests {
                 "--yes",
             ])
             .unwrap();
-        let rm = repeated.subcommand_matches("rm").unwrap();
+        let rm = rm_matches(&repeated);
         assert_eq!(
             rm.get_many::<String>("accept-volume-loss")
                 .unwrap()
@@ -859,6 +771,7 @@ mod tests {
         let trailing = super::command()
             .try_get_matches_from([
                 "ployz",
+                "service",
                 "rm",
                 "db",
                 "--volumes",
@@ -868,7 +781,7 @@ mod tests {
                 "--yes",
             ])
             .unwrap();
-        let rm = trailing.subcommand_matches("rm").unwrap();
+        let rm = rm_matches(&trailing);
         assert_eq!(
             rm.get_many::<String>("service")
                 .unwrap()
@@ -883,6 +796,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["app_data"]
         );
+    }
+
+    fn rm_matches(matches: &clap::ArgMatches) -> &clap::ArgMatches {
+        matches
+            .subcommand_matches("service")
+            .unwrap()
+            .subcommand_matches("rm")
+            .unwrap()
     }
 
     #[test]

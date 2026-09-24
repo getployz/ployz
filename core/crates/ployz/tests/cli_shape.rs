@@ -6,9 +6,91 @@ use std::process::{Command as ProcessCommand, Stdio};
 use clap_complete::{Shell, generate};
 
 #[test]
+fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
+    fn collect(command: &clap::Command, parent: &str, paths: &mut Vec<String>) {
+        for child in command.get_subcommands() {
+            let path = format!("{parent}{}", child.get_name());
+            assert_eq!(
+                child.get_all_aliases().count(),
+                0,
+                "{path} declares an alias"
+            );
+            collect(child, &format!("{path} "), paths);
+            paths.push(path);
+        }
+    }
+    let mut paths = Vec::new();
+    collect(&ployz::cli::command(), "", &mut paths);
+    paths.sort_unstable();
+    assert_eq!(
+        paths,
+        [
+            "cloud",
+            "cloud enroll",
+            // Shell tooling, not a Cluster operation.
+            "completion",
+            "ctx",
+            "ctx connection",
+            "ctx ls",
+            "ctx rm",
+            "ctx show",
+            "ctx use",
+            "ingress",
+            "ingress config",
+            "ingress deploy",
+            "ingress logs",
+            "machine",
+            "machine add",
+            "machine build-cache-clear",
+            "machine init",
+            "machine inspect",
+            "machine logs",
+            "machine ls",
+            "machine rename",
+            "machine rm",
+            "machine rtt",
+            "machine update",
+            "machine upgrade",
+            "machine upgrade inspect",
+            "project",
+            "project ls",
+            "project rm",
+            "proxy",
+            "ps",
+            "service",
+            "service exec",
+            "service inspect",
+            "service logs",
+            "service ls",
+            "service rm",
+            "service scale",
+            "service start",
+            "service stop",
+            "version",
+            "volume",
+            "volume create",
+            "volume inspect",
+            "volume ls",
+            "volume rm",
+        ]
+    );
+}
+
+#[test]
+fn version_takes_no_output_template() {
+    for flag in ["-o", "--output"] {
+        assert!(
+            ployz::cli::command()
+                .try_get_matches_from(["ployz", "version", flag, "{{.Version}}"])
+                .is_err(),
+            "{flag}"
+        );
+    }
+}
+
+#[test]
 fn listing_json_output_accepts_only_json_in_long_and_short_forms() {
     let paths: &[&[&str]] = &[
-        &["ls"],
         &["ps"],
         &["service", "ls"],
         &["volume", "ls"],
@@ -175,8 +257,8 @@ fn compose_workflows_and_inputs_are_not_accepted() {
         &["ployz", "build"],
         &["ployz", "run", "nginx"],
         &["ployz", "service", "run", "nginx"],
-        &["ployz", "logs", "--file", "compose.yaml", "api"],
-        &["ployz", "scale", "-p", "shop", "api", "2"],
+        &["ployz", "service", "logs", "--file", "compose.yaml", "api"],
+        &["ployz", "service", "scale", "-p", "shop", "api", "2"],
     ] {
         assert!(
             ployz::cli::command().try_get_matches_from(args).is_err(),

@@ -645,18 +645,6 @@ fn ctx_rm_help_describes_local_removal() {
     let help = String::from_utf8(rm.stdout).unwrap();
     assert!(help.contains("local"), "{help}");
     assert!(help.contains("<context-name>"), "{help}");
-
-    let parent = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["ctx", "--help"])
-        .output()
-        .unwrap();
-    assert!(
-        parent.status.success(),
-        "{}",
-        String::from_utf8_lossy(&parent.stderr)
-    );
-    let parent = String::from_utf8(parent.stdout).unwrap();
-    assert!(parent.contains("[aliases: remove, delete]"), "{parent}");
 }
 
 #[test]

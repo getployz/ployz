@@ -19,6 +19,7 @@ async fn removal_tty_retry_enter_eof_and_ctrl_c_precede_mutation() {
             env!("CARGO_BIN_EXE_ployz"),
             "--connect",
             &format!("tcp://{address}"),
+            "service",
             "rm",
             "web",
             "--volumes",
@@ -105,6 +106,7 @@ async fn removal_non_tty_yes_environment_cannot_accept_volume_loss() {
         .args([
             "--connect",
             &format!("tcp://{address}"),
+            "service",
             "rm",
             "web",
             "--volumes",
@@ -171,6 +173,7 @@ async fn service_volume_removal_proceeds_when_an_unrelated_machine_is_omitted() 
         .args([
             "--connect",
             &format!("tcp://{address}"),
+            "service",
             "rm",
             "web",
             "--volumes",
