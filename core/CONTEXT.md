@@ -336,7 +336,7 @@ A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. It 
 _Avoid_: self-hosted cluster, offline mode, unpaired as a fault
 
 **Release Channel**:
-One of exactly two names a daemon or installer may follow: `stable` or `beta`. A build from `main` is addressable by tag or commit, never by a channel.
+One of exactly two names a daemon or installer may follow: `stable` (the highest published `vX.Y.Z`) or `beta` (the highest published release, `vX.Y.Z-beta.N` or stable). A channel only moves forward, and upgrading through one never downgrades a Machine; only an exact version does. A build from `main` is addressable by tag or commit, never by a channel.
 _Avoid_: latest, nightly, dev channel
 
 **Hosted DNS**:

@@ -105,7 +105,7 @@ The single paid Ployz Cloud subscription an Organization holds through Polar. Ho
 _Avoid_: Free plan, Teams plan, plan slug, subscription tier
 
 **Custom Domain Capability**:
-Whether an Organization may link a custom hostname to a Service. Granted when the Cloud is self-hosted or the Organization holds an active Billing Plan, judged from Cloud's cached subscription state, never from a live billing call. It is the only plan-gated capability at 1.0.
+Whether an Organization may link a custom hostname to a Service. Granted when the Cloud is self-hosted or the Organization holds an active Billing Plan, judged from Cloud's cached subscription state, never from a live billing call. It is the only plan-gated capability at the first stable release.
 _Avoid_: Entitlement, feature flag, paid feature check
 
 **Cloud Lens**:

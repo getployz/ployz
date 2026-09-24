@@ -26,11 +26,13 @@ design, not filling a gap.
 
 ## Stable promise
 
-From 1.0: a 1.0 daemon keeps working, and can be upgraded, across every 1.x
-release without re-enrolling or reinstalling. The promise covers what a daemon
-carries or speaks — the replicated store, the local Machine record, Machine RPC
-within `PROTOCOL_MAJOR`, the enrollment protocol, and the release source. The CLI
-surface is a client courtesy with ordinary deprecation, not a guarantee.
+From 0.2.0, the first stable release: a daemon keeps working, and can be
+upgraded, across every later 0.x release without re-enrolling or reinstalling.
+Versions follow semver; 1.0 may break the promise, and says so if it does.
+The promise covers what a daemon carries or speaks — the replicated store, the
+local Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment
+protocol, and the release source. The CLI surface is a client courtesy with
+ordinary deprecation, not a guarantee.
 
 Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
