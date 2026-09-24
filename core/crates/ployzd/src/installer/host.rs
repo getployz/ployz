@@ -287,7 +287,7 @@ pub(super) async fn verify_running_daemon(
         stage: "inspect running daemon executable",
         source,
     })?;
-    let installed = fs::metadata(paths.bin_dir.join("ployzd")).map_err(|source| Error::Io {
+    let installed = fs::metadata(paths.daemon()).map_err(|source| Error::Io {
         stage: "inspect installed daemon executable",
         source,
     })?;
@@ -296,7 +296,7 @@ pub(super) async fn verify_running_daemon(
             "ployz.service is active but does not run the activated daemon executable".into(),
         ));
     }
-    match installed_release(&paths.bin_dir.join("ployzd")).await? {
+    match installed_release(&paths.daemon()).await? {
         Some(observed) if &observed == target => {}
         Some(observed) => Err(Error::Verification(format!(
             "activated daemon reported {observed}, expected {target}"

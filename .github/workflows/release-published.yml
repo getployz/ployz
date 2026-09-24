@@ -8,6 +8,11 @@ permissions:
   contents: write
   actions: write
 
+# Pointers and Homebrew must see one Publish at a time.
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
+
 defaults:
   run:
     working-directory: core

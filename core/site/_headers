@@ -18,3 +18,11 @@
 /beta
   Content-Type: text/plain; charset=utf-8
   Cache-Control: public, max-age=60, must-revalidate
+
+/:line/stable
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=60, must-revalidate
+
+/:line/beta
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=60, must-revalidate

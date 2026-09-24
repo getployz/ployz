@@ -14,9 +14,9 @@ install -m 0644 "$ROOT/install.sh" "$out_dir/install.sh"
 install -m 0644 "$ROOT/site/_headers" "$out_dir/_headers"
 
 if [ -n "$channels_dir" ]; then
-    for name in stable beta; do
-        if [ -f "$channels_dir/$name" ]; then
-            install -m 0644 "$channels_dir/$name" "$out_dir/$name"
+    for pointer in "$channels_dir"/{,v*/}{stable,beta}; do
+        if [ -f "$pointer" ]; then
+            install -D -m 0644 "$pointer" "$out_dir/${pointer#"$channels_dir"/}"
         fi
     done
 fi

@@ -12,7 +12,7 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineUpgradeStage, StorageChoice};
+use ployz_core::{MachineRelease, MachineUpgradeStage, StorageChoice};
 use thiserror::Error;
 
 use crate::mutation;
@@ -22,11 +22,11 @@ use self::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
         verify_running_daemon, verify_software_prerequisites,
     },
-    release::{install_binaries, resolve_release},
+    release::{install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
 };
 
-pub use self::release::{ReleaseRequest, ReleaseSource};
+pub use self::release::ReleaseSource;
 
 const PLOYZ_USER: &str = "ployz";
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
@@ -54,7 +54,7 @@ pub enum InstallMode {
 #[derive(Clone, Debug)]
 pub struct InstallRequest {
     /// A fixed version or a channel resolved once before host mutation.
-    pub release: ReleaseRequest,
+    pub release: MachineRelease,
     /// Trusted release source. Published releases never accept caller-provided URLs.
     pub source: ReleaseSource,
     /// Installation-only, software-only replacement, or full host preparation.
@@ -86,8 +86,6 @@ pub enum Error {
     NotRoot,
     #[error("another Ployz installation is active")]
     Busy,
-    #[error("nightly is not a supported release channel")]
-    Nightly,
     #[error("invalid Ployz release version '{value}'; expected X.Y.Z or X.Y.Z-beta.N")]
     InvalidVersion { value: String },
     #[error("Ployz Machine must be Linux")]
@@ -132,6 +130,11 @@ impl InstallPaths {
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
         }
+    }
+
+    /// The installed daemon executable.
+    fn daemon(&self) -> PathBuf {
+        self.bin_dir.join("ployzd")
     }
 
     #[cfg(test)]
@@ -196,7 +199,8 @@ async fn install_locked(
 ) -> Result<InstallOutcome, Error> {
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
-    let target = resolve_release(&request.release, &request.source).await?;
+    let installed = installed_release(&paths.daemon()).await?;
+    let target = resolve_release(&request.release, &request.source, installed.as_ref()).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {
@@ -217,7 +221,14 @@ async fn install_locked(
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
-    restart_required |= install_binaries(&request.source, &paths, &target, &mut progress).await?;
+    restart_required |= install_binaries(
+        &request.source,
+        &paths,
+        installed.as_ref(),
+        &target,
+        &mut progress,
+    )
+    .await?;
     install_systemd(&paths, installation_only)?;
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(&paths).await?;
@@ -399,7 +410,7 @@ mod tests {
     async fn system_install_rejects_nonstandard_machine_paths_before_mutation() {
         let fixture = fixture("nonstandard-paths");
         let request = InstallRequest {
-            release: ReleaseRequest::Exact(MachineVersion::parse("1.2.3").unwrap()),
+            release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(fixture.path().join("release")),
             mode: InstallMode::InstallationOnly,
         };
@@ -531,7 +542,7 @@ mod tests {
         }
 
         let request = InstallRequest {
-            release: ReleaseRequest::Exact(MachineVersion::parse("1.2.3").unwrap()),
+            release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(root.join("release")),
             mode: InstallMode::InstallationOnly,
         };

@@ -12,13 +12,13 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use ployz_core::{DOCKER_NETWORK_CONFLICT_EXIT_STATUS, MachineUpgradeAttemptId, StorageChoice};
+use ployz_core::{
+    DOCKER_NETWORK_CONFLICT_EXIT_STATUS, MachineRelease, MachineUpgradeAttemptId, StorageChoice,
+};
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    installer::{
-        DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseRequest, ReleaseSource,
-    },
+    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseSource},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
     network::NetworkError,
@@ -69,7 +69,7 @@ enum Command {
     Install {
         /// Release channel (stable or beta) or exact published version.
         #[arg(long, default_value = "stable")]
-        version: String,
+        version: MachineRelease,
         /// Prepare ZFS storage, or leave this Machine stateless.
         #[arg(long, default_value = "none")]
         storage: StorageChoice,
@@ -200,16 +200,13 @@ async fn run(args: Args) -> Result<(), Error> {
 }
 
 fn install_request(
-    version: String,
+    release: MachineRelease,
     storage: StorageChoice,
     software_only: bool,
     install_only: bool,
     group_user: Option<String>,
     release_dir: Option<PathBuf>,
 ) -> io::Result<InstallRequest> {
-    let release = version
-        .parse::<ReleaseRequest>()
-        .map_err(io::Error::other)?;
     if install_only && storage != StorageChoice::None {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -269,6 +266,10 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn release(value: &str) -> MachineRelease {
+        MachineRelease::parse(value).unwrap()
+    }
+
     #[test]
     fn docker_network_conflict_uses_the_dedicated_exit_status() {
         let conflict = Error::Network(NetworkError::DockerNetworkConflict {
@@ -290,8 +291,15 @@ mod tests {
 
     #[test]
     fn install_cli_rejects_host_options_for_software_only_replacement() {
-        let storage = install_request("stable".into(), StorageChoice::Zfs, true, false, None, None)
-            .unwrap_err();
+        let storage = install_request(
+            release("stable"),
+            StorageChoice::Zfs,
+            true,
+            false,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(
             storage.to_string(),
@@ -299,7 +307,7 @@ mod tests {
         );
 
         let group = install_request(
-            "stable".into(),
+            release("stable"),
             StorageChoice::None,
             true,
             false,
@@ -316,8 +324,15 @@ mod tests {
 
     #[test]
     fn install_cli_rejects_host_options_for_installation_only() {
-        let storage = install_request("stable".into(), StorageChoice::Zfs, false, true, None, None)
-            .unwrap_err();
+        let storage = install_request(
+            release("stable"),
+            StorageChoice::Zfs,
+            false,
+            true,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(
             storage.to_string(),
@@ -325,7 +340,7 @@ mod tests {
         );
 
         let group = install_request(
-            "stable".into(),
+            release("stable"),
             StorageChoice::None,
             false,
             true,
@@ -342,12 +357,19 @@ mod tests {
 
     #[test]
     fn install_cli_builds_one_explicit_mode() {
-        let replacement =
-            install_request("1.2.3".into(), StorageChoice::None, true, true, None, None).unwrap();
+        let replacement = install_request(
+            release("1.2.3"),
+            StorageChoice::None,
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(matches!(replacement.mode, InstallMode::InstallationOnly));
 
         let host = install_request(
-            "1.2.3".into(),
+            release("1.2.3"),
             StorageChoice::Zfs,
             false,
             false,

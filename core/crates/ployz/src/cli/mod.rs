@@ -1,9 +1,4 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-#[error("nightly is not a supported release channel")]
-struct UnsupportedDaemonChannel;
 
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
@@ -117,14 +112,6 @@ fn switch(name: &'static str, short: Option<char>) -> Arg {
 
 fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
-}
-
-fn daemon_version(value: &str) -> Result<String, UnsupportedDaemonChannel> {
-    if value == "nightly" {
-        Err(UnsupportedDaemonChannel)
-    } else {
-        Ok(value.to_owned())
-    }
 }
 
 fn trailing(name: &'static str) -> Arg {
@@ -449,7 +436,7 @@ fn provisioning_flags(command: Command) -> Command {
             value("version", None)
                 .env(env::DAEMON_VERSION)
                 .default_value(env!("CARGO_PKG_VERSION"))
-                .value_parser(daemon_version),
+                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
         )
         .arg(many("wg-endpoint", None))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
@@ -686,7 +673,10 @@ mod tests {
                     .subcommand_matches(command)
                     .unwrap();
                 assert_eq!(
-                    matches.get_one::<String>("version").map(String::as_str),
+                    matches
+                        .get_one::<ployz_core::MachineRelease>("version")
+                        .map(ToString::to_string)
+                        .as_deref(),
                     Some(version.unwrap_or(env!("CARGO_PKG_VERSION")))
                 );
             }

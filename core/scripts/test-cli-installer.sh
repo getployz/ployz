@@ -41,7 +41,7 @@ for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
     FAKE_ARCH=${platform#*:}
     PATH="$TMP/bin:$PATH" FAKE_OS="$FAKE_OS" FAKE_ARCH="$FAKE_ARCH" FAKE_RELEASE="$TMP/release" \
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
-        sh "$ROOT/install.sh" latest
+        sh "$ROOT/install.sh"
     [ "$("$TMP/install/ployz")" = installed ]
     [ "$("$TMP/install/ployz" version)" = 1.2.3 ]
 done
@@ -52,7 +52,7 @@ FAKE_CURL_LOG=$TMP/curl.log
 : > "$FAKE_CURL_LOG"
 PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
-    sh "$ROOT/install.sh" latest
+    sh "$ROOT/install.sh" stable
 grep -Fq '/releases/download/v9.9.9/ployz_linux_amd64.tar.gz' "$FAKE_CURL_LOG"
 
 pack_release 8.8.8-beta.1
@@ -63,12 +63,31 @@ PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release"
     sh "$ROOT/install.sh" beta
 grep -Fq '/releases/download/v8.8.8-beta.1/ployz_linux_amd64.tar.gz' "$FAKE_CURL_LOG"
 
-if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
-    INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
-    sh "$ROOT/install.sh" nightly >/dev/null 2>&1; then
-    echo "nightly channel was accepted" >&2
-    exit 1
-fi
+# A pointer is one raw line: whitespace inside it is corruption, not formatting.
+for pointer in 'v1.2.\n3' 'v1.2.3\ngarbage'; do
+    printf '%b\n' "$pointer" > "$TMP/release/stable"
+    if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
+        INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
+        sh "$ROOT/install.sh" stable > "$TMP/error" 2>&1; then
+        echo "installed from pointer '$pointer'" >&2
+        exit 1
+    fi
+    grep -Fq 'stable channel is unavailable' "$TMP/error"
+done
+
+# stable never installs a prerelease, and retired channel names are not versions.
+printf 'v8.8.8-beta.1\n' > "$TMP/release/stable"
+for case in 'stable:stable channel is unavailable' 'latest:Invalid version' \
+    'nightly:Invalid version' '1.2.03:Invalid version' '18446744073709551616.0.0:Invalid version'; do
+    requested=${case%%:*}
+    if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
+        INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
+        sh "$ROOT/install.sh" "$requested" > "$TMP/error" 2>&1; then
+        echo "$requested was installed" >&2
+        exit 1
+    fi
+    grep -Fq "${case#*:}" "$TMP/error"
+done
 
 # Missing and mismatched binaries must fail before replacing the installed one.
 for defect in missing wrong-version; do

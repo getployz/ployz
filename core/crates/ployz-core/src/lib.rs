@@ -10,6 +10,7 @@ mod host_config;
 mod machine_telemetry;
 mod ports;
 pub mod project;
+mod release;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
 pub mod rpc;
@@ -26,6 +27,7 @@ pub use host_config::*;
 pub use machine_telemetry::*;
 pub use ports::*;
 pub use project::*;
+pub use release::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use routing::*;
 pub use rpc::*;

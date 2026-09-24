@@ -5,8 +5,8 @@ Two human steps. Everything else is automation.
 ```text
 1. git tag && git push     → CI creates a GitHub draft
 2. Edit Notes, click Publish
-     stable  → ployz.sh/stable + Homebrew
-     beta    → ployz.sh/beta
+     stable  → ployz.sh/stable, /v<major>/stable, both betas + Homebrew
+     beta    → ployz.sh/beta, /v<major>/beta
 ```
 
 No `next` branch. Features and fixes both land on `main`. Beta is a tag.
@@ -22,7 +22,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and other suffixes are rejected.
+Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. `-rc` and every other suffix are rejected.
 
 4. Wait for the Release workflow. The tag run validates the tag and commit, builds the six CLI and daemon archives using the shared kache/R2 cache, and opens a **draft** GitHub release (`--prerelease` on beta tags).
 5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
@@ -43,8 +43,11 @@ When the informing cluster suite and that run disagree, the real Machines are th
 
 `scripts/promote-release.sh` runs on `release: published`.
 
-- Writes a one-line file (`v0.2.0`) on the `channels` branch: `stable` or `beta`.
-- Stable only: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
+- Writes one-line pointer files (`v0.2.0`) on the `channels` branch: the tag's line pointer (`v0/stable` or `v0/beta`) and the unscoped one (`stable` or `beta`). A stable tag also writes both `beta` pointers.
+- A pointer only moves to a higher semver tag. Publishing an older-line fix moves that line's pointers only; an older tag moves nothing.
+- Only when the unscoped `stable` pointer names the published tag: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
+
+Promotion runs one at a time. GitHub keeps only one waiting run, so publishing three releases in quick succession cancels the middle one's promotion: re-run any cancelled **Promote published release** run. Re-running is safe; pointers only move forward.
 
 Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
 
@@ -52,14 +55,14 @@ Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel update
 
 ```sh
 curl -fsSL https://ployz.sh | sh              # stable
-curl -fsSL https://ployz.sh | sh -s beta      # latest published beta
+curl -fsSL https://ployz.sh | sh -s beta      # highest published release, beta or stable
 curl -fsSL https://ployz.sh | sh -s 0.2.0     # pin
 brew install getployz/ployz/ployz             # stable
 ```
 
-`latest` and `stable` mean the same thing. `nightly` is rejected.
+`stable` and `beta` are the only channels.
 
-The installer reads `https://ployz.sh/stable` or `/beta` (one line, `vX.Y.Z` or `vX.Y.Z-beta.N`). Missing or invalid channel files fail the install. Pins skip the channel fetch.
+The installer reads the unscoped `https://ployz.sh/stable` (one line, `vX.Y.Z`) or `/beta` (`vX.Y.Z` or `vX.Y.Z-beta.N`). Missing or invalid channel files fail the install, including a prerelease on `stable`. Pins skip the channel fetch.
 
 Artifacts stay on GitHub Releases. `ployz.sh` is the pointer plus CLI installer.
 
@@ -72,6 +75,8 @@ The repository's `.github/workflows/ployz-sh.yml` Direct-Uploads the staged site
 | `https://ployz.sh` | `install.sh` from this repo |
 | `https://ployz.sh/stable` | `channels` branch file `stable` |
 | `https://ployz.sh/beta` | `channels` branch file `beta` |
+| `https://ployz.sh/v<major>/stable` | `channels` branch file `v<major>/stable` |
+| `https://ployz.sh/v<major>/beta` | `channels` branch file `v<major>/beta` |
 
 Needs repo secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 
@@ -79,11 +84,11 @@ Apex and channel URLs must serve these bodies.
 
 ## Homebrew
 
-Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only after a **stable** Publish.
+Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
 
 ## Machine daemon
 
-`ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
+`ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version. A channel reads the daemon's own line pointer, `ployz.sh/v<major>/<channel>`, and keeps an installed daemon that is newer than the pointer; only an exact version moves a Machine backwards or across lines. Use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
 
 ## Management transport
 

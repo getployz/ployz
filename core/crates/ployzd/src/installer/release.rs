@@ -6,7 +6,6 @@ use std::{
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    str::FromStr,
     time::Duration,
 };
 
@@ -18,44 +17,17 @@ use tempfile::TempDir;
 use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
-use ployz_core::{MachineUpgradeStage, MachineVersion};
+use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
+/// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
+const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// A trusted release target selected at the CLI boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReleaseRequest {
-    /// Resolve the stable channel once for this installation attempt.
-    Stable,
-    /// Resolve the beta channel once for this installation attempt.
-    Beta,
-    /// Install this exact published daemon version.
-    Exact(MachineVersion),
-}
-
-impl FromStr for ReleaseRequest {
-    type Err = Error;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = value.strip_prefix('v').unwrap_or(value);
-        match value {
-            "" | "latest" | "stable" => Ok(Self::Stable),
-            "beta" => Ok(Self::Beta),
-            "nightly" => Err(Error::Nightly),
-            value => MachineVersion::parse(value.to_owned())
-                .map(Self::Exact)
-                .map_err(|_| Error::InvalidVersion {
-                    value: value.to_owned(),
-                }),
-        }
-    }
-}
 
 /// A release source that is fixed by the local installer invocation.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -73,12 +45,17 @@ impl ReleaseSource {
     }
 
     async fn channel(&self, name: &str) -> Result<String, Error> {
+        let pointer = format!("{RELEASE_LINE}/{name}");
         let bytes = match self {
             Self::Published => {
-                fetch(&format!("{CHANNEL_URL}/{name}"), "resolve release channel").await?
+                fetch(
+                    &format!("{CHANNEL_URL}/{pointer}"),
+                    "resolve release channel",
+                )
+                .await?
             }
             Self::Local(directory) => {
-                fs::read(directory.join(name)).map_err(|source| Error::Io {
+                fs::read(directory.join(pointer)).map_err(|source| Error::Io {
                     stage: "read local release channel",
                     source,
                 })?
@@ -105,25 +82,52 @@ impl ReleaseSource {
     }
 }
 
+/// Resolve `request` to one exact target. A channel stays on this daemon's release line, both for
+/// its pointer and for the `installed` daemon, and never selects a release older than `installed`;
+/// only an exact version crosses a line or moves a Machine backwards.
 pub(super) async fn resolve_release(
-    request: &ReleaseRequest,
+    request: &MachineRelease,
     source: &ReleaseSource,
+    installed: Option<&MachineVersion>,
 ) -> Result<MachineVersion, Error> {
-    match request {
-        ReleaseRequest::Stable => {
-            let value = source.channel("stable").await?;
-            parse_channel_version(value.trim())
-        }
-        ReleaseRequest::Beta => {
-            let value = source.channel("beta").await?;
-            parse_channel_version(value.trim())
-        }
-        ReleaseRequest::Exact(version) => Ok(version.clone()),
+    let (channel, allows_prerelease) = match request {
+        MachineRelease::Exact(version) => return Ok(version.clone()),
+        MachineRelease::Stable => ("stable", false),
+        MachineRelease::Beta => ("beta", true),
+    };
+    if let Some(installed) = installed
+        && !on_release_line(installed)
+    {
+        return Err(Error::ReleaseSelection(format!(
+            "installed daemon {installed} is not on release line {RELEASE_LINE}; \
+             install an exact version to cross release lines"
+        )));
     }
+    let pointer = parse_channel_version(&source.channel(channel).await?)?;
+    if !on_release_line(&pointer) {
+        return Err(Error::ReleaseSelection(format!(
+            "{RELEASE_LINE} {channel} channel points at {pointer} on another release line"
+        )));
+    }
+    if pointer.is_prerelease() && !allows_prerelease {
+        return Err(Error::ReleaseSelection(format!(
+            "stable channel points at prerelease {pointer}"
+        )));
+    }
+    Ok(installed
+        .filter(|installed| **installed > pointer)
+        .cloned()
+        .unwrap_or(pointer))
+}
+
+fn on_release_line(version: &MachineVersion) -> bool {
+    format!("v{}", version.major()) == RELEASE_LINE
 }
 
 fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
-    MachineVersion::parse(value.to_owned()).map_err(|_| Error::InvalidVersion {
+    let value = value.trim();
+    let value = value.strip_prefix('v').unwrap_or(value);
+    MachineVersion::parse(value).map_err(|_| Error::InvalidVersion {
         value: value.to_owned(),
     })
 }
@@ -157,11 +161,11 @@ fn release_url(target: &MachineVersion, file: &str) -> String {
 pub(super) async fn install_binaries(
     source: &ReleaseSource,
     paths: &InstallPaths,
+    installed: Option<&MachineVersion>,
     target: &MachineVersion,
     progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
-    let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
-    let replace = replacement_required(source, installed.as_ref(), target);
+    let replace = replacement_required(source, installed, target);
     if !replace {
         println!(
             "ployzd {} retained",
@@ -211,7 +215,7 @@ pub(super) async fn installed_release(path: &Path) -> Result<Option<MachineVersi
             output.status
         )));
     }
-    MachineVersion::parse(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    MachineVersion::parse(String::from_utf8_lossy(&output.stdout).trim())
         .map(Some)
         .map_err(|_| Error::Verification("installed daemon reported an invalid version".into()))
 }
@@ -283,7 +287,7 @@ async fn verify_executable(path: &Path, target: &MachineVersion) -> Result<(), E
         )));
     }
     let observed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if observed == target.as_str() {
+    if observed == target.to_string() {
         Ok(())
     } else {
         Err(Error::Verification(format!(
@@ -370,7 +374,7 @@ pub(super) fn write_private(path: &Path, bytes: &[u8], stage: &'static str) -> R
 }
 
 fn activate(daemon: &Path, uninstall: &Path, paths: &InstallPaths) -> Result<(), Error> {
-    let installed = paths.bin_dir.join("ployzd");
+    let installed = paths.daemon();
     let previous = paths.bin_dir.join("ployzd.previous");
     let directory = File::open(&paths.bin_dir).map_err(|source| Error::Io {
         stage: "open daemon installation directory",
@@ -432,17 +436,70 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn published_release_requests_accept_only_trusted_shapes() {
-        assert!(matches!("stable".parse(), Ok(ReleaseRequest::Stable)));
-        assert!(matches!("beta".parse(), Ok(ReleaseRequest::Beta)));
+    #[tokio::test]
+    async fn channels_follow_this_line_and_never_downgrade() {
+        let version = |rest: &str| format!("{}.{rest}", &RELEASE_LINE[1..]);
+        let root = tempfile::tempdir().unwrap();
+        let source = ReleaseSource::Local(root.path().to_owned());
+        let line = root.path().join(RELEASE_LINE);
+        fs::create_dir_all(&line).unwrap();
+        // The unscoped pointer belongs to the live installer and may name a newer line.
+        fs::write(root.path().join("stable"), "v99.0.0\n").unwrap();
+        fs::write(line.join("stable"), format!("v{}\n", version("2.3"))).unwrap();
+        fs::write(line.join("beta"), format!("v{}\n", version("3.0-beta.2"))).unwrap();
+        let resolve = async |request: &MachineRelease, installed: Option<&str>| {
+            let installed = installed.map(|version| MachineVersion::parse(version).unwrap());
+            resolve_release(request, &source, installed.as_ref())
+                .await
+                .map(|version| version.to_string())
+        };
+        let installed = version("2.10");
+
         assert_eq!(
-            "v1.2.3-beta.4".parse::<ReleaseRequest>().unwrap(),
-            ReleaseRequest::Exact(MachineVersion::parse("1.2.3-beta.4").unwrap())
+            resolve(&MachineRelease::Stable, None).await.unwrap(),
+            version("2.3")
         );
-        for invalid in ["1.2", "1.2.3-rc.1", "1.2.3-beta.x", "1.2.3+build.1"] {
-            assert!(invalid.parse::<ReleaseRequest>().is_err(), "{invalid}");
-        }
+        assert_eq!(
+            resolve(&MachineRelease::Beta, None).await.unwrap(),
+            version("3.0-beta.2")
+        );
+        assert_eq!(
+            resolve(&MachineRelease::Stable, Some(&installed))
+                .await
+                .unwrap(),
+            installed
+        );
+        assert_eq!(
+            resolve(&MachineRelease::Beta, Some(&installed))
+                .await
+                .unwrap(),
+            version("3.0-beta.2")
+        );
+        let older = MachineRelease::Exact(MachineVersion::parse(version("0.0")).unwrap());
+        assert_eq!(
+            resolve(&older, Some(&installed)).await.unwrap(),
+            version("0.0")
+        );
+
+        fs::write(line.join("stable"), format!("v{}\n", version("4.0-beta.1"))).unwrap();
+        assert!(matches!(
+            resolve(&MachineRelease::Stable, None).await,
+            Err(Error::ReleaseSelection(message)) if message.contains("prerelease")
+        ));
+
+        // A daemon installed on another line is never crossed through a channel.
+        let other_line = format!("{}.0.0", RELEASE_LINE[1..].parse::<u64>().unwrap() + 1);
+        assert!(matches!(
+            resolve(&MachineRelease::Stable, Some(&other_line)).await,
+            Err(Error::ReleaseSelection(message)) if message.contains("not on release line")
+        ));
+
+        // A pointer misfiled under this line never moves a Machine onto another line.
+        fs::write(line.join("beta"), "v99.0.0\n").unwrap();
+        assert!(matches!(
+            resolve(&MachineRelease::Beta, None).await,
+            Err(Error::ReleaseSelection(message)) if message.contains("another release line")
+        ));
     }
 
     #[test]

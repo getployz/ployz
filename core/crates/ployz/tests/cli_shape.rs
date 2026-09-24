@@ -85,7 +85,8 @@ fn machine_upgrade_requires_explicit_targets_and_has_typed_inspection() {
     assert_eq!(
         upgrade
             .get_one::<ployz_core::MachineRelease>("version")
-            .map(ployz_core::MachineRelease::as_str),
+            .map(ToString::to_string)
+            .as_deref(),
         Some("1.2.3-beta.4")
     );
     assert_eq!(

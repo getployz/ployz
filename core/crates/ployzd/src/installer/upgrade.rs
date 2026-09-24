@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 
-use super::{
-    Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseRequest, ReleaseSource,
-};
+use super::{Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseSource};
 use crate::mutation;
 
 const RECEIPT_FILE: &str = "upgrade-attempt.json";
@@ -156,12 +154,11 @@ async fn request_locked(
         return Err(Error::Busy);
     }
     let source = current_source()?;
-    let release = request
-        .release
-        .as_str()
-        .parse::<ReleaseRequest>()
-        .map_err(Error::Resolve)?;
-    let target = super::release::resolve_release(&release, &source)
+    let installed =
+        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
+            .await
+            .map_err(Error::Resolve)?;
+    let target = super::release::resolve_release(&request.release, &source, installed.as_ref())
         .await
         .map_err(Error::Resolve)?;
     let mut stored = StoredAttempt {
@@ -247,7 +244,7 @@ pub async fn run_worker(
 
     let result = super::install_locked(
         InstallRequest {
-            release: ReleaseRequest::Exact(target.clone()),
+            release: MachineRelease::Exact(target.clone()),
             source: stored.source.clone(),
             mode: InstallMode::SoftwareOnly,
         },
