@@ -1,6 +1,6 @@
 import { BasicIndex, collectionOptions, liveQueryCollectionOptions, type DbClient, eq, toArray, type Collection, type UtilsRecord } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
-import { variableGroupDocumentRecord, volumeDocumentRecord, volumeIsVisible, type VolumeHistory, type ResourceDocumentView } from "./resource-document";
+import { volumeDocumentRecord, volumeIsVisible, type VolumeHistory, type ResourceDocumentView } from "./resource-document";
 
 import type { getRawEnvironmentResourcesCollection, getResourceLineagesCollection, getCanvasPositionsCollection, getEnvironmentNodeConfigSnapshotsCollection, getVolumeRemoveAttemptsCollection } from "#/collections/collections";
 import type { getEnvironmentDocumentsCollection } from "./environment-document.collection";
@@ -18,16 +18,16 @@ type VolumeSources = ResourceSources & {
   removals: Source<ReturnType<typeof getVolumeRemoveAttemptsCollection>>;
 };
 
-function resourceDocumentRows(client: DbClient, type: "variable_group" | "volume", { resources, lineages, positions, documents }: ResourceSources) {
+function volumeDocumentRows(client: DbClient, { resources, lineages, positions, documents }: ResourceSources) {
   const resourcePositions = client.collection(collectionOptions({ ...liveQueryCollectionOptions({
-    id: `${positions.id}:${type}-positions`,
-    query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.resourceType, type)),
+    id: `${positions.id}:volume-positions`,
+    query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.resourceType, "volume")),
     getKey: (position) => position.resourceId,
   }), autoIndex: "eager", defaultIndexType: BasicIndex }));
   return client.collection(collectionOptions({ ...liveQueryCollectionOptions({
-    id: `${resources.id}:${type}-document-rows`,
+    id: `${resources.id}:volume-document-rows`,
     query: (q) => q.from({ resource: resources })
-      .where(({ resource }) => eq(resource.implementationType, type))
+      .where(({ resource }) => eq(resource.implementationType, "volume"))
       .innerJoin({ lineage: lineages }, ({ resource, lineage }) => eq(resource.lineageId, lineage.id))
       .innerJoin({ document: documents }, ({ resource, document }) => eq(resource.environmentId, document.id))
       .leftJoin({ position: resourcePositions }, ({ resource, position }) => eq(resource.id, position.resourceId))
@@ -36,7 +36,7 @@ function resourceDocumentRows(client: DbClient, type: "variable_group" | "volume
   }), autoIndex: "eager", defaultIndexType: BasicIndex }));
 }
 
-function documentView(row: ReturnType<typeof resourceDocumentRows> extends { values(): IterableIterator<infer R> } ? R : never) {
+function documentView(row: ReturnType<typeof volumeDocumentRows> extends { values(): IterableIterator<infer R> } ? R : never) {
   const { organizationId: _resourceOrganization, ...resource } = withoutVirtualProps(row.resource);
   const { organizationId: _lineageOrganization, ...lineage } = withoutVirtualProps(row.lineage);
   const position = row.position;
@@ -50,25 +50,9 @@ function documentView(row: ReturnType<typeof resourceDocumentRows> extends { val
     projectSlug: row.document.projectSlug, environmentSlug: row.document.namespace };
 }
 
-export function createEnvironmentResourcesCollection(input: { client: DbClient; sources: ResourceSources }) {
-  const client = input.client;
-  const rows = resourceDocumentRows(input.client, "variable_group", input.sources);
-  return client.collection(collectionOptions(liveQueryCollectionOptions({
-    id: `${input.sources.resources.id}:variable-group-resources`,
-    query: (q) => q.from({ row: rows })
-      .fn.where(({ row }) => row.document.intent.variableGroups.some((node) => node.resourceId === row.resource.id))
-      .fn.select(({ row }) => {
-        const record = variableGroupDocumentRecord(documentView(row));
-        if (!record) throw new Error("Variable group is absent from the environment document.");
-        return record;
-      }),
-    getKey: (item) => item.resource.id,
-  })));
-}
-
 export function createVolumeResourcesCollection(input: { client: DbClient; sources: VolumeSources }) {
   const client = input.client;
-  const resources = resourceDocumentRows(input.client, "volume", input.sources);
+  const resources = volumeDocumentRows(input.client, input.sources);
   const { snapshots, removals } = input.sources;
   const rows = client.collection(collectionOptions(liveQueryCollectionOptions({
     id: `${input.sources.resources.id}:volume-history`,

@@ -77,7 +77,7 @@ function savedIntent(
     version: 1,
     environmentSlug: "production",
     services: services.map(({ id, lineageId, config }) => {
-      const { env, mounts: _mounts, variableGroupAttachments: _attachments, ...authoredConfig } = config;
+      const { env, mounts: _mounts, ...authoredConfig } = config;
       void _mounts;
       return {
         id,
@@ -108,11 +108,9 @@ function savedIntent(
             value: { kind: "literal" as const, value: value.value },
           };
         }),
-        variableGroupAttachments: [],
         volumeAttachments: [],
       };
     }),
-    variableGroups: [],
     volumes,
   };
 }

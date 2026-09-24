@@ -15,7 +15,7 @@ const nodes: NavigationNode[] = [
   { id: "worker", name: "Worker", type: "service" },
   { id: "postgres", name: "Postgres", type: "service" },
   { id: "data", name: "Database storage", type: "volume" },
-  { id: "shared", name: "Shared configuration", type: "variable_group" },
+  { id: "uploads", name: "Uploads storage", type: "volume" },
   { id: "scheduler", name: "Scheduler", type: "service" },
   { id: "web", name: "A very long website service name", type: "service" },
 ];
@@ -153,8 +153,9 @@ it("keeps an active filter clearable when a live resource removal hides the sear
   }
 });
 
-it.each(["data", "shared"])("opens %s as a resource and exposes only Configuration", async (id) => {
+it("opens a Volume as a resource and exposes only Configuration", async () => {
   const router = await show();
+  const id = "data";
   const node = nodes.find((candidate) => candidate.id === id);
   if (!node) throw new Error(`Missing node fixture: ${id}`);
   fireEvent.click(screen.getByRole("link", { name: node.name }));

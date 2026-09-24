@@ -4,7 +4,6 @@ import {
   isValid,
 } from "#/modules/environment-design/schema";
 import {
-  getAttachmentTargetError,
   getMountConflict,
   getServiceMountsByServiceId,
   mountPathSchema,
@@ -93,37 +92,6 @@ describe("getMountConflict", () => {
   });
 });
 
-describe("getAttachmentTargetError", () => {
-  it("rejects cross-environment mounts", () => {
-    expect(
-      getAttachmentTargetError({
-        serviceEnvironmentId: "env-1",
-        resourceEnvironmentId: "env-2",
-        resourceImplementationType: "volume",
-      }),
-    ).toBe("cross_environment");
-  });
-
-  it("rejects mounting a non-volume resource", () => {
-    expect(
-      getAttachmentTargetError({
-        serviceEnvironmentId: "env-1",
-        resourceEnvironmentId: "env-1",
-        resourceImplementationType: "variable_group",
-      }),
-    ).toBe("non_volume_resource");
-  });
-
-  it("accepts a volume in the same environment", () => {
-    expect(
-      getAttachmentTargetError({
-        serviceEnvironmentId: "env-1",
-        resourceEnvironmentId: "env-1",
-        resourceImplementationType: "volume",
-      }),
-    ).toBeNull();
-  });
-});
 
 describe("getServiceMountsByServiceId", () => {
   const volumeA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

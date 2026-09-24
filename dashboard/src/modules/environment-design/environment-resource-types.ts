@@ -1,7 +1,6 @@
 import { asString } from "#/lib/json";
 
 export const ENVIRONMENT_RESOURCE_TYPES = [
-  "variable_group",
   "volume",
 ] as const;
 

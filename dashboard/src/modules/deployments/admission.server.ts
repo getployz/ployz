@@ -1,6 +1,6 @@
 import { deploymentSourcePinsSchema, validateDeploymentSourcePins, type DeploymentSourcePins } from "./source-pins";
 import { serviceRegistryCredential, service as serviceIdentity } from "#/modules/environment-design/tables";
-import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import "@tanstack/react-start/server-only";
 
 import { randomUUID } from "node:crypto";
@@ -152,7 +152,7 @@ function insertNodeSnapshots(input: {
     const prepared = [];
     for (const snapshot of input.nodeSnapshots) {
       if (snapshot.nodeType !== "service" || snapshot.encryptedRegistrySecret) { prepared.push(snapshot); continue; }
-      const source = parseDashboardServiceConfig(snapshot.config).source;
+      const source = parseServiceConfig(snapshot.config).source;
       if (source.type !== "image" || source.credentials.type === "none") { prepared.push(snapshot); continue; }
       const credentialId = source.credentials.credentialId;
       const previous = frozen.find(row => row.nodeId === snapshot.nodeId)?.secret;

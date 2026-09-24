@@ -15,7 +15,6 @@ export function ServiceCreatorDialog({
   panel,
   position,
   params,
-  onCreateVariableGroup,
   onCreateVolume,
   onCreated,
 }: {
@@ -28,7 +27,6 @@ export function ServiceCreatorDialog({
     projectSlug: string;
     environmentSlug: string;
   };
-  onCreateVariableGroup: () => void;
   onCreateVolume: () => void;
   onCreated: (
     result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
@@ -55,7 +53,6 @@ export function ServiceCreatorDialog({
           projectSlug={params.projectSlug}
           environmentSlug={params.environmentSlug}
           canvasPosition={position}
-          onCreateVariableGroup={onCreateVariableGroup}
           onCreateVolume={onCreateVolume}
           onCreated={onCreated}
         />

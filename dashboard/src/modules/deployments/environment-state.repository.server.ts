@@ -36,7 +36,7 @@ type SnapshotScope =
   | { kind: "organization"; organizationId: string };
 
 export type EnvironmentExplicitStateProjectionNode = {
-  nodeType: "service" | "variable_group" | "volume";
+  nodeType: "service" | "volume";
   nodeId: string;
   nodeLineageId: string;
   config: unknown;
@@ -69,7 +69,7 @@ export type EnvironmentSnapshotProjection = {
   appliedSavedNodeByKey: Map<
     string,
     {
-      nodeType: "service" | "variable_group" | "volume";
+      nodeType: "service" | "volume";
       nodeId: string;
       nodeLineageId: string;
       configVersion: number;
@@ -86,7 +86,7 @@ export type EnvironmentSnapshotProjection = {
 type LoadedNode = {
   environmentDeploymentId: string;
   environmentId: string;
-  nodeType: "service" | "variable_group" | "volume";
+  nodeType: "service" | "volume";
   nodeId: string;
   nodeLineageId: string;
   configVersion: number;

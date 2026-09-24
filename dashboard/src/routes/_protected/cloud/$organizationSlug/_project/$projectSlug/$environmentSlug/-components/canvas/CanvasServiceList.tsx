@@ -1,5 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { DatabaseIcon, HardDriveIcon } from "lucide-react";
+import { HardDriveIcon } from "lucide-react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
@@ -13,7 +13,6 @@ import {
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import type {
-  CanvasEnvironmentResourceState,
   CanvasServiceState,
   CanvasVolumeResourceState,
 } from "./CanvasServicesContext";
@@ -116,17 +115,14 @@ export function CanvasNodeList({
   services,
   selectedNodeId,
   servicesById,
-  environmentResourcesById,
   volumeResourcesById,
 }: {
   services: EnvironmentServiceViewRecord[];
   selectedNodeId: string | null;
   servicesById: Map<string, CanvasServiceState>;
-  environmentResourcesById: Map<string, CanvasEnvironmentResourceState>;
   volumeResourcesById: Map<string, CanvasVolumeResourceState>;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const resources = [...volumeResourcesById.values(), ...environmentResourcesById.values()];
   return (
     <div
       className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
@@ -143,12 +139,9 @@ export function CanvasNodeList({
             />
           ) : null;
         })}
-        {resources.map(({ resource, diffRowCount }) => {
-          const isVolume = "attachments" in resource;
-          const removed = "isAuthored" in resource && !resource.isAuthored;
-          const summary = isVolume
-            ? resource.attachments.map((attachment) => attachment.mountPath).join(", ") || "No mounts"
-            : resource.exports.map((entry) => entry.key).join(", ") || "No exports";
+        {[...volumeResourcesById.values()].map(({ resource, diffRowCount }) => {
+          const removed = !resource.isAuthored;
+          const summary = resource.attachments.map((attachment) => attachment.mountPath).join(", ") || "No mounts";
           const selected = resource.resource.id === selectedNodeId;
           return <Link
             key={resource.resource.id}
@@ -162,10 +155,10 @@ export function CanvasNodeList({
             <Card state={removed ? "destructive" : diffRowCount > 0 ? "changed" : undefined} data-selected={selected}>
               <CardHeader>
                 <div className="flex items-start gap-3">
-                  <Avatar><AvatarFallback>{isVolume ? <HardDriveIcon /> : <DatabaseIcon />}</AvatarFallback></Avatar>
+                  <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
                   <div className="min-w-0 flex-1">
                     <CardTitle className="truncate" title={resource.resource.name}>{resource.resource.name}</CardTitle>
-                    <CardDescription>{isVolume ? "Volume" : "Variable group"}</CardDescription>
+                    <CardDescription>Volume</CardDescription>
                   </div>
                   {removed ? <Badge variant="destructive">Removing</Badge> : diffRowCount > 0 ? <Badge variant="changed">{diffRowCount}</Badge> : null}
                 </div>

@@ -20,10 +20,6 @@ import {
 const environmentId = "00000000-0000-4000-8000-000000000001";
 const serviceId = "00000000-0000-4000-8000-000000000002";
 const serviceLineageId = "00000000-0000-4000-8000-000000000003";
-const resourceId = "00000000-0000-4000-8000-000000000004";
-const resourceLineageId = "00000000-0000-4000-8000-000000000005";
-const groupId = "00000000-0000-4000-8000-000000000006";
-const groupLineageId = "00000000-0000-4000-8000-000000000007";
 const variableId = "00000000-0000-4000-8000-000000000008";
 const volumeId = "00000000-0000-4000-8000-000000000009";
 const volumeLineageId = "00000000-0000-4000-8000-000000000010";
@@ -46,19 +42,6 @@ function intent(value: string): DeepMutable<SavedEnvironmentIntent> {
           healthcheck: { type: "none" },
           restartPolicy: "unless-stopped",
         },
-        variables: [],
-        variableGroupAttachments: [{ variableGroupId: groupId, sortOrder: 0 }],
-        volumeAttachments: [],
-      },
-    ],
-    variableGroups: [
-      {
-        resourceId,
-        resourceLineageId,
-        variableGroupId: groupId,
-        variableGroupLineageId: groupLineageId,
-        slug: "shared",
-        name: "Shared",
         variables: [
           {
             id: variableId,
@@ -69,6 +52,7 @@ function intent(value: string): DeepMutable<SavedEnvironmentIntent> {
             value: { kind: "literal", value },
           },
         ],
+        volumeAttachments: [],
       },
     ],
     volumes: [],
@@ -136,12 +120,12 @@ describe("Saved Environment intent boundary", () => {
     ).toThrow();
   });
 
-  it("recompiles every consumer from the replaced owning node", () => {
+  it("recompiles the replaced owning node", () => {
     const discarded = Effect.runSync(
       replaceSavedEnvironmentIntentNode({
         current: intent("new"),
         baseline: intent("applied"),
-        node: { nodeType: "variable_group", nodeId: resourceId },
+        node: { nodeType: "service", nodeId: serviceId },
       }),
     );
     const compiled = compileSavedEnvironmentIntent({
@@ -153,18 +137,14 @@ describe("Saved Environment intent boundary", () => {
     );
     const producer = compiled.variableProducers.find(
       (candidate) =>
-        candidate.ownerScope === "variable_group" &&
-        candidate.ownerId === groupId &&
+        candidate.ownerScope === "service" &&
+        candidate.ownerId === serviceId &&
         candidate.key === "SHARED_VALUE",
     );
 
     expect(service?.config).toMatchObject({
       env: {
-        SHARED_VALUE: {
-          kind: "literal",
-          value: "applied",
-          source: { kind: "variable_group", variableGroupId: groupId },
-        },
+        SHARED_VALUE: { kind: "literal", value: "applied" },
       },
     });
     expect(producer?.value).toEqual({ kind: "literal", value: "applied" });
@@ -184,23 +164,12 @@ describe("Saved Environment intent boundary", () => {
       mountPath: "/data",
     });
     const afterDeletion = structuredClone(baseline);
-    afterDeletion.variableGroups = [];
     afterDeletion.volumes = [];
-    if (afterDeletion.services[0]) {
-      afterDeletion.services[0].variableGroupAttachments = [];
-      afterDeletion.services[0].volumeAttachments = [];
-    }
+    if (afterDeletion.services[0]) afterDeletion.services[0].volumeAttachments = [];
 
-    const restoredGroup = Effect.runSync(
-      replaceSavedEnvironmentIntentNode({
-        current: afterDeletion,
-        baseline,
-        node: { nodeType: "variable_group", nodeId: resourceId },
-      }),
-    );
     const restoredVolume = Effect.runSync(
       replaceSavedEnvironmentIntentNode({
-        current: restoredGroup,
+        current: afterDeletion,
         baseline,
         node: { nodeType: "volume", nodeId: volumeId },
       }),
@@ -223,12 +192,18 @@ describe("Saved Environment intent boundary", () => {
 
   it("retains references to deleted owners for warning-aware resolution", () => {
     const current = intent("applied");
-    const group = current.variableGroups[0];
-    if (!group) throw new Error("missing group");
-    const variable = group.variables[0];
+    const web = current.services[0];
+    if (!web) throw new Error("missing service");
+    const worker = structuredClone(web);
+    worker.id = "00000000-0000-4000-8000-000000000004";
+    worker.lineageId = "00000000-0000-4000-8000-000000000005";
+    worker.slug = "worker";
+    worker.config.privateDns = "worker";
+    const variable = worker.variables[0];
     if (!variable) throw new Error("missing variable");
-    group.variables[0] = {
+    worker.variables[0] = {
       ...variable,
+      id: "00000000-0000-4000-8000-000000000006",
       value: {
         kind: "template",
         parts: [
@@ -240,6 +215,7 @@ describe("Saved Environment intent boundary", () => {
         ],
       },
     };
+    current.services.push(worker);
 
     const discarded = Effect.runSync(
       replaceSavedEnvironmentIntentNode({
@@ -248,8 +224,8 @@ describe("Saved Environment intent boundary", () => {
         node: { nodeType: "service", nodeId: serviceId },
       }),
     );
-    expect(discarded.variableGroups[0]?.variables[0]?.value).toEqual(
-      group.variables[0]?.value,
+    expect(discarded.services.find((service) => service.id === worker.id)?.variables[0]?.value).toEqual(
+      worker.variables[0]?.value,
     );
   });
 

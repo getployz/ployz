@@ -8,11 +8,7 @@ import type {
   EnvironmentStateProjection,
 } from "#/modules/environment-design/environment-change-set";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
-import type {
-  VariableGroupResourceRecord,
-  VolumeResourceRecord,
-} from "#/modules/environment-design/resources";
-import { projectVariableGroupConfig } from "#/modules/environment-design/variable-group-config";
+import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import { namedVolumeConfig } from "#/modules/environment-design/volume-config";
 import type {
   EnvironmentChangeStateNodeProjection,
@@ -25,7 +21,6 @@ import type { CanvasResourceNode } from "./types";
 
 type UseCanvasFlowStateInput = {
   servicesWithBoundEnv: EnvironmentServiceViewRecord[];
-  environmentResources: VariableGroupResourceRecord[];
   volumeResources: VolumeResourceRecord[];
   environmentChangeState: EnvironmentChangeStateProjection | null;
   nodeIntroductions: EnvironmentNodeIntroduction[];
@@ -57,7 +52,6 @@ function countGroupsByNode(groups: CanvasEnvironmentChangeGroup[]) {
 
 export function useCanvasFlowState({
   servicesWithBoundEnv,
-  environmentResources,
   volumeResources,
   environmentChangeState,
   nodeIntroductions,
@@ -72,16 +66,6 @@ export function useCanvasFlowState({
           config:
             service.deletedAt === null
               ? projectServiceDeploymentConfig(service)
-              : null,
-        }) satisfies EnvironmentNodeProjection,
-    ),
-    ...environmentResources.map(
-      (resource) =>
-        ({
-          node: { type: "variable_group", id: resource.resource.id },
-          config:
-            resource.resource.deletedAt === null
-              ? projectVariableGroupConfig(resource)
               : null,
         }) satisfies EnvironmentNodeProjection,
     ),
@@ -100,10 +84,6 @@ export function useCanvasFlowState({
     token: [
       ...servicesWithBoundEnv.map(
         ({ service }) => `service:${service.id}:${service.updatedAt.toISOString()}`,
-      ),
-      ...environmentResources.map(
-        ({ resource }) =>
-          `variable_group:${resource.id}:${resource.updatedAt.toISOString()}`,
       ),
       ...volumeResources.map(
         ({ resource }) =>
@@ -170,14 +150,6 @@ export function useCanvasFlowState({
         summaryLabel: service.name,
         serviceSourceType: service.source.type,
       })),
-      ...environmentResources.map((resource) => ({
-        node: {
-          type: "variable_group" as const,
-          id: resource.resource.id,
-        },
-        name: resource.resource.name,
-        summaryLabel: "Variable Group",
-      })),
       ...volumeResources.map((resource) => ({
         node: { type: "volume" as const, id: resource.resource.id },
         name: resource.resource.name,
@@ -215,15 +187,6 @@ export function useCanvasFlowState({
   const selectedNodePositionKey = selectedNode
     ? `${selectedNode.position.x}:${selectedNode.position.y}`
     : null;
-  const environmentResourcesById = new Map(
-    environmentResources.map((resource) => [
-      resource.resource.id,
-      {
-        resource,
-        diffRowCount: countByNodeId.get(resource.resource.id) ?? 0,
-      },
-    ]),
-  );
   const volumeResourcesById = new Map(
     volumeResources.map((resource) => [
       resource.resource.id,
@@ -259,7 +222,6 @@ export function useCanvasFlowState({
     diffRowCountByServiceId: countByNodeId,
     servicesById,
     selectedNodePositionKey,
-    environmentResourcesById,
     volumeResourcesById,
     destructiveServiceIds: destructiveSave.serviceIds,
     destructiveServiceNames: destructiveSave.serviceIds.map(

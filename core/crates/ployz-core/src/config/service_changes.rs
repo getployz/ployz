@@ -39,7 +39,6 @@ const FIELDS: &[&str] = &[
     "healthcheck.timeoutSeconds",
     "restartPolicy",
     "maxRetries",
-    "cron",
     "replicas",
     "cpuLimit",
     "memLimit",

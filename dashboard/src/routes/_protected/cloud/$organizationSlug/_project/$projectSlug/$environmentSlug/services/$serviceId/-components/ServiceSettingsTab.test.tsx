@@ -44,7 +44,7 @@ async function show(source: ServiceSource, builder: "dockerfile" | "railpack" = 
       source, build, policy: { autoDeploy: true, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" } },
       routes: [], managedHostnames: [], replicas: 1,
       preDeployCommand: null, startCommand: null, healthcheck: { type: "none" },
-      restartPolicy: "on-failure", maxRetries: 10, cron: null,
+      restartPolicy: "on-failure", maxRetries: 10,
       registryCredentialUsername: null,
     },
     diff: { field: () => ({ changed: false, baselineValue: undefined }) },

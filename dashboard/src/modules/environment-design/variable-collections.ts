@@ -1,13 +1,11 @@
 import type { CollectionScope } from "#/collections/scope";
 import { editEnvironmentDocumentAfter } from "./environment-document-edit";
-import type { SavedEnvironmentIntent, SavedVariableIntent } from "./saved-intent";
+import type { SavedVariableIntent } from "./saved-intent";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import type { VariableRecord } from "./variables";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
 import {
-  createServiceVariableServerFn, createVariableGroupVariableServerFn,
-  deleteServiceVariableServerFn, deleteVariableGroupVariableServerFn,
-  updateServiceVariableServerFn, updateVariableGroupVariableServerFn,
+  createServiceVariableServerFn, deleteServiceVariableServerFn, updateServiceVariableServerFn,
 } from "./variable-functions";
 
 export type VariableWriter = {
@@ -17,21 +15,14 @@ export type VariableWriter = {
 };
 export type OrganizationVariablesCollection = VariableWriter;
 
-function variableOwners(intent: SavedEnvironmentIntent) {
-  return [
-    ...intent.services.map((node) => ({ serviceId: node.id, variableGroupId: null, variables: node.variables })),
-    ...intent.variableGroups.map((node) => ({ serviceId: null, variableGroupId: node.variableGroupId, variables: node.variables })),
-  ];
-}
-
 export function createVariableWriter(organizationSlug: string, scope: CollectionScope): VariableWriter {
   const environments = getEnvironmentsCollection(organizationSlug, scope);
 
   function currentVariable(id: string) {
     for (const document of environments.values()) {
-      for (const owner of variableOwners(document.intent)) {
-        const variable = owner.variables.find((variable) => variable.id === id);
-        if (variable) return variableDocumentRecord(variable, owner, document.intent, document.updatedAt);
+      for (const service of document.intent.services) {
+        const variable = service.variables.find((variable) => variable.id === id);
+        if (variable) return variableDocumentRecord(variable, service.id, document.intent, document.updatedAt);
       }
     }
     throw new Error("Variable is not loaded.");
@@ -43,21 +34,15 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
     if (kind !== "delete" && value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
     const data = { ...scope, key: variable.key, description: variable.description, exported: variable.exported,
       value: { type: "plain" as const, value: value.type === "plain" ? value.value : "" } };
-    return variable.serviceId
-      ? kind === "delete" ? deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
-        : kind === "insert" ? createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
-        : updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } })
-      : variable.variableGroupId
-        ? kind === "delete" ? deleteVariableGroupVariableServerFn({ data: { ...scope, variableGroupId: variable.variableGroupId, variableId: variable.id } })
-          : kind === "insert" ? createVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, id: variable.id } })
-          : updateVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, variableId: variable.id } })
-        : Promise.reject(new Error("Variable has no owner."));
+    return kind === "delete" ? deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
+      : kind === "insert" ? createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
+      : updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } });
   }
 
   function edit(kind: "insert" | "update" | "delete", variable: VariableRecord) {
     return editEnvironmentDocumentAfter(organizationSlug, scope, async () => {
-      const document = Array.from(environments.values()).find((document) => variableOwners(document.intent)
-        .some((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId));
+      const document = Array.from(environments.values()).find((document) => document.intent.services
+        .some((service) => service.id === variable.serviceId));
       if (!document) throw new Error("Variable owner is not loaded.");
       let authored: SavedVariableIntent | null = null;
       if (kind !== "delete") {
@@ -67,7 +52,7 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
       return {
         environmentId: document.id,
         apply: (intent) => {
-          const owner = variableOwners(intent).find((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId);
+          const owner = intent.services.find((service) => service.id === variable.serviceId);
           if (!owner) return;
           const index = owner.variables.findIndex((entry) => entry.id === variable.id);
           if (kind === "delete") {
@@ -101,15 +86,6 @@ export type PlainServiceVariableInsertInput = {
   exported?: boolean;
 };
 
-export type PlainVariableGroupVariableInsertInput = {
-  id?: string;
-  variableGroupId: string;
-  key: string;
-  value: string;
-  description?: string | null;
-  exported?: boolean;
-};
-
 export function buildPlainServiceVariableRecord(
   input: PlainServiceVariableInsertInput,
 ): VariableRecord {
@@ -118,7 +94,6 @@ export function buildPlainServiceVariableRecord(
   return {
     id: input.id ?? crypto.randomUUID(),
     serviceId: input.serviceId,
-    variableGroupId: null,
     key: input.key,
     description: input.description ?? null,
     exported: input.exported ?? false,
@@ -133,29 +108,4 @@ export function insertPlainServiceVariable(
   input: PlainServiceVariableInsertInput,
 ) {
   return writer.insert(buildPlainServiceVariableRecord(input));
-}
-
-function buildPlainVariableGroupVariableRecord(
-  input: PlainVariableGroupVariableInsertInput,
-): VariableRecord {
-  const now = new Date();
-
-  return {
-    id: input.id ?? crypto.randomUUID(),
-    serviceId: null,
-    variableGroupId: input.variableGroupId,
-    key: input.key,
-    description: input.description ?? null,
-    exported: input.exported ?? false,
-    value: { type: "plain", value: input.value },
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-export function insertPlainVariableGroupVariable(
-  writer: VariableWriter,
-  input: PlainVariableGroupVariableInsertInput,
-) {
-  return writer.insert(buildPlainVariableGroupVariableRecord(input));
 }

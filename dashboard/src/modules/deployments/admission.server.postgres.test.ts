@@ -40,7 +40,6 @@ function intent(volumes: "first" | "both") {
     version: 1 as const,
     environmentSlug: "production",
     services: [],
-    variableGroups: [],
     volumes: [
       {
         resourceId: firstVolumeId,
@@ -85,7 +84,7 @@ describe("Saved deployment admission", () => {
         id, project_id, organization_id, name, namespace, intent
       ) values (
         '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
+        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"volumes":[]}'
       );
     `);
   });

@@ -46,7 +46,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       serviceId,
       lineageId: serviceLineageId,
     });
-    const { env: _env, mounts: _mounts, variableGroupAttachments: _attachments, ...config } = node.config;
+    const { env: _env, mounts: _mounts, ...config } = node.config;
     void _env;
     void _mounts;
     const intent = {
@@ -59,11 +59,9 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
           slug: "api",
           config,
           variables: [],
-          variableGroupAttachments: [],
           volumeAttachments: [],
         },
       ],
-      variableGroups: [],
       volumes: [],
     };
     await harness.pool.query(`
@@ -93,7 +91,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
         '00000000-0000-4000-8000-000000000102',
         '00000000-0000-4000-8000-000000000101',
         'Production',
-        'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
+        'production', '{"version":1,"environmentSlug":"production","services":[],"volumes":[]}'
       );
       insert into service_lineage (id, project_id, canonical_name, canonical_slug)
       values ('${node.nodeLineageId}', '00000000-0000-4000-8000-000000000102', 'API', 'api');

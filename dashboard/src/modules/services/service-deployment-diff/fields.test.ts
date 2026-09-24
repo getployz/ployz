@@ -42,7 +42,7 @@ function mountRows(current: ServiceDeployMount[], baseline: ServiceDeployMount[]
 }
 
 describe("service deployment mount diff", () => {
-  it("reports an added mount as one owned service row", () => {
+  it("reports an added mount as one service row", () => {
     const rows = mountRows([mount()], []);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -52,7 +52,6 @@ describe("service deployment mount diff", () => {
       currentValue: "",
       canDiscard: false,
     });
-    expect(rows[0]?.derivedFrom).toBeUndefined();
   });
 
 });

@@ -1,5 +1,4 @@
 import { Schema } from "effect";
-import { variableGroupConfigSchema } from "#/modules/environment-design/variable-group-config";
 import { persistedVolumeConfigSchema } from "#/modules/environment-design/volume-config";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { Uuid } from "#/modules/environment-design/workspace-schemas";
@@ -19,11 +18,6 @@ export const environmentNodeIntroductionSchema = Schema.Union([
     ...introductionBaseFields,
     nodeType: Schema.Literal("service"),
     config: serviceDeploymentConfigSchema,
-  }),
-  Schema.Struct({
-    ...introductionBaseFields,
-    nodeType: Schema.Literal("variable_group"),
-    config: variableGroupConfigSchema,
   }),
   Schema.Struct({
     ...introductionBaseFields,

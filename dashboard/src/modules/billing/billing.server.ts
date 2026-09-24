@@ -12,6 +12,7 @@ import {
   previewProration,
   selectManagedSubscriptionSnapshot,
   type BillingPlan,
+  holdsBillingPlan,
   type LiveManagedSubscriptionSnapshot,
   type ManagedSubscriptionSnapshot,
 } from "#/modules/billing/billing";
@@ -264,8 +265,7 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
     activeSubscriptionId: snapshot.activeSubscriptionId,
     currentPlan: snapshot.currentPlan,
     hasActiveSubscription: snapshot.hasActiveSubscription,
-    hasActivePaidSubscription:
-      snapshot.hasActiveSubscription && snapshot.currentPlan !== "free",
+    hasActivePaidSubscription: holdsBillingPlan(snapshot),
   };
 });
 

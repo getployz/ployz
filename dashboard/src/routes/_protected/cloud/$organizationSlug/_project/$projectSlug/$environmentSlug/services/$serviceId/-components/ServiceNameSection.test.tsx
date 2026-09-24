@@ -51,7 +51,7 @@ function createState(overrides?: Partial<ServiceDrawerState>) {
         name: service.name,
       },
       {
-        type: "variable_group",
+        type: "volume",
         id: "33333333-3333-4333-8333-333333333333",
         name: "WEB",
       },

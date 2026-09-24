@@ -4,10 +4,7 @@ import { savedVariableIntent } from "./saved-intent";
 import { extractDisplayRefs, parseDisplayToParts, partsToDisplay } from "./variable-template";
 
 export function environmentVariableReferences(intent: SavedEnvironmentIntent) {
-  const owners = [
-    ...intent.services.map((node) => ({ lineageId: node.lineageId, slug: node.slug, scope: "service" as const })),
-    ...intent.variableGroups.map((node) => ({ lineageId: node.variableGroupLineageId, slug: node.slug, scope: "variable_group" as const })),
-  ];
+  const owners = intent.services.map((node) => ({ lineageId: node.lineageId, slug: node.slug, scope: "service" as const }));
   return {
     lookupSlug: (lineageId: string) => owners.find((owner) => owner.lineageId === lineageId)?.slug ?? null,
     lookupLineage: (slug: string) => owners.find((owner) => owner.slug === slug) ?? null,
@@ -16,7 +13,7 @@ export function environmentVariableReferences(intent: SavedEnvironmentIntent) {
 
 export function variableDocumentRecord(
   variable: SavedVariableIntent,
-  owner: { serviceId: string | null; variableGroupId: string | null },
+  serviceId: string,
   intent: SavedEnvironmentIntent,
   updatedAt: Date,
 ): VariableRecord {
@@ -26,7 +23,7 @@ export function variableDocumentRecord(
   const unresolvedReferences = [...new Set(parts.flatMap((part) => part.kind === "text"
     ? extractDisplayRefs(part.value).flatMap((ref) => ref.ownerSlug && !references.lookupLineage(ref.ownerSlug) ? [ref.ownerSlug] : [])
     : []))];
-  return { unresolvedReferences, id: variable.id, serviceId: owner.serviceId, variableGroupId: owner.variableGroupId, key: variable.key, description: variable.description, exported: variable.exported,
+  return { unresolvedReferences, id: variable.id, serviceId, key: variable.key, description: variable.description, exported: variable.exported,
     value: variable.value.kind === "secret" ? { type: "sealed", hasValue: true, fingerprint: variable.valueFingerprint }
       : { type: "plain", value: partsToDisplay(parts, references.lookupSlug) },
     createdAt: updatedAt, updatedAt,

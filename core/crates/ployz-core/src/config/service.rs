@@ -21,8 +21,6 @@ pub struct AuthoredServiceConfig {
     pub restart_policy: ServiceRestartPolicy,
     #[serde(default = "default_max_retries")]
     pub max_retries: u8,
-    #[serde(default)]
-    pub cron: Option<String>,
     #[serde(default = "default_replicas")]
     pub replicas: u8,
     #[serde(default)]

@@ -1,28 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { getPlainVariableValueFingerprint, type SecretEncryptionService } from "#/utils/encrypted-secret.server";
-import { Validation } from "#/server/public-error";
 import { parseDisplayToParts, type LookupLineage } from "./variable-template";
 import type { VariableValueInput } from "./variables";
-
-export function validateVariableValue(
-  value: VariableValueInput,
-  context: {
-    readonly lookupLineage: LookupLineage;
-    readonly ownerScope: "service" | "variable_group";
-  },
-) {
-  if (value.type !== "plain") return null;
-  const { parts } = parseDisplayToParts(value.value, context.lookupLineage);
-  if (
-    context.ownerScope === "variable_group" &&
-    parts.some((part) => part.kind === "ref" && part.owner.scope !== "self")
-  ) {
-    return new Validation({
-      message: "Variable Groups can only reference their own variables.",
-    });
-  }
-  return null;
-}
 
 export function variableValueColumnsForWrite(
   encryption: SecretEncryptionService,

@@ -1,6 +1,4 @@
-import type { VariableGroupConfig } from "#/modules/environment-design/variable-group-config";
-import { compareDashboardServiceSettings, compareVariableGroupSettings } from "#/modules/environment-design/config-changes";
-import { compareResourceSettings, type VolumeConfig, type ChangeKind, type ServiceSettingChange } from "@ployz/sdk/config";
+import { compareServiceSettings, type ChangeKind, type ServiceSettingChange } from "@ployz/sdk/config";
 import { asBoolean, asFiniteNumber, asString, asRecord } from "#/lib/json";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 
@@ -21,7 +19,6 @@ export const SERVICE_DEPLOYMENT_DIFF_PATHS = {
   healthcheckTimeout: "healthcheck.timeoutSeconds",
   restartPolicy: "restartPolicy",
   maxRetries: "maxRetries",
-  cron: "cron",
   replicas: "replicas",
   cpuLimit: "cpuLimit",
   memLimit: "memLimit",
@@ -40,20 +37,14 @@ const labels = new Map(Object.entries({
   "source.image": "Container image",
   "source.credentials": "Credentials", preDeployCommand: "Pre-deploy command",
   startCommand: "Start command", healthcheck: "Healthcheck", "healthcheck.path": "Healthcheck path", "healthcheck.timeoutSeconds": "Healthcheck timeout", restartPolicy: "Restart policy",
-  maxRetries: "Max retries", cron: "Cron schedule", replicas: "Replicas",
+  maxRetries: "Max retries", replicas: "Replicas",
   cpuLimit: "CPU limit", memLimit: "Memory limit", privateDns: "Private DNS",
   "build.command": "Build command",
   managedHostnames: "Managed domains", "build.builder": "Builder", "build.dockerfilePath": "Dockerfile path",
-  variableGroupAttachments: "Variable Group attachments (in precedence order)",
 }));
 
 function displaySetting(path: string, value: ServiceSettingChange["before"]): string {
   if (value == null) return "";
-  if (path === "variableGroupAttachments") {
-    return Array.isArray(value) && value.length
-      ? value.map((attachment) => asString(asRecord(attachment)?.["variableGroupId"]) ?? "Unknown group").join(" → ")
-      : "None";
-  }
   const record = asRecord(value);
   if (path.startsWith("env.")) return record?.["kind"] === "secret" ? "Secret value" : asString(record?.["value"]) ?? "";
   if (path.startsWith("mounts.")) return asString(record?.["mountPath"]) ?? "";
@@ -86,64 +77,37 @@ export type DiffRow = {
   currentValue: string;
   newValue: string;
   canDiscard: boolean;
-  derivedFrom?: {
-    kind: "variable_group";
-    resourceId: string;
-    resourceName: string;
-  };
 };
 
 export type ServiceDeploymentDiffRow = Omit<DiffRow, "path"> & {
   path: ServiceDeploymentDiffPath;
 };
 
-/** Changes the node owns — derived (inherited) rows don't count as its changes. */
-export function countOwnedRows(rows: Pick<DiffRow, "derivedFrom">[]): number {
-  return rows.filter((row) => !row.derivedFrom).length;
-}
-
 export function getServiceDeploymentDiffRows(input: {
   serviceId: string;
   current: ServiceDeploymentConfig;
   baseline: ServiceDeploymentConfig | null;
 }): ServiceDeploymentDiffRow[] {
-  return compareDashboardServiceSettings(input.current, input.baseline).map((change) => ({
-    changeKey: `${input.serviceId}:${change.path}`,
-    path: change.path,
-    ...presentSettingChange("service", change.path, change.before, change.after),
-    kind: change.kind,
-    canDiscard: change.canRestore,
-    derivedFrom: change.derivedFrom,
-  }));
+  return compareServiceSettings(input.current, input.baseline)
+    .map((change) => toDiffRow("service", input.serviceId, change));
 }
 
-export function getResourceDeploymentDiffRows(nodeType: "volume" | "variable_group", input: {
-  nodeId: string;
-  current: VolumeConfig | VariableGroupConfig;
-  baseline: VolumeConfig | VariableGroupConfig | null;
-}): DiffRow[] {
-  // SAFETY: resource configurations are parsed by their node type before presentation.
-  const changes = nodeType === "variable_group"
-    ? compareVariableGroupSettings(input.current, input.baseline)
-    : compareResourceSettings("volume", input.current as VolumeConfig, input.baseline as VolumeConfig | null);
-  return changes.map((change) => ({
-    changeKey: `${input.nodeId}:${change.path}`,
+export function toDiffRow(nodeType: "service" | "volume", nodeId: string, change: ServiceSettingChange) {
+  return {
+    changeKey: `${nodeId}:${change.path}`,
     path: change.path,
     ...presentSettingChange(nodeType, change.path, change.before, change.after),
     kind: change.kind,
     canDiscard: change.canRestore,
-  }));
+  };
 }
 
-export function presentSettingChange(nodeType: "service" | "volume" | "variable_group", path: string,
+export function presentSettingChange(nodeType: "service" | "volume", path: string,
   before: ServiceSettingChange["before"], after: ServiceSettingChange["after"]) {
-  if (nodeType !== "service") {
-    const display = (value: ServiceSettingChange["before"]) =>
-      asRecord(value)?.["kind"] === "secret" ? "Secret value" : asString(value) ?? "";
+  if (nodeType === "volume") {
     return {
-      label: path === "node" ? (nodeType === "volume" ? "Volume" : "Variable Group")
-        : path === "name" ? "Name" : `Variable ${path.slice(10)}`,
-      currentValue: display(before), newValue: display(after),
+      label: path === "node" ? "Volume" : path === "name" ? "Name" : path,
+      currentValue: asString(before) ?? "", newValue: asString(after) ?? "",
     };
   }
   return {

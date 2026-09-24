@@ -277,7 +277,7 @@ export const environmentNodeConfigSnapshot = pgTable(
     ),
     check(
       "environment_node_config_snapshot_node_type_check",
-      sql`${table.nodeType} in ('service', 'variable_group', 'volume')`,
+      sql`${table.nodeType} in ('service', 'volume')`,
     ),
     unique().on(table.environmentDeploymentId, table.nodeType, table.nodeId),
     index("environment_node_config_snapshot_environment_id_idx").on(
@@ -340,7 +340,7 @@ export const environmentNodeIntroduction = pgTable(
     }),
     check(
       "environment_node_introduction_node_type_check",
-      sql`${table.nodeType} in ('service', 'variable_group', 'volume')`
+      sql`${table.nodeType} in ('service', 'volume')`
     ),
     index("environment_node_introduction_lineage_idx").on(
       table.nodeType,

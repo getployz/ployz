@@ -1,19 +1,14 @@
 import { Position, type Edge } from "@xyflow/react";
-import type {
-  VariableGroupResourceRecord,
-  VolumeResourceRecord,
-} from "#/modules/environment-design/resources";
+import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentServiceVolumeAttachment } from "#/modules/environment-design/service-volume-attachments";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import {
   getCanvasPositionCollectionKey,
 } from "#/modules/services/services.collection";
 import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/services";
-import type { EnvironmentServiceVariableGroupAttachment } from "#/modules/environment-design/variables";
 import { extractDisplayRefs } from "#/modules/environment-design/variable-template";
 import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT } from "./constants";
 import type {
-  CanvasVariableGroupNode,
   CanvasResourceNode,
   CanvasServiceNode,
   CanvasVolumeNode,
@@ -75,26 +70,6 @@ function toServiceNode(
   };
 }
 
-function toVariableGroupNode(
-  resource: VariableGroupResourceRecord,
-  position: ServiceCanvasPositionRecord | null | undefined,
-): CanvasVariableGroupNode {
-  return {
-    id: resource.resource.id,
-    type: "variable_group",
-    position: getCanvasPosition(position),
-    width: SERVICE_NODE_WIDTH,
-    height: SERVICE_NODE_HEIGHT,
-    handles: CANVAS_NODE_HANDLES,
-    draggable: true,
-    data: {
-      resourceType: "variable_group",
-      resourceId: resource.resource.id,
-      environmentId: resource.resource.environmentId,
-    },
-  };
-}
-
 function toVolumeNode(
   resource: VolumeResourceRecord,
   position: ServiceCanvasPositionRecord | null | undefined,
@@ -117,7 +92,6 @@ function toVolumeNode(
 
 export function buildNodes(
   services: EnvironmentServiceViewRecord[],
-  environmentResources: VariableGroupResourceRecord[],
   canvasPositions: ServiceCanvasPositionRecord[],
   selectedNodeId: string | null,
   volumeResources: VolumeResourceRecord[] = [],
@@ -138,19 +112,6 @@ export function buildNodes(
     };
   });
 
-  const resourceNodes = environmentResources.map((resource) => ({
-    ...toVariableGroupNode(
-      resource,
-      positionByResource.get(
-        getCanvasPositionCollectionKey({
-          resourceType: "variable_group",
-          resourceId: resource.resource.id,
-        }),
-      ),
-    ),
-    selected: resource.resource.id === selectedNodeId,
-  }));
-
   const volumeNodes = volumeResources.map((resource) => ({
     ...toVolumeNode(
       resource,
@@ -164,66 +125,14 @@ export function buildNodes(
     selected: resource.resource.id === selectedNodeId,
   }));
 
-  return [...serviceNodes, ...resourceNodes, ...volumeNodes];
+  return [...serviceNodes, ...volumeNodes];
 }
 
 export function buildEdges(
-  environmentResources: VariableGroupResourceRecord[],
-  attachments: EnvironmentServiceVariableGroupAttachment[],
   volumeResources: VolumeResourceRecord[] = [],
   volumeAttachments: EnvironmentServiceVolumeAttachment[] = [],
   services: EnvironmentServiceViewRecord[] = [],
 ): Edge[] {
-  const resourceIdByVariableGroupId = new Map(
-    environmentResources.map((resource) => [
-      resource.variableGroup.id,
-      resource.resource.id,
-    ]),
-  );
-  const edges = new Map<
-    string,
-    {
-      source: string;
-      target: string;
-    }
-  >();
-
-  for (const attachment of attachments) {
-    const resourceId = resourceIdByVariableGroupId.get(attachment.variableGroupId);
-    if (!resourceId) {
-      continue;
-    }
-
-    const key = `${resourceId}:${attachment.serviceId}`;
-    edges.set(key, {
-      source: resourceId,
-      target: attachment.serviceId,
-    });
-  }
-
-  // Variable Groups render below their service (like volumes): the group's top
-  // (exit) flows into the service's bottom (entry), so the arrow points at the
-  // consuming service. Visual styling (dash, colour, arrow) is shared via
-  // `defaultEdgeOptions` on the canvas.
-  const variableGroupEdges = Array.from(edges.entries()).map(([key, edge]) => {
-    return {
-      id: `attachment:${key}`,
-      source: edge.source,
-      target: edge.target,
-    };
-  });
-
-  // Reference edges: a service whose plain variable value contains a `${{ }}`
-  // template ref draws an edge to the producer (variable group or service),
-  // matched by current slug. Self refs (no owner slug) draw nothing; a pair
-  // already linked by an attachment edge is left as-is (attachment is the
-  // stronger relation).
-  const variableGroupIdBySlug = new Map(
-    environmentResources.map((resource) => [
-      resource.variableGroup.slug,
-      resource.resource.id,
-    ]),
-  );
   const serviceIdBySlug = new Map(
     services.map((service) => [service.service.slug, service.service.id]),
   );
@@ -239,14 +148,12 @@ export function buildEdges(
         if (ref.ownerSlug == null) {
           continue;
         }
-        const producerId =
-          variableGroupIdBySlug.get(ref.ownerSlug) ??
-          serviceIdBySlug.get(ref.ownerSlug);
+        const producerId = serviceIdBySlug.get(ref.ownerSlug);
         if (!producerId || producerId === consumerServiceId) {
           continue;
         }
         const pairKey = `${producerId}:${consumerServiceId}`;
-        if (edges.has(pairKey) || referencePairs.has(pairKey)) {
+        if (referencePairs.has(pairKey)) {
           continue;
         }
         referencePairs.add(pairKey);
@@ -281,5 +188,5 @@ export function buildEdges(
       : [],
   );
 
-  return [...variableGroupEdges, ...referenceEdges, ...volumeEdges];
+  return [...referenceEdges, ...volumeEdges];
 }

@@ -11,21 +11,15 @@ import {
   updateServiceVolumeMountPath,
 } from "./mount-operations.server";
 import {
-  createVariableGroupResource,
   createVolumeResource,
-  deleteVariableGroupResource,
   deleteVolumeResource,
   updateEnvironmentResourceCanvasPosition,
-  updateVariableGroupResource,
   updateVolumeResource,
 } from "./resource-operations.server";
 import {
-  createVariableGroupResourceSchema,
   createVolumeResourceSchema,
-  deleteVariableGroupResourcePlanSchema,
   deleteVolumeResourceSchema,
   updateEnvironmentResourceCanvasPositionSchema,
-  updateVariableGroupResourceSchema,
   updateVolumeResourceSchema,
 } from "./resources";
 import {
@@ -35,33 +29,6 @@ import {
 } from "./service-volume-attachments";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
-
-export const createVariableGroupResourceServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(middleware)
-  .validator(strictValidator(createVariableGroupResourceSchema))
-  .handler(({ context, data }) =>
-    runActor(context, createVariableGroupResource(context.actor, data)),
-  );
-
-export const updateVariableGroupResourceServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(middleware)
-  .validator(strictValidator(updateVariableGroupResourceSchema))
-  .handler(({ context, data }) =>
-    runActor(context, updateVariableGroupResource(context.actor, data)),
-  );
-
-export const deleteVariableGroupResourceServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(middleware)
-  .validator(strictValidator(deleteVariableGroupResourcePlanSchema))
-  .handler(({ context, data }) =>
-    runActor(context, deleteVariableGroupResource(context.actor, data)),
-  );
 
 export const createVolumeResourceServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)

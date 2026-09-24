@@ -44,7 +44,6 @@ pub enum ServiceSettingInput {
     HealthcheckTimeoutSeconds(u16),
     RestartPolicy(ServiceRestartPolicy),
     MaxRetries(u8),
-    Cron(Option<String>),
     Replicas(u8),
     CpuLimit(Option<f64>),
     MemLimit(Option<f64>),
@@ -118,7 +117,6 @@ impl ServiceSettingInput {
             Self::Replicas(value) => range(*value <= 50, "replicas", "Expected 0–50 replicas"),
             Self::CpuLimit(value) => limit(*value, 64.0, "cpuLimit"),
             Self::MemLimit(value) => limit(*value, 1024.0, "memLimit"),
-            Self::Cron(value) => optional_trimmed(value, "cron", usize::MAX),
             Self::Routes(routes) => {
                 let mut ids = std::collections::BTreeSet::new();
                 for route in routes {

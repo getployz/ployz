@@ -36,7 +36,6 @@ const SERVICE_DEPLOYMENT_FIELD_KEYS = [
 // persisted value (e.g. the deploy snapshot projection) pass them explicitly.
 const SERVICE_DEPLOYMENT_OPTIONAL_FIELD_KEYS = [
   "maxRetries",
-  "cron",
   "replicas",
   "cpuLimit",
   "memLimit",
@@ -55,7 +54,6 @@ export type ServiceDeploymentFieldSelection = Pick<
     deletedAt?: Date | null;
     env?: ServiceDeployEnv;
     mounts?: ServiceDeployMount[];
-    variableGroupAttachments?: ServiceDeploymentConfig["variableGroupAttachments"];
   };
 
 type ServiceDeploymentConfigProjection = Omit<
@@ -316,10 +314,8 @@ export function projectServiceDeploymentConfig(
     privateDns: service.privateDns,
     env: service.env ?? {},
     mounts: service.mounts ?? [],
-    variableGroupAttachments: service.variableGroupAttachments ?? [],
   };
   if (service.maxRetries !== undefined) config.maxRetries = service.maxRetries;
-  if (service.cron !== undefined) config.cron = service.cron;
   if (service.replicas !== undefined) config.replicas = service.replicas;
   if (service.cpuLimit !== undefined) config.cpuLimit = service.cpuLimit;
   if (service.memLimit !== undefined) config.memLimit = service.memLimit;

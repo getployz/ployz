@@ -2,11 +2,9 @@ import { useOrgStoreStatus } from "#/collections/org-store";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { linkOptions } from "@tanstack/react-router";
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
   getServicesCollection,
-  getEnvironmentResourcesCollection,
   getVolumeResourcesCollection,
   type EnvironmentParams,
 } from "#/modules/services/services.collection";
@@ -19,7 +17,7 @@ import {
 export type NavigationNode = {
   id: string;
   name: string;
-  type: "service" | "volume" | "variable_group";
+  type: "service" | "volume";
 };
 
 export function nodeDestination(
@@ -58,9 +56,6 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
   const services = ready.data
     ? getServicesCollection(organizationSlug, scope)
     : null;
-  const resources = ready.data
-    ? getEnvironmentResourcesCollection(organizationSlug, scope)
-    : null;
   const volumes = ready.data
     ? getVolumeResourcesCollection(organizationSlug, scope)
     : null;
@@ -74,21 +69,6 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
               eq(service.environmentSlug, environmentSlug),
             )
             .select(({ service }) => ({ id: service.id, name: service.name }))
-        : undefined },
-  );
-  const resourceRows = useLiveQuery(
-    { queryKey: ['navigation-resources', resources?.id ?? null, projectSlug, environmentSlug], query: (q) =>
-      resources
-        ? q
-            .from({ resource: resources })
-            .where(({ resource }) => eq(resource.projectSlug, projectSlug))
-            .where(({ resource }) =>
-              eq(resource.environmentSlug, environmentSlug),
-            )
-            .select(({ resource }) => ({
-              id: resource.resource.id,
-              name: resource.resource.name,
-            }))
         : undefined },
   );
   const volumeRows = useLiveQuery(
@@ -111,9 +91,6 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
       name,
       type: "service" as const,
     })),
-    ...(variableGroupsEnabled ? (resourceRows.data ?? []) : []).map(withoutVirtualProps).map(
-      ({ id, name }) => ({ id, name, type: "variable_group" as const }),
-    ),
     ...(volumeRows.data ?? []).map(withoutVirtualProps).map(({ id, name }) => ({
       id,
       name,
@@ -125,12 +102,10 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
     isLoading:
       ready.isPending ||
       serviceRows.isLoading ||
-      resourceRows.isLoading ||
       volumeRows.isLoading,
     isError:
       ready.isError ||
       serviceRows.isError ||
-      resourceRows.isError ||
       volumeRows.isError,
     retry: () => void ready.refetch(),
   };

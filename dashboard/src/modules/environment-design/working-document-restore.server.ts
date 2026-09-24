@@ -1,4 +1,3 @@
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -17,10 +16,6 @@ import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introd
 
 export const restoreWorkingDocument = Effect.fn("EnvironmentDesign.restoreWorkingDocument")(
   function* (actor: Actor, input: RestoreWorkingDocumentInput) {
-    if (!variableGroupsEnabled && input.command.kind === "node" &&
-      (input.command.nodeType === "variable_group" || input.command.path === "variableGroupAttachments")) {
-      return yield* new Conflict({ message: "Variable Groups are disabled." });
-    }
     yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);

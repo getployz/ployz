@@ -9,10 +9,6 @@ import {
   ENVIRONMENT_RESOURCE_TYPES,
 } from "#/modules/environment-design/environment-resource-types";
 import {
-  environmentVariableGroupSelectSchema,
-  variableSelectSchema,
-} from "#/modules/environment-design/variables";
-import {
   OrganizationSlug,
   Uuid,
 } from "#/modules/environment-design/workspace-schemas";
@@ -57,7 +53,6 @@ export const environmentResourceSelectSchema = Schema.Struct({
   lineageId: environmentResourceDbSelectSchema.fields.lineageId,
   implementationType:
     environmentResourceDbSelectSchema.fields.implementationType,
-  variableGroupId: environmentResourceDbSelectSchema.fields.variableGroupId,
   name: resourceName,
   slug: requiredTrimmedString,
   deletedAt: Schema.NullOr(Schema.Date),
@@ -80,28 +75,6 @@ export const environmentResourceCanvasPositionSchema = Schema.Struct({
   updatedAt: canvasPositionDbSelectSchema.fields.updatedAt,
 });
 
-const environmentResourceExportSchema = Schema.Struct({
-  key: variableSelectSchema.fields.key,
-  value: variableSelectSchema.fields.value,
-  variableId: variableSelectSchema.fields.id,
-});
-
-export const variableGroupResourceRecordSchema = Schema.Struct({
-  resource: Schema.Struct({
-    ...environmentResourceSelectSchema.fields,
-    implementationType: Schema.Literal("variable_group"),
-    variableGroupId: Uuid,
-  }),
-  lineage: resourceLineageSelectSchema,
-  variableGroup: environmentVariableGroupSelectSchema,
-  canvasPosition: Schema.NullOr(environmentResourceCanvasPositionSchema),
-  variables: Schema.mutable(Schema.Array(variableSelectSchema)),
-  exports: Schema.mutable(Schema.Array(environmentResourceExportSchema)),
-  consumerCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  projectSlug: Schema.NonEmptyString,
-  environmentSlug: Schema.NonEmptyString,
-});
-
 const volumeAttachmentSummarySchema = Schema.Struct({
   serviceId: Uuid,
   mountPath: Schema.NonEmptyString,
@@ -111,7 +84,6 @@ export const volumeResourceRecordSchema = Schema.Struct({
   resource: Schema.Struct({
     ...environmentResourceSelectSchema.fields,
     implementationType: Schema.Literal("volume"),
-    variableGroupId: Schema.Null,
   }),
   lineage: resourceLineageSelectSchema,
   canvasPosition: Schema.NullOr(environmentResourceCanvasPositionSchema),
@@ -131,28 +103,6 @@ const canvasCoordinates = {
     Schema.withDecodingDefaultKey(Effect.succeed(0)),
   ),
 };
-
-export const createVariableGroupResourceSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  name: environmentResourceSelectSchema.fields.name,
-  ...canvasCoordinates,
-});
-
-export const updateVariableGroupResourceSchema = Schema.Struct({
-  revision: Uuid,
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  resourceId: Uuid,
-  name: environmentResourceSelectSchema.fields.name,
-});
-
-export const deleteVariableGroupResourcePlanSchema = Schema.Struct({
-  revision: Uuid,
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  resourceId: Uuid,
-});
 
 export const updateEnvironmentResourceCanvasPositionSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
@@ -187,19 +137,10 @@ export const deleteVolumeResourceSchema = Schema.Struct({
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 export type EnvironmentResourceType = typeof environmentResourceTypeSchema.Type;
-export type VariableGroupResourceRecord = Mutable<
-  typeof variableGroupResourceRecordSchema.Type
->;
 export type VolumeResourceRecord = Mutable<
   typeof volumeResourceRecordSchema.Type
 >;
 export type VolumeAttachmentSummary = typeof volumeAttachmentSummarySchema.Type;
-export type CreateVariableGroupResourceInput =
-  typeof createVariableGroupResourceSchema.Type;
-export type UpdateVariableGroupResourceInput =
-  typeof updateVariableGroupResourceSchema.Type;
-export type DeleteVariableGroupResourcePlanInput =
-  typeof deleteVariableGroupResourcePlanSchema.Type;
 export type UpdateEnvironmentResourceCanvasPositionInput =
   typeof updateEnvironmentResourceCanvasPositionSchema.Type;
 export type CreateVolumeResourceInput = typeof createVolumeResourceSchema.Type;

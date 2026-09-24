@@ -9,7 +9,6 @@ function plain(id: string, key: string, value: string): VariableRecord {
   return {
     id,
     serviceId: "svc",
-    variableGroupId: null,
 
     key,
     description: null,

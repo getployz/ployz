@@ -6,7 +6,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   DatabaseIcon,
-  LayersIcon,
 } from "lucide-react";
 import {
   createDashboardNavItems,
@@ -54,7 +53,6 @@ type Projection = "desktop" | "rail" | "mobile";
 const nodeIcons = {
   service: BoxIcon,
   volume: DatabaseIcon,
-  variable_group: LayersIcon,
 };
 
 function Destination({

@@ -15,7 +15,8 @@ import {
 } from "unique-names-generator";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict, Forbidden, NotFound } from "#/server/public-error";
+import { customDomainsAllowed, routeMutationRequiresCustomDomainCapability } from "#/modules/billing/custom-domain-capability";
 import { slugifySegment } from "#/utils/slug";
 import {
   SecretEncryption,
@@ -192,7 +193,7 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
       const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, source: input.source,
         preDeployCommand: input.preDeployCommand, startCommand: input.startCommand,
         healthcheck: input.healthcheck, restartPolicy: input.restartPolicy, privateDns: slug });
-      const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], variableGroupAttachments: [], volumeAttachments: [] };
+      const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], volumeAttachments: [] };
       document.intent.services.push(node);
       const environment = yield* writeEnvironmentDocument(document, document.intent);
       const introduction = yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: "service", nodeId: identity.id });
@@ -204,10 +205,13 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
 
 export const updateService = Effect.fn("EnvironmentDesign.updateService")(
   function* (actor: Actor, input: UpdateServiceInput) {
-    yield* requireEnvironmentForActorById(actor, input);
+    const context = yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       const { document, node } = yield* loadServiceEdit(input);
-      // ponytail: custom domains are ungated for alpha; re-add getCustomDomainCapability when plans ship.
+      if (input.routes && routeMutationRequiresCustomDomainCapability(node.config.routes, input.routes)
+        && !(yield* customDomainsAllowed(context.organization.id))) {
+        return yield* new Forbidden({ message: "Custom domains require an active subscription." });
+      }
       const { organizationSlug: _organization, environmentId: _environment, serviceId: _service, revision: _revision, deletedAt, ...settings } = input;
       if (deletedAt) document.intent.services = document.intent.services.filter((candidate) => candidate.id !== node.id);
       else Object.assign(node.config, settings);

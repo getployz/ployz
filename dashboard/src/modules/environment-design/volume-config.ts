@@ -1,8 +1,8 @@
-import { parseResourceConfig } from "@ployz/sdk/config";
+import { compareResourceSettings, parseResourceConfig } from "@ployz/sdk/config";
 import { sharedSchema } from "#/modules/environment-design/service-config";
 import { Schema, SchemaGetter } from "effect";
 import { decodeStrict } from "#/modules/environment-design/schema";
-import { getResourceDeploymentDiffRows, type DiffRow } from "#/modules/services/service-deployment-diff/fields";
+import { toDiffRow, type DiffRow } from "#/modules/services/service-deployment-diff/fields";
 
 export const volumeConfigSchema = sharedSchema((value) => parseResourceConfig("volume", value));
 
@@ -60,5 +60,6 @@ export function getVolumeConfigDiffRows(input: {
   current: VolumeConfig;
   baseline: VolumeConfig | null;
 }): DiffRow[] {
-  return getResourceDeploymentDiffRows("volume", input);
+  return compareResourceSettings("volume", input.current, input.baseline)
+    .map((change) => toDiffRow("volume", input.nodeId, change));
 }

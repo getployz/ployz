@@ -1,5 +1,4 @@
 import { useServiceMetadataEditor } from "#/modules/environment-design/service-metadata.collection";
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
@@ -8,8 +7,7 @@ import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import { DEFAULT_SERVICE_PORT } from "@ployz/sdk/config";
-import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
+import { DEFAULT_SERVICE_PORT, parseServiceConfig } from "@ployz/sdk/config";
 import {
   getServiceDeploymentDiffState,
   type ServiceDeploymentDiffState,
@@ -22,7 +20,6 @@ import {
   type EnvironmentServiceViewRecord,
   normalizeEnvironmentServicesViewRecord,
   useCanvasPositionsCollection,
-  useEnvironmentResourcesCollection,
   useServicesCollection,
   useServiceWriter,
 } from "#/modules/services/services.collection";
@@ -31,8 +28,6 @@ import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/e
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import { decodeStrict } from "#/modules/environment-design/schema";
-import { parseLiveQueryRow } from "#/lib/tanstack-db";
-import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
 
 export type ServiceRouteParams = {
   organizationSlug: string;
@@ -75,7 +70,7 @@ function serviceNodes(
     .filter((node) => node.nodeType === "service" && node.nodeId === serviceId)
     .map((node) => ({
       node: { type: "service", id: serviceId },
-      config: node.config ? parseDashboardServiceConfig(node.config) : null,
+      config: node.config ? parseServiceConfig(node.config) : null,
     }));
 }
 
@@ -86,9 +81,6 @@ export function useServiceDrawerState(
   const collectionScope = useCollectionScope();
   const collection = useServicesCollection(params.organizationSlug);
   const serviceWriter = useServiceWriter(params.organizationSlug);
-  const environmentResourcesCollection = useEnvironmentResourcesCollection(
-    params.organizationSlug,
-  );
   const canvasPositions = useCanvasPositionsCollection(params.organizationSlug);
   const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const nodeIntroductions = getEnvironmentNodeIntroductionsCollection(
@@ -114,17 +106,6 @@ export function useServiceDrawerState(
         documents,
       }) },
   );
-  const { data: environmentResourceRows } = useLiveSuspenseQuery({
-    queryKey: ['drawer-resources', environmentResourcesCollection.id, params.projectSlug, params.environmentSlug],
-    query: (q) =>
-      q
-        .from({ resource: environmentResourcesCollection })
-        .where(({ resource }) => eq(resource.projectSlug, params.projectSlug))
-        .where(({ resource }) =>
-          eq(resource.environmentSlug, params.environmentSlug),
-        )
-        .select(({ resource }) => resource),
-  });
   const { data: serviceIntroductionRows } = useLiveSuspenseQuery({
     queryKey: ['service-introduction', nodeIntroductions.id, params.serviceId],
     query: (q) =>
@@ -134,9 +115,6 @@ export function useServiceDrawerState(
         .where(({ introduction }) => eq(introduction.nodeId, params.serviceId))
         .select(({ introduction }) => introduction),
   });
-  const environmentResources = environmentResourceRows.map((resource) =>
-    parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
-  );
 
   const services = rawServices.map(normalizeEnvironmentServicesViewRecord);
   const serviceView = services.find(
@@ -196,18 +174,11 @@ export function useServiceDrawerState(
     environmentSlug: params.environmentSlug,
     organizationSlug: params.organizationSlug,
     service,
-    environmentNodes: [
-      ...services.map((item) => ({
-        type: "service" as const,
-        id: item.service.id,
-        name: item.service.name,
-      })),
-      ...(variableGroupsEnabled ? environmentResources : []).map((item) => ({
-        type: "variable_group" as const,
-        id: item.resource.id,
-        name: item.resource.name,
-      })),
-    ],
+    environmentNodes: services.map((item) => ({
+      type: "service" as const,
+      id: item.service.id,
+      name: item.service.name,
+    })),
     diff: getServiceDeploymentDiffState(change),
     collection: serviceWriter,
     editMetadata,

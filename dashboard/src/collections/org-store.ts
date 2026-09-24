@@ -7,7 +7,7 @@ import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import {
-  getEnvironmentResourcesCollection, getServicesCollection, getVolumeResourcesCollection,
+  getServicesCollection, getVolumeResourcesCollection,
 } from "#/modules/services/services.collection";
 
 /** Every table getter `collections.ts` exports is an Org Store table. */
@@ -18,8 +18,7 @@ const orgStoreTables = Object.entries(collections)
 
 /** Every derived view in an org-store data file. Adding a view means adding it here. */
 export const orgStoreViews = [
-  getEnvironmentDocumentsCollection, getServicesCollection, getEnvironmentResourcesCollection,
-  getVolumeResourcesCollection, getOrganizationDeploymentsCollection,
+  getEnvironmentDocumentsCollection, getServicesCollection, getVolumeResourcesCollection, getOrganizationDeploymentsCollection,
 ];
 
 /** Every server projection in an org-store Query file. Adding a projection means adding its preload here. */

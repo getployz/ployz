@@ -13,8 +13,8 @@ import {
 
 /**
  * Click-to-edit heading used in the canvas inspector overlay. Shared by the
- * service drawer and the Variable Group drawer so renaming behaves identically;
- * callers supply the validation schema and an optimistic rename that owns its failure toast.
+ * service and volume drawers so renaming behaves identically; callers supply
+ * the validation schema and an optimistic rename that owns its failure toast.
  */
 export function CanvasInspectorNameEditor({
   value,

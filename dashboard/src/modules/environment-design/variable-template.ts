@@ -13,7 +13,7 @@ import type { ValuePart, ValuePartRefOwner } from "#/modules/environment-design/
  *
  * Display grammar:
  *  - `${{ KEY }}`            — self ref (owner's own scope)
- *  - `${{ slug.KEY }}`       — ref to service/group `slug`'s exported `KEY`
+ *  - `${{ slug.KEY }}`       — ref to service `slug`'s exported `KEY`
  *  - `$${{`                  — a literal `${{`
  */
 
@@ -36,7 +36,7 @@ export type ParsedRef = { owner: ValuePartRefOwner; key: string };
 export type LookupSlug = (lineageId: string) => string | null;
 export type LookupLineage = (
   slug: string,
-) => { lineageId: string; scope: "service" | "variable_group" } | null;
+) => { lineageId: string; scope: "service" } | null;
 
 export type ParseDisplayResult = {
   parts: ValuePart[];

@@ -232,7 +232,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 - Label the organization destination and page **Projects**. Keep search visible and use an ink **New project** action.
 - Use three columns on desktop, two on tablet, and one on mobile.
-- Each project card shows the remembered Environment's Working State Services as centered icons on a subtle dotted surface. Reuse existing source icons; do not use canvas positions, connections, Volumes, or Variable Groups.
+- Each project card shows the remembered Environment's Working State Services as centered icons on a subtle dotted surface. Reuse existing source icons; do not use canvas positions, connections, or Volumes.
 - The whole card opens that Environment. Keep card controls out of the preview.
 - Footer: `● production · 2/3 services online`; an empty Environment shows `production · No services`. Count a Service once when it has a running container whose health is healthy or not configured. Exclude hooks. When runtime evidence is disconnected or incomplete, show only the service count.
 

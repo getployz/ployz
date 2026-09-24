@@ -14,7 +14,7 @@ import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
 import { ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 import { serviceSearchSchema } from "../services/$serviceId/-components/service-pages";
 import { CanvasNodeList } from "./canvas/CanvasServiceList";
-import type { CanvasEnvironmentResourceState, CanvasVolumeResourceState } from "./canvas/CanvasServicesContext";
+import type { CanvasVolumeResourceState } from "./canvas/CanvasServicesContext";
 import { asTestDouble } from "#/lib/test-double";
 
 let workspaceWidth = 1000;
@@ -22,10 +22,6 @@ const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug:
 const volume = asTestDouble<CanvasVolumeResourceState>()({
   diffRowCount: 1,
   resource: { resource: { id: "data", name: "Database data" }, isAuthored: true, attachments: [{ mountPath: "/data" }] },
-});
-const variableGroup = asTestDouble<CanvasEnvironmentResourceState>()({
-  diffRowCount: 0,
-  resource: { resource: { id: "shared", name: "Shared variables" }, exports: [{ key: "DATABASE_URL" }] },
 });
 
 function InspectorEditor() {
@@ -59,7 +55,6 @@ function Architecture() {
         servicesById={new Map()}
         selectedNodeId={nodeId}
         volumeResourcesById={new Map([["data", volume]])}
-        environmentResourcesById={new Map([["shared", variableGroup]])}
       />
     </div>}
   >
@@ -191,16 +186,13 @@ describe("canvas inspector presentation", () => {
     expect(document.activeElement).toBe(screen.getByText("API node"));
   });
 
-  it("exposes supported Volume and Variable Group editors in the mobile Architecture list", async () => {
+  it("exposes the Volume editor in the mobile Architecture list", async () => {
     vi.stubGlobal("innerWidth", 390);
     const router = await openInspector();
     expect(screen.getByText("Volume")).toBeTruthy();
-    expect(screen.getByText("Variable group")).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: /Database data/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/data"));
     expect(screen.getByRole("link", { name: /Database data/ }).getAttribute("aria-current")).toBe("page");
-    fireEvent.click(screen.getByRole("link", { name: /Shared variables/ }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/shared"));
   });
 
   it("closes on Escape inside the inspector after nested controls have handled it", async () => {

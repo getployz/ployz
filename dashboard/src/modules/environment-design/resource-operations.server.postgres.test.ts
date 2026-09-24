@@ -1,5 +1,3 @@
-import { vi } from "vitest";
-vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { saveReviewedEnvironmentState } from "./saved-state-operations.server";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "./working-state-fingerprint.server";
 import { loadCurrentEnvironmentState, loadEnvironmentDocument } from "./working-state-repository.server";
@@ -20,11 +18,9 @@ import {
   updateServiceVolumeMountPath,
 } from "./mount-operations.server";
 import {
-  createVariableGroupResource,
   createVolumeResource,
   deleteVolumeResource,
   updateEnvironmentResourceCanvasPosition,
-  updateVariableGroupResource,
 } from "./resource-operations.server";
 import { createService } from "./service-operations.server";
 import { createImageServiceSource } from "./services";
@@ -120,35 +116,6 @@ it.live(
           restartPolicy: "unless-stopped",
         });
 
-        const group = yield* createVariableGroupResource(actor, {
-          organizationSlug: "acme",
-          environmentId: environmentRecord.id,
-          name: "Shared config",
-          x: 10.4,
-          y: 20.6,
-        });
-        const groupRows = yield* database.drizzle.execute<{ txid: string }>(
-          sql`
-            select xmin::text as txid from environment_resource
-            where id = ${group.data.resource.id}
-            union all
-            select xmin::text as txid from resource_lineage
-            where id = ${group.data.resource.lineageId}
-            union all
-            select xmin::text as txid from environment_variable_group
-            where id = ${group.data.variableGroup.id}
-            union all
-            select xmin::text as txid from variable_group_lineage
-            where id = ${group.data.variableGroup.lineageId}
-            union all
-            select xmin::text as txid from environment_canvas_node_position
-            where resource_id = ${group.data.resource.id}
-          `,
-          "objects",
-        );
-        assert.strictEqual(groupRows.length, 5);
-        assert.strictEqual(new Set(groupRows.map((row) => row.txid)).size, 1);
-
         const volume = yield* createVolumeResource(actor, {
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
@@ -172,14 +139,6 @@ it.live(
         assert.strictEqual(volumeRows.length, 3);
         assert.strictEqual(new Set(volumeRows.map((row) => row.txid)).size, 1);
 
-        const renamed = yield* updateVariableGroupResource(actor, {
-          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
-          organizationSlug: "acme",
-          environmentId: environmentRecord.id,
-          resourceId: group.data.resource.id,
-          name: "Runtime config",
-        });
-        assert.strictEqual(renamed.data.intent.variableGroups[0]?.name, "Runtime config");
         const mounted = yield* attachServiceVolume(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
@@ -229,7 +188,7 @@ it.live(
             organizationSlug: "acme",
             environmentId: environmentRecord.id,
             serviceId: service.data.service.id,
-            volumeResourceId: group.data.resource.id,
+            volumeResourceId: service.data.service.id,
             mountPath: "/config",
           }),
         );
@@ -309,7 +268,7 @@ it.live(
               volumeDeletionAuthorizations: [],
             });
           } else {
-            yield* createVariableGroupResource(actor, {
+            yield* createVolumeResource(actor, {
               organizationSlug: "acme", environmentId: environmentRecord.id,
               name: "Retained introduction", x: 0, y: 0,
             });

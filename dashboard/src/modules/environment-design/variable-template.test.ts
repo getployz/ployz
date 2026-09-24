@@ -24,7 +24,7 @@ const lookupSlug: LookupSlug = (lineageId) => {
 
 const lookupLineage: LookupLineage = (slug) => {
   if (slug === "db") return { lineageId: DB_LINEAGE, scope: "service" };
-  if (slug === "shared") return { lineageId: SET_LINEAGE, scope: "variable_group" };
+  if (slug === "shared") return { lineageId: SET_LINEAGE, scope: "service" };
   return null;
 };
 
@@ -57,7 +57,7 @@ describe("partsToLiteralString", () => {
 });
 
 describe("partsToDisplay", () => {
-  it("renders self, service, and variable group refs", () => {
+  it("renders self and service refs", () => {
     const parts: ValuePart[] = [
       { kind: "text", value: "postgres://u:" },
       { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PASSWORD" },
@@ -96,7 +96,7 @@ describe("parseDisplayToParts", () => {
       { owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PASSWORD" },
       { owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PLOYZ_PRIVATE_DOMAIN" },
       { owner: { scope: "self" }, key: "REGION" },
-      { owner: { scope: "variable_group", lineageId: SET_LINEAGE }, key: "STRIPE" },
+      { owner: { scope: "service", lineageId: SET_LINEAGE }, key: "STRIPE" },
     ]);
   });
 

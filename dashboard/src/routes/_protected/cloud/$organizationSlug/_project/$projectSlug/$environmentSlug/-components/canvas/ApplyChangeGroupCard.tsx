@@ -22,7 +22,6 @@ import {
   getCanvasNodeDiffGroupCanDiscard,
 } from "#/modules/environment-design/canvas-node-diff";
 import type { CanvasNodeDiffGroup } from "#/modules/environment-design/canvas-node-diff";
-import { countOwnedRows } from "#/modules/services/service-deployment-diff/fields";
 import { ApplyChangeRow } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeRow";
 import {
   getCanvasNodeIcon,
@@ -32,10 +31,6 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/apply-changes-display";
 
 type DisplayCanvasNodeDiffGroup = CanvasNodeDiffGroup;
-
-function getDerivedRowCount(group: DisplayCanvasNodeDiffGroup) {
-  return group.rows.filter((row) => row.derivedFrom).length;
-}
 
 export function ApplyChangeGroupCard({
   group,
@@ -57,12 +52,10 @@ export function ApplyChangeGroupCard({
   const nodeAction = getServiceChangeAction(nodeKind);
   const showCurrentValue = nodeKind !== "add";
   const showNewValue = nodeKind !== "remove";
-  const ownedRowCount = countOwnedRows(group.rows);
-  const derivedRowCount = getDerivedRowCount(group);
   const hasSettings = group.rows.length > 0;
   const canDiscard =
     getCanvasNodeDiffGroupCanDiscard(group) &&
-    (ownedRowCount > 0 ||
+    (hasSettings ||
       group.lifecycle === "create" ||
       group.lifecycle === "delete");
   const nodeIdentity = (
@@ -123,16 +116,9 @@ export function ApplyChangeGroupCard({
             <div className="flex items-center gap-4">
               {hasSettings ? (
                 <div className="flex flex-col items-end text-sm">
-                  {ownedRowCount > 0 ? (
-                    <span className="text-muted-foreground">
-                      {getSettingsLabel(ownedRowCount)}
-                    </span>
-                  ) : null}
-                  {derivedRowCount > 0 ? (
-                    <span className="text-muted-foreground">
-                      {derivedRowCount} derived
-                    </span>
-                  ) : null}
+                  <span className="text-muted-foreground">
+                    {getSettingsLabel(group.rows.length)}
+                  </span>
                 </div>
               ) : null}
               <Button

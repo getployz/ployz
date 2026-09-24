@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { Option, Schema } from "effect";
 import {
   BillingPlan,
-  evaluateCustomDomainCapability,
   normalizeStoredBillingPlan,
   previewProration,
   selectManagedSubscriptionSnapshot,
@@ -74,24 +73,6 @@ describe("billing policy", () => {
       hasActiveSubscription: true,
       hasUnknownActiveProduct: true,
     });
-  });
-
-  it("fails custom-domain entitlement closed for unknown products", () => {
-    expect(
-      evaluateCustomDomainCapability(
-        {
-          activeSubscriptionId: "sub-teams",
-          currentPlan: "teams",
-          productId: "product-teams",
-          amount: 2900,
-          currency: "usd",
-          ...period,
-          hasActiveSubscription: true,
-          hasUnknownActiveProduct: true,
-        },
-        new Date("2026-03-15T00:00:00.000Z"),
-      ),
-    ).toEqual({ allowed: false, reason: "unknown_product" });
   });
 
   it("clamps proration to the cached period and rounds the amount delta", () => {

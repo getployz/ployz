@@ -119,7 +119,7 @@ export function useApplyRawVariablesAction({
     const remaining = node.variables.filter((variable) => !diff.deletes.includes(variable.id));
     const variables = await Promise.all(remaining.map(async (variable) => {
       const update = diff.updates.find((update) => update.variableId === variable.id);
-      return update ? plainVariableIntent({ ...variableDocumentRecord(variable, { serviceId, variableGroupId: null }, document.intent, document.updatedAt),
+      return update ? plainVariableIntent({ ...variableDocumentRecord(variable, serviceId, document.intent, document.updatedAt),
         key: update.key, value: { type: "plain", value: update.value } }, document.intent) : variable;
     }));
     for (const create of diff.creates) variables.push(await plainVariableIntent(buildPlainServiceVariableRecord({ ...create, serviceId }), document.intent));

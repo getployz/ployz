@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { Conflict } from "#/server/public-error";
 
 export const deploymentSourcePinsSchema = Schema.Record(Schema.String, Schema.Struct({
@@ -12,7 +12,7 @@ export const validateDeploymentSourcePins = Effect.fn("Deployments.validateSourc
   function* (pins: DeploymentSourcePins, snapshots: readonly { nodeId: string; nodeType: string; config: unknown }[]) {
     for (const serviceId of Object.keys(pins)) {
       const service = snapshots.find(row => row.nodeId === serviceId && row.nodeType === "service");
-      if (!service || parseDashboardServiceConfig(service.config).source.type !== "git") {
+      if (!service || parseServiceConfig(service.config).source.type !== "git") {
         return yield* new Conflict({ message: "A source pin must identify a frozen Git Service." });
       }
     }

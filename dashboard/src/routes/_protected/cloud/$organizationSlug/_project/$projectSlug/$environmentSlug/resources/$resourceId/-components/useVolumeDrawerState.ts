@@ -2,12 +2,10 @@ import { useEnvironmentDocument } from "#/modules/environment-design/environment
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
-  useEnvironmentResourcesCollection,
   useServicesCollection,
   useVolumeResourcesCollection,
 } from "#/modules/services/services.collection";
 import {
-  variableGroupResourceRecordSchema,
   volumeResourceRecordSchema,
   type VolumeResourceRecord,
 } from "#/modules/environment-design/resources";
@@ -39,26 +37,12 @@ export function useVolumeDrawerState(
   params: VolumeResourceRouteParams,
 ): VolumeDrawerState | null {
   const volumeResources = useVolumeResourcesCollection(params.organizationSlug);
-  const environmentResources = useEnvironmentResourcesCollection(
-    params.organizationSlug,
-  );
   const servicesCollection = useServicesCollection(params.organizationSlug);
   const { data: volumeRows } = useLiveSuspenseQuery({
     queryKey: ['volume-resources', volumeResources.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: volumeResources })
-        .where(({ resource }) => eq(resource.projectSlug, params.projectSlug))
-        .where(({ resource }) =>
-          eq(resource.environmentSlug, params.environmentSlug),
-        )
-        .select(({ resource }) => resource),
-  });
-  const { data: variableGroupResourceRows } = useLiveSuspenseQuery({
-    queryKey: ['volume-variable-groups', environmentResources.id, params.projectSlug, params.environmentSlug],
-    query: (q) =>
-      q
-        .from({ resource: environmentResources })
         .where(({ resource }) => eq(resource.projectSlug, params.projectSlug))
         .where(({ resource }) =>
           eq(resource.environmentSlug, params.environmentSlug),
@@ -78,9 +62,6 @@ export function useVolumeDrawerState(
   });
   const volumes = volumeRows.map((resource) =>
     parseLiveQueryRow(volumeResourceRecordSchema, resource),
-  );
-  const variableGroupResources = variableGroupResourceRows.map((resource) =>
-    parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
   const resourceRow =
     volumes.find((item) => item.resource.id === params.resourceId) ?? null;
@@ -107,11 +88,6 @@ export function useVolumeDrawerState(
         type: "service" as const,
         id: service.id,
         name: service.name,
-      })),
-      ...variableGroupResources.map((item) => ({
-        type: "variable_group" as const,
-        id: item.resource.id,
-        name: item.resource.name,
       })),
       ...volumes.map((item) => ({
         type: "volume" as const,

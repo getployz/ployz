@@ -8,7 +8,6 @@ import type { VariableRecord } from "#/modules/environment-design/variables";
 const baseVariable = {
   id: "33333333-3333-4333-8333-333333333333",
   serviceId: "22222222-2222-4222-8222-222222222222",
-  variableGroupId: null,
 
   key: "API_KEY",
   description: "API token",

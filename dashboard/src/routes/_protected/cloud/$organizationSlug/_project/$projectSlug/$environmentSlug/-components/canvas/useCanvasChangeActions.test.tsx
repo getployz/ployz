@@ -32,7 +32,7 @@ vi.spyOn(collections, "getEnvironmentsCollection").mockReturnValue(asTestDouble<
 const discard = vi.spyOn(restore, "discardEnvironmentChangesServerFn");
 const reviewedDocument = {
   id: "env", revision: "reviewed-revision", compiled: compileSavedEnvironmentIntent({ environmentId: "env", intent: {
-    version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [],
+    version: 1, environmentSlug: "production", services: [], volumes: [],
   } }),
 };
 vi.spyOn(documents, "getEnvironmentDocumentsCollection").mockReturnValue(

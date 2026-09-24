@@ -1,8 +1,5 @@
-import { vi } from "vitest";
-vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
-import { createVariableGroupResource } from "./resource-operations.server";
 import { assert, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
@@ -23,11 +20,9 @@ import {
 import { createService } from "./service-operations.server";
 import { createImageServiceSource } from "./services";
 import {
-  attachServiceVariableGroup,
   bulkUpdateServiceVariables,
   createServiceVariable,
-  createVariableGroupVariable,
-  updateVariableGroupVariable,
+  updateServiceVariable,
 } from "./variable-operations.server";
 
 it.live(
@@ -121,8 +116,6 @@ it.live(
           restartPolicy: "unless-stopped",
         });
         const serviceId = createdService.data.service.id;
-        const createdGroup = yield* createVariableGroupResource(actor, { organizationSlug: "acme", environmentId: environmentRecord.id, name: "Shared", x: 0, y: 0 });
-        const group = createdGroup.data.variableGroup;
 
         const plain = yield* createServiceVariable(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
@@ -142,17 +135,17 @@ it.live(
         assert.strictEqual(plainRows.length, 2);
         assert.strictEqual(new Set(plainRows.map((row) => row.txid)).size, 1);
 
-        const sealed = yield* createVariableGroupVariable(actor, {
+        const sealed = yield* createServiceVariable(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
           environmentId: environmentRecord.id,
-          variableGroupId: group.id,
+          serviceId,
           key: "TOKEN",
           description: "private",
           exported: true,
           value: { type: "sealed", value: "never-return-this" },
         });
-        const sealedVariable = sealed.data.intent.variableGroups[0]?.variables[0];
+        const sealedVariable = sealed.data.intent.services[0]?.variables.find((variable) => variable.key === "TOKEN");
         if (!sealedVariable) return yield* Effect.die("Secret variable missing.");
         assert.strictEqual(sealedVariable.value.kind, "secret");
         assert.ok(!JSON.stringify(sealed.data).includes("never-return-this"));
@@ -165,11 +158,11 @@ it.live(
         assert.strictEqual(new Set(secretRows.map((row) => row.txid)).size, 1);
 
         const invalidTransition = yield* Effect.flip(
-          updateVariableGroupVariable(actor, {
+          updateServiceVariable(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
             organizationSlug: "acme",
             environmentId: environmentRecord.id,
-            variableGroupId: group.id,
+            serviceId,
             variableId: sealedVariable.id,
             key: "TOKEN",
             description: "private",
@@ -179,14 +172,6 @@ it.live(
         );
         assert.strictEqual(invalidTransition._tag, "Validation");
 
-        const attachment = yield* attachServiceVariableGroup(actor, {
-          revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
-          organizationSlug: "acme",
-          environmentId: environmentRecord.id,
-          serviceId,
-          variableGroupId: group.id,
-        });
-        assert.strictEqual(attachment.data.intent.services[0]?.variableGroupAttachments[0]?.variableGroupId, group.id);
         const bulk = yield* bulkUpdateServiceVariables(actor, {
           revision: (yield* loadEnvironmentDocument(environmentRecord.id)).revision,
           organizationSlug: "acme",
@@ -209,7 +194,7 @@ it.live(
           ],
           deletes: [],
         });
-        assert.deepStrictEqual(bulk.data.intent.services[0]?.variables.map((variable) => [variable.key, variable.value]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), [
+        assert.deepStrictEqual(bulk.data.intent.services[0]?.variables.filter((variable) => variable.key !== "TOKEN").map((variable) => [variable.key, variable.value]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), [
           ["HOST", { kind: "literal", value: "127.0.0.1" }], ["PORT", { kind: "literal", value: "${{ Postgres.PORT }}" }],
         ]);
         assert.strictEqual(

@@ -1,14 +1,14 @@
 import { environmentNodeConfigSnapshot, volumeRemoveAttempt } from "#/modules/runtime/tables";
-import { variableGroupDocumentRecord, volumeDocumentRecord } from "./resource-document";
+import { volumeDocumentRecord } from "./resource-document";
 import "@tanstack/react-start/server-only";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { Effect } from "effect";
-import { environmentCanvasNodePosition, environmentResource, environmentVariableGroup, resourceLineage } from "./tables";
+import { environmentCanvasNodePosition, environmentResource, resourceLineage } from "./tables";
 import { project } from "#/modules/project/tables";
 import { organizationIdForEnvironment, organizationIdForProject } from "#/db/scope-values.server";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
-import { createResourceLineage, createVariableGroupLineage } from "./authoring-repository.server";
+import { createResourceLineage } from "./authoring-repository.server";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 
 const canvasPositionColumns = {
@@ -39,14 +39,6 @@ const loadResourceRecord = Effect.fn("EnvironmentDesign.loadResourceRecord")(
   },
 );
 
-export const getVariableGroupResource = Effect.fn("EnvironmentDesign.getVariableGroupResource")(
-  function* (environmentId: string, resourceId: string) {
-    const row = yield* loadResourceRecord(environmentId, resourceId);
-    if (!row) return null;
-    return variableGroupDocumentRecord(row);
-  },
-);
-
 export const getVolumeResource = Effect.fn("EnvironmentDesign.getVolumeResource")(
   function* (environmentId: string, resourceId: string) {
     const row = yield* loadResourceRecord(environmentId, resourceId);
@@ -70,29 +62,20 @@ export const getVolumeResource = Effect.fn("EnvironmentDesign.getVolumeResource"
 export const getResourceIdentity = Effect.fn("EnvironmentDesign.getResourceIdentity")(
   function* (environmentId: string, resourceId: string) {
     const { intent } = yield* loadEnvironmentDocument(environmentId);
-    if (intent.variableGroups.some((node) => node.resourceId === resourceId)) return { id: resourceId, implementationType: "variable_group" as const };
     if (intent.volumes.some((node) => node.resourceId === resourceId)) return { id: resourceId, implementationType: "volume" as const };
     return null;
   },
 );
 
 export const createResourceIdentity = Effect.fn("EnvironmentDesign.createResourceIdentity")(
-  function* (input: { projectId: string; environmentId: string; name: string; slug: string; type: "volume" | "variable_group"; x: number; y: number }) {
+  function* (input: { projectId: string; environmentId: string; name: string; slug: string; x: number; y: number }) {
     const { drizzle } = yield* Database;
     const lineage = yield* createResourceLineage(input);
     if (!lineage) return yield* new Conflict({ message: "Could not allocate resource lineage." });
-    let group = null;
-    if (input.type === "variable_group") {
-      const groupLineage = yield* createVariableGroupLineage(input);
-      if (!groupLineage) return yield* new Conflict({ message: "Could not allocate variable group lineage." });
-      const [created] = yield* drizzle.insert(environmentVariableGroup).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: groupLineage.id }).returning();
-      if (!created) return yield* Effect.die("PostgreSQL did not return variable group identity.");
-      group = created;
-    }
-    const [resource] = yield* drizzle.insert(environmentResource).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: lineage.id, implementationType: input.type, variableGroupId: group?.id ?? null }).returning();
+    const [resource] = yield* drizzle.insert(environmentResource).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: lineage.id, implementationType: "volume" }).returning();
     if (!resource) return yield* Effect.die("PostgreSQL did not return resource identity.");
-    const canvasPosition = yield* upsertResourceCanvasPosition({ ...input, resourceId: resource.id, resourceType: input.type });
-    return { resource, group, lineage, canvasPosition };
+    const canvasPosition = yield* upsertResourceCanvasPosition({ ...input, resourceId: resource.id, resourceType: "volume" });
+    return { resource, lineage, canvasPosition };
   },
 );
 
@@ -101,7 +84,7 @@ export const upsertResourceCanvasPosition = Effect.fn(
 )(function* (input: {
   readonly environmentId: string;
   readonly resourceId: string;
-  readonly resourceType: "variable_group" | "volume";
+  readonly resourceType: "volume";
   readonly x: number;
   readonly y: number;
 }) {

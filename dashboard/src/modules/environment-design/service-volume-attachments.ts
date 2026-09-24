@@ -1,5 +1,4 @@
 import { Schema, SchemaGetter } from "effect";
-import type { EnvironmentResourceType } from "#/modules/environment-design/resources";
 import {
   OrganizationSlug,
   Uuid,
@@ -101,24 +100,6 @@ export function getServiceMountsByServiceId(input: {
     );
   }
   return byServiceId;
-}
-
-export type AttachmentTargetError =
-  | "cross_environment"
-  | "non_volume_resource";
-
-export function getAttachmentTargetError(input: {
-  serviceEnvironmentId: string;
-  resourceEnvironmentId: string;
-  resourceImplementationType: EnvironmentResourceType;
-}): AttachmentTargetError | null {
-  if (input.serviceEnvironmentId !== input.resourceEnvironmentId) {
-    return "cross_environment";
-  }
-  if (input.resourceImplementationType !== "volume") {
-    return "non_volume_resource";
-  }
-  return null;
 }
 
 export const attachServiceVolumeSchema = Schema.Struct({

@@ -1,5 +1,4 @@
 import {
-  DatabaseIcon,
   HardDriveIcon,
   PackageIcon,
   PencilIcon,
@@ -65,11 +64,7 @@ export function getCanvasNodeIcon(group: CanvasNodeDiffGroup) {
     );
   }
 
-  if (group.nodeType === "volume") {
-    return <HardDriveIcon />;
-  }
-
-  return <DatabaseIcon />;
+  return <HardDriveIcon />;
 }
 
 export function getServiceChangeAction(kind: ServiceDeploymentDiffKind) {

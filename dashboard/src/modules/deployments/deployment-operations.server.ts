@@ -33,7 +33,7 @@ const requireOrganization = Effect.fn("Deployments.requireOrganization")(
 );
 
 function parseEnvironmentChangeStateNode(input: {
-  readonly nodeType: "service" | "variable_group" | "volume";
+  readonly nodeType: "service" | "volume";
   readonly nodeId: string;
   readonly nodeLineageId: string;
   readonly revisionId: string | null;
@@ -76,7 +76,7 @@ type EnvironmentChangeStateEvidenceNode = NonNullable<
 >["nodes"][number];
 
 function parseEvidenceChangeStateNode(input: {
-  readonly nodeType: "service" | "variable_group" | "volume";
+  readonly nodeType: "service" | "volume";
   readonly nodeId: string;
   readonly nodeLineageId: string;
   readonly revisionId: string | null;

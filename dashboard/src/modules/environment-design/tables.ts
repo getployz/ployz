@@ -11,7 +11,7 @@ import { sql } from "drizzle-orm";
 
 import { createSelectSchema } from "drizzle-orm/effect-schema";
 
-import { boolean, check, integer, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, integer, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -51,19 +51,18 @@ export type VariableValueKind = (typeof VARIABLE_VALUE_KINDS)[number];
  * parts. References are stored by the producer's stable `lineageId` (shared
  * across environments) so renames never break them; the UI
  * resolves `lineageId` -> current slug for display. A `self` ref resolves
- * within the owning service/variable group's own scope (its own vars + managed
- * exports).
+ * within the owning service's own scope (its own vars + managed exports).
  */
 export type ValuePartRefOwner =
   | { scope: "self" }
-  | { scope: "service" | "variable_group"; lineageId: string };
+  | { scope: "service"; lineageId: string };
 
 export type ValuePart =
   | { kind: "text"; value: string }
   | { kind: "ref"; owner: ValuePartRefOwner; key: string };
 
 export type EnvironmentSnapshotVariableProducer = {
-  ownerScope: "service" | "variable_group";
+  ownerScope: "service";
   ownerId: string;
   ownerLineageId: string;
   key: string;
@@ -75,18 +74,10 @@ export type EnvironmentSnapshotVariableProducer = {
 
 export const CANVAS_NODE_TYPES = [
   "service",
-  "variable_group",
   "volume",
 ] as const;
 
 export type CanvasNodeType = (typeof CANVAS_NODE_TYPES)[number];
-
-export const CONFIG_KEY_SCOPES = [
-  "service_lineage",
-  "variable_group_lineage",
-] as const;
-
-export type ConfigKeyScope = (typeof CONFIG_KEY_SCOPES)[number];
 
 export type {
   ServiceGitBranch, ServiceImageCredentials,
@@ -125,25 +116,6 @@ export const serviceLineage = pgTable(
     unique().on(table.projectId, table.canonicalSlug),
     unique().on(table.projectId, table.id),
     index("service_lineage_project_id_idx").on(table.projectId),
-  ],
-);
-
-export const variableGroupLineage = pgTable(
-  "variable_group_lineage",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    projectId: uuid("project_id")
-      .notNull()
-      .references(() => project.id, { onDelete: "cascade" }),
-    canonicalName: text("canonical_name").notNull(),
-    canonicalSlug: text("canonical_slug").notNull(),
-    createdAt,
-    updatedAt,
-  },
-  (table) => [
-    unique().on(table.projectId, table.canonicalSlug),
-    unique().on(table.projectId, table.id),
-    index("variable_group_lineage_project_id_idx").on(table.projectId),
   ],
 );
 
@@ -269,48 +241,6 @@ export const environmentCanvasNodePosition = pgTable(
   ],
 );
 
-export const environmentVariableGroup = pgTable(
-  "environment_variable_group",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
-    projectId: uuid("project_id")
-      .notNull()
-      .references(() => project.id, { onDelete: "cascade" }),
-    environmentId: uuid("environment_id")
-      .notNull()
-      .references(() => environment.id, { onDelete: "cascade" }),
-    lineageId: uuid("lineage_id")
-      .notNull()
-      .references(() => variableGroupLineage.id, { onDelete: "restrict" }),
-    createdAt,
-    updatedAt,
-  },
-  (table) => [
-    unique().on(table.projectId, table.id),
-    unique().on(table.environmentId, table.id),
-    unique().on(table.environmentId, table.lineageId),
-    index("environment_variable_group_project_id_idx").on(table.projectId),
-    index("environment_variable_group_organization_id_idx").on(
-      table.organizationId,
-    ),
-    index("environment_variable_group_environment_id_idx").on(
-      table.environmentId,
-    ),
-    index("environment_variable_group_lineage_id_idx").on(table.lineageId),
-    foreignKey({
-      columns: [table.projectId, table.environmentId],
-      foreignColumns: [environment.projectId, environment.id],
-    }).onDelete("cascade"),
-    foreignKey({
-      columns: [table.projectId, table.lineageId],
-      foreignColumns: [variableGroupLineage.projectId, variableGroupLineage.id],
-    }).onDelete("restrict"),
-  ],
-);
-
 export const environmentResource = pgTable(
   "environment_resource",
   {
@@ -330,10 +260,6 @@ export const environmentResource = pgTable(
     implementationType: text("implementation_type")
       .notNull()
       .$type<EnvironmentResourceType>(),
-    variableGroupId: uuid("variable_group_id").references(
-      () => environmentVariableGroup.id,
-      { onDelete: "restrict" },
-    ),
     createdAt,
     updatedAt,
   },
@@ -341,16 +267,10 @@ export const environmentResource = pgTable(
     unique().on(table.projectId, table.id),
     unique().on(table.environmentId, table.id),
     unique().on(table.environmentId, table.lineageId),
-    uniqueIndex("environment_resource_variable_group_variable_group_unique")
-      .on(table.variableGroupId)
-      .where(sql`${table.implementationType} = 'variable_group'`),
     index("environment_resource_project_id_idx").on(table.projectId),
     index("environment_resource_organization_id_idx").on(table.organizationId),
     index("environment_resource_environment_id_idx").on(table.environmentId),
     index("environment_resource_lineage_id_idx").on(table.lineageId),
-    index("environment_resource_variable_group_id_idx").on(
-      table.variableGroupId,
-    ),
     foreignKey({
       columns: [table.projectId, table.environmentId],
       foreignColumns: [environment.projectId, environment.id],
@@ -359,24 +279,9 @@ export const environmentResource = pgTable(
       columns: [table.projectId, table.lineageId],
       foreignColumns: [resourceLineage.projectId, resourceLineage.id],
     }).onDelete("restrict"),
-    foreignKey({
-      columns: [table.projectId, table.variableGroupId],
-      foreignColumns: [
-        environmentVariableGroup.projectId,
-        environmentVariableGroup.id,
-      ],
-    }).onDelete("restrict"),
     check(
       "environment_resource_implementation_type_check",
-      sql`${table.implementationType} in ('variable_group', 'volume')`,
-    ),
-    check(
-      "environment_resource_variable_group_reference_check",
-      sql`(${table.implementationType} != 'variable_group' or ${table.variableGroupId} is not null)`,
-    ),
-    check(
-      "environment_resource_volume_no_variable_group_check",
-      sql`(${table.implementationType} != 'volume' or ${table.variableGroupId} is null)`,
+      sql`${table.implementationType} in ('volume')`,
     ),
   ],
 );
@@ -385,14 +290,11 @@ export const environmentResource = pgTable(
 export const variable = pgTable("variable", {
   id: uuid("id").defaultRandom().primaryKey(),
   environmentId: uuid("environment_id").notNull().references(() => environment.id, { onDelete: "cascade" }),
-  serviceId: uuid("service_id").references(() => service.id, { onDelete: "cascade" }),
-  variableGroupId: uuid("variable_group_id").references(() => environmentVariableGroup.id, { onDelete: "cascade" }),
+  serviceId: uuid("service_id").notNull().references(() => service.id, { onDelete: "cascade" }),
   createdAt,
 }, (table) => [
   unique().on(table.environmentId, table.id),
-  check("variable_owner_check", sql`num_nonnulls(${table.serviceId}, ${table.variableGroupId}) = 1`),
   foreignKey({ columns: [table.environmentId, table.serviceId], foreignColumns: [service.environmentId, service.id] }).onDelete("cascade"),
-  foreignKey({ columns: [table.environmentId, table.variableGroupId], foreignColumns: [environmentVariableGroup.environmentId, environmentVariableGroup.id] }).onDelete("cascade"),
 ]);
 
 export const variableSecret = pgTable("variable_secret", {
@@ -410,6 +312,3 @@ export const resourceLineageSelectSchema = createSelectSchema(resourceLineage);
 export const environmentResourceSelectSchema =
   createSelectSchema(environmentResource);
 
-export const environmentVariableGroupSelectSchema = createSelectSchema(
-  environmentVariableGroup,
-);

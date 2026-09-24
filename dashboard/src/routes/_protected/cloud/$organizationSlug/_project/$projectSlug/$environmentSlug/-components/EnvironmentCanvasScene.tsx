@@ -1,4 +1,3 @@
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { Suspense } from "react";
@@ -22,12 +21,10 @@ import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collect
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
   environmentResourceCanvasPositionSchema,
-  variableGroupResourceRecordSchema,
   volumeResourceRecordSchema,
 } from "#/modules/environment-design/resources";
 import {
   useCanvasPositionsCollection,
-  useEnvironmentResourcesCollection,
   useServicesCollection,
   useVolumeResourcesCollection,
 } from "#/modules/services/services.collection";
@@ -75,9 +72,6 @@ function CanvasWithData() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const servicesCollection = useServicesCollection(params.organizationSlug);
-  const environmentResourcesCollection = useEnvironmentResourcesCollection(
-    params.organizationSlug,
-  );
   const canvasPositionsCollection = useCanvasPositionsCollection(
     params.organizationSlug,
   );
@@ -102,17 +96,6 @@ function CanvasWithData() {
         canvasPositions: canvasPositionsCollection,
         documents,
       }),
-  });
-  const { data: environmentResourceRows } = useLiveSuspenseQuery({
-    queryKey: ['canvas-resources', environmentResourcesCollection.id, params.projectSlug, params.environmentSlug],
-    query: (q) =>
-      q
-        .from({ resource: environmentResourcesCollection })
-        .where(({ resource }) => eq(resource.projectSlug, params.projectSlug))
-        .where(({ resource }) =>
-          eq(resource.environmentSlug, params.environmentSlug),
-        )
-        .select(({ resource }) => resource),
   });
   const { data: canvasPositionRows } = useLiveSuspenseQuery({
     queryKey: ['canvas-positions', canvasPositionsCollection.id, environmentId],
@@ -167,9 +150,6 @@ function CanvasWithData() {
   const nodeIntroductions = nodeIntroductionRows.map((introduction) =>
     parseLiveQueryRow(environmentNodeIntroductionSchema, introduction),
   );
-  const environmentResources = environmentResourceRows.map((resource) =>
-    parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
-  );
   const volumeResources = volumeResourceRows.map((resource) =>
     parseLiveQueryRow(volumeResourceRecordSchema, resource),
   );
@@ -177,24 +157,18 @@ function CanvasWithData() {
     parseLiveQueryRow(environmentResourceCanvasPositionSchema, position),
   );
   const servicesWithBoundEnv = services.map(normalizeEnvironmentServicesViewRecord);
-  const serviceVariableGroupAttachments = document?.intent.services.flatMap((service) =>
-    service.variableGroupAttachments.map((attachment) => ({ ...attachment, serviceId: service.id, environmentId }))) ?? [];
   const serviceVolumeAttachments = document?.intent.services.flatMap((service) =>
     service.volumeAttachments.map((attachment) => ({ ...attachment, serviceId: service.id, environmentId }))) ?? [];
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );
-  const visibleGroups = variableGroupsEnabled ? environmentResources : [];
   const initialNodes = buildNodes(
     activeServicesWithBoundEnv,
-    visibleGroups,
     canvasPositions,
     selectedNodeId,
     volumeResources,
   );
   const initialEdges = buildEdges(
-    visibleGroups,
-    serviceVariableGroupAttachments,
     volumeResources,
     serviceVolumeAttachments,
     activeServicesWithBoundEnv,
@@ -214,7 +188,6 @@ function CanvasWithData() {
         organizationId={organizationId}
         environmentId={environmentId}
         servicesWithBoundEnv={servicesWithBoundEnv}
-        environmentResources={visibleGroups}
         volumeResources={volumeResources}
         environmentChangeState={environmentChangeState}
         nodeIntroductions={nodeIntroductions}

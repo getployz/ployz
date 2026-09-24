@@ -33,14 +33,6 @@ describe("environment node introductions", () => {
     expect(
       decodeStrict(environmentNodeIntroductionSchema, {
         ...base,
-        nodeType: "variable_group",
-        config: { version: 1, name: "Shared", variables: [] },
-      }).nodeType,
-    ).toBe("variable_group");
-
-    expect(
-      decodeStrict(environmentNodeIntroductionSchema, {
-        ...base,
         nodeType: "volume",
         configVersion: 2,
         config: { version: 2, name: "Data" },

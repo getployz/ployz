@@ -1,7 +1,6 @@
 import { Schema } from "effect";
 import { BILLING_PLANS } from "#/modules/billing/tables";
 import type { StoredBillingPlan } from "#/modules/billing/tables";
-import type { ServiceRoute } from "#/modules/environment-design/tables";
 
 export const BillingPlan = Schema.Literals(BILLING_PLANS);
 export type BillingPlan = typeof BillingPlan.Type;
@@ -34,20 +33,6 @@ export type LiveManagedSubscriptionSnapshot = ManagedSubscriptionSnapshot & {
 };
 
 export type ProductIds = Readonly<Record<BillingPlan, string>>;
-
-export type CustomDomainCapabilityDenialReason =
-  | "free_plan"
-  | "inactive_subscription"
-  | "expired_subscription"
-  | "unknown_product"
-  | "provider_unavailable";
-
-export type CustomDomainCapability =
-  | { readonly allowed: true }
-  | {
-      readonly allowed: false;
-      readonly reason: CustomDomainCapabilityDenialReason;
-    };
 
 const planRank = {
   free: 0,
@@ -133,38 +118,7 @@ export function previewProration(input: {
   };
 }
 
-export function evaluateCustomDomainCapability(
-  entitlement: LiveManagedSubscriptionSnapshot,
-  now: Date,
-): CustomDomainCapability {
-  if (entitlement.hasUnknownActiveProduct) {
-    return { allowed: false, reason: "unknown_product" };
-  }
-  if (!entitlement.hasActiveSubscription || entitlement.currentPlan === null) {
-    return { allowed: false, reason: "inactive_subscription" };
-  }
-  if (
-    entitlement.currentPeriodEnd === null ||
-    entitlement.currentPeriodEnd.getTime() <= now.getTime()
-  ) {
-    return { allowed: false, reason: "expired_subscription" };
-  }
-  if (entitlement.currentPlan === "free") {
-    return { allowed: false, reason: "free_plan" };
-  }
-  return { allowed: true };
-}
-
-export function routeMutationRequiresCustomDomainCapability(
-  previous: readonly ServiceRoute[],
-  next: readonly ServiceRoute[],
-) {
-  return next.some(
-    (route) =>
-      !previous.some(
-        (current) =>
-          current.hostname === route.hostname &&
-          current.targetPort === route.targetPort,
-      ),
-  );
+/** Free subscriptions are active but grant no paid capability. */
+export function holdsBillingPlan(snapshot: ManagedSubscriptionSnapshot) {
+  return snapshot.hasActiveSubscription && snapshot.currentPlan !== "free";
 }

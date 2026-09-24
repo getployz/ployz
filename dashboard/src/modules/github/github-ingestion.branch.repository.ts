@@ -150,7 +150,7 @@ const savedStateCandidates = Effect.fn("Github.savedStateCandidates")(
     saved: {
       environmentId: string;
       nodeSnapshots: Array<{
-        nodeType: "service" | "variable_group" | "volume";
+        nodeType: "service" | "volume";
         nodeId: string;
         config: unknown;
       }>;

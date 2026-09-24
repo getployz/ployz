@@ -12,31 +12,14 @@ const nodeId = "11111111-1111-4111-8111-111111111111";
 
 describe("Environment Resource node spine", () => {
   it("owns Environment Resource type recognition and snapshot names", () => {
-    expect(isEnvironmentResourceNodeType("variable_group")).toBe(true);
     expect(isEnvironmentResourceNodeType("volume")).toBe(true);
     expect(isEnvironmentResourceNodeType("service")).toBe(false);
-    expect(getEnvironmentResourceNodeSnapshotResourceName("variable_group")).toBe(
-      "VariableGroupSnapshot",
-    );
     expect(getEnvironmentResourceNodeSnapshotResourceName("volume")).toBe(
       "VolumeSnapshot",
     );
   });
 
-  it("strictly parses Variable Groups and normalizes historical Volume configs", () => {
-    expect(
-      Effect.runSync(
-        decodeEnvironmentResourceNodeConfig("variable_group", {
-          version: 1,
-          name: "Shared",
-          variables: [],
-        }),
-      ),
-    ).toEqual({
-      nodeType: "variable_group",
-      config: { version: 1, name: "Shared", variables: [] },
-    });
-
+  it("normalizes historical Volume configs", () => {
     expect(
       Effect.runSync(
         decodeEnvironmentResourceNodeConfig("volume", {
@@ -53,10 +36,9 @@ describe("Environment Resource node spine", () => {
   it("rejects extra config fields", () => {
     const failure = Effect.runSync(
       Effect.flip(
-        decodeEnvironmentResourceNodeConfig("variable_group", {
-          version: 1,
-          name: "Shared",
-          variables: [],
+        decodeEnvironmentResourceNodeConfig("volume", {
+          version: 2,
+          name: "shared-data",
           extra: true,
         }),
       ),
@@ -65,21 +47,6 @@ describe("Environment Resource node spine", () => {
   });
 
   it("diffs explicit resource projections without selecting a baseline", () => {
-    expect(
-      getEnvironmentResourceNodeConfigDiffRows({
-        nodeType: "variable_group",
-        nodeId,
-        baseline: { version: 1, name: "Shared", variables: [] },
-        current: { version: 1, name: "Shared Next", variables: [] },
-      }),
-    ).toEqual([
-      expect.objectContaining({
-        path: "name",
-        currentValue: "Shared",
-        newValue: "Shared Next",
-      }),
-    ]);
-
     expect(
       getEnvironmentResourceNodeConfigDiffRows({
         nodeType: "volume",

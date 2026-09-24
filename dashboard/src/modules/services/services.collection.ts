@@ -1,6 +1,6 @@
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { serviceDocumentRecord } from "#/modules/environment-design/service-document";
@@ -22,7 +22,6 @@ import {
 } from "#/collections/collections";
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
 import {
-  createEnvironmentResourcesCollection,
   createVolumeResourcesCollection,
 } from "#/modules/environment-design/resource.collection";
 import { editEnvironmentDocument } from "#/modules/environment-design/environment-document-edit";
@@ -92,7 +91,7 @@ function createServiceWriter(
         source: modified.source,
         preDeployCommand: modified.preDeployCommand, startCommand: modified.startCommand,
         healthcheck: modified.healthcheck, restartPolicy: modified.restartPolicy,
-        maxRetries: modified.maxRetries, cron: modified.cron, replicas: modified.replicas,
+        maxRetries: modified.maxRetries, replicas: modified.replicas,
         cpuLimit: modified.cpuLimit, memLimit: modified.memLimit, privateDns: modified.privateDns,
         routes: modified.routes, managedHostnames: modified.managedHostnames, build: modified.build,
         deletedAt: modified.deletedAt ?? null,
@@ -146,14 +145,6 @@ function resourceSources(organizationSlug: string, scope: CollectionScope) {
   };
 }
 
-export const getEnvironmentResourcesCollection = cachedByCollectionScope(
-  (organizationSlug, scope) =>
-    createEnvironmentResourcesCollection({
-      client: getDbClient(scope.queryClient),
-      sources: resourceSources(organizationSlug, scope),
-    }),
-);
-
 export const getVolumeResourcesCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createVolumeResourcesCollection({
@@ -172,9 +163,6 @@ export function useServicesCollection(organizationSlug: string) {
 }
 export function useServiceWriter(organizationSlug: string) {
   return getServiceWriter(organizationSlug, useCollectionScope());
-}
-export function useEnvironmentResourcesCollection(organizationSlug: string) {
-  return getEnvironmentResourcesCollection(organizationSlug, useCollectionScope());
 }
 export function useVolumeResourcesCollection(organizationSlug: string) {
   return getVolumeResourcesCollection(organizationSlug, useCollectionScope());
@@ -233,7 +221,6 @@ export type EnvironmentServiceRecord = Omit<
   restartPolicy: ServiceWithContextRecord["restartPolicy"];
   env: ServiceDeployEnv;
   mounts?: ServiceDeployMount[];
-  variableGroupAttachments?: ServiceDeploymentFieldSelection["variableGroupAttachments"];
 } & Pick<
     RawEnvironmentServiceViewRecord["service"],
     "$synced" | "$origin" | "$key" | "$collectionId"
@@ -253,14 +240,13 @@ export function normalizeEnvironmentServicesViewRecord(
   const node = record.document.intent.services.find((node) => node.id === record.service.id);
   const snapshot = record.document.compiled.nodeSnapshots.find((node) => node.nodeType === "service" && node.nodeId === record.service.id);
   if (!node || !snapshot) throw new Error("Service is absent from the environment document.");
-  const config = parseDashboardServiceConfig(snapshot.config);
+  const config = parseServiceConfig(snapshot.config);
   const { document: _document, ...view } = record;
   return {
     ...view,
     variables: node.variables.map((variable) => variableDocumentRecord(variable,
-      { serviceId: node.id, variableGroupId: null }, record.document.intent, record.document.updatedAt)),
+      node.id, record.document.intent, record.document.updatedAt)),
     service: { ...record.service, source: config.source, healthcheck: config.healthcheck,
-      restartPolicy: config.restartPolicy, env: config.env, mounts: config.mounts,
-      variableGroupAttachments: config.variableGroupAttachments },
+      restartPolicy: config.restartPolicy, env: config.env, mounts: config.mounts },
   };
 }

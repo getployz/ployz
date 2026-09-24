@@ -67,8 +67,6 @@ by side. Run migrations once before the rollout, not independently on each proce
 See [DESIGN.md](DESIGN.md) for product design and [CONTEXT.md](CONTEXT.md) for the
 Dashboard glossary.
 
-Variable Group authoring is disabled by default. Set `VITE_VARIABLE_GROUPS_ENABLED=true` before starting the dev server or building Dashboard to enable it. The flag is shared by UI and server authoring actions; existing attached values still participate in deployment when disabled.
-
 ### Cloud image deployment
 
 The existing Cloud workflow reuses the matching SDK artifact (and the shared

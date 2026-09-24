@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parseDashboardServiceConfig as parseServiceConfig } from "#/modules/environment-design/service-config";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { buildEnvironmentChangeSet, type EnvironmentNodeProjection } from "./environment-change-set";
 
 const service = parseServiceConfig({
@@ -11,7 +11,6 @@ const empty = { token: "none", nodes: [] };
 
 it.each([
   { type: "service", config: service },
-  { type: "variable_group", config: { version: 1, name: "Variables", variables: [] } },
   { type: "volume", config: { version: 2, name: "Data" } },
 ] as const)("counts $type lifecycle once and suppresses submitted creations/deletions", ({ type, config }) => {
   const entry = { node: { type, id: "node" }, config } as EnvironmentNodeProjection;

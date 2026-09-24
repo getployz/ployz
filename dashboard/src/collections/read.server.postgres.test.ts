@@ -156,14 +156,14 @@ it.live(
         for (const row of projects) {
           yield* database.drizzle.insert(environment).values({ organizationId: row.organizationId, projectId: row.id,
             name: row.name, namespace: "production",
-            intent: { version: 1, environmentSlug: "production", services: [], volumes: [], variableGroups: [] },
+            intent: { version: 1, environmentSlug: "production", services: [], volumes: [] },
           });
         }
         const visibleProject = projects.find((row) => row.organizationId === organizationId);
         if (!visibleProject) return yield* Effect.die("Missing visible project");
         yield* database.drizzle.insert(environment).values({ organizationId, projectId: visibleProject.id,
           name: "Staging", namespace: "staging",
-          intent: { version: 1, environmentSlug: "staging", services: [], volumes: [], variableGroups: [] },
+          intent: { version: 1, environmentSlug: "staging", services: [], volumes: [] },
         });
         // Org Store reads are org-wide: every environment, summaries without intent documents.
         const summaryResponse = yield* execute(request, { table: "environment_summary", userId, organizationSlug: "acme-table-sync" });

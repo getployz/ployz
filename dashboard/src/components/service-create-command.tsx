@@ -25,10 +25,7 @@ import {
   getCreateMenuItems,
 } from "#/components/create-menu-items";
 import { Spinner } from "#/components/ui/spinner";
-import {
-  createVariableGroupResourceServerFn,
-  createVolumeResourceServerFn,
-} from "#/modules/environment-design/resource-functions";
+import { createVolumeResourceServerFn } from "#/modules/environment-design/resource-functions";
 import {
   loadWorkspaceEnvironment,
 } from "#/modules/environment-design/workspace.queries";
@@ -99,7 +96,6 @@ type ServiceCommandProps = {
   onCreated?: (
     result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
   ) => void | Promise<void>;
-  onCreateVariableGroup?: () => void;
   onCreateVolume?: () => void;
 };
 
@@ -175,9 +171,6 @@ function useServiceCreateActions({
   const navigate = useNavigate();
   const createEmptyProject = useServerFn(createEmptyProjectServerFn);
   const createService = useServerFn(createServiceServerFn);
-  const createVariableGroupResource = useServerFn(
-    createVariableGroupResourceServerFn,
-  );
   const createVolumeResource = useServerFn(createVolumeResourceServerFn);
 
   const createEmptyProjectMutation = useMutation({
@@ -222,21 +215,6 @@ function useServiceCreateActions({
       }
     },
   });
-  const createVariableGroupMutation = useMutation({
-    mutationFn: (input: { environmentId: string }) =>
-      createVariableGroupResource({
-        data: {
-          organizationSlug: props.organizationSlug,
-          environmentId: input.environmentId,
-          name: "Database",
-          x: 0,
-          y: 0,
-        },
-      }),
-    onSuccess: async (result) => {
-      await applyCreatedResource(props.organizationSlug, collectionScope, result);
-    },
-  });
   const createVolumeMutation = useMutation({
     mutationFn: (input: { environmentId: string }) =>
       createVolumeResource({
@@ -257,7 +235,6 @@ function useServiceCreateActions({
     setQuery("");
     createEmptyProjectMutation.reset();
     createServiceMutation.reset();
-    createVariableGroupMutation.reset();
     createVolumeMutation.reset();
   }
 
@@ -269,12 +246,10 @@ function useServiceCreateActions({
   const isPending =
     createEmptyProjectMutation.isPending ||
     createServiceMutation.isPending ||
-    createVariableGroupMutation.isPending ||
     createVolumeMutation.isPending;
   const error =
     createEmptyProjectMutation.error ??
     createServiceMutation.error ??
-    createVariableGroupMutation.error ??
     createVolumeMutation.error;
 
   async function getServiceModeEnvironment() {
@@ -348,29 +323,6 @@ function useServiceCreateActions({
     }
   }
 
-  async function createVariableGroup() {
-    if (props.mode === "service" && props.onCreateVariableGroup) {
-      props.onCreateVariableGroup();
-      return;
-    }
-
-    const target = await getCreationTarget();
-    const result = await createVariableGroupMutation.mutateAsync({
-      environmentId: target.environmentId,
-    });
-
-    await navigate({
-      to: ENVIRONMENT_RESOURCE_ROUTE_TO,
-      params: {
-        organizationSlug: props.organizationSlug,
-        projectSlug: target.projectSlug,
-        environmentSlug: target.environmentSlug,
-          resourceId: result.data.resource.id,
-      },
-      search: (prev) => prev,
-    });
-  }
-
   async function createVolume() {
     if (props.mode === "service" && props.onCreateVolume) {
       props.onCreateVolume();
@@ -405,10 +357,6 @@ function useServiceCreateActions({
     }
     if (itemId === "empty-service") {
       void createServiceFromSource(createEmptyServiceSource());
-      return;
-    }
-    if (itemId === "variable-group") {
-      void createVariableGroup();
       return;
     }
     if (itemId === "volume") {

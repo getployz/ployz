@@ -41,10 +41,8 @@ export function VariablesPanel({
   allowSealOnCreate = false,
   defaultExported = false,
   headerActions,
-  renderBeforeList,
   renderAfterList,
   emptyState,
-  variableWarnings,
   valueTargets,
 }: {
   variables: VariableRecord[];
@@ -58,18 +56,14 @@ export function VariablesPanel({
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
   allowSealOnCreate?: boolean;
-  /** Whether the "Exported" toggle starts checked (true for export-first owners like Variable Groups). */
+  /** Whether the "Exported" toggle starts checked. */
   defaultExported?: boolean;
   /** Extra buttons rendered next to "New Variable" (e.g. a raw editor). */
   headerActions?: ReactNode;
-  /** Rendered above the variable rows (e.g. an alert or bindings panel). */
-  renderBeforeList?: () => ReactNode;
   /** Rendered below the variable rows (e.g. managed system variables). */
   renderAfterList?: () => ReactNode;
   /** Override the default empty state. */
   emptyState?: ReactNode;
-  /** Per-variable warning text rendered on editable rows. */
-  variableWarnings?: Map<string, string>;
 }) {
   const supportsExport = onUpdateMetadata != null;
   const [isAdding, setIsAdding] = useState(false);
@@ -114,8 +108,6 @@ export function VariablesPanel({
       <Separator />
 
       <div className="flex flex-col gap-6">
-        {renderBeforeList?.()}
-
         {variables.length > 0 ? (
           <div className="flex flex-col">
             {variables.map((variable) => (
@@ -126,7 +118,6 @@ export function VariablesPanel({
                 valueTargets={valueTargets}
                 onSealVariable={onSealVariable}
                 onUpdateMetadata={onUpdateMetadata}
-                warning={variableWarnings?.get(variable.id)}
               />
             ))}
           </div>

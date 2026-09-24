@@ -14,7 +14,6 @@ function getActionForItem(
   actions: {
     onCreateFromPanel: (panel: CreatorPanel) => void;
     onCreateBlank: () => void;
-    onCreateVariableGroup: () => void;
     onCreateVolume: () => void;
   },
 ) {
@@ -27,9 +26,6 @@ function getActionForItem(
   if (itemId === "empty-service") {
     return actions.onCreateBlank;
   }
-  if (itemId === "variable-group") {
-    return actions.onCreateVariableGroup;
-  }
   if (itemId === "volume") {
     return actions.onCreateVolume;
   }
@@ -41,13 +37,11 @@ export function CanvasContextMenu({
   children,
   onCreateFromPanel,
   onCreateBlank,
-  onCreateVariableGroup,
   onCreateVolume,
 }: {
   children: React.ReactNode;
   onCreateFromPanel: (panel: CreatorPanel) => void;
   onCreateBlank: () => void;
-  onCreateVariableGroup: () => void;
   onCreateVolume: () => void;
 }) {
   return (
@@ -63,7 +57,6 @@ export function CanvasContextMenu({
               onClick={getActionForItem(id, {
                 onCreateFromPanel,
                 onCreateBlank,
-                onCreateVariableGroup,
                 onCreateVolume,
               })}
             >

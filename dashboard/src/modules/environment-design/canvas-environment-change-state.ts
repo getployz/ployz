@@ -1,4 +1,3 @@
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceRecord } from "./services";
 import type {
@@ -35,14 +34,11 @@ export function buildCanvasEnvironmentChangeState(input: {
 }): CanvasEnvironmentChangeState {
   const submitted = input.deploymentEvidence && ["queued", "planning", "deploying"].includes(input.deploymentEvidence.status)
     ? input.deploymentEvidence : null;
-  const visibleState = <T extends EnvironmentStateProjection>(state: T): T => variableGroupsEnabled ? state
-    : { ...state, nodes: state.nodes.filter(entry => entry.node.type !== "variable_group") };
-  const saved = input.saved ? visibleState(input.saved) : null;
   const result = buildEnvironmentChangeSet({
-    working: visibleState(input.working), applied: visibleState(input.applied),
-    saved,
-    submitted: submitted ? visibleState({ token: submitted.token, nodes: submitted.nodes }) : null,
-    nodeIntroductions: visibleState(input.nodeIntroductions),
+    working: input.working, applied: input.applied,
+    saved: input.saved,
+    submitted: submitted ? { token: submitted.token, nodes: submitted.nodes } : null,
+    nodeIntroductions: input.nodeIntroductions,
   });
   const presentations = new Map(input.nodes.map(node => [`${node.node.type}:${node.node.id}`, node]));
   return {
@@ -50,11 +46,11 @@ export function buildCanvasEnvironmentChangeState(input: {
     headToken: result.headToken,
     // Publication compares Working with Saved independently of the runtime Head.
     canSave: buildEnvironmentChangeSet({
-      working: visibleState(input.working),
-      applied: saved ?? { token: "saved:none", nodes: [] },
-      saved,
+      working: input.working,
+      applied: input.saved ?? { token: "saved:none", nodes: [] },
+      saved: input.saved,
       submitted: null,
-      nodeIntroductions: visibleState(input.nodeIntroductions),
+      nodeIntroductions: input.nodeIntroductions,
     }).totalCount > 0,
     groups: result.groups.map(group => {
       const key = `${group.node.type}:${group.node.id}`;

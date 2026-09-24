@@ -1,15 +1,13 @@
 import { getStoredServiceCredential } from "./service-repository.server";
-import { vi } from "vitest";
-vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
 import { restoreWorkingDocument } from "./working-document-restore.server";
 import { discardEnvironmentChanges } from "./saved-state-operations.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { loadLatestEnvironmentSavedState } from "./saved-state-repository.server";
-import { createVariableGroupResource, createVolumeResource, deleteVolumeResource } from "./resource-operations.server";
+import { createVolumeResource, deleteVolumeResource } from "./resource-operations.server";
 import { attachServiceVolume } from "./mount-operations.server";
-import { attachServiceVariableGroup, createServiceVariable, updateServiceVariable } from "./variable-operations.server";
+import { createServiceVariable, updateServiceVariable } from "./variable-operations.server";
 import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introduction.repository.server";
 import { environmentNodeIntroductionSchema } from "./environment-node-introductions";
 import { environmentNodeConfigSnapshot, environmentNodeIntroduction } from "#/modules/runtime/tables";
@@ -143,25 +141,19 @@ it.live(
         const serviceId = created.data.service.id;
         const revision = () => loadEnvironmentDocument(environmentRecord.id).pipe(Effect.map((document) => document.revision));
         const volume = yield* createVolumeResource(actor, { ...scope, name: "Data", x: 1, y: 2 });
-        const group = yield* createVariableGroupResource(actor, { ...scope, name: "Shared", x: 3, y: 4 });
         const introductionIdentity = { environmentId: environmentRecord.id, nodeType: "service" as const, nodeId: serviceId };
         const introduced = yield* loadEnvironmentNodeIntroductionIntent(introductionIdentity);
         const publicIntroductions = yield* database.drizzle.select().from(environmentNodeIntroduction)
           .where(eq(environmentNodeIntroduction.environmentId, environmentRecord.id));
         assert.deepStrictEqual(publicIntroductions.map((row) => decodeStrict(environmentNodeIntroductionSchema, row).nodeType).sort(),
-          ["service", "variable_group", "volume"]);
+          ["service", "volume"]);
         assert.ok(!JSON.stringify(publicIntroductions).includes("ciphertext"));
-        yield* attachServiceVariableGroup(actor, { ...scope, revision: yield* revision(), serviceId,
-          variableGroupId: group.data.variableGroup.id });
         yield* setServiceRegistryCredential(actor, { ...scope, revision: yield* revision(), serviceId,
           username: "temporary-owner", secret: "temporary-credential" });
-        for (const path of ["variableGroupAttachments", "source.credentials"]) {
-          yield* discardEnvironmentChanges(actor, { ...scope, revision: yield* revision(),
-            savedStateBasis: { kind: "no_saved_state" }, headToken: "applied:none",
-            command: { kind: "node", nodeType: "service", nodeId: serviceId, path } });
-        }
+        yield* discardEnvironmentChanges(actor, { ...scope, revision: yield* revision(),
+          savedStateBasis: { kind: "no_saved_state" }, headToken: "applied:none",
+          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "source.credentials" } });
         const restoredIntroduction = (yield* loadEnvironmentDocument(environmentRecord.id)).intent.services[0];
-        assert.deepStrictEqual(restoredIntroduction?.variableGroupAttachments, []);
         assert.deepStrictEqual(restoredIntroduction?.config.source, introduced.services[0]?.config.source);
         assert.deepStrictEqual(yield* loadEnvironmentNodeIntroductionIntent(introductionIdentity), introduced);
         assert.strictEqual(yield* loadLatestEnvironmentSavedState(scope.environmentId), null);

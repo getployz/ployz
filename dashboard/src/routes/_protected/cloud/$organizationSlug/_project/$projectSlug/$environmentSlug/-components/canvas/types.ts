@@ -1,6 +1,6 @@
 import type { Node } from "@xyflow/react";
 
-export type CanvasResourceType = "service" | "variable_group" | "volume";
+export type CanvasResourceType = "service" | "volume";
 
 export type CanvasResourceNodeData = {
   resourceType: CanvasResourceType;
@@ -17,14 +17,6 @@ export type CanvasServiceNodeData = {
 
 export type CanvasServiceNode = Node<CanvasServiceNodeData, "service">;
 
-export type CanvasVariableGroupNodeData = {
-  resourceType: "variable_group";
-  resourceId: string;
-  environmentId: string;
-};
-
-export type CanvasVariableGroupNode = Node<CanvasVariableGroupNodeData, "variable_group">;
-
 export type CanvasVolumeNodeData = {
   resourceType: "volume";
   resourceId: string;
@@ -35,7 +27,6 @@ export type CanvasVolumeNode = Node<CanvasVolumeNodeData, "volume">;
 
 export type CanvasResourceNode =
   | CanvasServiceNode
-  | CanvasVariableGroupNode
   | CanvasVolumeNode;
 
 export type FlowPosition = { x: number; y: number };

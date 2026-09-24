@@ -6,7 +6,6 @@ import {
   resourceLineage,
   serviceLineage,
   service,
-  variableGroupLineage,
 } from "#/modules/environment-design/tables";
 import { environment, project } from "#/modules/project/tables";
 import { organizationIdForProject } from "#/db/scope-values.server";
@@ -121,7 +120,6 @@ export const listEnvironmentNodeNameIdentities = Effect.fn(
   const identities = yield* drizzle.select({ id: service.id, name: service.name }).from(service).where(eq(service.environmentId, environmentId));
   return [
     ...identities.filter(identity => intent.services.some(node => node.id === identity.id)).map(identity => ({ type: "service" as const, ...identity })),
-    ...intent.variableGroups.map((node) => ({ type: "variable_group" as const, id: node.resourceId, name: node.name })),
     ...intent.volumes.map((node) => ({ type: "volume" as const, id: node.resourceId, name: node.name })),
   ] satisfies EnvironmentNodeNameIdentity[];
 });
@@ -152,28 +150,6 @@ export const createServiceLineage = Effect.fn(
     })
     .onConflictDoNothing()
     .returning({ id: serviceLineage.id });
-  return rows[0] ?? null;
-});
-
-export const createVariableGroupLineage = Effect.fn(
-  "EnvironmentDesign.createVariableGroupLineage",
-)(function* (input: {
-  readonly projectId: string;
-  readonly name: string;
-  readonly slug: string;
-}) {
-  const database = yield* Database;
-  const id = randomUUID();
-  const rows = yield* database.drizzle
-    .insert(variableGroupLineage)
-    .values({
-      id,
-      projectId: input.projectId,
-      canonicalName: input.name,
-      canonicalSlug: lineageCanonicalSlug({ baseSlug: input.slug, lineageId: id }),
-    })
-    .onConflictDoNothing()
-    .returning({ id: variableGroupLineage.id });
   return rows[0] ?? null;
 });
 

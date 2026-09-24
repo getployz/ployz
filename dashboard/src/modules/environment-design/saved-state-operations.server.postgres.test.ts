@@ -33,7 +33,6 @@ const emptyIntent = {
   version: 1 as const,
   environmentSlug: "production",
   services: [],
-  variableGroups: [],
   volumes: [],
 };
 
@@ -114,7 +113,7 @@ describe("Environment Saved State aggregate", () => {
         id, project_id, organization_id, name, namespace, intent
       ) values (
         '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
+        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"volumes":[]}'
       );
     `);
   });

@@ -4,7 +4,6 @@ import { Schema } from "effect";
 import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
-import type { VariableGroupConfig } from "#/modules/environment-design/variable-group-config";
 import type { VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
 import { reviewedEnvironmentPublicationSchema } from "#/modules/environment-design/working-state-review";
@@ -133,18 +132,14 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
 });
 
 export type EnvironmentChangeStateNodeProjection = {
-  [TNodeType in "service" | "variable_group" | "volume"]: {
+  [TNodeType in "service" | "volume"]: {
     nodeType: TNodeType;
     nodeId: string;
     nodeLineageId: string;
     revisionId: string | null;
-    config: TNodeType extends "service"
-      ? ServiceDeploymentConfig
-      : TNodeType extends "variable_group"
-        ? VariableGroupConfig
-        : VolumeConfig;
+    config: TNodeType extends "service" ? ServiceDeploymentConfig : VolumeConfig;
   };
-}["service" | "variable_group" | "volume"];
+}["service" | "volume"];
 
 export type EnvironmentChangeStateProjection = {
   environmentId: string;

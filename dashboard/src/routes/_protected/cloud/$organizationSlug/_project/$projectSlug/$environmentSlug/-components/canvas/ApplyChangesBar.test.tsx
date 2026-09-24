@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { parseDashboardServiceConfig as parseServiceConfig } from "#/modules/environment-design/service-config";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { buildCanvasEnvironmentChangeState } from "#/modules/environment-design/canvas-environment-change-state";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import { ApplyChangesBar } from "./ApplyChangesBar";

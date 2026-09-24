@@ -34,7 +34,7 @@ describe("environment node names", () => {
         "database",
         [
           {
-            type: "variable_group",
+            type: "volume",
             id: "resource-1",
             name: "Database",
           },
@@ -51,13 +51,13 @@ describe("environment node names", () => {
         "DATABASE",
         [
           {
-            type: "variable_group",
+            type: "volume",
             id: "resource-1",
             name: "Database",
           },
         ],
         {
-          type: "variable_group",
+          type: "volume",
           id: "resource-1",
         },
       ),
@@ -81,7 +81,7 @@ describe("environment node names", () => {
         },
       ],
       excludeNode: {
-        type: "variable_group",
+        type: "volume",
         id: "resource-1",
       },
     });
@@ -115,7 +115,7 @@ describe("environment node names", () => {
       maxLength: 64,
       nodes: [
         {
-          type: "variable_group",
+          type: "volume",
           id: "resource-1",
           name: "a".repeat(64),
         },

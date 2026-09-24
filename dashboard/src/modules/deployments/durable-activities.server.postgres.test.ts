@@ -28,7 +28,6 @@ const emptySavedIntent = {
   version: 1 as const,
   environmentSlug: "production",
   services: [],
-  variableGroups: [],
   volumes: [],
 };
 
@@ -67,7 +66,7 @@ describe("durable deployment activities", () => {
         id, project_id, organization_id, name, namespace, intent
       ) values (
         '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
+        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"volumes":[]}'
       );
     `);
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({

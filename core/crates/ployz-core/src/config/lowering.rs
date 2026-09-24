@@ -89,12 +89,6 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             }
             ServiceSource::Image { image, .. } => image,
         };
-        if config.cron.is_some() {
-            return Err(ConfigError::at(
-                "cron",
-                "Cron scheduling is not supported by the runtime",
-            ));
-        }
         let mut environment = snapshot.resolved_env;
         environment
             .entry("PORT".into())

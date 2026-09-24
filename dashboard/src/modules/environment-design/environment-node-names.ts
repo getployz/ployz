@@ -6,7 +6,6 @@ import {
 
 export type EnvironmentNodeType =
   | "service"
-  | "variable_group"
   | (string & {});
 
 export type EnvironmentNodeNameIdentity = {

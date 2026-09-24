@@ -1,7 +1,6 @@
 import {
   Field,
   FieldDescription,
-  FieldError,
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
@@ -55,7 +54,6 @@ export function ServiceRestartPolicySection({
   const { service, collection, diff } = state;
   const restartDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.restartPolicy);
   const retriesDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.maxRetries);
-  const cronDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.cron);
 
   return (
     <FieldGroup>
@@ -124,32 +122,6 @@ export function ServiceRestartPolicySection({
               })
             }
           />
-        </Field>
-      ) : null}
-
-      {service.cron ? (
-        <Field data-invalid>
-          <FieldLabel>Cron schedule</FieldLabel>
-          <FieldDescription>
-            The service is configured to run on this schedule
-          </FieldDescription>
-          <ServiceSettingInput
-            ariaLabel="Cron schedule"
-            placeholder="0 3 * * *"
-            value={service.cron}
-            isChanged={cronDiff.changed}
-            baselineLabel={cronDiff.baselineLabel}
-            baselineValue={cronDiff.baselineValue}
-            validate={(raw) =>
-              raw.length === 0 ? null : "Clear this schedule before deploying"
-            }
-            onCommit={(raw) =>
-              collection.update(service.id, (draft) => {
-                draft.cron = raw.length > 0 ? raw : null;
-              })
-            }
-          />
-          <FieldError>Clear this schedule before deploying</FieldError>
         </Field>
       ) : null}
     </FieldGroup>

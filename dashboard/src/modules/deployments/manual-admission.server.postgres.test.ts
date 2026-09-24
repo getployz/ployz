@@ -92,10 +92,9 @@ describe("manual environment saved-state persistence", () => {
     vi.mocked(inngest.send).mockReset().mockResolvedValue({ ids: [] });
     const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({ version: 2, source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: "api" });
 
-    const intent = { version: 1, environmentSlug: "production", variableGroups: [], volumes: [], services: [{
+    const intent = { version: 1, environmentSlug: "production", volumes: [], services: [{
       id: serviceId, lineageId, slug: "api", config,
-      variables: [{ id: variableId, key: "API_TOKEN", description: null, exported: false, valueFingerprint: "fingerprint", value: { kind: "secret", encryptedValue: null } }],
-      variableGroupAttachments: [], volumeAttachments: [],
+      variables: [{ id: variableId, key: "API_TOKEN", description: null, exported: false, valueFingerprint: "fingerprint", value: { kind: "secret", encryptedValue: null } }], volumeAttachments: [],
     }] };
     await harness.pool.query(`
       truncate table organization, "user" cascade;
@@ -199,7 +198,7 @@ describe("manual environment saved-state persistence", () => {
     await harness.runEffect(markDeploymentStatus({ environmentDeploymentId: baseline.environmentDeploymentId, status: "applied" }).pipe(
       Effect.provideService(InngestClient, inngest), Effect.provideService(SecretEncryption, encryption),
     ));
-    await harness.db.update(schema.environment).set({ intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] }, revision: randomUUID() })
+    await harness.db.update(schema.environment).set({ intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
     const review = await publicationReview();
     for (const destructiveServiceIds of [[], [serviceId, serviceId], [randomUUID()]]) {
@@ -337,7 +336,7 @@ describe("manual environment saved-state persistence", () => {
   });
 
   it("persists an empty-node saved state", async () => {
-    await harness.db.update(schema.environment).set({ intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] }, revision: randomUUID() }).where(eq(schema.environment.id, environmentId));
+    await harness.db.update(schema.environment).set({ intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, revision: randomUUID() }).where(eq(schema.environment.id, environmentId));
     await save(null);
     const [row] = await harness.db
       .select()
@@ -587,7 +586,7 @@ describe("manual environment saved-state persistence", () => {
     );
     await harness.db
       .update(schema.environment)
-      .set({ intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] }, revision: randomUUID() })
+      .set({ intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
     const review = await publicationReview();
 

@@ -1,7 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { variableGroupsEnabled } from "#/lib/feature-flags";
-import { compareDashboardServiceSettings } from "./config-changes";
-import { parseDashboardServiceConfig } from "./service-config";
+import { compareServiceSettings, parseServiceConfig } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
@@ -258,10 +256,6 @@ const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
         const value = source.services.find(value => value.id === node.nodeId);
         if (!value) return yield* new Conflict({ message: "Applied Service is missing." });
         baseline.services.push(value);
-      } else if (node.nodeType === "variable_group") {
-        const value = source.variableGroups.find(value => value.resourceId === node.nodeId);
-        if (!value) return yield* new Conflict({ message: "Applied Variable Group is missing." });
-        baseline.variableGroups.push(value);
       } else {
         const value = source.volumes.find(value => value.resourceId === node.nodeId);
         if (!value) return yield* new Conflict({ message: "Applied Volume is missing." });
@@ -275,10 +269,6 @@ const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
 /** One transaction restores the reviewed scope in Working and Saved State. */
 export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnvironmentChanges")(
   function* (actor: Actor, input: DiscardEnvironmentChangesInput) {
-    if (!variableGroupsEnabled && input.command.kind === "node" &&
-      (input.command.nodeType === "variable_group" || input.command.path === "variableGroupAttachments")) {
-      return yield* new Conflict({ message: "Variable Groups are disabled." });
-    }
     yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       yield* lockEnvironmentDeploymentQueue(input.environmentId);
@@ -326,7 +316,7 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
       // Saved follows so a non-manual trigger ships the discarded state.
       const savedNeedsRestore = command.kind === "all" || !command.path ||
         (savedNode != null && headNode != null &&
-          compareDashboardServiceSettings(parseDashboardServiceConfig(savedNode), parseDashboardServiceConfig(headNode))
+          compareServiceSettings(parseServiceConfig(savedNode), parseServiceConfig(headNode))
             .some(row => row.path === command.path && row.canRestore));
       // New-node field resets use its Introduction and do not publish it.
       if (latest && !introduction && savedNeedsRestore) {

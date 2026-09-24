@@ -83,7 +83,7 @@ function PreferenceProbe() {
 async function show(ssr = false, orgStore: "ready" | "pending" | "failed" = "ready") {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
-  const environmentData = { intent: { version: 1, environmentSlug: "production", services: [], volumes: [], variableGroups: [] }, createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" };
+  const environmentData = { intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" };
   client.setQueryData(organizationKeys.state("acme"), { activeOrganization: { id: "org", slug: "acme", name: "Acme" }, organizations: [{ id: "org", slug: "acme", name: "Acme" }] });
   client.setQueryData(["collections", "test-session", "test-user", "acme", "project"], [{ id: "project", slug: "store", name: "Store", resolvedEnvironment: environmentData }]);
   client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], [environmentData]);

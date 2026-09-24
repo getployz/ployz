@@ -1,4 +1,3 @@
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useState } from "react";
 import {
   Background,
@@ -11,10 +10,7 @@ import "@xyflow/react/dist/style.css";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
-import type {
-  VariableGroupResourceRecord,
-  VolumeResourceRecord,
-} from "#/modules/environment-design/resources";
+import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import { ApplyChangesBar } from "./ApplyChangesBar";
@@ -26,11 +22,9 @@ import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useServiceCreator } from "./useServiceCreator";
-import { useVariableGroupCreator } from "./useVariableGroupCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
-import { VariableGroupCreatorDialog } from "./VariableGroupCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
 import { useCanvasFlowState } from "./useCanvasFlowState";
@@ -53,7 +47,6 @@ export function CanvasFlow({
   organizationId,
   environmentId,
   servicesWithBoundEnv,
-  environmentResources,
   volumeResources,
   environmentChangeState,
   nodeIntroductions,
@@ -63,7 +56,6 @@ export function CanvasFlow({
   organizationId: string;
   environmentId: string;
   servicesWithBoundEnv: EnvironmentServiceViewRecord[];
-  environmentResources: VariableGroupResourceRecord[];
   volumeResources: VolumeResourceRecord[];
   environmentChangeState: EnvironmentChangeStateProjection | null;
   nodeIntroductions: EnvironmentNodeIntroduction[];
@@ -93,14 +85,12 @@ export function CanvasFlow({
     canSave,
     servicesById,
     selectedNodePositionKey,
-    environmentResourcesById,
     volumeResourcesById,
     destructiveServiceIds,
     destructiveServiceNames,
     deletedDeployedVolumeIds,
   } = useCanvasFlowState({
     servicesWithBoundEnv,
-    environmentResources,
     volumeResources,
     environmentChangeState,
     nodeIntroductions,
@@ -113,11 +103,6 @@ export function CanvasFlow({
     flowReady,
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
-  const variableGroupCreator = useVariableGroupCreator(
-    params,
-    environmentId,
-    getViewportCenter,
-  );
   const volumeCreator = useVolumeCreator(
     params,
     environmentId,
@@ -150,11 +135,6 @@ export function CanvasFlow({
     setDestructiveConfirmationOpen,
   });
 
-  function openVariableGroupCreatorFromServiceDialog() {
-    creator.setCreatorOpen(false);
-    variableGroupCreator.openCreatorAtPosition(creator.creatorPosition);
-  }
-
   function openVolumeCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
     volumeCreator.openCreatorAtPosition(creator.creatorPosition);
@@ -167,14 +147,10 @@ export function CanvasFlow({
         <CanvasContextMenu
           onCreateFromPanel={creator.openCreatorAtLastRightClick}
           onCreateBlank={creator.createBlankServiceAtLastRightClick}
-          onCreateVariableGroup={
-            variableGroupCreator.openCreatorAtLastRightClick
-          }
           onCreateVolume={volumeCreator.openCreatorAtLastRightClick}
         >
           <CanvasServicesProvider
             servicesById={servicesById}
-            environmentResourcesById={environmentResourcesById}
             volumeResourcesById={volumeResourcesById}
           >
             <ReactFlow
@@ -197,7 +173,6 @@ export function CanvasFlow({
               onNodeDragStop={onNodeDrag}
               onPaneContextMenu={(event) => {
                 creator.onPaneContextMenu(event);
-                variableGroupCreator.onPaneContextMenu(event);
                 volumeCreator.onPaneContextMenu(event);
               }}
             >
@@ -210,7 +185,6 @@ export function CanvasFlow({
         services={activeServicesWithBoundEnv}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
-        environmentResourcesById={environmentResourcesById}
         volumeResourcesById={volumeResourcesById}
       />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
@@ -253,7 +227,6 @@ export function CanvasFlow({
         panel={creator.creatorPanel}
         position={creator.creatorPosition}
         params={params}
-        onCreateVariableGroup={openVariableGroupCreatorFromServiceDialog}
         onCreateVolume={openVolumeCreatorFromServiceDialog}
         onCreated={async (result) => {
           creator.setCreatorOpen(false);
@@ -269,14 +242,6 @@ export function CanvasFlow({
           });
         }}
       />
-      {variableGroupsEnabled && <VariableGroupCreatorDialog
-        open={variableGroupCreator.creatorOpen}
-        onOpenChange={variableGroupCreator.setCreatorOpen}
-        position={variableGroupCreator.creatorPosition}
-        onCreate={async (input) => {
-          await variableGroupCreator.createVariableGroup(input);
-        }}
-      />}
       <VolumeCreatorDialog
         open={volumeCreator.creatorOpen}
         onOpenChange={volumeCreator.setCreatorOpen}

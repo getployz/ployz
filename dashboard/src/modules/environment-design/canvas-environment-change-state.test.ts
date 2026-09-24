@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parseDashboardServiceConfig as parseServiceConfig } from "#/modules/environment-design/service-config";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { buildCanvasEnvironmentChangeState } from "./canvas-environment-change-state";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { EnvironmentStateProjection } from "./environment-change-set";
@@ -57,18 +57,4 @@ it("advances successful nodes independently after a partial failure", () => {
   });
   expect(result.groups).toMatchObject([{ nodeId: "worker", rows: [{ currentValue: "1", newValue: "5" }] }]);
   expect(result.totalCount).toBe(1);
-});
-
-it.each([null, "deploying"] as const)("hides group changes across every review baseline (%s)", status => {
-  const group = { type: "variable_group" as const, id: "shared" };
-  const saved = { token: "saved", nodes: [{ node: group, config: { version: 1 as const, name: "Shared", variables: [] } }] };
-  const working = { token: "working", nodes: [{ node: group, config: { version: 1 as const, name: "Renamed", variables: [] } }] };
-  const result = buildCanvasEnvironmentChangeState({
-    working, saved, applied: saved, nodeIntroductions: saved,
-    deploymentEvidence: status ? { ...saved, id: "attempt", status } : null,
-    nodes: [{ node: group, name: "Renamed", summaryLabel: "Variable Group" }],
-  });
-  expect(result).toMatchObject({ groups: [], totalCount: 0, headToken: "saved" });
-  expect(working.nodes).toHaveLength(1);
-  expect(saved.nodes).toHaveLength(1);
 });

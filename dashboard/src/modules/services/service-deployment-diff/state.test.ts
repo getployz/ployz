@@ -18,7 +18,6 @@ function config(replicas: number): ServiceDeploymentConfig {
     healthcheck: { type: "none" },
     restartPolicy: "unless-stopped",
     maxRetries: 10,
-    cron: null,
     replicas,
     cpuLimit: null,
     memLimit: null,
@@ -28,7 +27,6 @@ function config(replicas: number): ServiceDeploymentConfig {
     build: { builder: "railpack", dockerfilePath: null, command: null, },
     env: {},
     mounts: [],
-    variableGroupAttachments: [],
   };
 }
 

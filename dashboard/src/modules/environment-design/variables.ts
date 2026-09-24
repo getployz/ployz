@@ -1,7 +1,6 @@
 import { createSelectSchema } from "drizzle-orm/effect-schema";
 import { Effect, Schema, SchemaGetter } from "effect";
 import {
-  environmentVariableGroup,
   VARIABLE_VALUE_KINDS,
   variable,
 } from "#/modules/environment-design/tables";
@@ -9,8 +8,6 @@ import {
   OrganizationSlug,
   Uuid,
 } from "#/modules/environment-design/workspace-schemas";
-
-const requiredTrimmedString = Schema.Trim.check(Schema.isNonEmpty());
 
 const variableName = Schema.Trim.pipe(
   Schema.check(
@@ -45,7 +42,7 @@ export const encryptedSecretValueSchema = Schema.Struct({
 const valuePartOwnerSchema = Schema.Union([
   Schema.Struct({ scope: Schema.Literal("self") }),
   Schema.Struct({
-    scope: Schema.Literals(["service", "variable_group"]),
+    scope: Schema.Literal("service"),
     lineageId: Uuid,
   }),
 ]);
@@ -95,24 +92,11 @@ export const variableValueSchema = Schema.Union([
 ]);
 
 const variableDbSelectSchema = createSelectSchema(variable);
-const environmentVariableGroupDbSelectSchema = createSelectSchema(environmentVariableGroup);
-
-export const environmentVariableGroupSelectSchema = Schema.Struct({
-  id: environmentVariableGroupDbSelectSchema.fields.id,
-  projectId: environmentVariableGroupDbSelectSchema.fields.projectId,
-  environmentId: environmentVariableGroupDbSelectSchema.fields.environmentId,
-  lineageId: environmentVariableGroupDbSelectSchema.fields.lineageId,
-  name: requiredTrimmedString,
-  slug: requiredTrimmedString,
-  createdAt: environmentVariableGroupDbSelectSchema.fields.createdAt,
-  updatedAt: environmentVariableGroupDbSelectSchema.fields.updatedAt,
-});
 
 export const variableSelectSchema = Schema.Struct({
   unresolvedReferences: Schema.optionalKey(Schema.Array(Schema.String)),
   id: variableDbSelectSchema.fields.id,
   serviceId: variableDbSelectSchema.fields.serviceId,
-  variableGroupId: variableDbSelectSchema.fields.variableGroupId,
   key: variableName,
   description: nullableDescription,
   exported: Schema.Boolean,
@@ -141,14 +125,6 @@ export const createServiceVariableSchema = Schema.Struct({
   ...variableCreateFields,
 });
 
-export const createVariableGroupVariableSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  revision: Uuid,
-  environmentId: Uuid,
-  variableGroupId: Uuid,
-  ...variableCreateFields,
-});
-
 const variableUpdateFields = {
   variableId: Uuid,
   key: variableSelectSchema.fields.key,
@@ -163,24 +139,6 @@ export const updateServiceVariableSchema = Schema.Struct({
   environmentId: Uuid,
   serviceId: Uuid,
   ...variableUpdateFields,
-});
-
-export const updateVariableGroupVariableSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  revision: Uuid,
-  environmentId: Uuid,
-  variableGroupId: Uuid,
-  ...variableUpdateFields,
-});
-
-export const updateVariableGroupVariableMetadataSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  revision: Uuid,
-  environmentId: Uuid,
-  variableGroupId: Uuid,
-  variableId: Uuid,
-  description: variableSelectSchema.fields.description,
-  exported: variableSelectSchema.fields.exported,
 });
 
 export const updateServiceVariableExportSchema = Schema.Struct({
@@ -200,25 +158,6 @@ export const deleteServiceVariableSchema = Schema.Struct({
   variableId: Uuid,
 });
 
-export const deleteVariableGroupVariableSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  revision: Uuid,
-  environmentId: Uuid,
-  variableGroupId: Uuid,
-  variableId: Uuid,
-});
-
-export const attachServiceVariableGroupSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  revision: Uuid,
-  environmentId: Uuid,
-  serviceId: Uuid,
-  variableGroupId: Uuid,
-});
-
-export const detachServiceVariableGroupSchema =
-  attachServiceVariableGroupSchema;
-
 const bulkServiceVariableCreateSchema = Schema.Struct(variableCreateFields);
 
 const bulkServiceVariableUpdateSchema = Schema.Struct({
@@ -237,30 +176,12 @@ export const bulkUpdateServiceVariablesSchema = Schema.Struct({
   deletes: Schema.Array(Uuid),
 });
 
-export const environmentServiceVariableGroupAttachmentSchema = Schema.Struct({
-  environmentId: Uuid,
-  serviceId: Uuid,
-  variableGroupId: Uuid,
-  sortOrder: Schema.Int,
-});
-
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
-export type EnvironmentVariableGroupRecord = Mutable<
-  typeof environmentVariableGroupSelectSchema.Type
->;
 export type VariableRecord = Mutable<typeof variableSelectSchema.Type>;
 export type VariableValueInput = typeof variableValueInputSchema.Type;
-export type EnvironmentServiceVariableGroupAttachment =
-  typeof environmentServiceVariableGroupAttachmentSchema.Type;
 export type CreateServiceVariableInput = typeof createServiceVariableSchema.Type;
-export type CreateVariableGroupVariableInput =
-  typeof createVariableGroupVariableSchema.Type;
 export type UpdateServiceVariableInput = typeof updateServiceVariableSchema.Type;
-export type UpdateVariableGroupVariableInput =
-  typeof updateVariableGroupVariableSchema.Type;
-export type UpdateVariableGroupVariableMetadataInput =
-  typeof updateVariableGroupVariableMetadataSchema.Type;
 export type UpdateServiceVariableExportInput =
   typeof updateServiceVariableExportSchema.Type;
 export type BulkUpdateServiceVariablesInput =

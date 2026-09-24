@@ -16,7 +16,7 @@ it("reconciles an unobserved collection, updates joined documents, and isolates 
   const project: typeof projectTable.$inferSelect = { id: crypto.randomUUID(), organizationId: crypto.randomUUID(), name: "Project", slug: "project", createdAt: new Date() };
   const environment: EnvironmentDocument = { id: crypto.randomUUID(), projectId: project.id, organizationId: project.organizationId,
     name: "Production", namespace: "production", revision: crypto.randomUUID(), createdAt: new Date(), updatedAt: new Date(),
-    intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] } };
+    intent: { version: 1, environmentSlug: "production", services: [], volumes: [] } };
   let projects = [project];
   let environments = [environment];
   const raw = createApiCollection({ queryClient: client, queryKey: ["test", "environments"],

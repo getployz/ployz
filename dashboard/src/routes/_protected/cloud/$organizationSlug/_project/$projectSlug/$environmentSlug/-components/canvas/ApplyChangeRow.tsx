@@ -38,11 +38,6 @@ export function ApplyChangeRow({
             {getKindIcon(row.kind)}
           </Badge>
           <span className={cn(getKindTextClassName(row.kind))}>{row.label}</span>
-          {row.derivedFrom ? (
-            <span className="text-muted-foreground">
-              derived from {row.derivedFrom.resourceName}
-            </span>
-          ) : null}
         </div>
       </TableCell>
       {showCurrentValue ? (

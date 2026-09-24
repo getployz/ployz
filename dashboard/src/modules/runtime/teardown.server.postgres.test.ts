@@ -117,7 +117,7 @@ describe("teardown durable state", () => {
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'App', 'app');
       insert into environment (id, project_id, organization_id, name, namespace, intent
-      ) values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'app-production', '{"version":1,"environmentSlug":"app-production","services":[],"variableGroups":[],"volumes":[]}'
+      ) values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'app-production', '{"version":1,"environmentSlug":"app-production","services":[],"volumes":[]}'
       );
     `);
   });

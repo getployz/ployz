@@ -8,7 +8,7 @@ type InputProps = Omit<React.ComponentProps<typeof Input>, "value" | "onChange">
 /**
  * A single-line value input with inline `${{ }}` reference autocomplete. Behaves
  * like a normal `Input`; type `${{` to get a slug-namespaced suggestion list of
- * referenceable variables, managed exports, and variable groups.
+ * referenceable variables and managed exports.
  */
 export function VariableValueInput({
   value,

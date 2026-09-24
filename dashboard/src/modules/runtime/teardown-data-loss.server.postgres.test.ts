@@ -55,7 +55,6 @@ const serviceConfig = projectServiceDeploymentConfig({
 const {
   env: _serviceEnvironment,
   mounts: _serviceMounts,
-  variableGroupAttachments: _serviceVariableGroupAttachments,
   ...authoredServiceConfig
 } = serviceConfig;
 void _serviceEnvironment;
@@ -70,12 +69,10 @@ const environmentIntent = {
       lineageId: serviceLineageId,
       slug: "api",
       variables: [],
-      variableGroupAttachments: [],
       volumeAttachments: [],
       config: authoredServiceConfig,
     },
   ],
-  variableGroups: [],
   volumes: [
     {
       resourceId,

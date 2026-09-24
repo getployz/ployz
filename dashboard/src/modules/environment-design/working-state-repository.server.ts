@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { environment } from "#/modules/project/tables";
-import { service, variable, variableSecret, environmentResource, environmentVariableGroup, environmentCanvasNodePosition } from "./tables";
+import { service, variable, variableSecret, environmentResource, environmentCanvasNodePosition } from "./tables";
 import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent, parseDashboardEnvironmentIntent, redactSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import { Database } from "#/server/database.server";
 import { environmentNodeIntroduction, environmentNodeIntroductionSecret, environmentNodeConfigSnapshot, volumeRemoveAttempt } from "#/modules/runtime/tables";
@@ -63,23 +63,18 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
       return yield* new Conflict({ message: "Registry credentials do not belong to this service." });
     }
     const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, document.id));
-    const groups = yield* drizzle.select().from(environmentVariableGroup).where(eq(environmentVariableGroup.environmentId, document.id));
-    if (intent.volumes.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "volume")) ||
-      intent.variableGroups.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "variable_group" && identity.variableGroupId === node.variableGroupId) || !groups.some((identity) => identity.id === node.variableGroupId && identity.lineageId === node.variableGroupLineageId))) {
+    if (intent.volumes.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "volume"))) {
       return yield* new Conflict({ message: "A resource does not belong to this Environment." });
     }
-    const variableOwners = [
-      ...intent.services.flatMap((node) => node.variables.map((value) => ({ id: value.id, environmentId: document.id, serviceId: node.id, variableGroupId: null }))),
-      ...intent.variableGroups.flatMap((node) => node.variables.map((value) => ({ id: value.id, environmentId: document.id, serviceId: null, variableGroupId: node.variableGroupId }))),
-    ];
+    const variableOwners = intent.services.flatMap((node) => node.variables.map((value) => ({ id: value.id, environmentId: document.id, serviceId: node.id })));
     if (variableOwners.length) {
       yield* drizzle.insert(variable).values(variableOwners).onConflictDoNothing();
       const storedOwners = yield* drizzle.select().from(variable).where(and(eq(variable.environmentId, document.id), inArray(variable.id, variableOwners.map((owner) => owner.id))));
-      if (variableOwners.some((owner) => !storedOwners.some((stored) => stored.id === owner.id && stored.serviceId === owner.serviceId && stored.variableGroupId === owner.variableGroupId))) {
+      if (variableOwners.some((owner) => !storedOwners.some((stored) => stored.id === owner.id && stored.serviceId === owner.serviceId))) {
         return yield* new Conflict({ message: "A variable identity belongs to a different owner." });
       }
     }
-    const secrets = [...intent.services.flatMap((node) => node.variables), ...intent.variableGroups.flatMap((node) => node.variables)]
+    const secrets = intent.services.flatMap((node) => node.variables)
       .flatMap((variable) => variable.value.kind === "secret" && variable.value.encryptedValue
         ? [{ environmentId: document.id, variableId: variable.id, encryptedValue: variable.value.encryptedValue }]
         : []);
@@ -103,7 +98,7 @@ export const loadCurrentEnvironmentState = Effect.fn("EnvironmentDesign.loadCurr
     const { drizzle } = yield* Database;
     const document = yield* loadEnvironmentDocument(environmentId);
     const intent = structuredClone(document.intent);
-    const variables = [...intent.services.flatMap((node) => node.variables), ...intent.variableGroups.flatMap((node) => node.variables)];
+    const variables = intent.services.flatMap((node) => node.variables);
     const secretIds = variables.filter((variable) => variable.value.kind === "secret").map((variable) => variable.id);
     const secrets = secretIds.length ? yield* drizzle.select().from(variableSecret)
       .where(and(eq(variableSecret.environmentId, environmentId), inArray(variableSecret.variableId, secretIds))) : [];

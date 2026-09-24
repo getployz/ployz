@@ -20,9 +20,9 @@ function createStores() {
   const id = "00000000-0000-4000-8000-000000000004";
   const lineageId = "00000000-0000-4000-8000-000000000005";
   const now = new Date("2026-09-08T00:00:00Z");
-  const intent: SavedEnvironmentIntent = { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [{ resourceId: id, resourceLineageId: lineageId, name: "data" }] };
+  const intent: SavedEnvironmentIntent = { version: 1, environmentSlug: "production", services: [], volumes: [{ resourceId: id, resourceLineageId: lineageId, name: "data" }] };
   const server = {
-    resources: [{ id, environmentId, projectId, organizationId, lineageId, implementationType: "volume", variableGroupId: null, createdAt: now, updatedAt: now }] satisfies Row<"resources">[],
+    resources: [{ id, environmentId, projectId, organizationId, lineageId, implementationType: "volume", createdAt: now, updatedAt: now }] satisfies Row<"resources">[],
     lineages: [{ id: lineageId, projectId, organizationId, canonicalName: "data", canonicalSlug: "data", createdAt: now, updatedAt: now }] satisfies Row<"lineages">[],
     documents: [{ id: environmentId, projectId, organizationId, projectSlug: "app", namespace: "production", name: "Production", revision: "00000000-0000-4000-8000-000000000099", createdAt: now, updatedAt: now, intent, compiled: compileSavedEnvironmentIntent({ environmentId, intent }) }] satisfies Row<"documents">[],
     positions: [{ id: "00000000-0000-4000-8000-000000000006", environmentId, organizationId, resourceType: "volume", resourceId: id, x: 10, y: 20, createdAt: now, updatedAt: now }] satisfies Row<"positions">[],

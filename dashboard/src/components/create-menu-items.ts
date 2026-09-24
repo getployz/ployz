@@ -1,18 +1,15 @@
 import type { ComponentType, SVGProps } from "react";
 import {
-  DatabaseIcon,
   HardDriveIcon,
   PackageIcon,
   SquareTerminalIcon,
 } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { variableGroupsEnabled } from "#/lib/feature-flags";
 
 export type CreateMenuItemId =
   | "git-repository"
   | "container-image"
   | "empty-service"
-  | "variable-group"
   | "volume"
   | "empty-project";
 
@@ -26,9 +23,6 @@ export const SERVICE_CREATE_MENU_ITEMS: CreateMenuItem[] = [
   { id: "git-repository", icon: GitHubMarkIcon, label: "GitHub repository" },
   { id: "container-image", icon: PackageIcon, label: "Docker image" },
   { id: "empty-service", icon: SquareTerminalIcon, label: "Empty service" },
-  ...(variableGroupsEnabled
-    ? [{ id: "variable-group" as const, icon: DatabaseIcon, label: "Variable Group" }]
-    : []),
   { id: "volume", icon: HardDriveIcon, label: "Volume" },
 ];
 

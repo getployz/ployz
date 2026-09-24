@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildEdges, buildNodes } from "./nodes";
-import type {
-  VariableGroupResourceRecord,
-  VolumeResourceRecord,
-} from "#/modules/environment-design/resources";
+import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/services";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import type { VariableRecord } from "#/modules/environment-design/variables";
@@ -19,7 +16,6 @@ function createVolumeRecord(
       environmentId: "env-1",
       lineageId: "volume-lineage-1",
       implementationType: "volume",
-      variableGroupId: null,
       name: "shared-data",
       slug: "shared-data",
       deletedAt: null,
@@ -113,62 +109,6 @@ function createPlainVariable(value: string): VariableRecord {
   } as VariableRecord;
 }
 
-function createVariableGroupRecord(
-  overrides?: Partial<VariableGroupResourceRecord>,
-): VariableGroupResourceRecord {
-  const now = new Date("2026-06-03T00:00:00.000Z");
-
-  return {
-    resource: {
-      id: "resource-1",
-      projectId: "project-id",
-      environmentId: "env-1",
-      lineageId: "resource-lineage-1",
-      implementationType: "variable_group",
-      variableGroupId: "variable-group-1",
-      name: "Database",
-      slug: "database",
-      deletedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    },
-    lineage: {
-      id: "resource-lineage-1",
-      projectId: "project-id",
-      canonicalName: "Database",
-      canonicalSlug: "database-resource",
-      createdAt: now,
-      updatedAt: now,
-    },
-    variableGroup: {
-      id: "variable-group-1",
-      projectId: "project-id",
-      environmentId: "env-1",
-      lineageId: "variable-group-lineage-1",
-      name: "Database",
-      slug: "database",
-      createdAt: now,
-      updatedAt: now,
-    },
-    canvasPosition: {
-      id: "resource-position-1",
-      environmentId: "env-1",
-      resourceType: "variable_group",
-      resourceId: "resource-1",
-      x: 80,
-      y: 120,
-      createdAt: now,
-      updatedAt: now,
-    },
-    variables: [],
-    exports: [],
-    consumerCount: 0,
-    projectSlug: "project",
-    environmentSlug: "production",
-    ...overrides,
-  };
-}
-
 function createCanvasPosition(
   overrides?: Partial<ServiceCanvasPositionRecord>,
 ): ServiceCanvasPositionRecord {
@@ -185,11 +125,15 @@ function createCanvasPosition(
   };
 }
 
+function createDatabaseService(): EnvironmentServiceViewRecord {
+  const service = createServiceRecord();
+  return { ...service, service: { ...service.service, id: "service-db", name: "db", slug: "db" } };
+}
+
 describe("buildNodes", () => {
   it("leaves every node unselected when no inspector is open", () => {
     const nodes = buildNodes(
       [createServiceRecord()],
-      [createVariableGroupRecord()],
       [],
       null,
       [createVolumeRecord()],
@@ -203,7 +147,6 @@ describe("buildNodes", () => {
   it("uses the collection position", () => {
     const [node] = buildNodes(
       [createServiceRecord()],
-      [],
       [createCanvasPosition()],
       null,
     );
@@ -214,7 +157,6 @@ describe("buildNodes", () => {
   it("marks the selected service", () => {
     const [node] = buildNodes(
       [createServiceRecord()],
-      [],
       [createCanvasPosition()],
       "service-1",
     );
@@ -222,39 +164,8 @@ describe("buildNodes", () => {
     expect(node?.selected).toBe(true);
   });
 
-  it("adds Variable Group resources as canvas nodes", () => {
-    const nodes = buildNodes(
-      [],
-      [createVariableGroupRecord()],
-      [
-        createCanvasPosition({
-          id: "resource-position-1",
-          resourceType: "variable_group",
-          resourceId: "resource-1",
-          x: 80,
-          y: 120,
-        }),
-      ],
-      null,
-    );
-
-    expect(nodes).toEqual([
-      expect.objectContaining({
-        id: "resource-1",
-        type: "variable_group",
-        position: { x: 80, y: 120 },
-        data: {
-          resourceType: "variable_group",
-          resourceId: "resource-1",
-          environmentId: "env-1",
-        },
-      }),
-    ]);
-  });
-
   it("adds Volume resources as canvas nodes", () => {
     const nodes = buildNodes(
-      [],
       [],
       [
         createCanvasPosition({
@@ -285,8 +196,6 @@ describe("buildNodes", () => {
 
   it("builds service-volume mount edges", () => {
     const edges = buildEdges(
-      [],
-      [],
       [createVolumeRecord()],
       [
         {
@@ -309,8 +218,6 @@ describe("buildNodes", () => {
 
   it("omits mount edges for a volume removed from the authored document", () => {
     const edges = buildEdges(
-      [],
-      [],
       [createVolumeRecord({ isAuthored: false })],
       [
         {
@@ -325,83 +232,29 @@ describe("buildNodes", () => {
     expect(edges).toEqual([]);
   });
 
-  it("builds collapsed Variable Group attachment edges", () => {
-    const edges = buildEdges(
-      [createVariableGroupRecord()],
-      [
-        {
-          environmentId: "env-1",
-          serviceId: "service-1",
-          variableGroupId: "variable-group-1",
-          sortOrder: 0,
-        },
-      ],
-    );
+  it("builds one reference edge per ${{ }} producer service", () => {
+    const edges = buildEdges([], [], [
+      createDatabaseService(),
+      createServiceRecord({
+        variables: [
+          createPlainVariable("${{ db.URL }}"),
+          { ...createPlainVariable("${{ db.PASSWORD }}"), id: "var-2", key: "DATABASE_PASSWORD" },
+        ],
+      }),
+    ]);
 
     expect(edges).toEqual([
       expect.objectContaining({
-        id: "attachment:resource-1:service-1",
-        // Variable Group (exit/top) -> service (entry/bottom): arrow points at
-        // the consuming service, and the group renders below it (like volumes).
-        source: "resource-1",
+        id: "reference:service-db:service-1",
+        // Producer -> consumer: arrow points at the consuming service.
+        source: "service-db",
         target: "service-1",
       }),
-    ]);
-  });
-
-  it("builds reference edges from a ${{ }} template ref to its producer", () => {
-    const edges = buildEdges(
-      [createVariableGroupRecord()],
-      [],
-      [],
-      [],
-      [
-        createServiceRecord({
-          variables: [createPlainVariable("${{ database.URL }}")],
-        }),
-      ],
-    );
-
-    expect(edges).toEqual([
-      expect.objectContaining({
-        id: "reference:resource-1:service-1",
-        // Producer (Variable Group) -> consumer (service): arrow points at the
-        // service.
-        source: "resource-1",
-        target: "service-1",
-      }),
-    ]);
-  });
-
-  it("does not duplicate a reference edge when an attachment already links the pair", () => {
-    const edges = buildEdges(
-      [createVariableGroupRecord()],
-      [
-        {
-          environmentId: "env-1",
-          serviceId: "service-1",
-          variableGroupId: "variable-group-1",
-          sortOrder: 0,
-        },
-      ],
-      [],
-      [],
-      [
-        createServiceRecord({
-          variables: [createPlainVariable("${{ database.URL }}")],
-        }),
-      ],
-    );
-
-    expect(edges).toEqual([
-      expect.objectContaining({ id: "attachment:resource-1:service-1" }),
     ]);
   });
 
   it("ignores self references (no owner slug)", () => {
     const edges = buildEdges(
-      [],
-      [],
       [],
       [],
       [

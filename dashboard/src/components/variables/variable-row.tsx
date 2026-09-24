@@ -21,7 +21,6 @@ export function VariableRow({
   valueTargets,
   onSealVariable,
   onUpdateMetadata,
-  warning,
 }: {
   variable: VariableRecord;
   collection: VariableWriter;
@@ -33,7 +32,6 @@ export function VariableRow({
    * model exports (e.g. plain service variables) omit this.
    */
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
-  warning?: string;
 }) {
   const [state, dispatch] = useReducer(
     variableRowReducer,
@@ -44,7 +42,7 @@ export function VariableRow({
   const plainValue = variable.value.type === "plain" ? variable.value.value : "";
   const showMetadata = onUpdateMetadata != null;
   const brokenRefWarning = referencesDeletedOwner(plainValue)
-    ? "References a variable whose service or group was deleted — it resolves to empty at deploy."
+    ? "References a variable whose service was deleted — it resolves to empty at deploy."
     : null;
 
   // Writes are optimistic: the writer rolls back and toasts if saving fails.
@@ -73,7 +71,7 @@ export function VariableRow({
         variableKey={variable.key}
         exported={variable.exported}
         showMetadata={showMetadata}
-        warnings={[warning, brokenRefWarning]}
+        warnings={[brokenRefWarning]}
       />
 
       <div className="flex min-w-0 items-center gap-1.5">

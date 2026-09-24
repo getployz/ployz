@@ -1,6 +1,5 @@
 import { deploymentDependencies } from "./deployment-dependencies";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
-import { toCoreServiceConfig } from "#/modules/environment-design/service-config";
 import type { DeployIntent } from "@ployz/sdk";
 import { lowerDeployment, parseRuntimePreview } from "@ployz/sdk/config";
 import { Schema } from "effect";
@@ -34,7 +33,7 @@ export function compileSdkPreparationInput(input: {
   variableProducers?: readonly EnvironmentSnapshotVariableProducer[];
 }) {
   const { variableProducers = [], ...deployment } = input;
-  return { ...deployment, dependencies: deploymentDependencies(input.snapshots, variableProducers), snapshots: input.snapshots.map((snapshot) => ({ ...snapshot, config: toCoreServiceConfig(snapshot.config) })) };
+  return { ...deployment, dependencies: deploymentDependencies(input.snapshots, variableProducers) };
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {

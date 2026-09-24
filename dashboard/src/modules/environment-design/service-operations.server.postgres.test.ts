@@ -2,13 +2,15 @@ import { editServiceMetadata } from "./service-metadata.server";
 import { loadEnvironmentDocument, loadCurrentEnvironmentState } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { Polar } from "#/modules/billing/polar-provider.server";
+import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import {
   environment,
   member,
   organization,
+  organizationBillingState,
   project,
   user,
 } from "#/db/schema";
@@ -198,6 +200,83 @@ it.live(
           assert.strictEqual(rejected._tag, "Validation");
         }
       }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+const hostedPolar: PolarService = {
+  mode: "hosted",
+  productIds: { free: "free", solo: "solo", teams: "teams" },
+  listActiveSubscriptions: () => Effect.die("Custom domains read the cached billing row."),
+  createFreeSubscription: () => Effect.die("unused"),
+  getProductPrices: () => Effect.die("unused"),
+  updateSubscriptionPlan: () => Effect.die("unused"),
+  createCheckout: () => Effect.die("unused"),
+};
+
+it.live(
+  "links custom domains on self-hosted or with an active hosted subscription",
+  () =>
+    Effect.gen(function* () {
+      const container = yield* postgresTestContainer;
+      yield* migrateTestDatabase(container.url);
+      const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {
+        DATABASE_URL: container.url.href, APP_URL: "http://localhost:3000", BETTER_AUTH_SECRET: "better-auth-secret",
+        GITHUB_CLIENT_ID: "github-client-id", GITHUB_CLIENT_SECRET: "github-client-secret",
+        APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
+      } }))));
+      const layer = (polar: PolarService) => Layer.mergeAll(DatabaseLive.pipe(Layer.provide(config)),
+        Layer.succeed(Polar, polar), SecretEncryptionLive.pipe(Layer.provide(config)));
+
+      const seeded = yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const [author] = yield* database.drizzle.insert(user)
+          .values({ email: "domains@example.test", emailVerified: true, name: "Domains" }).returning({ id: user.id });
+        const [org] = yield* database.drizzle.insert(organization).values({ name: "Acme", slug: "acme" }).returning({ id: organization.id });
+        if (!author || !org) return yield* Effect.die("PostgreSQL did not return the seed rows.");
+        yield* database.drizzle.insert(member).values({ userId: author.id, organizationId: org.id, role: "owner" });
+        const [proj] = yield* database.drizzle.insert(project).values({ organizationId: org.id, name: "API", slug: "api" }).returning({ id: project.id });
+        if (!proj) return yield* Effect.die("PostgreSQL did not return the project.");
+        const [env] = yield* database.drizzle.insert(environment).values({ organizationId: org.id, projectId: proj.id,
+          name: "Production", namespace: "api-production", intent: emptyEnvironmentIntent("api-production") }).returning({ id: environment.id });
+        if (!env) return yield* Effect.die("PostgreSQL did not return the environment.");
+        const actor = { userId: author.id };
+        const created = yield* createService(actor, { organizationSlug: "acme", environmentId: env.id, name: "Web",
+          source: createImageServiceSource({ image: "acme/web:latest" }), x: 0, y: 0,
+          preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped" });
+        return { actor, organizationId: org.id, environmentId: env.id, serviceId: created.data.service.id };
+      }).pipe(Effect.provide(layer({ mode: "self_hosted" })));
+
+      const linkRoute = (hostname: string) => Effect.gen(function* () {
+        const { revision } = yield* loadEnvironmentDocument(seeded.environmentId);
+        return yield* updateService(seeded.actor, { organizationSlug: "acme", environmentId: seeded.environmentId,
+          serviceId: seeded.serviceId, revision, routes: [{ id: randomUUID(), hostname, targetPort: 3000 }] });
+      });
+
+      yield* linkRoute("self-hosted.example.com").pipe(Effect.provide(layer({ mode: "self_hosted" })));
+
+      yield* Effect.gen(function* () {
+        const refused = yield* linkRoute("unpaid.example.com").pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "Forbidden");
+        assert.strictEqual(refused.message, "Custom domains require an active subscription.");
+        const { intent } = yield* loadEnvironmentDocument(seeded.environmentId);
+        assert.strictEqual(intent.services[0]?.config.routes[0]?.hostname, "self-hosted.example.com");
+
+        const { revision } = yield* loadEnvironmentDocument(seeded.environmentId);
+        yield* updateService(seeded.actor, { organizationSlug: "acme", environmentId: seeded.environmentId,
+          serviceId: seeded.serviceId, revision, routes: [] });
+
+        const database = yield* Database;
+        const subscribe = (currentPlan: "free" | "solo") => database.drizzle.insert(organizationBillingState).values({
+          organizationId: seeded.organizationId, activeSubscriptionId: `sub-${currentPlan}`, currentPlan, productId: randomUUID(),
+          amount: 900, currency: "usd", currentPeriodStart: new Date("2026-01-01T00:00:00Z"),
+          currentPeriodEnd: new Date("2099-01-01T00:00:00Z"), hasActiveSubscription: true,
+        }).onConflictDoUpdate({ target: organizationBillingState.organizationId, set: { currentPlan } });
+        yield* subscribe("free");
+        assert.strictEqual((yield* linkRoute("free.example.com").pipe(Effect.flip))._tag, "Forbidden");
+        yield* subscribe("solo");
+        yield* linkRoute("paid.example.com");
+      }).pipe(Effect.provide(layer(hostedPolar)));
     }),
   60_000,
 );

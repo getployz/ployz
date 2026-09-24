@@ -4,8 +4,8 @@ import {
   createSelectSchema,
 } from "drizzle-orm/effect-schema";
 import { Effect, Schema } from "effect";
-import { serviceFieldSchema, sharedServiceConfigSchema, savedServiceConfigSchema, type DashboardServiceConfig } from "./service-config";
-import type { ServiceGitBranch as SharedServiceGitBranch, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
+import { serviceFieldSchema, sharedServiceConfigSchema, savedServiceConfigSchema } from "./service-config";
+import type { ServiceConfig, ServiceGitBranch as SharedServiceGitBranch, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
 import {
   environmentCanvasNodePosition,
   REGISTRY_CREDENTIAL_AUTH_MODES,
@@ -67,7 +67,7 @@ export const valuePartSchema = Schema.Union([
     owner: Schema.Union([
       Schema.Struct({ scope: Schema.Literal("self") }),
       Schema.Struct({
-        scope: Schema.Literals(["service", "variable_group"]),
+        scope: Schema.Literal("service"),
         lineageId: Schema.String,
       }),
     ]),
@@ -75,18 +75,9 @@ export const valuePartSchema = Schema.Union([
   }),
 ]);
 
-const serviceDeployEnvSourceSchema = Schema.Struct({
-  kind: Schema.Literal("variable_group"),
-  resourceId: Uuid,
-  resourceName: Schema.NonEmptyString,
-  variableGroupId: Uuid,
-  key: Schema.NonEmptyString,
-});
-
 const serviceDeployEnvLiteralValueSchema = Schema.Struct({
   kind: Schema.Literal("literal"),
   value: Schema.String,
-  source: Schema.optionalKey(serviceDeployEnvSourceSchema),
   parts: Schema.optionalKey(Schema.mutable(Schema.Array(valuePartSchema))),
 });
 
@@ -95,7 +86,6 @@ const serviceDeployEnvSecretValueSchema = Schema.Struct({
   variableId: Schema.optionalKey(Uuid),
   encryptedValue: Schema.optionalKey(encryptedSecretValueSchema),
   fingerprint: Schema.NonEmptyString,
-  source: Schema.optionalKey(serviceDeployEnvSourceSchema),
 });
 
 const serviceDeployEnvValueSchema = Schema.Union([
@@ -120,7 +110,6 @@ export const serviceMaxRetriesSchema = serviceFieldSchema("maxRetries");
 export const serviceReplicasSchema = serviceFieldSchema("replicas");
 export const serviceCpuLimitSchema = serviceFieldSchema("cpuLimit");
 export const serviceMemLimitSchema = serviceFieldSchema("memLimit");
-export const serviceCronSchema = serviceFieldSchema("cron");
 export const servicePrivateDnsSchema = serviceFieldSchema("privateDns");
 export const serviceRouteSchema = Schema.Struct({
   id: Uuid, hostname: Schema.String, targetPort: Schema.NullOr(Schema.Int.check(
@@ -168,7 +157,6 @@ export const serviceSelectSchema = Schema.Struct({
   healthcheck: serviceHealthcheckSchema,
   restartPolicy: serviceRestartPolicySchema,
   maxRetries: serviceMaxRetriesSchema,
-  cron: serviceCronSchema,
   replicas: serviceReplicasSchema,
   cpuLimit: serviceCpuLimitSchema,
   memLimit: serviceMemLimitSchema,
@@ -268,7 +256,6 @@ export const updateServiceSchema = Schema.Struct({
   healthcheck: Schema.optionalKey(serviceSelectSchema.fields.healthcheck),
   restartPolicy: Schema.optionalKey(serviceSelectSchema.fields.restartPolicy),
   maxRetries: Schema.optionalKey(serviceSelectSchema.fields.maxRetries),
-  cron: Schema.optionalKey(serviceSelectSchema.fields.cron),
   replicas: Schema.optionalKey(serviceSelectSchema.fields.replicas),
   cpuLimit: Schema.optionalKey(serviceSelectSchema.fields.cpuLimit),
   memLimit: Schema.optionalKey(serviceSelectSchema.fields.memLimit),
@@ -296,7 +283,7 @@ export type ServiceDeployEnvValue = DeepMutable<
   typeof serviceDeployEnvValueSchema.Type
 >;
 export type ServiceDeployEnv = DeepMutable<typeof serviceDeployEnvSchema.Type>;
-export type ServiceDeploymentConfig = DashboardServiceConfig;
+export type ServiceDeploymentConfig = ServiceConfig;
 export type ServiceRecord = DeepMutable<typeof serviceSelectSchema.Type>;
 export type ServiceWithContextRecord = DeepMutable<
   typeof serviceWithContextSelectSchema.Type

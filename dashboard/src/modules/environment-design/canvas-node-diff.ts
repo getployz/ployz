@@ -4,7 +4,7 @@ import type { ServiceRecord } from "#/modules/environment-design/services";
 
 /** Canvas-only presentation shape for an explicit Environment Change Set group. */
 export type CanvasNodeDiffGroup = {
-  nodeType: "service" | "variable_group" | "volume";
+  nodeType: "service" | "volume";
   nodeId: string;
   nodeName: string;
   summaryLabel: string;

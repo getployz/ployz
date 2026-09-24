@@ -123,15 +123,10 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
         "vol-00000000-0000-4000-8000-000000000002"
     );
     assert_eq!(intent["options"]["selected"], json!([{"name":"api"}]));
-    let mut http = config.clone();
+    let mut http = config;
     http["healthcheck"] = json!({"type":"http","path":"/health","timeoutSeconds":10});
     assert_eq!(
         lower(http).unwrap()["target"][0]["container"]["healthcheck"],
         json!({"state":"http","path":"/health","port":8080,"timeout_seconds":10})
     );
-    let mut cron = config;
-    cron["cron"] = json!("* * * * *");
-    let error = lower(cron).unwrap_err();
-    assert_eq!(error.path, "cron");
-    assert!(!error.to_string().contains("authorized-secret"));
 }

@@ -8,7 +8,7 @@ import { environmentSavedStateBasisSchema } from "./saved-state";
 
 
 type ReviewedNodeSnapshot = {
-  nodeType: "service" | "variable_group" | "volume";
+  nodeType: "service" | "volume";
   nodeId: string;
   nodeLineageId: string;
   configVersion: number;
@@ -65,10 +65,9 @@ export function projectDestructiveEnvironmentSave(input: {
   workingNodes: ReviewableNodeIdentity[];
   appliedNodes: ReviewableNodeIdentity[];
 }) {
-  const runtimeNodes = (nodes: ReviewableNodeIdentity[]) => nodes.flatMap((node) =>
-    node.nodeType === "variable_group" ? [] : [{
-      nodeType: node.nodeType, nodeId: node.nodeId, config: node.config === null ? null : {},
-    }]);
+  const runtimeNodes = (nodes: ReviewableNodeIdentity[]) => nodes.map((node) => ({
+    nodeType: node.nodeType, nodeId: node.nodeId, config: node.config === null ? null : {},
+  }));
   return destructivePublication({
     workingNodes: runtimeNodes(input.workingNodes),
     appliedNodes: runtimeNodes(input.appliedNodes),

@@ -25,46 +25,17 @@ const db = {
   ],
   managedExports: [{ key: "PLOYZ_PRIVATE_DOMAIN", description: "Private DNS." }],
 };
-const shared = {
-  slug: "shared",
-  name: "Shared",
-  isSelf: false,
-  variables: [{ key: "STRIPE", exported: true, isSecret: true, description: null }],
-};
 
 describe("buildReferenceTargets", () => {
-  it("offers self vars, self managed exports, other services' exports, and variable group exports", () => {
-    const targets = buildReferenceTargets({
-      ownerScope: "service",
-      services: [api, db],
-      variableGroups: [shared],
-    });
+  it("offers self vars, self managed exports, and other services' exports", () => {
+    const targets = buildReferenceTargets({ services: [api, db] });
     const labels = targets.map((t) => `${t.ownerSlug ?? ""}.${t.key}`);
     expect(labels).toContain(".REGION"); // self, no prefix
     expect(labels).toContain(".INTERNAL"); // self non-exported still offered
     expect(labels).toContain(".PLOYZ_PRIVATE_DOMAIN"); // self managed export
     expect(labels).toContain("db.PASSWORD"); // other service exported
     expect(labels).toContain("db.PLOYZ_PRIVATE_DOMAIN"); // other service managed
-    expect(labels).toContain("shared.STRIPE"); // variable group exported
     expect(labels).not.toContain("db.INTERNAL_ONLY"); // other service non-exported hidden
-  });
-
-  it("offers only the group's own variables for a variable-group owner", () => {
-    const targets = buildReferenceTargets({
-      ownerScope: "variable_group",
-      services: [api, db],
-      variableGroups: [{ ...shared, isSelf: true }],
-    });
-    expect(targets).toEqual([
-      {
-        key: "STRIPE",
-        ownerSlug: null,
-        kind: "self",
-        ownerLabel: "This group",
-        isSecret: true,
-        description: null,
-      },
-    ]);
   });
 });
 

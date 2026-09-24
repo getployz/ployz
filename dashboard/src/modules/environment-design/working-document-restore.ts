@@ -9,7 +9,7 @@ const restoreScope = {
   revision: Uuid,
 };
 const nodeCommand = Schema.Struct({
-  kind: Schema.Literal("node"), nodeType: Schema.Literals(["service", "variable_group", "volume"]),
+  kind: Schema.Literal("node"), nodeType: Schema.Literals(["service", "volume"]),
   nodeId: Uuid, path: Schema.optionalKey(Schema.NonEmptyString),
 });
 export const restoreWorkingDocumentSchema = Schema.Union([
