@@ -3,8 +3,8 @@ pub mod local;
 
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    CloudPairing, EnrollmentAssignment, EnrollmentSnapshot, JoinAccepted, JoinRequest,
-    ListMachinesRequest, Registered, RpcError, RpcErrorCode, op,
+    EnrollmentAssignment, EnrollmentSnapshot, JoinAccepted, JoinRequest, ListMachinesRequest,
+    Registered, RpcError, RpcErrorCode, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -72,7 +72,6 @@ pub async fn join_enrollment(
     joining: &mut Client,
     assignment: &EnrollmentAssignment,
     wireguard_mtu: Option<u32>,
-    cloud_pairing: Option<CloudPairing>,
 ) -> Result<JoinAccepted, RpcError> {
     let local = joining
         .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
@@ -98,7 +97,6 @@ pub async fn join_enrollment(
             JoinRequest {
                 registration,
                 wireguard_mtu,
-                cloud_pairing,
             },
             None,
         )

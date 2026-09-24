@@ -44,7 +44,7 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
     drop(lock);
     assert!(
-        join_enrollment(&mut entry, &mut joining, &assignment, None, None)
+        join_enrollment(&mut entry, &mut joining, &assignment, None)
             .await
             .is_err()
     );
@@ -52,7 +52,7 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
     let reopened = ployz::enrollment::local::save_assignment(dir.path(), &request, &fresh).unwrap();
     assert_eq!(reopened, assignment);
     assert!(
-        join_enrollment(&mut entry, &mut joining, &reopened, None, None)
+        join_enrollment(&mut entry, &mut joining, &reopened, None)
             .await
             .unwrap()
             .already_accepted
@@ -75,7 +75,7 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
         details: Value::Null,
     });
     assert!(
-        join_enrollment(&mut entry, &mut joining, &assignment, None, None)
+        join_enrollment(&mut entry, &mut joining, &assignment, None)
             .await
             .is_err()
     );

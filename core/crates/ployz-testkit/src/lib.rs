@@ -130,7 +130,6 @@ pub fn join_request(first: &Machine, registration: &Registered) -> JoinRequest {
             ..registration.clone()
         },
         wireguard_mtu: None,
-        cloud_pairing: None,
     }
 }
 
@@ -382,7 +381,6 @@ impl Cluster {
                         public_ip: None,
                         advertised_endpoints: vec![self.endpoint(0)?],
                         wireguard_mtu: None,
-                        cloud_pairing: None,
                     })
                     .encode()?,
                 )

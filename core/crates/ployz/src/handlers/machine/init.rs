@@ -92,7 +92,6 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
                 wireguard_mtu,
-                cloud_pairing: None,
             },
         )
         .await?

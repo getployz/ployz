@@ -41,7 +41,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     }))
     .unwrap();
     local
-        .join(machine.clone(), vec![machine], BTreeMap::new(), None, None)
+        .join(machine.clone(), vec![machine], BTreeMap::new(), None)
         .unwrap();
     let local = RecordOwner::spawn(local).unwrap();
 

@@ -91,7 +91,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             JoinRequest {
                 registration,
                 wireguard_mtu,
-                cloud_pairing: None,
             },
         )
         .await?;

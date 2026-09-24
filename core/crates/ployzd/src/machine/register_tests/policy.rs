@@ -50,7 +50,6 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
         .join(JoinRequest {
             registration,
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .await
         .unwrap();

@@ -10,17 +10,14 @@ use harness::{
     CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
     founder_machine, ingress_on, registration, serve_ingress_probe, serve_machine,
 };
-use ployz_core::{
-    CloudPairing, InitializeRequest, InspectRequest, LocalMachinePhase, PairingCredential,
-    Registered, op,
-};
+use ployz_core::{InitializeRequest, InspectRequest, LocalMachinePhase, Registered, op};
 use serde_json::json;
 
 #[tokio::test]
 async fn cloud_init_join_participates() {
     let registration = registration();
     let machine_id = registration.assigned_machine.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -64,13 +61,6 @@ async fn cloud_init_join_participates() {
         "lost Join reply must be recovered by Inspect"
     );
     let joined = daemon.join_request();
-    let pairing_json = serde_json::to_value(joined.cloud_pairing.as_ref().unwrap()).unwrap();
-    assert_eq!(
-        pairing_json,
-        json!({
-            "secret": PAIRING,
-        })
-    );
     assert_eq!(joined.registration.assigned_machine.id, machine_id);
 
     assert!(
@@ -108,7 +98,7 @@ async fn cloud_init_join_participates() {
 async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "zfs",
@@ -148,7 +138,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
 async fn cloud_init_initialize_participates() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let events = EventLog::default();
     let enroll = EnrollListen::script_recording(
         [json!({
@@ -227,10 +217,6 @@ async fn cloud_init_initialize_participates() {
     );
     assert_eq!(initialized.cluster_network.to_string(), "10.210.0.0/16");
     assert_eq!(initialized.wireguard_mtu, Some(1400));
-    assert!(
-        initialized.cloud_pairing.is_none(),
-        "Cloud Pairing is published only after founder setup"
-    );
 
     assert_eq!(
         enroll.paths(),
@@ -273,7 +259,7 @@ async fn cloud_init_initialize_participates() {
 #[tokio::test]
 async fn caddy_lookup_failure_happens_before_initialize() {
     let founder = founder_machine();
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": false,
@@ -354,7 +340,7 @@ async fn caddy_lookup_failure_happens_before_initialize() {
 async fn cloud_init_initialize_reserves_hosted_dns() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let events = EventLog::default();
     let enroll = EnrollListen::script_recording(
         [json!({
@@ -437,7 +423,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
 async fn cloud_init_retries_not_yet_then_joins() {
     let registration = registration();
     let machine_id = registration.assigned_machine.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script([
         json!({"kind": "not_yet", "retryAfter": 0}),
         json!({
@@ -515,7 +501,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
 async fn cloud_init_retries_not_yet_then_initializes() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script([
         json!({"kind": "not_yet", "retryAfter": 0}),
         json!({
@@ -609,7 +595,7 @@ async fn init_cloud(
 #[tokio::test]
 async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     let founder = founder_machine();
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(
         json!({ "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing }),
     )
@@ -630,7 +616,6 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -663,7 +648,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         "kind": "initialize",
         "resumed": false,
         "storage": "none",
-        "pairing": CloudPairing::new(PairingCredential::parse(PAIRING).unwrap()),
+        "pairing": json!({ "secret": PAIRING }),
     }))
     .await;
     let daemon = JoinDaemon::new(Registered {
@@ -682,7 +667,6 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -726,7 +710,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let mut assigned = local.clone();
     assigned.assigned_machine.accepts_ingress = false;
     assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let mut rotated = assigned.clone();
     rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
     let enroll = EnrollListen::start(json!({
@@ -748,7 +732,6 @@ async fn reset_enroll_posts_the_rotated_public_key() {
                 public_ip: None,
                 advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -795,7 +778,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
     assigned.assigned_machine.accepts_ingress = false;
     assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
     assigned.assigned_machine.name = ployz_core::MachineName::parse("rejoined").unwrap();
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::occupying_join(json!({
         "kind": "join",
         "storage": "none",
@@ -815,7 +798,6 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
                 public_ip: None,
                 advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -866,7 +848,7 @@ async fn join_places_observed_ingress_on_this_machine() {
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -913,7 +895,7 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
     unreachable.name = ployz_core::MachineName::parse("unreachable").unwrap();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone(), unreachable.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -957,7 +939,7 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
     registration.visible_peers = vec![founder.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -1012,7 +994,7 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -1067,7 +1049,7 @@ async fn join_starts_created_ingress_before_success() {
     let mut registration = registration();
     let joiner = registration.assigned_machine.clone();
     registration.visible_peers = vec![founder.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
@@ -1145,7 +1127,7 @@ async fn join_against_founder(
     let mut registration = registration();
     registration.assigned_machine.id = ployz_core::MachineId::random();
     registration.visible_peers = vec![founder.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",

@@ -1,4 +1,4 @@
-//! Cloud Pairing and the management client key it admits, as one admitted mutation.
+//! Cloud Pairing as the management client key it admits, as one admitted mutation.
 
 use ployz_core::{
     LocalMachinePhase, ManagementCapability, SetCloudPairingRequest, SetCloudPairingResponse,
@@ -13,7 +13,8 @@ impl LocalMachine {
     /// The accepted key remains usable through read-only replacement verification.
     /// Its first operational RPC activates the replacement after the caller saves it.
     /// `Clear` removes both accepted and pending keys; record publication revokes
-    /// every live management connection. Client secrets are never persisted.
+    /// every live management connection. No secret is persisted: not the client
+    /// secret, and no Cloud secret ever reaches the daemon.
     ///
     /// # Errors
     /// Returns [`Error::NotParticipating`] when this Machine is not participating,
@@ -32,19 +33,16 @@ impl LocalMachine {
                         return Err(Error::NotParticipating);
                     }
                     let capability = match request {
-                        SetCloudPairingRequest::Set { pairing } => {
+                        SetCloudPairingRequest::Set {} => {
                             let client = iroh::SecretKey::generate();
-                            store.persist_cloud_pairing(Some((
-                                pairing,
-                                *client.public().as_bytes(),
-                            )))?;
+                            store.stage_client_key(*client.public().as_bytes())?;
                             Some(ManagementCapability::new(
                                 store.record().management_secret().public_key(),
                                 client.to_bytes(),
                             ))
                         }
                         SetCloudPairingRequest::Clear {} => {
-                            store.persist_cloud_pairing(None)?;
+                            store.clear_client_keys()?;
                             None
                         }
                     };
@@ -81,7 +79,6 @@ impl LocalMachine {
 mod tests {
     use super::*;
     use crate::machine::{LocalMachineStore, RecordOwner};
-    use ployz_core::CloudPairing;
 
     async fn participating(dir: &std::path::Path) -> LocalMachine {
         let store = LocalMachineStore::open(dir).unwrap();
@@ -96,15 +93,10 @@ mod tests {
                     "192.0.2.1:51820".parse().unwrap(),
                 )],
                 wireguard_mtu: None,
-                cloud_pairing: None,
             })
             .await
             .unwrap();
         local
-    }
-
-    fn pairing(secret: &str) -> CloudPairing {
-        CloudPairing::new(ployz_core::PairingCredential::parse(secret).unwrap())
     }
 
     #[tokio::test]
@@ -112,9 +104,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         let capability = local
-            .set_cloud_pairing(SetCloudPairingRequest::Set {
-                pairing: pairing("first"),
-            })
+            .set_cloud_pairing(SetCloudPairingRequest::Set {})
             .await
             .unwrap()
             .capability
@@ -126,9 +116,7 @@ mod tests {
         let remote = local.clone().with_management_client(key);
         let lock = local.owner.admission_lock().lock_owned().await;
         let clear = local.set_cloud_pairing(SetCloudPairingRequest::Clear {});
-        let queued = remote.set_cloud_pairing(SetCloudPairingRequest::Set {
-            pairing: pairing("after-clear"),
-        });
+        let queued = remote.set_cloud_pairing(SetCloudPairingRequest::Set {});
         tokio::pin!(clear, queued);
         assert!(futures_util::poll!(&mut clear).is_pending());
         assert!(futures_util::poll!(&mut queued).is_pending());
@@ -138,7 +126,7 @@ mod tests {
             queued.await.is_err(),
             "a revoked client must not mutate after Clear"
         );
-        assert!(local.record().cloud_pairing().is_none());
+        assert!(!local.record().has_management_client());
     }
 
     #[tokio::test]
@@ -146,14 +134,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         let response = local
-            .set_cloud_pairing(SetCloudPairingRequest::Set {
-                pairing: pairing("pairing"),
-            })
+            .set_cloud_pairing(SetCloudPairingRequest::Set {})
             .await
             .unwrap();
         let capability = response.capability.unwrap();
         let record = local.record();
-        assert_eq!(record.cloud_pairing(), Some(&pairing("pairing")));
         assert_eq!(
             *capability.machine(),
             record.management_secret().public_key()
@@ -171,9 +156,7 @@ mod tests {
 
         // A lost response leaves the accepted key usable until the replacement proves possession.
         let again = local
-            .set_cloud_pairing(SetCloudPairingRequest::Set {
-                pairing: pairing("pairing"),
-            })
+            .set_cloud_pairing(SetCloudPairingRequest::Set {})
             .await
             .unwrap();
         let replacement = again.capability.unwrap();
@@ -204,9 +187,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         let first = local
-            .set_cloud_pairing(SetCloudPairingRequest::Set {
-                pairing: pairing("first"),
-            })
+            .set_cloud_pairing(SetCloudPairingRequest::Set {})
             .await
             .unwrap()
             .capability
@@ -216,9 +197,7 @@ mod tests {
             .as_bytes();
         local.activate_management_client(first_key).await.unwrap();
         let next = local
-            .set_cloud_pairing(SetCloudPairingRequest::Set {
-                pairing: pairing("next"),
-            })
+            .set_cloud_pairing(SetCloudPairingRequest::Set {})
             .await
             .unwrap()
             .capability
@@ -247,13 +226,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_removes_pairing_and_accepted_key_in_one_write() {
+    async fn clear_removes_accepted_and_pending_keys_in_one_write() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         local
-            .set_cloud_pairing(SetCloudPairingRequest::Set {
-                pairing: pairing("pairing"),
-            })
+            .set_cloud_pairing(SetCloudPairingRequest::Set {})
             .await
             .unwrap();
         let mut records = local.owner().watch();
@@ -265,10 +242,10 @@ mod tests {
         assert_eq!(response, SetCloudPairingResponse { capability: None });
         assert!(records.has_changed().unwrap());
         let record = records.borrow_and_update().clone();
-        assert_eq!(record.cloud_pairing(), None);
+        assert!(!record.has_management_client());
         assert_eq!(record.accepted_client(), None);
         assert_eq!(record.pending_client(), None);
-        // One publication means one write: pairing and key were not cleared separately.
+        // One publication means one write: the keys were not cleared separately.
         assert!(!records.has_changed().unwrap());
     }
 }

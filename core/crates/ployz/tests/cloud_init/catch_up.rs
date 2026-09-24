@@ -10,8 +10,7 @@ use super::harness::{
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
-    CloudPairing, ContainerId, ContainerObservation, MembershipObservation, PairingCredential,
-    ProjectName, ServiceId, ServiceName,
+    ContainerId, ContainerObservation, MembershipObservation, ProjectName, ServiceId, ServiceName,
 };
 use serde_json::json;
 
@@ -123,7 +122,7 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let events = EventLog::default();
     let enroll = EnrollListen::script_recording(
         [json!({

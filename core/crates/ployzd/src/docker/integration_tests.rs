@@ -846,7 +846,6 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .unwrap()
         .id;

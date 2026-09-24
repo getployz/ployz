@@ -3,9 +3,9 @@ mod test_dir;
 use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairing, InspectRequest, JoinRequest, LocalMachinePhase, Machine,
-    MachineId, MachineName, MachineRuntime, MachineUpdate, PairingCredential, PublicIpUpdate,
-    Registered, SelectedEndpoint,
+    AdvertisedEndpoint, InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineId,
+    MachineName, MachineRuntime, MachineUpdate, PublicIpUpdate, Registered, SelectedEndpoint,
+    SetCloudPairingRequest,
 };
 use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
@@ -52,7 +52,6 @@ async fn initialize_commits_policy_in_the_first_participating_record() {
         "name": "builder",
         "cluster_network": "10.210.0.0/16",
         "advertised_endpoints": ["192.0.2.1:51820"],
-        "cloud_pairing": null,
         "initial_policy": {
             "labels": {"pool": "build"},
             "accepts_builds": true,
@@ -87,7 +86,6 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             public_ip: Some("203.0.113.1".parse().unwrap()),
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: Some(1400),
-            cloud_pairing: None,
         })
         .unwrap();
     assert_eq!(first.record().phase(), LocalMachinePhase::Participating);
@@ -104,7 +102,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     else {
         panic!("initialized Machine must retain its founding Cluster seed");
     };
-    assert_eq!(first.record().cloud_pairing(), None);
+    assert!(!first.record().has_management_client());
     assert!(
         first
             .initialize(ployz_core::InitializeRequest {
@@ -114,7 +112,6 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
                 wireguard_mtu: None,
-                cloud_pairing: None,
             })
             .is_err()
     );
@@ -141,27 +138,18 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             vec![initialized.clone()],
             BTreeMap::from([("actor".into(), 4)]),
             None,
-            None,
         )
         .unwrap();
     assert_eq!(second.record().id(), assigned.id);
     assert_eq!(second.record().phase(), LocalMachinePhase::Joining);
     assert_eq!(second.record().bootstrap(), [initialized].as_slice());
     assert_eq!(second.record().min_store_version().get("actor"), Some(&4));
-    assert_eq!(second.record().cloud_pairing(), None);
+    assert!(!second.record().has_management_client());
 }
 
-fn sample_cloud_pairing() -> CloudPairing {
-    CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
-}
-
-#[tokio::test]
-async fn initialize_with_cloud_pairing_stores_pairing_credential() {
-    let dir = TestDir::new("ployzd-initialize-cloud-pairing");
-    let store = LocalMachineStore::open(&dir.0).unwrap();
-    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
-    let pairing = sample_cloud_pairing();
-
+async fn participating(dir: &TestDir) -> LocalMachine {
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap());
     local
         .initialize(ployz_core::InitializeRequest {
             initial_policy: Default::default(),
@@ -170,87 +158,55 @@ async fn initialize_with_cloud_pairing_stores_pairing_credential() {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: Some(pairing.clone()),
         })
         .await
         .unwrap();
+    local
+}
 
-    assert_eq!(local.record().cloud_pairing(), Some(&pairing));
+#[tokio::test]
+async fn set_cloud_pairing_persists_only_public_client_keys() {
+    let dir = TestDir::new("ployzd-set-cloud-pairing");
+    let local = participating(&dir).await;
+    assert!(!local.record().has_management_client());
+
+    let capability = local
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
     drop(local);
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert_eq!(reopened.record().cloud_pairing(), Some(&pairing));
+    assert!(reopened.record().has_management_client());
     let persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
-    let pairing_json = persisted.pointer("/cloud_access/pairing").unwrap();
-    assert_eq!(
-        pairing_json,
-        &serde_json::json!({
-            "secret": "pairing-secret",
-        })
-    );
-    assert!(persisted.get("dial").is_none());
-    assert!(pairing_json.get("dial").is_none());
+    let access = persisted.get("cloud_access").unwrap();
+    let mut fields = access.as_object().unwrap().keys().collect::<Vec<_>>();
+    fields.sort();
+    assert_eq!(fields, ["pending", "state"], "{access}");
+    let text = persisted.to_string();
+    assert!(!text.contains(&capability.to_secret_string()));
+    assert!(!text.contains(&serde_json::to_string(capability.client_secret()).unwrap()));
 }
 
 #[tokio::test]
-async fn set_cloud_pairing_after_initialize_persists() {
-    let dir = TestDir::new("ployzd-set-cloud-pairing");
-    let store = LocalMachineStore::open(&dir.0).unwrap();
-    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
-    let pairing = sample_cloud_pairing();
-
-    local
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-            cloud_pairing: None,
-        })
-        .await
-        .unwrap();
-    assert_eq!(local.record().cloud_pairing(), None);
-
-    local
-        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
-            pairing: pairing.clone(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(local.record().cloud_pairing(), Some(&pairing));
-    drop(local);
-    let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert_eq!(reopened.record().cloud_pairing(), Some(&pairing));
-}
-
-#[tokio::test]
-async fn set_cloud_pairing_none_clears_persisted_pairing() {
+async fn set_cloud_pairing_clear_persists() {
     let dir = TestDir::new("ployzd-clear-cloud-pairing");
-    let store = LocalMachineStore::open(&dir.0).unwrap();
-    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
+    let local = participating(&dir).await;
     local
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-            cloud_pairing: Some(sample_cloud_pairing()),
-        })
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
         .await
         .unwrap();
     local
-        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {})
+        .set_cloud_pairing(SetCloudPairingRequest::Clear {})
         .await
         .unwrap();
-    assert_eq!(local.record().cloud_pairing(), None);
+    assert!(!local.record().has_management_client());
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert_eq!(reopened.record().cloud_pairing(), None);
+    assert!(!reopened.record().has_management_client());
 }
 
 #[tokio::test]
@@ -259,67 +215,10 @@ async fn set_cloud_pairing_before_initialize_is_not_participating() {
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     let error = local
-        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
-            pairing: sample_cloud_pairing(),
-        })
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
         .await
         .unwrap_err();
     assert!(matches!(error, LocalMachineError::NotParticipating));
-}
-
-#[tokio::test]
-async fn join_with_cloud_pairing_stores_the_pairing_credential() {
-    let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
-    let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
-    let initialized = first
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-            cloud_pairing: None,
-        })
-        .unwrap();
-
-    let second_dir = TestDir::new("ployzd-join-cloud-pairing-second");
-    let store = LocalMachineStore::open(&second_dir.0).unwrap();
-    let public_key = store.record().private_key().public_key();
-    let assigned = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: store.record().id(),
-        name: MachineName::parse("second").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        public_key,
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-        runtime: Default::default(),
-    };
-    let pairing = sample_cloud_pairing();
-    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
-    local
-        .join(JoinRequest {
-            registration: Registered {
-                assigned_machine: assigned.clone(),
-                visible_peers: vec![initialized],
-                target_versions: BTreeMap::from([("actor".into(), 4)]),
-            },
-            wireguard_mtu: None,
-            cloud_pairing: Some(pairing.clone()),
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(local.record().cloud_pairing(), Some(&pairing));
-    drop(local);
-
-    let reopened = LocalMachineStore::open(&second_dir.0).unwrap();
-    assert_eq!(reopened.record().id(), assigned.id);
-    assert_eq!(reopened.record().cloud_pairing(), Some(&pairing));
 }
 
 #[test]
@@ -334,7 +233,6 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .unwrap();
     drop(store);
@@ -371,7 +269,6 @@ fn machine_update_is_atomic_and_durable() {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .unwrap();
     let endpoints = vec![AdvertisedEndpoint("198.51.100.2:6000".parse().unwrap())];
@@ -469,20 +366,18 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
 }
 
 #[tokio::test]
-async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
+async fn inspect_reports_cloud_pairing_from_client_keys() {
     let dir = TestDir::new("ployzd-inspect-cloud-pairing");
-    let store = LocalMachineStore::open(&dir.0).unwrap();
-    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
+    let local = participating(&dir).await;
+    assert!(
+        !local
+            .inspect(InspectRequest::default())
+            .await
+            .unwrap()
+            .cloud_paired
+    );
     local
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-            cloud_pairing: Some(sample_cloud_pairing()),
-        })
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
         .await
         .unwrap();
 
@@ -881,7 +776,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
     );
     assigned.advertised_endpoints.clear();
     assert!(matches!(
-        store.join(assigned, vec![peer], BTreeMap::new(), None, None),
+        store.join(assigned, vec![peer], BTreeMap::new(), None),
         Err(StoreError::MissingEndpoints)
     ));
     assert_eq!(store.record(), &original);
@@ -939,7 +834,6 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
             target_versions: BTreeMap::from([("actor".into(), 4)]),
         },
         wireguard_mtu: Some(1380),
-        cloud_pairing: Some(sample_cloud_pairing()),
     };
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
     let mut restart_observation = local.owner().restart_requested();
@@ -975,14 +869,14 @@ fn local_record_rejects_contradictory_cloud_access() {
     let dir = TestDir::new("ployzd-invalid-cloud-access");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let valid = serde_json::to_value(store.record()).unwrap();
-    let pairing = serde_json::to_value(sample_cloud_pairing()).unwrap();
     let key = serde_json::to_value([1_u8; 32]).unwrap();
     for access in [
         serde_json::json!({"state": "unpaired", "accepted": key}),
-        serde_json::json!({"state": "active", "accepted": key}),
-        serde_json::json!({"state": "pending", "pairing": pairing}),
-        serde_json::json!({"state": "enrolling", "pairing": pairing, "pending": key}),
-        serde_json::json!({"state": "rotating", "pairing": pairing, "accepted": key}),
+        serde_json::json!({"state": "active"}),
+        serde_json::json!({"state": "pending", "accepted": key}),
+        serde_json::json!({"state": "rotating", "accepted": key}),
+        serde_json::json!({"state": "enrolling"}),
+        serde_json::json!({"state": "active", "accepted": key, "pairing": {"secret": "s"}}),
     ] {
         let mut invalid = valid.clone();
         *invalid.get_mut("cloud_access").unwrap() = access;

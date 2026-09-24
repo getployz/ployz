@@ -13,7 +13,7 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
+    LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
     SelectedEndpoint,
 };
 use serde::{Deserialize, Serialize};
@@ -140,7 +140,7 @@ pub struct LocalMachineRecord {
     wireguard_private_key: WireGuardPrivateKey,
     /// Management Identity secret; minted when the record is born.
     management_secret: ManagementSecret,
-    /// Pairing and its admitted keys form one persisted state.
+    /// Admitted management client public keys, as one persisted state.
     cloud_access: CloudAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
@@ -148,46 +148,28 @@ pub struct LocalMachineRecord {
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
 }
 
-/// The pairing credential may precede issuance during initialization or join.
+/// Management client public keys. No Cloud secret is persisted.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum CloudAccess {
     Unpaired {},
-    Enrolling {
-        pairing: CloudPairing,
-    },
     Pending {
-        pairing: CloudPairing,
         pending: [u8; 32],
     },
     Active {
-        pairing: CloudPairing,
         accepted: [u8; 32],
     },
     Rotating {
-        pairing: CloudPairing,
         accepted: [u8; 32],
         pending: [u8; 32],
     },
 }
 
-impl From<Option<CloudPairing>> for CloudAccess {
-    fn from(pairing: Option<CloudPairing>) -> Self {
-        pairing.map_or(Self::Unpaired {}, |pairing| Self::Enrolling { pairing })
-    }
-}
-
 impl LocalMachineRecord {
-    /// Current Cloud Pairing, including enrollment before capability issuance.
+    /// Whether any management client public key is accepted or pending.
     #[must_use]
-    pub fn cloud_pairing(&self) -> Option<&CloudPairing> {
-        match &self.cloud_access {
-            CloudAccess::Unpaired {} => None,
-            CloudAccess::Enrolling { pairing }
-            | CloudAccess::Pending { pairing, .. }
-            | CloudAccess::Active { pairing, .. }
-            | CloudAccess::Rotating { pairing, .. } => Some(pairing),
-        }
+    pub fn has_management_client(&self) -> bool {
+        !matches!(self.cloud_access, CloudAccess::Unpaired {})
     }
 
     /// Public key currently admitted by the management transport.
@@ -197,9 +179,7 @@ impl LocalMachineRecord {
             CloudAccess::Active { accepted, .. } | CloudAccess::Rotating { accepted, .. } => {
                 Some(accepted)
             }
-            CloudAccess::Unpaired {}
-            | CloudAccess::Enrolling { .. }
-            | CloudAccess::Pending { .. } => None,
+            CloudAccess::Unpaired {} | CloudAccess::Pending { .. } => None,
         }
     }
 
@@ -210,9 +190,7 @@ impl LocalMachineRecord {
             CloudAccess::Pending { pending, .. } | CloudAccess::Rotating { pending, .. } => {
                 Some(pending)
             }
-            CloudAccess::Unpaired {}
-            | CloudAccess::Enrolling { .. }
-            | CloudAccess::Active { .. } => None,
+            CloudAccess::Unpaired {} | CloudAccess::Active { .. } => None,
         }
     }
 }

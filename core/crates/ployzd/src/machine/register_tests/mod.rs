@@ -67,7 +67,6 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
         .join(JoinRequest {
             registration: replay,
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .await
         .unwrap();
@@ -103,7 +102,6 @@ async fn register_does_not_reconstruct_membership_while_joining() {
         .join(JoinRequest {
             registration: registered,
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .await
         .unwrap();

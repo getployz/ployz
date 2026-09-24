@@ -25,9 +25,8 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairing, DescribeContractRequest, InitializeRequest, MANAGEMENT_ALPN,
-    MachineId, MachineName, MachineRpcClient, ManagementCapability, PairingCredential,
-    RpcErrorCode, SetCloudPairingRequest, op,
+    AdvertisedEndpoint, DescribeContractRequest, InitializeRequest, MANAGEMENT_ALPN, MachineId,
+    MachineName, MachineRpcClient, ManagementCapability, RpcErrorCode, SetCloudPairingRequest, op,
 };
 use ployzd::{
     machine::{LocalMachine, LocalMachineStore, RecordOwner},
@@ -63,14 +62,11 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .await
         .unwrap();
     let old = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {
-            pairing: CloudPairing::new(PairingCredential::parse("pairing").unwrap()),
-        })
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
         .await
         .unwrap()
         .capability
@@ -100,7 +96,7 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify()),
     ));
     let previous = connector.connect(&connection(&old)).await.unwrap();
-    let replacement = rotate(previous.clone(), "pairing").await;
+    let replacement = rotate(previous.clone()).await;
     // Cloud has not committed replacement publication: negotiation may only verify identity.
     let verified =
         ployz::sdk::connect_connections(vec![connection(&replacement)], connector.clone())
@@ -116,8 +112,8 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         )
         .await;
     // Clear may revoke its own response; the authenticated cleared response is confirmation.
-    wait_until(|| local.record().cloud_pairing().is_none()).await;
-    assert!(local.record().cloud_pairing().is_none());
+    wait_until(|| !local.record().has_management_client()).await;
+    assert!(!local.record().has_management_client());
     assert!(matches!(
         connector.connect(&connection(&replacement)).await,
         Err(ConnectError::PairingCleared)
@@ -140,15 +136,12 @@ async fn contract() {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .await
         .unwrap();
     let machine_id = local.record().id();
     let capability = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {
-            pairing: CloudPairing::new(PairingCredential::parse("pairing").unwrap()),
-        })
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
         .await
         .unwrap()
         .capability
@@ -235,11 +228,11 @@ async fn contract() {
     // Lose the Set acknowledgement on the very connection being rotated. The
     // original capability still works, including after reconnecting, until a
     // replacement proves possession. A later Set retires the abandoned candidate.
-    let abandoned = rotate(channel.clone(), "lost-ack").await;
+    let abandoned = rotate(channel.clone()).await;
     assert_eq!(describe(channel.clone()).await.unwrap(), machine_id);
     let retry = connector.connect(&connection(&capability)).await.unwrap();
     let retry_connection = observed.recv().await.unwrap();
-    let delayed_capability = rotate(retry.clone(), "delayed").await;
+    let delayed_capability = rotate(retry.clone()).await;
     assert_eq!(describe(retry.clone()).await.unwrap(), machine_id);
     assert!(matches!(
         connector.connect(&connection(&abandoned)).await,
@@ -275,9 +268,7 @@ async fn contract() {
         "accepted peer must remain connected before rotation"
     );
     let capability = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {
-            pairing: CloudPairing::new(PairingCredential::parse("next").unwrap()),
-        })
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
         .await
         .unwrap()
         .capability
@@ -407,14 +398,12 @@ fn connection(capability: &ManagementCapability) -> Connection {
     Connection::management(capability.to_secret_string()).unwrap()
 }
 
-async fn rotate(channel: Channel, secret: &str) -> ManagementCapability {
+async fn rotate(channel: Channel) -> ManagementCapability {
     MachineRpcClient::new(channel)
         .set_cloud_pairing(
-            op::SetCloudPairing::into_request(SetCloudPairingRequest::Set {
-                pairing: CloudPairing::new(PairingCredential::parse(secret).unwrap()),
-            })
-            .encode()
-            .unwrap(),
+            op::SetCloudPairing::into_request(SetCloudPairingRequest::Set {})
+                .encode()
+                .unwrap(),
         )
         .await
         .unwrap()

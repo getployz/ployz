@@ -3,8 +3,8 @@
 use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
-    AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    ManagementCapability, PairingCredential, Registered, StorageChoice, WireGuardPublicKey,
+    AdvertisedEndpoint, CloudEnrollToken, MachineId, MachineName, MachineToken,
+    ManagementCapability, Registered, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -45,6 +45,56 @@ impl Error {
             Self::Json(_) | Self::Status { .. } | Self::RetrySameCommand { .. } => false,
         }
     }
+}
+
+/// Bearer identifying the current Cluster-scoped Cloud pairing.
+///
+/// Only the CLI↔Cloud exchange carries it; it never reaches the daemon.
+/// Enrollment callbacks and endpoint removal authenticate against this credential.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) struct PairingCredential(String);
+
+/// A Pairing Credential must be a non-empty bearer.
+#[derive(Debug, Error)]
+#[error("invalid Pairing Credential: expected a non-empty bearer")]
+pub(crate) struct EmptyPairingCredential;
+
+impl PairingCredential {
+    /// Parse a non-empty Pairing Credential bearer.
+    ///
+    /// # Errors
+    /// Returns [`EmptyPairingCredential`] when `value` is empty.
+    pub(crate) fn parse(value: impl Into<String>) -> Result<Self, EmptyPairingCredential> {
+        let value = value.into();
+        if value.is_empty() {
+            Err(EmptyPairingCredential)
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
+impl std::fmt::Debug for PairingCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PairingCredential(..)")
+    }
+}
+
+impl TryFrom<String> for PairingCredential {
+    type Error = EmptyPairingCredential;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+/// Cloud Pairing as Cloud's enroll response names it: `{"secret": ...}`.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloudPairing {
+    /// Credential identifying this Cloud pairing.
+    pub(crate) secret: PairingCredential,
 }
 
 /// Identity POSTed to `POST /api/enroll/<token>`.
@@ -408,12 +458,38 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{Machine, MachineId, MachineName, PairingCredential, Registered};
+    use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
 
     fn pairing() -> CloudPairing {
-        CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
+        CloudPairing {
+            secret: PairingCredential::parse("pairing-secret").unwrap(),
+        }
+    }
+
+    #[test]
+    fn cloud_pairing_accepts_only_a_non_empty_secret() {
+        assert_eq!(
+            serde_json::from_value::<CloudPairing>(
+                serde_json::json!({ "secret": "pairing-secret" })
+            )
+            .unwrap(),
+            pairing()
+        );
+        assert!(PairingCredential::parse("").is_err());
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({ "secret": "" }),
+            serde_json::json!({ "secret": "pairing-secret", "futureField": 1 }),
+        ] {
+            assert!(serde_json::from_value::<CloudPairing>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn pairing_credential_debug_redacts_the_bearer() {
+        assert!(!format!("{:?}", pairing()).contains("pairing-secret"));
     }
 
     fn registration() -> Registered {

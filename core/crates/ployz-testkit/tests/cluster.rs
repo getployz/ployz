@@ -1,9 +1,8 @@
 use std::{collections::BTreeSet, process, time::Duration};
 
 use ployz_core::{
-    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation,
-    MachineUpdate, ManagementAddress, MembershipObservation, PairingCredential, PublicIpUpdate,
-    UNREGISTRY_PORT, WireGuardPublicKey,
+    LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, MachineUpdate,
+    ManagementAddress, MembershipObservation, PublicIpUpdate, UNREGISTRY_PORT, WireGuardPublicKey,
 };
 use ployz_testkit::{Cluster, ClusterPlan, join_request};
 
@@ -66,51 +65,43 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
 
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn machine_add_and_cloud_join_reach_participating() {
-    let cloud_pairing = CloudPairing::new(PairingCredential::parse("test-pairing").unwrap());
+async fn join_reaches_participating() {
+    // Cloud enrollment and machine add send the same Join; no pairing reaches the daemon.
     for run in 1..=2 {
-        for (path, cloud_pairing) in [
-            ("machine-add", None),
-            ("cloud-enroll", Some(cloud_pairing.clone())),
-        ] {
-            let plan = ClusterPlan::new(
-                &format!("l3-join-startup-{path}-{run}-{}", process::id()),
-                2,
-            )
-            .unwrap();
-            let cluster = Cluster::create(plan).unwrap();
-            cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
-            let first = cluster.initialize_first().await.unwrap();
-            wait_for(&cluster, 0, Duration::from_secs(60), |machines| {
-                machines
-                    .iter()
-                    .any(|machine| machine.machine.id == first.id)
-            })
-            .await;
+        let plan =
+            ClusterPlan::new(&format!("l3-join-startup-{run}-{}", process::id()), 2).unwrap();
+        let cluster = Cluster::create(plan).unwrap();
+        cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+        let first = cluster.initialize_first().await.unwrap();
+        wait_for(&cluster, 0, Duration::from_secs(60), |machines| {
+            machines
+                .iter()
+                .any(|machine| machine.machine.id == first.id)
+        })
+        .await;
 
-            let registration = cluster.register_second().await.unwrap();
-            let mut request = join_request(&first, &registration);
-            request.cloud_pairing = cloud_pairing;
-            cluster.join(1, request).await.unwrap();
-
-            tokio::time::timeout(Duration::from_secs(60), async {
-                loop {
-                    if tokio::time::timeout(Duration::from_secs(1), cluster.inspect(1))
-                        .await
-                        .is_ok_and(|details| {
-                            details.is_ok_and(|details| {
-                                details.phase == LocalMachinePhase::Participating
-                            })
-                        })
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-            })
+        let registration = cluster.register_second().await.unwrap();
+        cluster
+            .join(1, join_request(&first, &registration))
             .await
-            .unwrap_or_else(|_| panic!("{path} daemon did not become participating after join"));
-        }
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                if tokio::time::timeout(Duration::from_secs(1), cluster.inspect(1))
+                    .await
+                    .is_ok_and(|details| {
+                        details
+                            .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("daemon did not become participating after join"));
     }
 }
 

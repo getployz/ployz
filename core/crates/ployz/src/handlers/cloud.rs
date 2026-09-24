@@ -5,13 +5,13 @@ use std::{future::Future, time::Duration};
 use clap::ArgMatches;
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudEnrollToken, CloudPairing, DescribeContractRequest, InitializeRequest, InspectRequest,
-    JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken,
-    MachineTokenRequest, ManagementCapability, SetCloudPairingRequest, StorageChoice, op,
+    CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
+    LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, MachineTokenRequest,
+    ManagementCapability, SetCloudPairingRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
-use crate::cloud_enroll::{self, EnrollIdentity, InitializeMode, Join, Outcome};
+use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
 use crate::context::{ContextError, Transport};
 
@@ -173,7 +173,7 @@ where
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
-    let pairing = join.pairing.clone();
+    let pairing = join.pairing;
     let mut ready = if already_assigned(&details, &assigned) {
         client
     } else {
@@ -190,7 +190,6 @@ where
             JoinRequest {
                 registration: join.registration,
                 wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                cloud_pairing: Some(join.pairing),
             },
         )
         .await?;
@@ -202,12 +201,12 @@ where
         .await?
     };
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
-    let capability = set_cloud_pairing(matches, &mut ready, &pairing).await?;
+    let capability = set_cloud_pairing(matches, &mut ready).await?;
     let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
-    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &capability).await?;
-    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
+    cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
+    cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
     if let Err(error) = catch_up {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
@@ -304,7 +303,6 @@ where
                     public_ip: machine_token.public_ip,
                     advertised_endpoints: machine_token.advertised_endpoints,
                     wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                    cloud_pairing: None,
                 },
             )
             .await?;
@@ -339,38 +337,34 @@ where
         }
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
-    let capability = set_cloud_pairing(matches, &mut ready, &pairing).await
+    let capability = set_cloud_pairing(matches, &mut ready).await
         .map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
-        pairing.secret(),
+        &pairing.secret,
         &capability,
     )
     .await?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
-        pairing.secret(),
+        &pairing.secret,
     )
     .await?;
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
 }
 
-/// Set the Cloud Pairing and take the Management Capability the daemon minted for it.
+/// Take a fresh Management Capability from the daemon for Cloud.
+///
+/// The Pairing Credential stays with the CLI; the daemon stores only public keys.
 async fn set_cloud_pairing(
     matches: &ArgMatches,
     client: &mut Client,
-    pairing: &CloudPairing,
 ) -> Result<ManagementCapability, Error> {
     let response = client
-        .call_repeatable::<op::SetCloudPairing>(
-            SetCloudPairingRequest::Set {
-                pairing: pairing.clone(),
-            },
-            None,
-        )
+        .call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest::Set {}, None)
         .await?;
     let capability = response.capability.ok_or_else(|| {
         Error::usage("Machine confirmed the Cloud Pairing without a Management Capability")

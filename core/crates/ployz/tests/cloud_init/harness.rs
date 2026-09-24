@@ -478,9 +478,6 @@ impl MachineRpc for JoinDaemon {
                 details: serde_json::Value::Null,
             });
         }
-        self.inner
-            .cloud_paired
-            .store(join.cloud_pairing.is_some(), Ordering::SeqCst);
         *self.inner.current_machine.lock().unwrap() = join.registration.assigned_machine.clone();
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
@@ -553,7 +550,6 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Initialize(init) = decoded.body else {
             return Err(Status::invalid_argument("expected Initialize"));
         };
-        let pairing = init.cloud_pairing.clone();
         let mut machine = self.inner.current_machine.lock().unwrap().clone();
         machine.name = init.name.clone();
         machine.labels = init.initial_policy.labels.clone();
@@ -564,9 +560,6 @@ impl MachineRpc for JoinDaemon {
         self.inner.initialize_requests.lock().unwrap().push(init);
         self.record("initialize");
         self.inner.joined.store(true, Ordering::SeqCst);
-        self.inner
-            .cloud_paired
-            .store(pairing.is_some(), Ordering::SeqCst);
         if self
             .inner
             .replace_identity_on_initialize

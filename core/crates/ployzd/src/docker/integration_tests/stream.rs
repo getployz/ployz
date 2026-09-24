@@ -140,7 +140,6 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
             public_ip: None,
             advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(address)],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .unwrap();
     let machine_store = crate::machine::RecordOwner::spawn(machine_store).unwrap();

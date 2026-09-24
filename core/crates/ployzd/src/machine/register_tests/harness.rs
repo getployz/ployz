@@ -42,7 +42,6 @@ pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Mach
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .unwrap();
     (data_dir, RecordOwner::spawn(store).unwrap(), founder)

@@ -7,7 +7,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     let mut founder = founder_machine();
     let machine_id = founder.id;
     founder.accepts_ingress = false;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let registration = Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
@@ -76,7 +76,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
 async fn new_founding_claim_with_reset_resets_then_initializes() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": false,
@@ -101,7 +101,6 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -138,7 +137,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
 async fn resumed_founder_uses_the_matching_participating_machine() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": true,
@@ -165,7 +164,6 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -234,7 +232,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
                 public_ip: founder.public_ip,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
-                cloud_pairing: None,
             },
             None,
         )
@@ -242,7 +239,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .unwrap();
     let events = EventLog::default();
     let daemon = daemon.with_events(events.clone());
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script_recording(
         [json!({
             "kind": "initialize",
@@ -301,7 +298,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let machine_id = founder.id;
     founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let events = EventLog::default();
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script_recording(
         [
             json!({
@@ -417,7 +414,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
 #[tokio::test]
 async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservation() {
     for replaced in [true, false] {
-        let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+        let pairing = json!({ "secret": PAIRING });
         let enroll = EnrollListen::start(json!({
             "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
         }))
@@ -472,7 +469,7 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
 async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
     let mut founder = founder_machine();
     founder.accepts_ingress = false;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script([
         json!({ "kind": "initialize", "resumed": false, "pairing": pairing }),
         json!({ "kind": "initialize", "resumed": true, "pairing": pairing }),

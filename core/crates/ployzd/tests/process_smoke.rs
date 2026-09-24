@@ -357,7 +357,6 @@ fn join(path: &Path) {
                         target_versions: [("actor".into(), 1)].into(),
                     },
                     wireguard_mtu: None,
-                    cloud_pairing: None,
                 })
                 .encode()
                 .unwrap(),

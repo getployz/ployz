@@ -101,7 +101,6 @@ fn initialize_request(machine: &Machine) -> InitializeRequest {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         wireguard_mtu: None,
-        cloud_pairing: None,
     }
 }
 
@@ -159,7 +158,6 @@ async fn lost_creation_replies_refuse_an_observed_policy_mismatch() {
                         target_versions: Default::default(),
                     },
                     wireguard_mtu: None,
-                    cloud_pairing: None,
                 },
             )
             .await

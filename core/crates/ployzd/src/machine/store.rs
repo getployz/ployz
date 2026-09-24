@@ -10,8 +10,8 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineUpdate, MachineUpdateError,
-    SelectedEndpoint, apply_machine_update,
+    LocalMachinePhase, Machine, MachineId, MachineUpdate, MachineUpdateError, SelectedEndpoint,
+    apply_machine_update,
 };
 use thiserror::Error;
 
@@ -216,7 +216,6 @@ impl LocalMachineStore {
             public_ip,
             advertised_endpoints,
             wireguard_mtu,
-            cloud_pairing,
         } = request;
         let founding_cluster = FoundingCluster {
             network: cluster_network,
@@ -248,7 +247,6 @@ impl LocalMachineStore {
             },
         };
         initialized.wireguard_mtu = wireguard_mtu;
-        initialized.cloud_access = cloud_pairing.into();
         save(&self.data_dir, &initialized)?;
         self.record = initialized;
         Ok(machine)
@@ -261,7 +259,6 @@ impl LocalMachineStore {
         visible_peers: Vec<Machine>,
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
-        cloud_pairing: Option<CloudPairing>,
     ) -> Result<bool, StoreError> {
         if self.record.id() != assigned_machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -281,10 +278,7 @@ impl LocalMachineStore {
             | LocalMachineBody::Participating {
                 machine,
                 origin: ParticipationOrigin::Join { .. },
-            } if machine == &assigned_machine
-                && self.record.wireguard_mtu == wireguard_mtu
-                && self.record.cloud_pairing() == cloud_pairing.as_ref() =>
-            {
+            } if machine == &assigned_machine && self.record.wireguard_mtu == wireguard_mtu => {
                 return Ok(true);
             }
             LocalMachineBody::Uninitialized { .. } => {}
@@ -299,7 +293,6 @@ impl LocalMachineStore {
             min_store_version: target_versions,
         };
         joining.wireguard_mtu = wireguard_mtu;
-        joining.cloud_access = cloud_pairing.into();
         save(&self.data_dir, &joining)?;
         self.record = joining;
         Ok(false)
@@ -358,26 +351,29 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Stage a replacement client key, or clear both keys and the pairing in one write.
+    /// Stage a replacement client key beside any accepted key.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn persist_cloud_pairing(
-        &mut self,
-        replacement: Option<(CloudPairing, [u8; 32])>,
-    ) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        updated.cloud_access = match replacement {
-            None => CloudAccess::Unpaired {},
-            Some((pairing, pending)) => match self.record.accepted_client() {
-                Some(accepted) => CloudAccess::Rotating {
-                    pairing,
-                    accepted,
-                    pending,
-                },
-                None => CloudAccess::Pending { pairing, pending },
-            },
+    pub fn stage_client_key(&mut self, pending: [u8; 32]) -> Result<(), StoreError> {
+        let access = match self.record.accepted_client() {
+            Some(accepted) => CloudAccess::Rotating { accepted, pending },
+            None => CloudAccess::Pending { pending },
         };
+        self.persist_cloud_access(access)
+    }
+
+    /// Clear the accepted and pending client keys in one write.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn clear_client_keys(&mut self) -> Result<(), StoreError> {
+        self.persist_cloud_access(CloudAccess::Unpaired {})
+    }
+
+    fn persist_cloud_access(&mut self, access: CloudAccess) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        updated.cloud_access = access;
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())
@@ -388,24 +384,10 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn activate_management_client(&mut self, remote: [u8; 32]) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        let (CloudAccess::Pending { pairing, pending }
-        | CloudAccess::Rotating {
-            pairing, pending, ..
-        }) = updated.cloud_access
-        else {
-            return Ok(());
-        };
-        if pending != remote {
+        if self.record.pending_client() != Some(remote) {
             return Ok(());
         }
-        updated.cloud_access = CloudAccess::Active {
-            pairing,
-            accepted: remote,
-        };
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+        self.persist_cloud_access(CloudAccess::Active { accepted: remote })
     }
 
     pub fn complete_reset(&self) -> Result<(), StoreError> {

@@ -329,7 +329,7 @@ impl LocalMachine {
             advertised_endpoints,
             store_version,
             rtts,
-            cloud_paired: record.cloud_pairing().is_some(),
+            cloud_paired: record.has_management_client(),
             telemetry,
             storage,
         })
@@ -513,7 +513,6 @@ impl LocalMachine {
                     request.registration.visible_peers,
                     request.registration.target_versions,
                     request.wireguard_mtu,
-                    request.cloud_pairing,
                 )
             })
             .await??;

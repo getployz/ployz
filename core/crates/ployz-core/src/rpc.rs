@@ -16,11 +16,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ManagementCapability,
-    ProjectName, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
+    DockerVolume, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
+    MachineRuntime, MachineToken, MachineUpdate, ManagementCapability, ProjectName,
+    PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -237,7 +236,6 @@ pub struct InitializeRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
-    pub cloud_pairing: Option<CloudPairing>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -265,8 +263,6 @@ pub struct JoinRequest {
     pub registration: Registered,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
-    #[serde(default)]
-    pub cloud_pairing: Option<CloudPairing>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -307,10 +303,12 @@ pub struct CreateContainerRequest {
 }
 
 /// Exactly one admitted Cloud Pairing update: set it or clear it.
+///
+/// Neither case carries a Cloud secret; the Pairing Credential stays with the CLI.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetCloudPairingRequest {
-    Set { pairing: CloudPairing },
+    Set {},
     Clear {},
 }
 
@@ -1044,49 +1042,72 @@ mod set_cloud_pairing_wire {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn exclusive_updates_round_trip_without_debug_disclosure() {
-        for (value, expected) in [
-            (json!({ "kind": "clear" }), SetCloudPairingRequest::Clear {}),
-            (
-                json!({ "kind": "set", "pairing": { "secret": "private-pairing" } }),
-                SetCloudPairingRequest::Set {
-                    pairing: CloudPairing::new(
-                        crate::PairingCredential::parse("private-pairing").unwrap(),
-                    ),
-                },
-            ),
-        ] {
-            let request = serde_json::from_value::<SetCloudPairingRequest>(value.clone()).unwrap();
-            assert_eq!(request, expected);
-            assert_eq!(serde_json::to_value(&request).unwrap(), value);
-            assert!(!format!("{request:?}").contains("private-"));
+    fn machine() -> Machine {
+        Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: MachineName::parse("first").unwrap(),
+            subnet: crate::MachineSubnet::parse("10.210.0.0/24").unwrap(),
+            public_key: WireGuardPublicKey([1; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            runtime: Default::default(),
         }
     }
 
     #[test]
-    fn updates_reject_missing_and_contradictory_cases() {
+    fn exclusive_updates_round_trip_without_a_secret() {
+        for (value, expected) in [
+            (json!({ "kind": "clear" }), SetCloudPairingRequest::Clear {}),
+            (json!({ "kind": "set" }), SetCloudPairingRequest::Set {}),
+        ] {
+            let request = serde_json::from_value::<SetCloudPairingRequest>(value.clone()).unwrap();
+            assert_eq!(request, expected);
+            assert_eq!(serde_json::to_value(&request).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn updates_reject_missing_cases_and_any_pairing_secret() {
         let pairing = json!({ "secret": "private-pairing" });
         for value in [
             json!({}),
             json!({ "cloud_pairing": null }),
-            json!({ "kind": "set" }),
-            json!({ "kind": "unknown", "pairing": pairing }),
+            json!({ "kind": "unknown" }),
+            json!({ "kind": "set", "pairing": pairing }),
             json!({ "kind": "clear", "pairing": pairing }),
-            json!({ "kind": "set", "pairing": pairing, "cloud_pairing": null }),
         ] {
             assert!(serde_json::from_value::<SetCloudPairingRequest>(value).is_err());
         }
     }
 
     #[test]
-    fn updates_reject_invalid_credentials_at_decoding() {
-        assert!(
-            serde_json::from_value::<SetCloudPairingRequest>(json!({
-                "kind": "set", "pairing": { "secret": "" },
-            }))
-            .is_err()
-        );
+    fn initialize_and_join_carry_no_pairing() {
+        let initialize = serde_json::to_value(InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: machine().advertised_endpoints,
+            wireguard_mtu: None,
+        })
+        .unwrap();
+        let join = serde_json::to_value(JoinRequest {
+            registration: Registered {
+                assigned_machine: machine(),
+                visible_peers: vec![machine()],
+                target_versions: BTreeMap::new(),
+            },
+            wireguard_mtu: None,
+        })
+        .unwrap();
+        for request in [initialize, join] {
+            assert!(request.get("cloud_pairing").is_none(), "{request}");
+            assert!(!request.to_string().contains("secret"), "{request}");
+        }
     }
 
     #[test]

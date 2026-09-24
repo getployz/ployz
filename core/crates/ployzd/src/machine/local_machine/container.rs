@@ -328,7 +328,6 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
                 wireguard_mtu: None,
-                cloud_pairing: None,
             })
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();
@@ -439,7 +438,6 @@ mod tests {
                         "192.0.2.1:51820".parse().unwrap(),
                     )],
                     wireguard_mtu: None,
-                    cloud_pairing: None,
                 })
                 .unwrap();
             let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -544,7 +542,7 @@ mod tests {
         let mut peer = machine.clone();
         peer.id = MachineId::random();
         owner
-            .mutate(move |store| store.join(machine, vec![peer], Default::default(), None, None))
+            .mutate(move |store| store.join(machine, vec![peer], Default::default(), None))
             .await
             .unwrap()
             .unwrap();
@@ -581,7 +579,6 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
                 wireguard_mtu: None,
-                cloud_pairing: None,
             })
             .unwrap();
         let (replicated, server) = fake_cluster::store().await;

@@ -6,7 +6,6 @@ use std::sync::{
 };
 
 use clap::ArgMatches;
-use ployz_core::{CloudPairing, PairingCredential};
 use serde_json::json;
 
 use super::harness::{
@@ -96,7 +95,7 @@ async fn enroll_locally_with_storage(
 ) {
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
-    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+    let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": storage,

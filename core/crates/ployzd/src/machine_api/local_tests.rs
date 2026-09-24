@@ -490,7 +490,6 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
                 "192.0.2.1:51820".parse().unwrap(),
             )],
             wireguard_mtu: None,
-            cloud_pairing: None,
         })
         .unwrap();
     let store = RecordOwner::spawn(store).unwrap();

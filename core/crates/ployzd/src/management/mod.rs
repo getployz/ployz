@@ -137,7 +137,7 @@ pub fn admits(accepted_client: Option<&[u8; 32]>, remote: &[u8; 32]) -> bool {
 /// Serve `api` over `endpoint` until `shutdown`.
 ///
 /// Keys other than the accepted or pending key receive [`REFUSED_BY_IDENTITY`],
-/// or [`PAIRING_CLEARED`] when no pairing or client keys remain. Authenticating
+/// or [`PAIRING_CLEARED`] when no client keys remain. Authenticating
 /// with the pending key permits read-only identity negotiation. Its first operational
 /// RPC activates it. A Clear or replacement activation closes old connections with
 /// [`REVOKED`].
@@ -265,7 +265,7 @@ async fn accept_loop(
                     record.pending_client().as_ref(),
                     connection.remote_id().as_bytes(),
                 ) {
-                    let code = if record.cloud_pairing().is_none() {
+                    let code = if !record.has_management_client() {
                         PAIRING_CLEARED
                     } else {
                         REFUSED_BY_IDENTITY

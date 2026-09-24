@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
-    MachineSubnet, MachineTarget, ManagementAddress, PairingCredential, Placement,
-    SelectedEndpoint, ValueError, WireGuardPublicKey,
+    MachineSubnet, MachineTarget, ManagementAddress, Placement, SelectedEndpoint, ValueError,
+    WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -628,80 +628,6 @@ impl MembershipObservation {
     #[must_use]
     pub fn invites_rpc(&self) -> bool {
         matches!(self, Self::Up | Self::Suspect)
-    }
-}
-
-/// Cluster-scoped credential identifying the current Cloud pairing.
-/// Absence means the Machine is not paired with Cloud.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CloudPairing {
-    secret: PairingCredential,
-}
-
-impl CloudPairing {
-    /// Build Cloud Pairing from an admitted Pairing Credential.
-    #[must_use]
-    pub fn new(secret: PairingCredential) -> Self {
-        Self { secret }
-    }
-
-    /// Credential identifying this Cloud pairing.
-    #[must_use]
-    pub fn secret(&self) -> &PairingCredential {
-        &self.secret
-    }
-}
-
-#[cfg(test)]
-mod cloud_pairing_tests {
-    use super::*;
-    use serde_json::json;
-
-    fn pairing() -> CloudPairing {
-        CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
-    }
-
-    #[test]
-    fn cloud_pairing_wire_shape_is_secret() {
-        let value = serde_json::to_value(pairing()).unwrap();
-        assert_eq!(
-            value,
-            json!({
-                "secret": "pairing-secret",
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<CloudPairing>(value).unwrap(),
-            pairing()
-        );
-    }
-
-    #[test]
-    fn cloud_pairing_rejects_unknown_fields() {
-        for field in ["unexpectedCredential", "futureField"] {
-            let error = serde_json::from_value::<CloudPairing>(json!({
-                "secret": "pairing-secret",
-                (field): "unexpected-value",
-            }))
-            .unwrap_err();
-            assert!(error.to_string().contains("unknown field"), "{error}");
-        }
-    }
-
-    #[test]
-    fn pairing_credential_must_be_non_empty() {
-        assert!(PairingCredential::parse("").is_err());
-        for value in [json!({}), json!({"secret": ""})] {
-            assert!(serde_json::from_value::<CloudPairing>(value).is_err());
-        }
-    }
-
-    #[test]
-    fn pairing_credential_debug_redacts_the_bearer() {
-        let secret = PairingCredential::parse("pairing-secret").unwrap();
-        assert_eq!(format!("{secret:?}"), "PairingCredential(..)");
-        assert!(!format!("{:?}", pairing()).contains("pairing-secret"));
     }
 }
 

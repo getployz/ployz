@@ -53,7 +53,6 @@ impl Fixture {
                     "127.0.0.1:7569".parse().unwrap(),
                 )],
                 wireguard_mtu: None,
-                cloud_pairing: None,
             })
             .unwrap();
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;

@@ -13,7 +13,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             visible_peers: Vec::new(),
             target_versions: Default::default(),
         };
-        let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
+        let pairing = json!({ "secret": PAIRING });
         let response = if resume_founder {
             json!({"kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing})
         } else {
@@ -37,7 +37,6 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
                     public_ip: None,
                     advertised_endpoints: founder.advertised_endpoints,
                     wireguard_mtu: None,
-                    cloud_pairing: None,
                 },
                 None,
             )
