@@ -155,9 +155,12 @@ impl Service<http::Request<Body>> for MachineApi {
                 return Ok(tonic::Status::unavailable(error.to_string()).into_http());
             }
             let record = local.record();
-            if record.accepted_client() != Some(remote)
-                && !(verification && record.pending_client() == Some(remote))
-            {
+            let allowed = if verification {
+                record.admits_management_client(&remote)
+            } else {
+                record.accepts_management_client(&remote)
+            };
+            if !allowed {
                 return Ok(
                     tonic::Status::unauthenticated("management credential revoked").into_http(),
                 );

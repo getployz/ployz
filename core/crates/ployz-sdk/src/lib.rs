@@ -10,7 +10,10 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::{DataLossConfirmation, ProjectName, RemoveVolumesRequest, RpcError, RpcErrorCode};
+use ployz_core::{
+    DataLossConfirmation, ManagementClientLabel, ProjectName, RemoveVolumesRequest, RpcError,
+    RpcErrorCode,
+};
 
 /// One cancellable connection attempt.
 #[napi]
@@ -26,19 +29,9 @@ pub struct PendingConnection {
 #[napi]
 pub fn start_connections(connections: serde_json::Value) -> Result<PendingConnection> {
     let connections: Vec<ployz::context::Connection> = serde_json::from_value(connections)
-        .map_err(|_| {
-            rpc_to_napi(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "invalid management connections".into(),
-                details: serde_json::Value::Null,
-            })
-        })?;
+        .map_err(|_| invalid_argument("invalid management connections"))?;
     if connections.is_empty() {
-        return Err(rpc_to_napi(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: "connections must not be empty".into(),
-            details: serde_json::Value::Null,
-        }));
+        return Err(invalid_argument("connections must not be empty"));
     }
     Ok(PendingConnection {
         connections: std::sync::Mutex::new(Some(connections)),
@@ -131,22 +124,26 @@ pub struct RunningDeployHandle {
 
 #[napi]
 impl Client {
-    /// Clear this Machine's Cloud Pairing.
+    /// Clear this Machine's Management Client slot named `label`.
     ///
     /// # Errors
-    /// Returns uncertain mutation failures.
+    /// Returns an invalid label or uncertain mutation failures.
     #[napi]
-    pub async fn remove_cloud_pairing(&self) -> Result<()> {
-        self.inner.remove_cloud_pairing().await.map_err(rpc_to_napi)
+    pub async fn clear_management_client(&self, label: String) -> Result<()> {
+        let label = ManagementClientLabel::parse(label).map_err(invalid_argument)?;
+        self.inner
+            .clear_management_client(label)
+            .await
+            .map_err(rpc_to_napi)
     }
 
-    /// Inspect identity and Cloud Pairing presence on this session.
+    /// Inspect identity and Management Client labels on this session.
     ///
     /// # Errors
     /// Returns transport or inspection errors.
     #[napi]
     pub async fn inspect(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(self.inner.inspect().await.map_err(rpc_to_napi)?).map_err(invalid_json)
+        to_json(&self.inner.inspect().await.map_err(rpc_to_napi)?)
     }
 
     /// Read enrollment facts from this confirmed Entry Machine.
@@ -164,7 +161,7 @@ impl Client {
     /// Returns invalid input, transport failures or Register domain errors.
     #[napi]
     pub async fn register(&self, assignment: serde_json::Value) -> Result<serde_json::Value> {
-        let assignment = serde_json::from_value(assignment).map_err(invalid_json)?;
+        let assignment = serde_json::from_value(assignment).map_err(invalid_argument)?;
         to_json(
             &self
                 .inner
@@ -191,7 +188,7 @@ impl Client {
     /// Returns malformed input and Machine transport failures.
     #[napi]
     pub async fn container_logs(&self, input: serde_json::Value) -> Result<ContainerLogStream> {
-        let input = serde_json::from_value(input).map_err(invalid_json)?;
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
         Ok(ContainerLogStream {
             inner: self
                 .inner
@@ -219,7 +216,7 @@ impl Client {
     /// Rejects malformed input or closed sessions.
     #[napi]
     pub fn prepare(&self, input: serde_json::Value) -> Result<PreparationHandle> {
-        let input = serde_json::from_value(input).map_err(invalid_json)?;
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
         Ok(PreparationHandle {
             inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
         })
@@ -235,7 +232,7 @@ impl Client {
     /// [`DeployIntent`](ployz_core::DeployIntent) data, the session is closed, or planning fails.
     #[napi]
     pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
-        let intent = serde_json::from_value(intent).map_err(invalid_json)?;
+        let intent = serde_json::from_value(intent).map_err(invalid_argument)?;
         let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
     }
@@ -253,13 +250,7 @@ impl Client {
         project_name: String,
         destroy_volumes: bool,
     ) -> Result<DeployPreviewHandle> {
-        let project_name = ProjectName::parse(project_name).map_err(|error| {
-            rpc_to_napi(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-            })
-        })?;
+        let project_name = ProjectName::parse(project_name).map_err(invalid_argument)?;
         let volumes = volume_fate(destroy_volumes);
         let inner = self
             .inner
@@ -280,7 +271,7 @@ impl Client {
     #[napi]
     pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
         let request: RemoveVolumesRequest =
-            serde_json::from_value(request).map_err(invalid_json)?;
+            serde_json::from_value(request).map_err(invalid_argument)?;
         let result = self
             .inner
             .remove_volumes(request)
@@ -326,7 +317,7 @@ impl Client {
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            serde_json::from_value(confirm_data_loss).map_err(invalid_json)?;
+            serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
         let removed = self
             .inner
             .remove_machine(&machine, &confirm_data_loss)
@@ -379,7 +370,7 @@ impl Client {
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            serde_json::from_value(confirm_data_loss).map_err(invalid_json)?;
+            serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
         let outcome = self
             .inner
             .destroy_project(
@@ -427,7 +418,7 @@ impl Client {
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            serde_json::from_value(confirm_data_loss).map_err(invalid_json)?;
+            serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
         let teardown = self
             .inner
             .destroy_cluster(&confirm_data_loss)
@@ -558,7 +549,7 @@ fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
     serde_json::to_value(value).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-fn invalid_json(error: serde_json::Error) -> Error {
+fn invalid_argument(error: impl std::fmt::Display) -> Error {
     rpc_to_napi(RpcError {
         code: RpcErrorCode::InvalidArgument,
         message: error.to_string(),
@@ -585,10 +576,10 @@ pub fn allocate_enrollment(
     snapshot: serde_json::Value,
     saved: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let request = serde_json::from_value(request).map_err(invalid_json)?;
-    let snapshot = serde_json::from_value(snapshot).map_err(invalid_json)?;
+    let request = serde_json::from_value(request).map_err(invalid_argument)?;
+    let snapshot = serde_json::from_value(snapshot).map_err(invalid_argument)?;
     let saved: Vec<ployz_core::EnrollmentAssignment> =
-        serde_json::from_value(saved).map_err(invalid_json)?;
+        serde_json::from_value(saved).map_err(invalid_argument)?;
     let assignment =
         ployz_core::allocate_enrollment(&request, &snapshot, &saved).map_err(|error| {
             rpc_to_napi(ployz_core::RpcError {

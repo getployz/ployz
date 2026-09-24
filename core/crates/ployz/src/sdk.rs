@@ -166,18 +166,21 @@ impl Session {
         }
     }
 
-    /// Clear the pairing; the daemon revokes the capability's key before replying, so a
-    /// reply is confirmation. A later dial confirms removal only with explicit
+    /// Clear `label`'s Management Client slot. A reply confirms the Clear, but revoking
+    /// the caller's own connection may drop it. A later dial confirms removal only with explicit
     /// `management_pairing: "cleared"` details; a replaced key refusal does not.
     ///
     /// # Errors
     /// Returns cancellation or transport errors, including uncertain outcomes.
-    pub async fn remove_cloud_pairing(&self) -> Result<(), RpcError> {
+    pub async fn clear_management_client(
+        &self,
+        label: ployz_core::ManagementClientLabel,
+    ) -> Result<(), RpcError> {
         let client = self.client()?;
         self.until_closed(async {
             client
-                .call_unretried::<op::SetCloudPairing>(
-                    ployz_core::SetCloudPairingRequest::Clear {},
+                .call_unretried::<op::SetManagementClient>(
+                    ployz_core::SetManagementClientRequest::Clear { label },
                     None,
                 )
                 .await
@@ -187,7 +190,7 @@ impl Session {
         .await
     }
 
-    /// Inspect the selected Machine, including its Cloud Pairing presence.
+    /// Inspect the selected Machine, including its Management Client labels.
     ///
     /// # Errors
     /// Returns cancellation or Inspect errors.
@@ -453,8 +456,8 @@ impl Session {
     ///
     /// Returns a generated [`RpcError`] when the session is closed, `machine`
     /// is not a Machine Target, the Machine is not visible or is the current
-    /// entry while another Machine is visible, the Machine is the last
-    /// Cloud-paired Machine, the Machine did not respond so Data Loss cannot
+    /// entry while another Machine is visible, the Machine is the last one and a
+    /// Management Client holds a key, the Machine did not respond so Data Loss cannot
     /// be listed, the confirmation does not cover the fresh Data Loss, or
     /// reset or shared-row removal fails. Unconfirmed names are in
     /// `UnconfirmedDataLoss` details.

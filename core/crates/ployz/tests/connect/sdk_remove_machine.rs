@@ -1,6 +1,6 @@
 //! Façade tests for Cloud session Machine removal with named Data Loss.
 
-use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz::sdk;
 use ployz_core::{
@@ -141,9 +141,9 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
 }
 
 #[tokio::test]
-async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() {
+async fn remove_machine_refuses_the_last_managed_machine_before_mutation() {
     let (description, entry, service) = last_machine_cluster();
-    service.cloud_paired.store(true, Ordering::SeqCst);
+    hold_keys(&service, &["cloud"]);
     let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
@@ -163,7 +163,9 @@ async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() 
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(
-        error.message.contains("tear down this Cluster from Cloud"),
+        error
+            .message
+            .contains("Delete the Cluster from Cloud instead"),
         "{}",
         error.message
     );
@@ -173,9 +175,9 @@ async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() 
 }
 
 #[tokio::test]
-async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
+async fn remove_machine_refuses_the_last_machine_with_a_management_client() {
     let (_description, entry, service) = last_machine_cluster();
-    service.cloud_paired.store(true, Ordering::SeqCst);
+    hold_keys(&service, &["cloud"]);
     let (mut client, server, _) = connected_client(service.clone()).await;
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
@@ -188,7 +190,9 @@ async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(
-        error.message.contains("tear down this Cluster from Cloud"),
+        error
+            .message
+            .contains("Delete the Cluster from Cloud instead"),
         "{}",
         error.message
     );
@@ -198,9 +202,37 @@ async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
 }
 
 #[tokio::test]
-async fn remove_machine_membership_refuses_the_last_machine_with_stored_cloud_pairing() {
+async fn last_machine_refusal_names_non_cloud_holders_without_cloud_teardown() {
     let (_description, entry, service) = last_machine_cluster();
-    service.cloud_paired.store(true, Ordering::SeqCst);
+    hold_keys(&service, &["cli", "ops"]);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "this is the last Machine in the Cluster and it is still managed by `cli` and `ops`; \
+         removing it would leave `cli` and `ops` managing a Cluster that no longer exists. \
+         Disconnect `cli` and `ops` from this Machine first."
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+fn hold_keys(service: &DiscoveryService, labels: &[&str]) {
+    *service.management_clients.lock().unwrap() = labels
+        .iter()
+        .map(|label| ployz_core::ManagementClientLabel::parse(*label).unwrap())
+        .collect();
+}
+
+#[tokio::test]
+async fn remove_machine_membership_refuses_the_last_machine_with_a_management_client() {
+    let (_description, entry, service) = last_machine_cluster();
+    hold_keys(&service, &["cloud"]);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
     let error = client
@@ -209,7 +241,9 @@ async fn remove_machine_membership_refuses_the_last_machine_with_stored_cloud_pa
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(
-        error.message.contains("tear down this Cluster from Cloud"),
+        error
+            .message
+            .contains("Delete the Cluster from Cloud instead"),
         "{}",
         error.message
     );

@@ -354,6 +354,18 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 validated_string_newtype!(
+    /// Names one Management Client slot on a Machine, such as `cloud`.
+    ManagementClientLabel,
+    "Management Client label",
+    "a lowercase letter then up to 31 lowercase letters, digits or hyphens",
+    |value| {
+        let mut bytes = value.bytes();
+        bytes.next().is_some_and(|first| first.is_ascii_lowercase())
+            && value.len() <= 32
+            && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }
+);
+validated_string_newtype!(
     /// A trusted release selector: stable, beta, or an exact supported version.
     MachineRelease,
     "Machine release",
@@ -895,6 +907,28 @@ impl From<CloudEnrollToken> for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_are_a_lowercase_letter_then_up_to_31_label_characters() {
+        let longest = format!("a{}", "-9z".repeat(10) + "b");
+        assert_eq!(longest.len(), 32);
+        for valid in ["cloud", "a", "cli-2", longest.as_str()] {
+            assert_eq!(ManagementClientLabel::parse(valid).unwrap().as_str(), valid);
+        }
+        let too_long = format!("{longest}c");
+        for invalid in [
+            "",
+            "2cloud",
+            "-cloud",
+            "Cloud",
+            "cl_oud",
+            "cl oud",
+            "clöud",
+            too_long.as_str(),
+        ] {
+            assert!(ManagementClientLabel::parse(invalid).is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn cloud_enroll_token_rejects_empty_and_redacts_debug() {

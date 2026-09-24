@@ -10,14 +10,14 @@ use std::{
 };
 
 use ployz_core::{
-    LocalMachinePhase, Machine, MachineId, MachineUpdate, MachineUpdateError, SelectedEndpoint,
-    apply_machine_update,
+    LocalMachinePhase, Machine, MachineId, MachineUpdate, MachineUpdateError,
+    ManagementClientLabel, SelectedEndpoint, apply_machine_update,
 };
 use thiserror::Error;
 
 use super::{
-    CloudAccess, FoundingCluster, LocalMachineBody, LocalMachineRecord, ParticipationOrigin,
-    local_runtime,
+    FoundingCluster, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
+    ParticipationOrigin, local_runtime,
 };
 use crate::management::ManagementSecret;
 use crate::network::{WireGuardPrivateKey, allocate_machine_subnet};
@@ -124,7 +124,7 @@ impl LocalMachineStore {
                     },
                     wireguard_private_key: WireGuardPrivateKey::generate(),
                     management_secret: ManagementSecret::generate(),
-                    cloud_access: CloudAccess::Unpaired {},
+                    management_clients: BTreeMap::new(),
                     wireguard_mtu: None,
                     selected_endpoints: BTreeMap::new(),
                 };
@@ -351,32 +351,36 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Stage a replacement client key beside any accepted key.
+    /// Stage a fresh client key in `label`'s slot, beside any key it has accepted.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn stage_client_key(&mut self, pending: [u8; 32]) -> Result<(), StoreError> {
-        let access = match self.record.accepted_client() {
-            Some(accepted) => CloudAccess::Rotating { accepted, pending },
-            None => CloudAccess::Pending { pending },
+    pub fn stage_management_client(
+        &mut self,
+        label: ManagementClientLabel,
+        pending: [u8; 32],
+    ) -> Result<(), StoreError> {
+        let slot = match self.record.accepted_client(&label) {
+            Some(accepted) => ManagementClientSlot::Rotating { accepted, pending },
+            None => ManagementClientSlot::Pending { pending },
         };
-        self.persist_cloud_access(access)
+        self.persist_management_clients(|clients| {
+            clients.insert(label, slot);
+        })
     }
 
-    /// Clear the accepted and pending client keys in one write.
+    /// Remove `label`'s slot, with its accepted and pending keys, in one write.
+    /// An absent label stays absent.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn clear_client_keys(&mut self) -> Result<(), StoreError> {
-        self.persist_cloud_access(CloudAccess::Unpaired {})
-    }
-
-    fn persist_cloud_access(&mut self, access: CloudAccess) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        updated.cloud_access = access;
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+    pub fn clear_management_client(
+        &mut self,
+        label: &ManagementClientLabel,
+    ) -> Result<(), StoreError> {
+        self.persist_management_clients(|clients| {
+            clients.remove(label);
+        })
     }
 
     /// Commit a pending key for its holder's first operational RPC, after identity verification.
@@ -384,10 +388,23 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn activate_management_client(&mut self, remote: [u8; 32]) -> Result<(), StoreError> {
-        if self.record.pending_client() != Some(remote) {
+        let Some(label) = self.record.pending_label(&remote).cloned() else {
             return Ok(());
-        }
-        self.persist_cloud_access(CloudAccess::Active { accepted: remote })
+        };
+        self.persist_management_clients(|clients| {
+            clients.insert(label, ManagementClientSlot::Active { accepted: remote });
+        })
+    }
+
+    fn persist_management_clients(
+        &mut self,
+        change: impl FnOnce(&mut BTreeMap<ManagementClientLabel, ManagementClientSlot>),
+    ) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        change(&mut updated.management_clients);
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
     }
 
     pub fn complete_reset(&self) -> Result<(), StoreError> {

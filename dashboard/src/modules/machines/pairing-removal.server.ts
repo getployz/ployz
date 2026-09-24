@@ -115,13 +115,13 @@ const PairingCleared = Schema.Struct({
   details: Schema.Struct({ management_pairing: Schema.Literal("cleared") }),
 });
 
-/** Clear one Machine's Cloud pairing. Only a successful Clear or an authenticated no-pairing response confirms removal. */
+/** Clear one Machine's `cloud` Management Client. Only a successful Clear or an authenticated cleared response confirms removal. */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
-      yield* session.removeCloudPairing();
+      yield* session.clearManagementClient("cloud");
       return true;
     })).pipe(Effect.catch((error) => Effect.succeed(
       error._tag === "PloyzProviderError" && error.operation === "connect"

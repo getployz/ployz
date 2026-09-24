@@ -41,7 +41,7 @@ pub struct LocalMachine {
 }
 
 mod container;
-mod pairing;
+mod management_client;
 mod upgrade;
 
 #[derive(Clone)]
@@ -196,7 +196,7 @@ impl LocalMachine {
 
     pub(crate) fn require_management_access(&self) -> Result<(), Error> {
         if let Some(remote) = self.management_client
-            && self.record().accepted_client() != Some(remote)
+            && !self.record().accepts_management_client(&remote)
         {
             return Err(Error::ManagementRevoked);
         }
@@ -328,7 +328,7 @@ impl LocalMachine {
             advertised_endpoints,
             store_version,
             rtts,
-            cloud_paired: record.has_management_client(),
+            management_clients: record.management_clients().cloned().collect(),
             telemetry,
             storage,
         })

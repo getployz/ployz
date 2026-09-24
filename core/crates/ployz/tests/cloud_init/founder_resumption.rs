@@ -288,7 +288,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
     assert!(daemon.reserve_request().is_none());
     assert_eq!(
         events.entries(),
-        ["set_cloud_pairing", "publish", "callback"]
+        ["set_management_client", "publish", "callback"]
     );
 }
 
@@ -401,7 +401,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             "reserve_domain",
             "deploy_ingress",
             "publish_dns",
-            "set_cloud_pairing",
+            "set_management_client",
             "publish",
             "callback",
         ]

@@ -18,8 +18,9 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
-    MachineRuntime, MachineToken, MachineUpdate, ManagementCapability, ProjectName,
-    PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
+    MachineRuntime, MachineToken, MachineUpdate, ManagementCapability, ManagementClientLabel,
+    ProjectName, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice,
+    WireGuardPublicKey,
 };
 
 mod docker;
@@ -285,21 +286,21 @@ pub struct CreateContainerRequest {
     pub resolved_spec: ResolvedServiceSpec,
 }
 
-/// Exactly one admitted Cloud Pairing update: set it or clear it.
+/// Exactly one update to a labelled Management Client slot: set it or clear it.
 ///
-/// Neither case carries a Cloud secret; the Pairing Credential stays with the CLI.
+/// Neither case carries a secret; `Set` returns the fresh client key in its capability.
 /// Strict by the Stable promise's security exception: an unrecognized field may
 /// be secret material the daemon must never accept.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SetCloudPairingRequest {
-    Set {},
-    Clear {},
+pub enum SetManagementClientRequest {
+    Set { label: ManagementClientLabel },
+    Clear { label: ManagementClientLabel },
 }
 
-/// Confirmation of a pairing update. `capability` is present after `Set` and absent after `Clear`.
+/// Confirmation of a slot update. `capability` is present after `Set` and absent after `Clear`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SetCloudPairingResponse {
+pub struct SetManagementClientResponse {
     #[ts(type = "string | null")]
     pub capability: Option<ManagementCapability>,
 }
@@ -875,7 +876,7 @@ define_responses! {
     Initialized(Initialized) => "initialized";
     Registered(Registered) => "registered";
     JoinAccepted(JoinAccepted) => "join_accepted";
-    SetCloudPairingResponse(SetCloudPairingResponse) => "cloud_pairing_set";
+    SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1024,7 +1025,7 @@ pub struct RpcError {
 }
 
 #[cfg(test)]
-mod set_cloud_pairing_wire {
+mod set_management_client_wire {
     use super::*;
     use serde_json::json;
 
@@ -1044,29 +1045,45 @@ mod set_cloud_pairing_wire {
         }
     }
 
+    fn label(value: &str) -> ManagementClientLabel {
+        ManagementClientLabel::parse(value).unwrap()
+    }
+
     #[test]
-    fn exclusive_updates_round_trip_without_a_secret() {
+    fn labelled_updates_round_trip_without_a_secret() {
         for (value, expected) in [
-            (json!({ "kind": "clear" }), SetCloudPairingRequest::Clear {}),
-            (json!({ "kind": "set" }), SetCloudPairingRequest::Set {}),
+            (
+                json!({ "kind": "clear", "label": "cloud" }),
+                SetManagementClientRequest::Clear {
+                    label: label("cloud"),
+                },
+            ),
+            (
+                json!({ "kind": "set", "label": "cloud" }),
+                SetManagementClientRequest::Set {
+                    label: label("cloud"),
+                },
+            ),
         ] {
-            let request = serde_json::from_value::<SetCloudPairingRequest>(value.clone()).unwrap();
+            let request =
+                serde_json::from_value::<SetManagementClientRequest>(value.clone()).unwrap();
             assert_eq!(request, expected);
             assert_eq!(serde_json::to_value(&request).unwrap(), value);
         }
     }
 
     #[test]
-    fn updates_reject_missing_cases_and_any_pairing_secret() {
-        let pairing = json!({ "secret": "private-pairing" });
+    fn updates_require_a_known_case_a_valid_label_and_no_secret() {
         for value in [
             json!({}),
-            json!({ "cloud_pairing": null }),
-            json!({ "kind": "unknown" }),
-            json!({ "kind": "set", "pairing": pairing }),
-            json!({ "kind": "clear", "pairing": pairing }),
+            json!({ "kind": "set" }),
+            json!({ "kind": "clear" }),
+            json!({ "kind": "unknown", "label": "cloud" }),
+            json!({ "kind": "set", "label": "Cloud" }),
+            json!({ "kind": "set", "label": "cloud", "secret": "private" }),
+            json!({ "kind": "clear", "label": "cloud", "pairing": { "secret": "private" } }),
         ] {
-            assert!(serde_json::from_value::<SetCloudPairingRequest>(value).is_err());
+            assert!(serde_json::from_value::<SetManagementClientRequest>(value).is_err());
         }
     }
 
@@ -1097,25 +1114,25 @@ mod set_cloud_pairing_wire {
     }
 
     #[test]
-    fn pairing_response_carries_optional_capability_without_debug_disclosure() {
+    fn response_carries_optional_capability_without_debug_disclosure() {
         let capability =
             ManagementCapability::new(crate::ManagementIdentity::from_bytes([1; 32]), [2; 32]);
         let text = capability.to_secret_string();
         for (response, expected) in [
             (
-                SetCloudPairingResponse {
+                SetManagementClientResponse {
                     capability: Some(capability),
                 },
                 json!({ "capability": text }),
             ),
             (
-                SetCloudPairingResponse { capability: None },
+                SetManagementClientResponse { capability: None },
                 json!({ "capability": null }),
             ),
         ] {
             assert_eq!(serde_json::to_value(&response).unwrap(), expected);
             assert_eq!(
-                serde_json::from_value::<SetCloudPairingResponse>(expected).unwrap(),
+                serde_json::from_value::<SetManagementClientResponse>(expected).unwrap(),
                 response
             );
             assert!(!format!("{response:?}").contains(&text[8..]));

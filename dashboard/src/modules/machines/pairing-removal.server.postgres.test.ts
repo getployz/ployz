@@ -53,7 +53,8 @@ describe("protected pairing removal", () => {
         if (endpoint.replaced) throw Object.assign(new Error("key replaced"), { code: "unauthenticated", details: null });
         if (!endpoint.paired) throw Object.assign(new Error("pairing cleared"), { code: "unauthenticated", details: { management_pairing: "cleared" } });
         return asTestDouble<Client>()({
-          removeCloudPairing: async () => {
+          clearManagementClient: async (label: string) => {
+            if (label !== "cloud") throw new Error(`unexpected Management Client ${label}`);
             mutations += 1;
             endpoint.paired = false;
             if (endpoint.loseAck) throw new Error("Rotation closed the old stream");

@@ -73,7 +73,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     machine: Some(target),
                                     store_version: Default::default(),
                                     rtts: Vec::new(),
-                                    cloud_paired: false,
+                                    management_clients: Vec::new(),
                                     telemetry: Some(
                                         ployz_core::TelemetryObservation::BridgeCapacity {
                                             bridge: BridgeEndpointCapacity::new(10, 0),
@@ -200,7 +200,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 advertised_endpoints: Vec::new(),
                                 store_version: Default::default(),
                                 rtts: Vec::new(),
-                                cloud_paired: false,
+                                management_clients: Vec::new(),
                                 telemetry: Some(ployz_core::TelemetryObservation::BridgeCapacity {
                                     bridge: BridgeEndpointCapacity::new(
                                         1,
@@ -405,7 +405,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             advertised_endpoints: Vec::new(),
                             store_version: Default::default(),
                             rtts: Vec::new(),
-                            cloud_paired: false,
+                            management_clients: Vec::new(),
                             storage: None,
                             telemetry: Some(TelemetryObservation::BridgeCapacity {
                                 bridge: BridgeEndpointCapacity::new(1, 1),
@@ -511,7 +511,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                             advertised_endpoints: Vec::new(),
                             store_version: Default::default(),
                             rtts: Vec::new(),
-                            cloud_paired: false,
+                            management_clients: Vec::new(),
                             storage,
                             telemetry: Some(ployz_core::TelemetryObservation::BridgeCapacity {
                                 bridge: BridgeEndpointCapacity::new(10, 0),

@@ -474,7 +474,7 @@ impl MachineRpc for DeployService {
             advertised_endpoints: Vec::new(),
             store_version: BTreeMap::new(),
             rtts: Vec::new(),
-            cloud_paired: false,
+            management_clients: Vec::new(),
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
         }))
@@ -506,7 +506,7 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn set_cloud_pairing(
+    async fn set_management_client(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

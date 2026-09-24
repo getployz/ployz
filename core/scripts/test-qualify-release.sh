@@ -228,11 +228,11 @@ case "$command" in
         ;;
     *'sudo cat /var/lib/ployz/machine.json'*)
         if [ -f "$QUALIFY_PAIRED" ]; then
-            pairing='{"secret":"qualification-synthetic-pairing-secret-v1"}'
+            clients='{"cloud":{"state":"pending","pending":[1]}}'
         else
-            pairing=null
+            clients='{}'
         fi
-        printf '{"body":{"phase":"participating","machine":{"id":"11111111111111111111111111111111","runtime":{"daemon_version":"1.2.3"}}},"wireguard_private_key":"secret","cloud_pairing":%s,"selected_endpoints":{}}\n' "$pairing"
+        printf '{"body":{"phase":"participating","machine":{"id":"11111111111111111111111111111111","runtime":{"daemon_version":"1.2.3"}}},"wireguard_private_key":"secret","management_clients":%s,"selected_endpoints":{}}\n' "$clients"
         ;;
     *'while [ ! -e /var/lib/ployz/qualification/traffic.stop'*)
         printf 'ok\nok\nok\nok\nok\nok\n'

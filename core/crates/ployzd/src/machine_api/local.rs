@@ -209,12 +209,12 @@ impl MachineRpc for MachineService {
         finish(self.local.join(expect::<op::Join>(request)?).await)
     }
 
-    async fn set_cloud_pairing(
+    async fn set_management_client(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::SetCloudPairing>(request)?;
-        finish(self.local.set_cloud_pairing(request).await)
+        let request = expect::<op::SetManagementClient>(request)?;
+        finish(self.local.set_management_client(request).await)
     }
 
     async fn list_machines(

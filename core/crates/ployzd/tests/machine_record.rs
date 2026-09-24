@@ -4,8 +4,8 @@ use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsE
 
 use ployz_core::{
     AdvertisedEndpoint, InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineId,
-    MachineName, MachineRuntime, MachineUpdate, PublicIpUpdate, Registered, SelectedEndpoint,
-    SetCloudPairingRequest,
+    MachineName, MachineRuntime, MachineUpdate, ManagementClientLabel, PublicIpUpdate, Registered,
+    SelectedEndpoint, SetManagementClientRequest,
 };
 use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
@@ -102,7 +102,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     else {
         panic!("initialized Machine must retain its founding Cluster seed");
     };
-    assert!(!first.record().has_management_client());
+    assert!(!first.record().has_management_clients());
     assert!(
         first
             .initialize(ployz_core::InitializeRequest {
@@ -144,7 +144,11 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     assert_eq!(second.record().phase(), LocalMachinePhase::Joining);
     assert_eq!(second.record().bootstrap(), [initialized].as_slice());
     assert_eq!(second.record().min_store_version().get("actor"), Some(&4));
-    assert!(!second.record().has_management_client());
+    assert!(!second.record().has_management_clients());
+}
+
+fn cloud() -> ManagementClientLabel {
+    ManagementClientLabel::parse("cloud").unwrap()
 }
 
 async fn participating(dir: &TestDir) -> LocalMachine {
@@ -165,13 +169,13 @@ async fn participating(dir: &TestDir) -> LocalMachine {
 }
 
 #[tokio::test]
-async fn set_cloud_pairing_persists_only_public_client_keys() {
-    let dir = TestDir::new("ployzd-set-cloud-pairing");
+async fn set_management_client_persists_only_public_client_keys() {
+    let dir = TestDir::new("ployzd-set-management-client");
     let local = participating(&dir).await;
-    assert!(!local.record().has_management_client());
+    assert!(!local.record().has_management_clients());
 
     let capability = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap()
         .capability
@@ -179,10 +183,13 @@ async fn set_cloud_pairing_persists_only_public_client_keys() {
     drop(local);
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert!(reopened.record().has_management_client());
+    assert_eq!(
+        reopened.record().management_clients().collect::<Vec<_>>(),
+        [&cloud()]
+    );
     let persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
-    let access = persisted.get("cloud_access").unwrap();
+    let access = persisted.pointer("/management_clients/cloud").unwrap();
     let mut fields = access.as_object().unwrap().keys().collect::<Vec<_>>();
     fields.sort();
     assert_eq!(fields, ["pending", "state"], "{access}");
@@ -198,7 +205,7 @@ async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
     let dir = TestDir::new("ployzd-record-unknown-fields");
     let local = participating(&dir).await;
     local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap();
     drop(local);
@@ -220,33 +227,35 @@ async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
 }
 
 #[tokio::test]
-async fn set_cloud_pairing_clear_persists() {
-    let dir = TestDir::new("ployzd-clear-cloud-pairing");
+async fn set_management_client_clear_persists() {
+    let dir = TestDir::new("ployzd-clear-management-client");
     let local = participating(&dir).await;
     local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap();
     local
-        .set_cloud_pairing(SetCloudPairingRequest::Clear {})
+        .set_management_client(SetManagementClientRequest::Clear { label: cloud() })
         .await
         .unwrap();
-    assert!(!local.record().has_management_client());
+    assert!(!local.record().has_management_clients());
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert!(!reopened.record().has_management_client());
+    assert!(!reopened.record().has_management_clients());
 }
 
 #[tokio::test]
-async fn set_cloud_pairing_before_initialize_is_not_participating() {
-    let dir = TestDir::new("ployzd-set-cloud-pairing-uninitialized");
+async fn set_management_client_before_initialize_is_not_participating() {
+    let dir = TestDir::new("ployzd-set-management-client-uninitialized");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
-    let error = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
-        .await
-        .unwrap_err();
-    assert!(matches!(error, LocalMachineError::NotParticipating));
+    for request in [
+        SetManagementClientRequest::Set { label: cloud() },
+        SetManagementClientRequest::Clear { label: cloud() },
+    ] {
+        let error = local.set_management_client(request).await.unwrap_err();
+        assert!(matches!(error, LocalMachineError::NotParticipating));
+    }
 }
 
 #[test]
@@ -389,31 +398,29 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
 
     assert_eq!(details.public_key, public_key);
     assert_eq!(details.advertised_endpoints, [endpoint]);
-    assert!(!details.cloud_paired);
+    assert!(details.management_clients.is_empty());
     assert_eq!(details.storage, None);
 }
 
 #[tokio::test]
-async fn inspect_reports_cloud_pairing_from_client_keys() {
-    let dir = TestDir::new("ployzd-inspect-cloud-pairing");
+async fn inspect_lists_management_clients_holding_keys() {
+    let dir = TestDir::new("ployzd-inspect-management-clients");
     let local = participating(&dir).await;
-    assert!(
-        !local
-            .inspect(InspectRequest::default())
-            .await
-            .unwrap()
-            .cloud_paired
-    );
+    let details = local.inspect(InspectRequest::default()).await.unwrap();
+    assert!(details.management_clients.is_empty());
     local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap();
 
     let details = local.inspect(InspectRequest::default()).await.unwrap();
-    assert!(details.cloud_paired);
+    assert_eq!(details.management_clients, [cloud()]);
     let encoded = serde_json::to_value(&details).unwrap();
-    assert_eq!(encoded.get("cloud_paired"), Some(&serde_json::json!(true)));
-    assert!(encoded.get("cloud_pairing").is_none());
+    assert_eq!(
+        encoded.get("management_clients"),
+        Some(&serde_json::json!(["cloud"]))
+    );
+    assert!(!encoded.to_string().contains("cloud_pair"));
     assert!(encoded.get("secret").is_none());
 }
 
@@ -569,7 +576,6 @@ fn opening_joining_without_a_machine_or_key_fails() {
             },
             "wireguard_private_key": key,
             "management_secret": ManagementSecret::generate(),
-        "cloud_access": { "state": "unpaired" }
         }))
         .unwrap(),
     )
@@ -754,7 +760,7 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
         "body": { "phase": "joining", "machine": machine, "bootstrap": [peer] },
         "wireguard_private_key": key,
         "management_secret": ManagementSecret::generate(),
-        "cloud_access": { "state": "unpaired" }
+        "management_clients": {},
     });
     assert!(serde_json::from_value::<LocalMachineRecord>(valid.clone()).is_ok());
     for (path, value) in [
@@ -893,21 +899,61 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
 }
 
 #[test]
-fn local_record_rejects_contradictory_cloud_access() {
-    let dir = TestDir::new("ployzd-invalid-cloud-access");
+fn local_record_rejects_incomplete_management_client_slots() {
+    let dir = TestDir::new("ployzd-invalid-management-clients");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let valid = serde_json::to_value(store.record()).unwrap();
     let key = serde_json::to_value([1_u8; 32]).unwrap();
-    for access in [
-        serde_json::json!({"state": "unpaired", "accepted": key}),
-        serde_json::json!({"state": "active"}),
-        serde_json::json!({"state": "pending", "accepted": key}),
-        serde_json::json!({"state": "rotating", "accepted": key}),
-        serde_json::json!({"state": "enrolling"}),
-        serde_json::json!({"state": "active", "accepted": key, "pairing": {"secret": "s"}}),
+    for clients in [
+        serde_json::json!({"cloud": {"state": "active"}}),
+        serde_json::json!({"cloud": {"state": "pending"}}),
+        serde_json::json!({"cloud": {"state": "rotating", "accepted": key}}),
+        serde_json::json!({"cloud": {"state": "enrolling", "accepted": key}}),
+        serde_json::json!({"Cloud": {"state": "active", "accepted": key}}),
     ] {
         let mut invalid = valid.clone();
-        *invalid.get_mut("cloud_access").unwrap() = access;
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .insert("management_clients".into(), clients);
         assert!(serde_json::from_value::<LocalMachineRecord>(invalid).is_err());
     }
+}
+
+#[test]
+fn local_record_refuses_unknown_management_client_slot_fields() {
+    let dir = TestDir::new("ployzd-strict-management-clients");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let valid = serde_json::to_value(store.record()).unwrap();
+    let key = serde_json::to_value([1_u8; 32]).unwrap();
+    let mut extended = valid.clone();
+    extended.as_object_mut().unwrap().insert(
+        "management_clients".into(),
+        serde_json::json!({"cloud": {"state": "active", "accepted": key, "secret": "s"}}),
+    );
+    // Key material fails closed: an unknown slot field may be a secret.
+    assert!(serde_json::from_value::<LocalMachineRecord>(extended).is_err());
+
+    // A record with no slots still writes the field.
+    assert_eq!(
+        valid.get("management_clients"),
+        Some(&serde_json::json!({}))
+    );
+    serde_json::from_value::<LocalMachineRecord>(valid.clone()).unwrap();
+}
+
+/// A record from a build before Management Clients has no `management_clients`.
+/// Reading it as "no slots" would silently forget the admitted Cloud key.
+#[test]
+fn local_record_without_management_clients_fails_to_load() {
+    let dir = TestDir::new("ployzd-record-without-management-clients");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let mut earlier = serde_json::to_value(store.record()).unwrap();
+    let record = earlier.as_object_mut().unwrap();
+    record.remove("management_clients");
+    record.insert(
+        "cloud_access".into(),
+        serde_json::json!({ "state": "active", "accepted": vec![1_u8; 32] }),
+    );
+    assert!(serde_json::from_value::<LocalMachineRecord>(earlier).is_err());
 }

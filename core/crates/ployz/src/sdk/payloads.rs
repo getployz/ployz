@@ -75,7 +75,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<LocalMachineRemoved>();
     declarations.add::<MachineId>();
     declarations.add::<ployz_core::MachineDetails>();
-    declarations.add::<ployz_core::SetCloudPairingResponse>();
+    declarations.add::<ployz_core::SetManagementClientResponse>();
     declarations.add::<MachineTarget>();
     declarations.add::<ObservedDataLoss>();
     declarations.add::<PlanOptions>();

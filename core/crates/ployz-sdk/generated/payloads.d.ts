@@ -328,9 +328,9 @@ export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContain
 
 export type MachineDetails = { id: MachineId, phase: LocalMachinePhase, machine: Machine | null, public_key: WireGuardPublicKey, advertised_endpoints: Array<AdvertisedEndpoint>, store_version: { [key in string]: number }, rtts: Array<RttObservation>,
 /**
- * Stored Cloud Pairing is present. The Pairing Credential is not returned.
+ * Labels of Management Client slots holding an accepted or pending key.
  */
-cloud_paired: boolean,
+management_clients: Array<ManagementClientLabel>,
 /**
  * Fresh telemetry requested only by targeted inspect.
  */
@@ -435,6 +435,8 @@ docker_root_total_bytes: number,
  * Docker-root filesystem free bytes.
  */
 docker_root_free_bytes: number, };
+
+export type ManagementClientLabel = string;
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
@@ -796,7 +798,7 @@ export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeS
 
 export type ServiceVolumeReference = string;
 
-export type SetCloudPairingResponse = { capability: string | null, };
+export type SetManagementClientResponse = { capability: string | null, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 

@@ -13,11 +13,11 @@ use ployz_core::{
     Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
-    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SetCloudPairingResponse,
-    VolumeInventory, WireGuardPublicKey,
+    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
-/// The Management Capability the fake daemon mints for any Cloud Pairing.
+/// The Management Capability the fake daemon mints for any Management Client Set.
 pub fn fixture_capability() -> ployz_core::ManagementCapability {
     ployz_core::ManagementCapability::new(
         ployz_core::ManagementIdentity::from_bytes([0xa1; 32]),
@@ -76,9 +76,9 @@ struct JoinInner {
     domain_record_requests: Mutex<Vec<CreateDomainRecordsRequest>>,
     domain_record_attempts: AtomicUsize,
     transient_domain_record_failures: AtomicUsize,
-    cloud_paired: AtomicBool,
-    cloud_pairing_attempts: AtomicUsize,
-    transient_cloud_pairing_failures: AtomicUsize,
+    cloud_managed: AtomicBool,
+    set_management_client_attempts: AtomicUsize,
+    transient_set_management_client_failures: AtomicUsize,
     events: Mutex<EventLog>,
     revoked_on_publication: Mutex<Option<EventLog>>,
     resets: AtomicUsize,
@@ -121,9 +121,9 @@ impl JoinDaemon {
                 domain_record_requests: Mutex::new(Vec::new()),
                 domain_record_attempts: AtomicUsize::new(0),
                 transient_domain_record_failures: AtomicUsize::new(0),
-                cloud_paired: AtomicBool::new(false),
-                cloud_pairing_attempts: AtomicUsize::new(0),
-                transient_cloud_pairing_failures: AtomicUsize::new(0),
+                cloud_managed: AtomicBool::new(false),
+                set_management_client_attempts: AtomicUsize::new(0),
+                transient_set_management_client_failures: AtomicUsize::new(0),
                 events: Mutex::new(EventLog::default()),
                 revoked_on_publication: Mutex::new(None),
                 resets: AtomicUsize::new(0),
@@ -197,7 +197,9 @@ impl JoinDaemon {
             self.inner.reserve_attempts.load(Ordering::SeqCst),
             self.inner.create_attempts.load(Ordering::SeqCst),
             self.inner.domain_record_attempts.load(Ordering::SeqCst),
-            self.inner.cloud_pairing_attempts.load(Ordering::SeqCst),
+            self.inner
+                .set_management_client_attempts
+                .load(Ordering::SeqCst),
         ]
     }
 
@@ -262,7 +264,7 @@ impl JoinDaemon {
             .transient_domain_record_failures
             .store(failures, Ordering::SeqCst);
         self.inner
-            .transient_cloud_pairing_failures
+            .transient_set_management_client_failures
             .store(failures, Ordering::SeqCst);
         self
     }
@@ -432,7 +434,13 @@ impl MachineRpc for JoinDaemon {
                 .clone(),
             store_version: Default::default(),
             rtts: Vec::new(),
-            cloud_paired: self.inner.cloud_paired.load(Ordering::SeqCst),
+            management_clients: self
+                .inner
+                .cloud_managed
+                .load(Ordering::SeqCst)
+                .then(|| ployz_core::ManagementClientLabel::parse("cloud").unwrap())
+                .into_iter()
+                .collect(),
             telemetry,
             storage: None,
         })
@@ -493,34 +501,37 @@ impl MachineRpc for JoinDaemon {
         })
     }
 
-    async fn set_cloud_pairing(
+    async fn set_management_client(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner
-            .cloud_pairing_attempts
+            .set_management_client_attempts
             .fetch_add(1, Ordering::SeqCst);
-        if consume_transient_failure(&self.inner.transient_cloud_pairing_failures) {
-            return Err(Status::unavailable("transient Cloud Pairing failure"));
+        if consume_transient_failure(&self.inner.transient_set_management_client_failures) {
+            return Err(Status::unavailable("transient SetManagementClient failure"));
         }
         let decoded = request
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::SetCloudPairing(set) = decoded.body else {
-            return Err(Status::invalid_argument("expected SetCloudPairing"));
+        let RpcRequestBody::SetManagementClient(set) = decoded.body else {
+            return Err(Status::invalid_argument("expected SetManagementClient"));
         };
         match set {
-            ployz_core::SetCloudPairingRequest::Set { .. } => {
-                self.inner.cloud_paired.store(true, Ordering::SeqCst);
-                self.record("set_cloud_pairing");
+            ployz_core::SetManagementClientRequest::Set { label } => {
+                if label.as_str() != "cloud" {
+                    return Err(Status::invalid_argument("enroll must set the cloud slot"));
+                }
+                self.inner.cloud_managed.store(true, Ordering::SeqCst);
+                self.record("set_management_client");
             }
-            ployz_core::SetCloudPairingRequest::Clear {} => {
-                self.inner.cloud_paired.store(false, Ordering::SeqCst);
-                return rpc_ok(SetCloudPairingResponse { capability: None });
+            ployz_core::SetManagementClientRequest::Clear { .. } => {
+                self.inner.cloud_managed.store(false, Ordering::SeqCst);
+                return rpc_ok(SetManagementClientResponse { capability: None });
             }
         }
-        rpc_ok(SetCloudPairingResponse {
+        rpc_ok(SetManagementClientResponse {
             capability: Some(fixture_capability()),
         })
     }
@@ -1017,7 +1028,7 @@ impl MachineRpc for JoinDaemon {
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
         *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
-        self.inner.cloud_paired.store(false, Ordering::SeqCst);
+        self.inner.cloud_managed.store(false, Ordering::SeqCst);
         if self
             .inner
             .lose_lifecycle_reply

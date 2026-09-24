@@ -7,7 +7,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, MachineTokenRequest,
-    ManagementCapability, SetCloudPairingRequest, StorageChoice, op,
+    ManagementCapability, ManagementClientLabel, SetManagementClientRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -201,7 +201,7 @@ where
         .await?
     };
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
-    let capability = set_cloud_pairing(matches, &mut ready).await?;
+    let capability = set_cloud_management_client(matches, &mut ready).await?;
     let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
@@ -337,7 +337,7 @@ where
         }
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
-    let capability = set_cloud_pairing(matches, &mut ready).await
+    let capability = set_cloud_management_client(matches, &mut ready).await
         .map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
@@ -356,18 +356,24 @@ where
     Ok(())
 }
 
-/// Take a fresh Management Capability from the daemon for Cloud.
+/// Take a fresh Management Capability for Cloud's `cloud` Management Client slot.
 ///
 /// The Pairing Credential stays with the CLI; the daemon stores only public keys.
-async fn set_cloud_pairing(
+async fn set_cloud_management_client(
     matches: &ArgMatches,
     client: &mut Client,
 ) -> Result<ManagementCapability, Error> {
     let response = client
-        .call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest::Set {}, None)
+        .call_repeatable::<op::SetManagementClient>(
+            SetManagementClientRequest::Set {
+                label: ManagementClientLabel::parse("cloud")
+                    .expect("`cloud` is a valid Management Client label"),
+            },
+            None,
+        )
         .await?;
     let capability = response.capability.ok_or_else(|| {
-        Error::usage("Machine confirmed the Cloud Pairing without a Management Capability")
+        Error::usage("Machine set the `cloud` Management Client without a Management Capability")
     })?;
     if matches!(client.connection().transport(), Transport::Management(_)) {
         crate::context::Config::load(config_path(matches)?)?

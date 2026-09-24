@@ -79,7 +79,7 @@ async fn starting_machine() -> (
                         machine: started.then_some(machine),
                         store_version: Default::default(),
                         rtts: Vec::new(),
-                        cloud_paired: false,
+                        management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
                     };

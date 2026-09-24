@@ -126,7 +126,7 @@ export declare function applyOne(
 
 export declare class Client {
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
-  removeCloudPairing(): Promise<void>;
+  clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
   register(assignment: EnrollmentAssignment): Promise<Registered>;

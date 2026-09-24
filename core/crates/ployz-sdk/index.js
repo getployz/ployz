@@ -62,8 +62,8 @@ class Client {
     return withRpcError(this._inner.register(assignment));
   }
 
-  removeCloudPairing() {
-    return withRpcError(this._inner.removeCloudPairing());
+  clearManagementClient(label) {
+    return withRpcError(this._inner.clearManagementClient(label));
   }
 
   inspect() {

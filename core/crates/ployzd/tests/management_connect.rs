@@ -26,7 +26,8 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, DescribeContractRequest, InitializeRequest, MANAGEMENT_ALPN, MachineId,
-    MachineName, MachineRpcClient, ManagementCapability, RpcErrorCode, SetCloudPairingRequest, op,
+    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, RpcErrorCode,
+    SetManagementClientRequest, op,
 };
 use ployzd::{
     machine::{LocalMachine, LocalMachineStore, RecordOwner},
@@ -51,22 +52,9 @@ async fn client_connector_honours_the_management_transport_contract() {
 #[tokio::test(flavor = "multi_thread")]
 async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
-    let local = LocalMachine::new(owner.clone());
-    local
-        .initialize(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-        })
-        .await
-        .unwrap();
+    let (_dir, owner, local) = participating().await;
     let old = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap()
         .capability
@@ -102,18 +90,19 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         ployz::sdk::connect_connections(vec![connection(&replacement)], connector.clone())
             .await
             .unwrap();
-    assert_eq!(local.record().accepted_client(), Some(old_key));
+    assert_eq!(local.record().accepted_client(&cloud()), Some(old_key));
     // Removal wins publication and retains only the previous saved capability.
     let _ = MachineRpcClient::new(previous)
-        .set_cloud_pairing(
-            op::SetCloudPairing::into_request(SetCloudPairingRequest::Clear {})
-                .encode()
-                .unwrap(),
+        .set_management_client(
+            op::SetManagementClient::into_request(SetManagementClientRequest::Clear {
+                label: cloud(),
+            })
+            .encode()
+            .unwrap(),
         )
         .await;
     // Clear may revoke its own response; the authenticated cleared response is confirmation.
-    wait_until(|| !local.record().has_management_client()).await;
-    assert!(!local.record().has_management_client());
+    wait_until(|| !local.record().has_management_clients()).await;
     assert!(matches!(
         connector.connect(&connection(&replacement)).await,
         Err(ConnectError::PairingCleared)
@@ -123,25 +112,85 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
     server.await.unwrap().unwrap();
 }
 
-async fn contract() {
-    let (_relay_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
-    let local = LocalMachine::new(owner.clone());
-    local
-        .initialize(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-        })
+#[tokio::test(flavor = "multi_thread")]
+async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let cli = ManagementClientLabel::parse("cli").unwrap();
+    let set = |label: ManagementClientLabel| {
+        let local = local.clone();
+        async move {
+            let capability = local
+                .set_management_client(SetManagementClientRequest::Set { label })
+                .await
+                .unwrap()
+                .capability
+                .unwrap();
+            let key = *SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes();
+            local.activate_management_client(key).await.unwrap();
+            capability
+        }
+    };
+    let cloud_old = set(cloud()).await;
+    let cli_capability = set(cli.clone()).await;
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        shutdown.clone(),
+    ));
+    let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
+        relay_url,
+        CaTlsConfig::insecure_skip_verify(),
+    ));
+    let cloud_channel = connector.connect(&connection(&cloud_old)).await.unwrap();
+    let cli_channel = connector
+        .connect(&connection(&cli_capability))
         .await
         .unwrap();
+    let machine_id = describe(cli_channel.clone()).await.unwrap();
+
+    // Rotating `cloud` revokes the old cloud key only.
+    let cloud_new = set(cloud()).await;
+    revoked(cloud_channel).await;
+    assert_eq!(describe(cli_channel.clone()).await.unwrap(), machine_id);
+    let cloud_channel = connector.connect(&connection(&cloud_new)).await.unwrap();
+
+    // Clearing `cli` revokes the cli key only.
+    local
+        .set_management_client(SetManagementClientRequest::Clear { label: cli })
+        .await
+        .unwrap();
+    revoked(cli_channel).await;
+    assert_eq!(describe(cloud_channel).await.unwrap(), machine_id);
+    assert_eq!(
+        local.record().management_clients().collect::<Vec<_>>(),
+        [&cloud()]
+    );
+
+    shutdown.cancel();
+    server.await.unwrap().unwrap();
+}
+
+async fn contract() {
+    let (_relay_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
     let machine_id = local.record().id();
     let capability = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap()
         .capability
@@ -268,7 +317,7 @@ async fn contract() {
         "accepted peer must remain connected before rotation"
     );
     let capability = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap()
         .capability
@@ -294,7 +343,7 @@ async fn contract() {
     let activated_connection = observed.recv().await.unwrap();
     activate(activated.clone()).await;
     assert_eq!(
-        local.record().accepted_client(),
+        local.record().accepted_client(&cloud()),
         Some(
             *SecretKey::from_bytes(capability.client_secret())
                 .public()
@@ -354,7 +403,7 @@ async fn contract() {
     };
     assert_eq!(replaced.code, RpcErrorCode::Unauthenticated);
     assert_eq!(replaced.details, serde_json::Value::Null);
-    let _ = session.remove_cloud_pairing().await;
+    let _ = session.clear_management_client(cloud()).await;
     tokio::time::timeout(Duration::from_secs(10), removal_connection.closed())
         .await
         .unwrap();
@@ -394,23 +443,57 @@ fn assert_refused(result: Result<Channel, ConnectError>) {
     }
 }
 
+async fn participating() -> (tempfile::TempDir, RecordOwner, LocalMachine) {
+    let dir = tempfile::tempdir().unwrap();
+    let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
+    let local = LocalMachine::new(owner.clone());
+    local
+        .initialize(InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+        })
+        .await
+        .unwrap();
+    (dir, owner, local)
+}
+
+fn cloud() -> ManagementClientLabel {
+    ManagementClientLabel::parse("cloud").unwrap()
+}
+
+async fn revoked(channel: Channel) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while describe(channel.clone()).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a revoked key's connection must stop serving");
+}
+
 fn connection(capability: &ManagementCapability) -> Connection {
     Connection::management(capability.to_secret_string()).unwrap()
 }
 
 async fn rotate(channel: Channel) -> ManagementCapability {
     MachineRpcClient::new(channel)
-        .set_cloud_pairing(
-            op::SetCloudPairing::into_request(SetCloudPairingRequest::Set {})
-                .encode()
-                .unwrap(),
+        .set_management_client(
+            op::SetManagementClient::into_request(SetManagementClientRequest::Set {
+                label: cloud(),
+            })
+            .encode()
+            .unwrap(),
         )
         .await
         .unwrap()
         .into_inner()
         .decode_response()
         .unwrap()
-        .decode::<op::SetCloudPairing>()
+        .decode::<op::SetManagementClient>()
         .unwrap()
         .capability
         .unwrap()

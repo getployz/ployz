@@ -12,7 +12,7 @@ use ployz_core::{
     RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
     REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY,
     RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
-    SET_CLOUD_PAIRING_CAPABILITY, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, op,
 };
 
@@ -31,8 +31,8 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1"),
         (JOIN_MACHINE_CAPABILITY, "ployz.machine.join.v1"),
         (
-            SET_CLOUD_PAIRING_CAPABILITY,
-            "ployz.machine.set-cloud-pairing.v1",
+            SET_MANAGEMENT_CLIENT_CAPABILITY,
+            "ployz.machine.set-management-client.v1",
         ),
         (LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1"),
         (
@@ -113,7 +113,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.initialize.v1",
             "ployz.machine.register.v1",
             "ployz.machine.join.v1",
-            "ployz.machine.set-cloud-pairing.v1",
+            "ployz.machine.set-management-client.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.upgrade.request.v1",
@@ -199,8 +199,8 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/CreateDomainRecords"
     );
     assert_eq!(
-        op::SetCloudPairing::PATH,
-        "/ployz.rpc.v1.MachineRpc/SetCloudPairing"
+        op::SetManagementClient::PATH,
+        "/ployz.rpc.v1.MachineRpc/SetManagementClient"
     );
     assert_eq!(
         op::RequestMachineUpgrade::PATH,

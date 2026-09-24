@@ -14,7 +14,7 @@ use std::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
-    SelectedEndpoint,
+    ManagementClientLabel, SelectedEndpoint,
 };
 use serde::{Deserialize, Serialize};
 
@@ -140,22 +140,22 @@ pub struct LocalMachineRecord {
     wireguard_private_key: WireGuardPrivateKey,
     /// Management Identity secret; minted when the record is born.
     management_secret: ManagementSecret,
-    /// Admitted management client public keys, as one persisted state.
-    cloud_access: CloudAccess,
+    /// Management Client slots by label. An absent label has no slot. Always
+    /// written, even when empty, because readers require it.
+    management_clients: BTreeMap<ManagementClientLabel, ManagementClientSlot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
 }
 
-/// Management client public keys. No Cloud secret is persisted.
+/// Public keys held by one Management Client slot. No secret is persisted.
 ///
 /// Unlike the rest of the record this stays strict: an unrecognized field here
 /// is key or secret material this daemon cannot judge, so the record fails closed.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-enum CloudAccess {
-    Unpaired {},
+enum ManagementClientSlot {
     Pending {
         pending: [u8; 32],
     },
@@ -168,33 +168,71 @@ enum CloudAccess {
     },
 }
 
+impl ManagementClientSlot {
+    fn accepted(self) -> Option<[u8; 32]> {
+        match self {
+            Self::Active { accepted } | Self::Rotating { accepted, .. } => Some(accepted),
+            Self::Pending { .. } => None,
+        }
+    }
+
+    fn pending(self) -> Option<[u8; 32]> {
+        match self {
+            Self::Pending { pending } | Self::Rotating { pending, .. } => Some(pending),
+            Self::Active { .. } => None,
+        }
+    }
+}
+
 impl LocalMachineRecord {
-    /// Whether any management client public key is accepted or pending.
+    /// Whether any Management Client slot exists.
     #[must_use]
-    pub fn has_management_client(&self) -> bool {
-        !matches!(self.cloud_access, CloudAccess::Unpaired {})
+    pub fn has_management_clients(&self) -> bool {
+        !self.management_clients.is_empty()
     }
 
-    /// Public key currently admitted by the management transport.
-    #[must_use]
-    pub fn accepted_client(&self) -> Option<[u8; 32]> {
-        match self.cloud_access {
-            CloudAccess::Active { accepted, .. } | CloudAccess::Rotating { accepted, .. } => {
-                Some(accepted)
-            }
-            CloudAccess::Unpaired {} | CloudAccess::Pending { .. } => None,
-        }
+    /// Labels of the Management Client slots, each holding an accepted or pending key.
+    pub fn management_clients(&self) -> impl Iterator<Item = &ManagementClientLabel> {
+        self.management_clients.keys()
     }
 
-    /// Public key awaiting an authenticated handover.
+    /// Public key `label` currently has accepted by the management transport.
     #[must_use]
-    pub fn pending_client(&self) -> Option<[u8; 32]> {
-        match self.cloud_access {
-            CloudAccess::Pending { pending, .. } | CloudAccess::Rotating { pending, .. } => {
-                Some(pending)
-            }
-            CloudAccess::Unpaired {} | CloudAccess::Active { .. } => None,
-        }
+    pub fn accepted_client(&self, label: &ManagementClientLabel) -> Option<[u8; 32]> {
+        self.management_clients
+            .get(label)
+            .and_then(|slot| slot.accepted())
+    }
+
+    /// Public key `label` has awaiting an authenticated handover.
+    #[must_use]
+    pub fn pending_client(&self, label: &ManagementClientLabel) -> Option<[u8; 32]> {
+        self.management_clients
+            .get(label)
+            .and_then(|slot| slot.pending())
+    }
+
+    /// Whether `remote` is any slot's accepted key, so it may run operational RPCs.
+    #[must_use]
+    pub fn accepts_management_client(&self, remote: &[u8; 32]) -> bool {
+        self.management_clients
+            .values()
+            .any(|slot| slot.accepted().as_ref() == Some(remote))
+    }
+
+    /// Label of the slot holding `remote` as its pending key.
+    #[must_use]
+    pub fn pending_label(&self, remote: &[u8; 32]) -> Option<&ManagementClientLabel> {
+        self.management_clients
+            .iter()
+            .find(|(_, slot)| slot.pending().as_ref() == Some(remote))
+            .map(|(label, _)| label)
+    }
+
+    /// Whether `remote` is any slot's accepted or pending key, so it may connect.
+    #[must_use]
+    pub fn admits_management_client(&self, remote: &[u8; 32]) -> bool {
+        self.accepts_management_client(remote) || self.pending_label(remote).is_some()
     }
 }
 
@@ -341,7 +379,7 @@ impl LocalMachineRecord {
             body,
             wireguard_private_key,
             management_secret: ManagementSecret::generate(),
-            cloud_access: CloudAccess::Unpaired {},
+            management_clients: BTreeMap::new(),
             wireguard_mtu: None,
             selected_endpoints: BTreeMap::new(),
         })
@@ -408,7 +446,7 @@ impl LocalMachineRecord {
             },
             wireguard_private_key: self.wireguard_private_key,
             management_secret: self.management_secret,
-            cloud_access: self.cloud_access,
+            management_clients: self.management_clients,
             wireguard_mtu: self.wireguard_mtu,
             selected_endpoints: self.selected_endpoints,
         }

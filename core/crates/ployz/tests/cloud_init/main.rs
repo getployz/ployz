@@ -252,7 +252,7 @@ async fn cloud_init_initialize_participates() {
     );
     assert_eq!(
         events.entries(),
-        ["initialize", "set_cloud_pairing", "publish", "callback"]
+        ["initialize", "set_management_client", "publish", "callback"]
     );
 }
 
@@ -412,7 +412,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
         [
             "initialize",
             "reserve_domain",
-            "set_cloud_pairing",
+            "set_management_client",
             "publish",
             "callback"
         ]

@@ -81,7 +81,7 @@ export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
   readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
-  readonly removeCloudPairing: () => Effect.Effect<void, PloyzSdkError>;
+  readonly clearManagementClient: (label: string) => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
   readonly removeMachine: (
@@ -247,7 +247,7 @@ function wrapClient(client: Client): PloyzSession {
     logs: (options) => Effect.try({ try: () => client.runtime.logs(options), catch: (cause) => asSdkFailure("logs", cause) }),
     logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
-    removeCloudPairing: () => sdkPromise("remove Cloud pairing", () => client.removeCloudPairing()),
+    clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
     observeEnrollment: () => Effect.tryPromise({
       try: () => client.observeEnrollment(),
       catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),

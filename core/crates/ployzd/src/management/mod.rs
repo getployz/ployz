@@ -128,19 +128,13 @@ pub async fn bind(
         .await
 }
 
-/// Whether a handshake-completed remote key may reach the Machine API.
-#[must_use]
-pub fn admits(accepted_client: Option<&[u8; 32]>, remote: &[u8; 32]) -> bool {
-    accepted_client == Some(remote)
-}
-
 /// Serve `api` over `endpoint` until `shutdown`.
 ///
-/// Keys other than the accepted or pending key receive [`REFUSED_BY_IDENTITY`],
-/// or [`PAIRING_CLEARED`] when no client keys remain. Authenticating
-/// with the pending key permits read-only identity negotiation. Its first operational
-/// RPC activates it. A Clear or replacement activation closes old connections with
-/// [`REVOKED`].
+/// Keys other than a Management Client slot's accepted or pending key receive
+/// [`REFUSED_BY_IDENTITY`], or [`PAIRING_CLEARED`] when no slot remains. Authenticating
+/// with a pending key permits read-only identity negotiation. Its first operational
+/// RPC activates it. A Clear or replacement activation closes only the connections of
+/// keys no slot holds any more, with [`REVOKED`].
 ///
 /// # Errors
 /// Returns the tonic transport error when the RPC server fails.
@@ -207,13 +201,7 @@ fn revoke_others(
         let Some(connection) = weak.upgrade() else {
             return false;
         };
-        let keep = admits(
-            record.accepted_client().as_ref(),
-            connection.remote_id().as_bytes(),
-        ) || admits(
-            record.pending_client().as_ref(),
-            connection.remote_id().as_bytes(),
-        );
+        let keep = record.admits_management_client(connection.remote_id().as_bytes());
         if !keep {
             connection.close(REVOKED, b"revoked");
         }
@@ -258,14 +246,8 @@ async fn accept_loop(
                 // for peer input: a delayed first stream cannot escape key rotation.
                 let mut live = live.lock().expect("live connection list is not poisoned");
                 let record = records.borrow();
-                if !admits(
-                    record.accepted_client().as_ref(),
-                    connection.remote_id().as_bytes(),
-                ) && !admits(
-                    record.pending_client().as_ref(),
-                    connection.remote_id().as_bytes(),
-                ) {
-                    let code = if !record.has_management_client() {
+                if !record.admits_management_client(connection.remote_id().as_bytes()) {
+                    let code = if !record.has_management_clients() {
                         PAIRING_CLEARED
                     } else {
                         REFUSED_BY_IDENTITY
@@ -342,14 +324,6 @@ impl Connected for ManagementIo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_the_accepted_client_key_is_admitted() {
-        let accepted = [1; 32];
-        assert!(admits(Some(&accepted), &accepted));
-        assert!(!admits(Some(&accepted), &[2; 32]));
-        assert!(!admits(None, &accepted));
-    }
 
     #[test]
     fn management_secret_is_redacted_and_its_public_key_is_stable() {

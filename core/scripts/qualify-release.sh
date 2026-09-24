@@ -120,10 +120,10 @@ encoded = json.dumps(stable(value), sort_keys=True, separators=(",", ":")).encod
 print(hashlib.sha256(encoded).hexdigest())'
 }
 
-machine_cloud_pairing() {
+# Labels only: a slot's keys legitimately move from pending to accepted on first use.
+machine_management_clients() {
     ssh_host "$first" sudo cat /var/lib/ployz/machine.json | python3 -c 'import json, sys
-value = json.load(sys.stdin)["cloud_pairing"]
-print(json.dumps(value, sort_keys=True, separators=(",", ":")))'
+print(",".join(sorted(json.load(sys.stdin).get("management_clients", {}))))'
 }
 
 run_cloud_phase() {
@@ -386,8 +386,8 @@ ssh_host "${HOST_LIST[1]}" 'test -f /var/lib/ployz/machine.json' || error "Cloud
 fi
 touch "$PLOYZ_CONFIG"
 chmod 0600 "$PLOYZ_CONFIG"
-pairing_before=$(machine_cloud_pairing)
-[ "$pairing_before" != null ] || error "Machine did not persist the Cloud Pairing"
+clients_before=$(machine_management_clients)
+[ "$clients_before" = cloud ] || error "Machine did not persist the cloud Management Client"
 run_cloud_phase runtime
 python3 - "$PLOYZ_CONFIG" <<'CONTEXT_EOF'
 import json, sys
@@ -456,7 +456,7 @@ require_field "$success_inspection" version "$target_version"
 assert_remote_hash /usr/local/bin/ployzd "$target_daemon_hash"
 wait_for_application
 [ "$(machine_state_signature)" = "$state_before" ] || error "Machine identity, pairing, or configuration changed during upgrade"
-[ "$(machine_cloud_pairing)" = "$pairing_before" ] || error "Cloud Pairing changed during upgrade"
+[ "$(machine_management_clients)" = "$clients_before" ] || error "Management Clients changed during upgrade"
 
 echo "reject a checksum-corrupt target before activation"
 select_remote_release corrupt
@@ -502,7 +502,7 @@ require_field "$failure_inspection" stage "$failure_stage"
 assert_remote_hash /usr/local/bin/ployzd "$target_daemon_hash"
 wait_for_application
 [ "$(machine_state_signature)" = "$state_before" ] || error "Machine identity, pairing, or configuration changed after explicit repair"
-[ "$(machine_cloud_pairing)" = "$pairing_before" ] || error "Cloud Pairing changed after explicit repair"
+[ "$(machine_management_clients)" = "$clients_before" ] || error "Management Clients changed after explicit repair"
 
 echo "record truthful Cloud revocation offline, then confirm online"
 if [ "${PLOYZ_QUALIFY_PAUSE_BEFORE_REVOCATION:-0}" != 0 ]; then

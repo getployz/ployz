@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AdvertisedEndpoint, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
-    MachineStorageObservation, RttObservation, TelemetryObservation, WireGuardPublicKey,
+    MachineStorageObservation, ManagementClientLabel, RttObservation, TelemetryObservation,
+    WireGuardPublicKey,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -32,9 +33,9 @@ pub struct MachineDetails {
     pub store_version: BTreeMap<String, i64>,
     #[serde(default)]
     pub rtts: Vec<RttObservation>,
-    /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
+    /// Labels of Management Client slots holding an accepted or pending key.
     #[serde(default)]
-    pub cloud_paired: bool,
+    pub management_clients: Vec<ManagementClientLabel>,
     /// Fresh telemetry requested only by targeted inspect.
     #[serde(default)]
     pub telemetry: Option<TelemetryObservation>,

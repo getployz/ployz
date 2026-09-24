@@ -255,11 +255,11 @@ async fn active_build_refuses_an_upgrade_request() {
             .is_err(),
         "ordinary Machine update ran concurrently with active Build execution"
     );
-    let mut ordinary = Box::pin(
-        fixture
-            .local
-            .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {}),
-    );
+    let mut ordinary = Box::pin(fixture.local.set_management_client(
+        ployz_core::SetManagementClientRequest::Clear {
+            label: ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
+        },
+    ));
     assert!(
         tokio::time::timeout(Duration::from_millis(100), ordinary.as_mut())
             .await
@@ -400,7 +400,9 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
         Duration::from_secs(2),
         fixture
             .local
-            .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {}),
+            .set_management_client(ployz_core::SetManagementClientRequest::Clear {
+                label: ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
+            }),
     )
     .await
     .expect("retained Build stream held the local mutation mutex")
