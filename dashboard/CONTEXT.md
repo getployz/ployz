@@ -105,7 +105,7 @@ A Cloud instance an operator runs on their own infrastructure from the released 
 _Avoid_: Standalone Cluster, on-prem control plane, self-hosted relay
 
 **Billing Plan**:
-The single paid Ployz Cloud subscription an Organization holds through Polar. Holding it is the plan; there is no plan column, no free tier, and no second tier at launch. Its display name is product copy, not a stored value. A Self-hosted Cloud has no Billing Plan.
+The single paid Ployz Cloud subscription an Organization holds through Polar, sold as "Pro". Holding it is the plan; there is no plan column and no second tier. It grants only the Custom Domain Capability: an Organization without it keeps every other capability, with unlimited members. Its display name is product copy, not a stored value. A Self-hosted Cloud has no Billing Plan.
 _Avoid_: Free plan, Teams plan, plan slug, subscription tier
 
 **Custom Domain Capability**:
