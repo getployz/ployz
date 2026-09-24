@@ -6,10 +6,10 @@ disable-model-invocation: true
 
 Implement the work described by the user in the spec or tickets.
 
-Use /tdd when the user requests test-first development.
+Use /tdd where possible, at pre-agreed seams.
 
-Run affected checks after meaningful changes and the applicable final gate once. Reuse passing results until relevant files change.
+Run typechecking regularly, single test files regularly, and the full test suite once at the end.
 
-Once done, follow the applicable review policy in AGENTS.md.
+Once done, use /code-review to review the work.
 
 Commit your work to the current branch.
