@@ -1,7 +1,6 @@
-import { useState } from "react";
 import { Schema } from "effect";
 import { Button } from "#/components/ui/button";
-import { FieldError, FieldGroup } from "#/components/ui/field";
+import { FieldGroup } from "#/components/ui/field";
 import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
@@ -36,7 +35,7 @@ type ServiceRegistryCredentialFormProps = {
   baselineLabel?: string;
   baselineValue?: string;
   isChanged?: boolean;
-  onSubmit: (value: { username: string; secret: string }) => Promise<void>;
+  onSubmit: (value: { username: string; secret: string }) => void;
   onClose: () => void;
 };
 
@@ -51,7 +50,6 @@ export function ServiceRegistryCredentialForm({
   onSubmit,
   onClose,
 }: ServiceRegistryCredentialFormProps) {
-  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const form = useAppForm({
     ...registryCredentialFormOptions,
@@ -59,25 +57,8 @@ export function ServiceRegistryCredentialForm({
       username: initialUsername,
       secret: "",
     },
-    listeners: [
-      {
-        triggers: ["change"],
-        run: () => setSubmitError(null),
-      },
-    ],
-    onSubmit: async ({ schemaOutputs }) => {
-      setSubmitError(null);
-
-      try {
-        await onSubmit(schemaOutputs[0]);
-      } catch (error) {
-        setSubmitError(
-          error instanceof Error
-            ? error.message
-            : "Could not save registry credentials.",
-        );
-      }
-    },
+    // Optimistic: saving rolls back and toasts on failure.
+    onSubmit: ({ schemaOutputs }) => onSubmit(schemaOutputs[0]),
   });
 
   function resetForm() {
@@ -85,7 +66,6 @@ export function ServiceRegistryCredentialForm({
       username: initialUsername,
       secret: "",
     });
-    setSubmitError(null);
   }
 
   return (
@@ -124,7 +104,6 @@ export function ServiceRegistryCredentialForm({
             )}
           </form.Field>
 
-          {submitError ? <FieldError>{submitError}</FieldError> : null}
 
           <div className="flex items-center gap-2">
             <form.SubmitButton>Save</form.SubmitButton>

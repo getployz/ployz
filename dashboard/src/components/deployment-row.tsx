@@ -7,6 +7,7 @@ import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
 import { DeploymentStatusCard } from "#/components/deployment-status-card";
 import { DeploymentLogs } from "#/components/deployment-logs";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
+import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
 import { Button } from "#/components/ui/button";
@@ -90,6 +91,7 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
   return <>
     <DeploymentStatusCard deployment={deployment} serviceId={serviceId} progress={deployment.runtimeProgress}
       showLogs={showLogs} onLogsChange={setShowLogs}
+      onLogsIntent={organizationSlug ? () => preloadDeploymentLogs(organizationSlug, deployment.id, collectionScope) : undefined}
       logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} hasBuild={deployment.buildServiceIds.some((id) => !serviceId || id === serviceId)} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={
         <DropdownMenu>
             <DropdownMenuTrigger

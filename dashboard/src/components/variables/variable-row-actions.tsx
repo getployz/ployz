@@ -20,7 +20,6 @@ import type { VariableMetadataPatch } from "#/components/variables/variable-row-
 export function VariableRowActions({
   editing,
   exported,
-  isSaving,
   isSealed,
   plainValue,
   showMetadata,
@@ -33,7 +32,6 @@ export function VariableRowActions({
 }: {
   editing: boolean;
   exported: boolean;
-  isSaving: boolean;
   isSealed: boolean;
   plainValue: string;
   showMetadata: boolean;
@@ -52,7 +50,6 @@ export function VariableRowActions({
           variant="ghost"
           size="icon-sm"
           onClick={onCancelEdit}
-          disabled={isSaving}
         >
           <XIcon />
           <span className="sr-only">Cancel</span>
@@ -62,7 +59,6 @@ export function VariableRowActions({
           variant="ghost"
           size="icon-sm"
           onClick={onSave}
-          disabled={isSaving}
         >
           <CheckIcon />
           <span className="sr-only">Save</span>

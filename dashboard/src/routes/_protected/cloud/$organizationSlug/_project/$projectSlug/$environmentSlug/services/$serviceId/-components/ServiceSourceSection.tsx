@@ -116,7 +116,7 @@ function GitServiceSourceSection({
               type="button"
               variant="outline"
               onClick={() => {
-                const transaction = collection.update(service.id, (draft) => {
+                collection.update(service.id, (draft) => {
                   if (draft.source.type !== "git") {
                     return;
                   }
@@ -124,7 +124,6 @@ function GitServiceSourceSection({
                   draft.source = createEmptyServiceSource();
                 });
 
-                void transaction.isPersisted.promise;
               }}
             >
               Disconnect
@@ -185,13 +184,13 @@ function GitServiceSourceSection({
       <GitRepoSelectorDialog
         open={isGitRepoSelectorOpen}
         onOpenChange={setIsGitRepoSelectorOpen}
-        onSelectRepo={async ({
+        onSelectRepo={({
           fullName,
           repositoryId,
           access,
           defaultBranch,
         }) => {
-          const transaction = collection.update(service.id, (draft) => {
+          collection.update(service.id, (draft) => {
             if (draft.source.type !== "git") {
               return;
             }
@@ -207,8 +206,6 @@ function GitServiceSourceSection({
               },
             });
           });
-
-          await transaction.isPersisted.promise;
         }}
       />
     </FieldGroup>
@@ -298,13 +295,13 @@ function EmptyServiceSourceSection({ state }: { state: ServiceDrawerState }) {
       <GitRepoSelectorDialog
         open={isGitRepoSelectorOpen}
         onOpenChange={setIsGitRepoSelectorOpen}
-        onSelectRepo={async ({
+        onSelectRepo={({
           fullName,
           repositoryId,
           access,
           defaultBranch,
         }) => {
-          const transaction = collection.update(service.id, (draft) => {
+          collection.update(service.id, (draft) => {
             if (draft.source.type !== "empty") {
               return;
             }
@@ -320,15 +317,13 @@ function EmptyServiceSourceSection({ state }: { state: ServiceDrawerState }) {
               },
             });
           });
-
-          await transaction.isPersisted.promise;
         }}
       />
       <ImageSelectorDialog
         open={isImageSelectorOpen}
         onOpenChange={setIsImageSelectorOpen}
-        onSelectImage={async (image) => {
-          const transaction = collection.update(service.id, (draft) => {
+        onSelectImage={(image) => {
+          collection.update(service.id, (draft) => {
             if (draft.source.type !== "empty") {
               return;
             }
@@ -337,8 +332,6 @@ function EmptyServiceSourceSection({ state }: { state: ServiceDrawerState }) {
               image,
             });
           });
-
-          await transaction.isPersisted.promise;
         }}
       />
     </FieldGroup>
@@ -389,7 +382,7 @@ function ImageServiceSourceSection({ state }: { state: ServiceDrawerState }) {
               type="button"
               variant="outline"
               onClick={() => {
-                const transaction = collection.update(service.id, (draft) => {
+                collection.update(service.id, (draft) => {
                   if (draft.source.type !== "image") {
                     return;
                   }
@@ -397,7 +390,6 @@ function ImageServiceSourceSection({ state }: { state: ServiceDrawerState }) {
                   draft.source = createEmptyServiceSource();
                 });
 
-                void transaction.isPersisted.promise;
               }}
             >
               Disconnect
@@ -411,8 +403,8 @@ function ImageServiceSourceSection({ state }: { state: ServiceDrawerState }) {
       <ImageSelectorDialog
         open={isImageSelectorOpen}
         onOpenChange={setIsImageSelectorOpen}
-        onSelectImage={async (image) => {
-          const transaction = collection.update(service.id, (draft) => {
+        onSelectImage={(image) => {
+          collection.update(service.id, (draft) => {
             if (draft.source.type !== "image") {
               return;
             }
@@ -422,8 +414,6 @@ function ImageServiceSourceSection({ state }: { state: ServiceDrawerState }) {
               credentials: draft.source.credentials,
             });
           });
-
-          await transaction.isPersisted.promise;
         }}
       />
     </FieldGroup>

@@ -1,15 +1,11 @@
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { useState } from "react";
+import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useServerFn } from "@tanstack/react-start";
 import { DatabaseIcon, PackagePlusIcon, UnlinkIcon } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Separator } from "#/components/ui/separator";
-import { Spinner } from "#/components/ui/spinner";
-import { getEnvironmentsCollection } from "#/collections/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   attachServiceVariableGroupServerFn,
@@ -27,24 +23,13 @@ import {
 } from "#/modules/services/services.collection";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 
-type PendingAttachment = {
-  action: "attach" | "detach";
-  variableGroupId: string;
-};
-
-function pendingAttachmentKey(attachment: PendingAttachment) {
-  return `${attachment.action}:${attachment.variableGroupId}`;
-}
-
 function VariableGroupAttachmentRow({
   variableGroup,
   action,
-  pending,
   onClick,
 }: {
   variableGroup: EnvironmentVariableGroupRecord;
   action: "attach" | "detach";
-  pending: boolean;
   onClick: () => void;
 }) {
   return (
@@ -59,12 +44,9 @@ function VariableGroupAttachmentRow({
         type="button"
         variant={action === "detach" ? "ghost" : "outline"}
         size="sm"
-        disabled={pending}
         onClick={onClick}
       >
-        {pending ? (
-          <Spinner />
-        ) : action === "detach" ? (
+        {action === "detach" ? (
           <UnlinkIcon data-icon="inline-start" />
         ) : (
           <PackagePlusIcon data-icon="inline-start" />
@@ -80,16 +62,12 @@ export function ServiceVariableGroupAttachmentsPanel({
 }: {
   state: ServiceDrawerState;
 }) {
-  const collectionScope = useCollectionScope();
+  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
   const attachVariableGroup = useServerFn(attachServiceVariableGroupServerFn);
   const detachVariableGroup = useServerFn(detachServiceVariableGroupServerFn);
-  const rawAttachments = getEnvironmentsCollection(state.organizationSlug, collectionScope);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
   );
-  const [pendingAttachment, setPendingAttachment] =
-    useState<PendingAttachment | null>(null);
-
   const document = useEnvironmentDocument(state.organizationSlug, state.service.environmentId);
   const attachments = document?.intent.services.find((node) => node.id === state.service.id)?.variableGroupAttachments
     .map((attachment) => ({ ...attachment, serviceId: state.service.id, environmentId: state.service.environmentId })) ?? [];
@@ -104,9 +82,6 @@ export function ServiceVariableGroupAttachmentsPanel({
         .select(({ resource }) => resource),
   });
 
-  const pendingKey = pendingAttachment
-    ? pendingAttachmentKey(pendingAttachment)
-    : null;
   const environmentResources = environmentResourceRows.map((resource) =>
     parseLiveQueryRow(variableGroupResourceRecordSchema, resource),
   );
@@ -116,32 +91,27 @@ export function ServiceVariableGroupAttachmentsPanel({
       environmentResources,
     });
 
-  async function runAttachmentAction(attachment: PendingAttachment) {
-    setPendingAttachment(attachment);
-    try {
-      if (!document) throw new Error("Environment is not loaded.");
-      const data = {
-        revision: document.revision,
-        organizationSlug: state.organizationSlug,
-        environmentId: state.service.environmentId,
-        serviceId: state.service.id,
-        variableGroupId: attachment.variableGroupId,
-      };
-
-      if (attachment.action === "attach") {
-        const result = await attachVariableGroup({ data });
-        await rawAttachments.writeCommitted(result.data);
-      } else {
-        const result = await detachVariableGroup({ data });
-        await rawAttachments.writeCommitted(result.data);
-      }
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not update Variable Groups.",
-      );
-    } finally {
-      setPendingAttachment(null);
-    }
+  function runAttachmentAction(action: "attach" | "detach", variableGroupId: string) {
+    const { organizationSlug } = state;
+    const { environmentId, id: serviceId } = state.service;
+    editDocument({
+      environmentId,
+      apply: (intent) => {
+        const node = intent.services.find((node) => node.id === serviceId);
+        if (!node) return;
+        if (action === "detach") {
+          node.variableGroupAttachments = node.variableGroupAttachments.filter((attachment) => attachment.variableGroupId !== variableGroupId);
+          return;
+        }
+        const sortOrder = Math.max(-1, ...node.variableGroupAttachments.map((attachment) => attachment.sortOrder)) + 1;
+        node.variableGroupAttachments.push({ variableGroupId, sortOrder });
+      },
+      save: (revision) => {
+        const data = { revision, organizationSlug, environmentId, serviceId, variableGroupId };
+        return action === "attach" ? attachVariableGroup({ data }) : detachVariableGroup({ data });
+      },
+      failureMessage: "Could not update Variable Groups.",
+    });
   }
 
   return (
@@ -161,19 +131,7 @@ export function ServiceVariableGroupAttachmentsPanel({
                   key={variableGroup.id}
                   variableGroup={variableGroup}
                   action="detach"
-                  pending={
-                    pendingKey ===
-                    pendingAttachmentKey({
-                      action: "detach",
-                      variableGroupId: variableGroup.id,
-                    })
-                  }
-                  onClick={() =>
-                    void runAttachmentAction({
-                      action: "detach",
-                      variableGroupId: variableGroup.id,
-                    })
-                  }
+                  onClick={() => runAttachmentAction("detach", variableGroup.id)}
                 />
               ))}
             </div>
@@ -195,19 +153,7 @@ export function ServiceVariableGroupAttachmentsPanel({
                   key={variableGroup.id}
                   variableGroup={variableGroup}
                   action="attach"
-                  pending={
-                    pendingKey ===
-                    pendingAttachmentKey({
-                      action: "attach",
-                      variableGroupId: variableGroup.id,
-                    })
-                  }
-                  onClick={() =>
-                    void runAttachmentAction({
-                      action: "attach",
-                      variableGroupId: variableGroup.id,
-                    })
-                  }
+                  onClick={() => runAttachmentAction("attach", variableGroup.id)}
                 />
               ))}
             </div>

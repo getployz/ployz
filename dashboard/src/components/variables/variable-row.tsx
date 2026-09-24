@@ -1,5 +1,4 @@
 import { useReducer } from "react";
-import { toast } from "sonner";
 import {
   initialVariableRowState,
   variableRowReducer,
@@ -28,15 +27,12 @@ export function VariableRow({
   collection: VariableWriter;
   /** Reference targets offered by the value editor's `${{ }}` autocomplete. */
   valueTargets?: ReferenceTarget[];
-  onSealVariable: (variable: PlainVariableRecord) => Promise<void>;
+  onSealVariable: (variable: PlainVariableRecord) => void;
   /**
    * When provided, the row exposes export controls and badges. Owners that don't
    * model exports (e.g. plain service variables) omit this.
    */
-  onUpdateMetadata?: (
-    variable: VariableRecord,
-    patch: VariableMetadataPatch,
-  ) => Promise<void>;
+  onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   warning?: string;
 }) {
   const [state, dispatch] = useReducer(
@@ -51,60 +47,24 @@ export function VariableRow({
     ? "References a variable whose service or group was deleted — it resolves to empty at deploy."
     : null;
 
-  async function handleSave() {
-    dispatch({ type: "saveStarted" });
-    const tx = collection.update(variable.id, (draft) => {
+  // Writes are optimistic: the writer rolls back and toasts if saving fails.
+  function handleSave() {
+    collection.update(variable.id, (draft) => {
       draft.value = { type: "plain", value: state.editValue };
       draft.updatedAt = new Date();
     });
-    try {
-      await tx.isPersisted.promise;
-      dispatch({ type: "saveSucceeded" });
-    } catch (error) {
-      dispatch({ type: "saveFailed" });
-      toast.error(
-        error instanceof Error ? error.message : "Could not update variable.",
-      );
-    }
+    dispatch({ type: "saveSucceeded" });
   }
 
-  async function handleDelete() {
-    const tx = collection.delete(variable.id);
-    try {
-      await tx.isPersisted.promise;
-      dispatch({ type: "deleteDialogChanged", open: false });
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not delete variable.",
-      );
-      throw error;
-    }
+  function handleDelete() {
+    collection.delete(variable.id);
+    dispatch({ type: "deleteDialogChanged", open: false });
   }
 
-  async function handleSeal() {
+  function handleSeal() {
     if (variable.value.type !== "plain") return;
-    try {
-      await onSealVariable({
-        ...variable,
-        value: variable.value,
-      });
-      dispatch({ type: "sealDialogChanged", open: false });
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not seal variable.",
-      );
-    }
-  }
-
-  async function handleUpdateMetadata(patch: VariableMetadataPatch) {
-    if (!onUpdateMetadata) return;
-    try {
-      await onUpdateMetadata(variable, patch);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not update variable.",
-      );
-    }
+    onSealVariable({ ...variable, value: variable.value });
+    dispatch({ type: "sealDialogChanged", open: false });
   }
 
   return (
@@ -120,7 +80,6 @@ export function VariableRow({
       <VariableRowValue
         editing={state.editing}
         editValue={state.editValue}
-        isSaving={state.isSaving}
         isSealed={isSealed}
         plainValue={plainValue}
         unresolvedReferences={variable.unresolvedReferences}
@@ -130,14 +89,13 @@ export function VariableRow({
         onChangeEditValue={(value) =>
           dispatch({ type: "editValueChanged", value })
         }
-        onSave={() => void handleSave()}
+        onSave={handleSave}
         onToggleReveal={() => dispatch({ type: "revealToggled" })}
       />
 
       <VariableRowActions
         editing={state.editing}
         exported={variable.exported}
-        isSaving={state.isSaving}
         isSealed={isSealed}
         plainValue={plainValue}
         showMetadata={showMetadata}
@@ -151,8 +109,8 @@ export function VariableRow({
         onOpenSealDialog={() =>
           dispatch({ type: "sealDialogChanged", open: true })
         }
-        onSave={() => void handleSave()}
-        onUpdateMetadata={(patch) => void handleUpdateMetadata(patch)}
+        onSave={handleSave}
+        onUpdateMetadata={(patch) => onUpdateMetadata?.(variable, patch)}
       />
 
       </div>

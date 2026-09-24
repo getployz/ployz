@@ -1,5 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
+import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { Separator } from "#/components/ui/separator";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
@@ -8,6 +10,13 @@ import { Route as EnvironmentLayoutRoute } from "./route";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
 )({
+  loader: async ({ params, context }) => {
+    const { organizationSlug, projectSlug } = params;
+    const environment = await requireEnvironment(context, params);
+    await prefetchRemote(context,
+      latestTeardownAttemptQueryOptions({ organizationSlug, scope: "environment", environmentId: environment.id }),
+      latestTeardownAttemptQueryOptions({ organizationSlug, scope: "project", projectSlug }));
+  },
   component: RouteComponent,
 });
 

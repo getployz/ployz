@@ -74,16 +74,17 @@ export function ServiceNetworkingSection({
     };
   };
 
-  async function commitRoutes(next: ServiceRoute[]) {
-    await collection.update(service.id, (draft) => {
+  // Optimistic: the service writer rolls back and toasts if saving fails.
+  function commitRoutes(next: ServiceRoute[]) {
+    collection.update(service.id, (draft) => {
       draft.routes = next;
-    }).isPersisted.promise;
+    });
   }
 
-  async function commitManaged(next: ServiceManagedHostname[]) {
-    await collection.update(service.id, (draft) => {
+  function commitManaged(next: ServiceManagedHostname[]) {
+    collection.update(service.id, (draft) => {
       draft.managedHostnames = next;
-    }).isPersisted.promise;
+    });
   }
 
   const takenPrefixesFor = (index: number | null) => [
@@ -129,7 +130,7 @@ export function ServiceNetworkingSection({
               changed={managedDiff.changed}
               onEdit={() => setEditor({ kind: "managed", index })}
               onDelete={() =>
-                void commitManaged(
+                commitManaged(
                   managedList.filter((_, current) => current !== index)
                 )
               }
@@ -144,7 +145,7 @@ export function ServiceNetworkingSection({
               changed={routesDiff.changed}
               onEdit={() => setEditor({ kind: "route", index })}
               onDelete={() =>
-                void commitRoutes(
+                commitRoutes(
                   routes.filter((_, current) => current !== index)
                 )
               }

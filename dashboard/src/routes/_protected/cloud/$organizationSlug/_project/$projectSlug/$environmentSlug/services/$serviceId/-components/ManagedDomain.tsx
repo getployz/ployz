@@ -1,6 +1,4 @@
-import { useState } from "react";
 import {
-  CircleAlertIcon,
   GlobeIcon,
   PencilIcon,
   Trash2Icon,
@@ -8,7 +6,6 @@ import {
 import { Schema, SchemaGetter } from "effect";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Button } from "#/components/ui/button";
-import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import {
   Dialog,
   DialogClose,
@@ -130,9 +127,8 @@ export function ManagedDomainDialog({
   takenPrefixes: string[];
   defaultTargetPort: number | null;
   onClose: () => void;
-  onSubmit: (next: ServiceManagedHostname) => Promise<void>;
+  onSubmit: (next: ServiceManagedHostname) => void;
 }) {
-  const [saveFailure, setSaveFailure] = useState<string | null>(null);
   const taken = new Set(takenPrefixes);
   const schema = Schema.toStandardSchemaV1(
     Schema.Struct({
@@ -165,18 +161,10 @@ export function ManagedDomainDialog({
       errorVisibility: showErrorsAfterBlurOrSubmit,
       validators: [validateOnChangeOrBlur(schema)],
     }),
-    onSubmit: async ({ schemaOutputs }) => {
-      setSaveFailure(null);
-      try {
-        await onSubmit(schemaOutputs[0]);
-        onClose();
-      } catch (error) {
-        setSaveFailure(
-          error instanceof Error
-            ? error.message
-            : "The managed domain could not be saved."
-        );
-      }
+    // Optimistic: saving rolls back and toasts on failure.
+    onSubmit: ({ schemaOutputs }) => {
+      onSubmit(schemaOutputs[0]);
+      onClose();
     },
   });
   return (
@@ -229,13 +217,6 @@ export function ManagedDomainDialog({
                 )}
               </form.Field>
             </FieldGroup>
-            {saveFailure ? (
-              <Alert variant="destructive">
-                <CircleAlertIcon />
-                <AlertTitle>Managed domain not saved</AlertTitle>
-                <AlertDescription>{saveFailure}</AlertDescription>
-              </Alert>
-            ) : null}
             <DialogFooter>
               <DialogClose
                 render={

@@ -34,12 +34,12 @@ export function ServiceDrawerHeader({
         editTitle="Edit service name"
         editDescription="Rename this service."
         placeholder="Service name"
-        onRename={async (value) => {
-          await state.editMetadata({
+        onRename={(value) => {
+          state.editMetadata({
             environmentId: service.environmentId,
             serviceId: service.id,
             edit: { kind: "rename", name: value },
-          }).isPersisted.promise;
+          });
         }}
       />
     </CanvasInspectorHeader>

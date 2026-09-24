@@ -3,9 +3,8 @@ import { PencilIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
-import { InputGroupAddon, InputGroupInput } from "#/components/ui/input-group";
+import { InputGroupInput } from "#/components/ui/input-group";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
-import { Spinner } from "#/components/ui/spinner";
 import { Result, Schema } from "effect";
 import {
   strictParseOptions,
@@ -15,7 +14,7 @@ import {
 /**
  * Click-to-edit heading used in the canvas inspector overlay. Shared by the
  * service drawer and the Variable Group drawer so renaming behaves identically;
- * callers supply the validation schema and the persistence callback.
+ * callers supply the validation schema and an optimistic rename that owns its failure toast.
  */
 export function CanvasInspectorNameEditor({
   value,
@@ -29,7 +28,7 @@ export function CanvasInspectorNameEditor({
 }: {
   value: string;
   schema: StringSchema;
-  onRename: (value: string) => Promise<void>;
+  onRename: (value: string) => void;
   editTitle: string;
   editDescription: string;
   placeholder: string;
@@ -38,8 +37,6 @@ export function CanvasInspectorNameEditor({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [draftValue, setDraftValue] = useState("");
-  const [isPending, setIsPending] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const parsed = Schema.decodeUnknownResult(schema)(draftValue, strictParseOptions);
   const error = Result.isFailure(parsed)
     ? parsed.failure instanceof Error
@@ -50,35 +47,18 @@ export function CanvasInspectorNameEditor({
 
   function openEditor() {
     setDraftValue(value);
-    setIsPending(false);
-    setSaveError(null);
     setIsOpen(true);
   }
 
-  async function handleSubmit() {
-    if (Result.isFailure(parsed) || !isDirty || isPending) {
+  function handleSubmit() {
+    if (Result.isFailure(parsed) || !isDirty) {
       return;
     }
-
-    setIsPending(true);
-    setSaveError(null);
-
-    try {
-      await onRename(parsed.success);
-      setDraftValue(parsed.success);
-      setIsOpen(false);
-    } catch {
-      setSaveError("Could not save the name. Try again.");
-    } finally {
-      setIsPending(false);
-    }
+    onRename(parsed.success);
+    setIsOpen(false);
   }
 
   function handleClose() {
-    if (isPending) {
-      return;
-    }
-
     setDraftValue(value);
     setIsOpen(false);
   }
@@ -120,29 +100,24 @@ export function CanvasInspectorNameEditor({
         surface="unstyled"
         showCloseButton={false}
       >
-        <form onSubmit={(event) => { event.preventDefault(); void handleSubmit(); }}>
+        <form onSubmit={(event) => { event.preventDefault(); handleSubmit(); }}>
         <SourcePickerLayout title={editTitle}>
-          <SourcePickerInput onBack={handleClose} disabled={isPending}>
+          <SourcePickerInput onBack={handleClose}>
               <InputGroupInput
                 aria-label={editTitle}
-                aria-invalid={Boolean(error || saveError) || undefined}
+                aria-invalid={Boolean(error) || undefined}
                 value={draftValue}
                 placeholder={placeholder}
-                disabled={isPending}
                 data-changed={isChanged}
                 autoFocus
                 onFocus={(event) => event.currentTarget.select()}
-                onChange={(event) => {
-                  setDraftValue(event.target.value);
-                  setSaveError(null);
-                }}
+                onChange={(event) => setDraftValue(event.target.value)}
 
               />
-              {isPending ? <InputGroupAddon align="inline-end"><Spinner /></InputGroupAddon> : null}
           </SourcePickerInput>
-          {error || saveError ? <FieldError>{error ?? saveError}</FieldError> : null}
+          {error ? <FieldError>{error}</FieldError> : null}
         </SourcePickerLayout>
-        <button type="submit" hidden disabled={Boolean(error) || !isDirty || isPending}>Save</button>
+        <button type="submit" hidden disabled={Boolean(error) || !isDirty}>Save</button>
         </form>
       </CommandDialog>
     </>

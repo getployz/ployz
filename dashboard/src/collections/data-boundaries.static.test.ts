@@ -15,6 +15,7 @@ import {
   isPropertyAssignment,
   isShorthandPropertyAssignment,
   isStringLiteral,
+  isVariableDeclaration,
 } from "typescript/unstable/ast/is";
 import { dataSources } from "./data-sources";
 
@@ -37,20 +38,15 @@ const SPINNER_FILES = {
   "components/navigation-switcher.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
-  "components/stageable/confirmable-input.tsx": "save in flight",
-  "components/variables/variable-add-form.tsx": "submit in flight",
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/BillingPlanCard.tsx": "checkout in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/BillingPlanChangeDialog.tsx": "plan change in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor.tsx": "rename in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VariableGroupCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariableGroupAttachmentsPanel.tsx": "attach in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorFooter.tsx": "save in flight",
   "routes/_public/-components/AppHeaderActions.tsx": "sign-out in flight",
   "routes/_public/-components/LoginDialog.tsx": "sign-in in flight",
 };
@@ -71,6 +67,39 @@ const NETWORK = /\bfetch\(|new EventSource\(/;
 const NETWORK_FILES = {
   "modules/github/github-observation.api.ts": "server-only GitHub API client",
   "providers/runtime-provider.tsx": "the Runtime SSE connection",
+};
+
+// Matches the conventional spellings (`environments` or an inline getter); other aliases rely on review.
+const DOCUMENT_WRITE = /\b(environments|getEnvironmentsCollection\([^)]*\))\.writeCommitted\(/;
+/** Commands that store a server-returned environment document directly; field edits go through editEnvironmentDocument. */
+const DOCUMENT_COMMAND_FILES = {
+  "modules/environment-design/environment-document-edit.ts": "the editor itself",
+  "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
+  "components/navigation-switcher.tsx": "a created environment returns its first document",
+  "components/service-create-command.tsx": "a created project returns its first document",
+};
+
+/** Remote Reads a loader cannot prefetch, and what warms them instead. */
+const ON_DEMAND_READS = {
+  deploymentBuildLogQueryOptions: "warmed when the user reaches for a deployment's logs",
+  githubFileSearchQueryOptions: "searches as the user types",
+  githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
+  githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
+  githubBranchesQueryOptions: "depends on the repository the user just picked",
+};
+
+/** UI that waits for the server, and why. Everything else applies writes optimistically. */
+const COMMAND_FILES = {
+  "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
+  "components/deployment-row.tsx": "deploy and retry start runtime work",
+  "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
+  "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
+  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "plan changes and checkout involve money",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "removing a machine is destructive and waits on the runtime",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVariableGroupCreator.ts": "the server assigns a new Variable Group's id, slug, and lineage",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage",
 };
 
 function walk(dir: string): string[] {
@@ -110,6 +139,19 @@ describe("data boundaries", () => {
     expect(outside, "Move the request into a data file").toEqual(Object.keys(NETWORK_FILES).sort());
   });
 
+  it("prefetches every Remote Read in a loader unless it is read on demand", () => {
+    const remoteFiles = Object.entries(dataSources).filter(([path, source]) => source.kind === "remote" && path.endsWith(".queries.ts")).map(([path]) => path);
+    const factories = remoteFiles.flatMap((path) => [...readFileSync(join(SRC, path), "utf8").matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
+    const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || path === "collections/route-data.ts").map(({ text }) => text).join("\n");
+    // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
+    const unprefetched = factories.filter((name) => !new RegExp(`(prefetchRemote\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
+    expect(unprefetched.sort(), "Prefetch it with prefetchRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
+  });
+
+  it("edits environment documents through the queued editor", () => {
+    expect(filesMatching(DOCUMENT_WRITE), "Use editEnvironmentDocument so saves queue against the current revision").toEqual(Object.keys(DOCUMENT_COMMAND_FILES).sort());
+  });
+
   it("uses spinners only for writes and running processes", () => {
     expect(filesMatching(SPINNER), "Reads use prefetched content, a skeleton, or nothing").toEqual(Object.keys(SPINNER_FILES).sort());
   });
@@ -123,6 +165,7 @@ describe("data boundaries", () => {
         const project = snapshot.getProject(configPath);
         if (!project) throw new Error(`TypeScript project not found: ${configPath}`);
         const violations: string[] = [];
+        const awaitingUi = new Set<string>();
         const at = (source: SourceFile, node: Node, message: string) => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
@@ -141,6 +184,8 @@ describe("data boundaries", () => {
           const isRoute = file.startsWith(`${SRC}/routes/`);
           // Only Org Store tables in collections/ inherit the createApiCollection default.
           const isCollectionsFile = file.startsWith(`${SRC}/collections/`);
+          const isUi = isRoute || file.startsWith(`${SRC}/components/`);
+          const serverCalls = new Set<string>();
           const importedFrom = new Map<string, string>();
           for (const statement of source.statements) {
             if (!isImportDeclaration(statement) || !isStringLiteral(statement.moduleSpecifier)) continue;
@@ -179,6 +224,18 @@ describe("data boundaries", () => {
             }
             if (isRoute && isMethodDeclaration(node) && isLoaderName(node.name) && node.body) checkLoader(node.body);
             if (isRoute && isShorthandPropertyAssignment(node) && isLoaderName(node.name)) at(source, node, "write loaders inline so their awaits can be checked");
+            if (isVariableDeclaration(node) && isIdentifier(node.name) && node.initializer && calleeName(node.initializer) === "useServerFn") {
+              serverCalls.add(node.name.text);
+            }
+            if (isUi && isAwaitExpression(node)) {
+              const awaited = node.expression;
+              const awaitedName = calleeName(awaited);
+              const persistence = isPropertyAccessExpression(awaited) && awaited.name.text === "promise"
+                && isPropertyAccessExpression(awaited.expression) && awaited.expression.name.text === "isPersisted";
+              if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
+                awaitingUi.add(relative(SRC, source.fileName));
+              }
+            }
             const name = calleeName(node);
             if (name && isCallExpression(node)) {
               const options = node.arguments[0];
@@ -195,6 +252,7 @@ describe("data boundaries", () => {
           });
         }
         expect(violations).toEqual([]);
+        expect([...awaitingUi].sort(), "Make the write optimistic, or list a command with its reason").toEqual(Object.keys(COMMAND_FILES).sort());
       } finally {
         snapshot.dispose();
       }

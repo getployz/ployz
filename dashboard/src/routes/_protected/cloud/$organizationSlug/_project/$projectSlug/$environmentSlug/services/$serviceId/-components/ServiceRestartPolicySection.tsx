@@ -68,13 +68,12 @@ export function ServiceRestartPolicySection({
           value={service.restartPolicy}
           onValueChange={(next) => {
             if (next !== "always" && next !== "on-failure" && next !== "no") return;
-            const transaction = collection.update(service.id, (draft) => {
+            collection.update(service.id, (draft) => {
               draft.restartPolicy = next;
               if (next === "on-failure" && draft.maxRetries === 0) {
                 draft.maxRetries = 10;
               }
             });
-            void transaction.isPersisted.promise;
           }}
         >
           <SelectTrigger

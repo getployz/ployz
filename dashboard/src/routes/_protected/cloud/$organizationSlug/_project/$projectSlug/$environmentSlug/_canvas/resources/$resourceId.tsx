@@ -1,4 +1,6 @@
+import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
+import { latestVolumeRemoveAttemptQueryOptions } from "#/modules/runtime/volume-removal.queries";
 import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
 import { ENVIRONMENT_INDEX_ROUTE_TO } from "../../-components/environment-route-paths";
 import {
@@ -13,6 +15,12 @@ import { useVolumeDrawerState } from "#/routes/_protected/cloud/$organizationSlu
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId",
 )({
+  loader: async ({ params, context }) => {
+    const environment = await requireEnvironment(context, params);
+    await prefetchRemote(context, latestVolumeRemoveAttemptQueryOptions({
+      organizationSlug: params.organizationSlug, environmentId: environment.id, resourceId: params.resourceId,
+    }));
+  },
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Resource" />,
   component: RouteComponent,

@@ -1,5 +1,5 @@
 import type { CollectionScope } from "#/collections/scope";
-import { createOptimisticAction } from "@tanstack/react-db";
+import { editEnvironmentDocumentAfter } from "./environment-document-edit";
 import type { SavedEnvironmentIntent, SavedVariableIntent } from "./saved-intent";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import type { VariableRecord } from "./variables";
@@ -26,40 +26,6 @@ function variableOwners(intent: SavedEnvironmentIntent) {
 
 export function createVariableWriter(organizationSlug: string, scope: CollectionScope): VariableWriter {
   const environments = getEnvironmentsCollection(organizationSlug, scope);
-  type Edit = { environmentId: string; revision: string; kind: "insert" | "update" | "delete";
-    variable: VariableRecord; authored: SavedVariableIntent | null };
-  const persist = createOptimisticAction<Edit>({
-    onMutate: ({ environmentId, kind, variable, authored }) => {
-      environments.update(environmentId, (draft) => {
-        const owner = variableOwners(draft.intent).find((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId);
-        if (!owner) throw new Error("Variable owner is not loaded.");
-        const index = owner.variables.findIndex((entry) => entry.id === variable.id);
-        if (kind === "delete") {
-          if (index !== -1) owner.variables.splice(index, 1);
-        } else if (authored) {
-          if (index === -1) owner.variables.push(authored);
-          else owner.variables[index] = authored;
-        }
-      });
-    },
-    mutationFn: async ({ environmentId, revision, kind, variable }) => {
-      const scope = { organizationSlug, environmentId, revision };
-      const value = variable.value;
-      if (kind !== "delete" && value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
-      const data = { ...scope, key: variable.key, description: variable.description, exported: variable.exported,
-        value: { type: "plain" as const, value: value.type === "plain" ? value.value : "" } };
-      const result = await (variable.serviceId
-        ? kind === "delete" ? deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
-          : kind === "insert" ? createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
-          : updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } })
-        : variable.variableGroupId
-          ? kind === "delete" ? deleteVariableGroupVariableServerFn({ data: { ...scope, variableGroupId: variable.variableGroupId, variableId: variable.id } })
-            : kind === "insert" ? createVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, id: variable.id } })
-            : updateVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, variableId: variable.id } })
-          : (() => { throw new Error("Variable has no owner."); })());
-      await environments.writeCommitted(result.data);
-    },
-  });
 
   function currentVariable(id: string) {
     for (const document of environments.values()) {
@@ -71,8 +37,25 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
     throw new Error("Variable is not loaded.");
   }
 
-  function edit(kind: Edit["kind"], variable: VariableRecord) {
-    const promise = (async () => {
+  function save(kind: "insert" | "update" | "delete", variable: VariableRecord, environmentId: string, revision: string) {
+    const scope = { organizationSlug, environmentId, revision };
+    const value = variable.value;
+    if (kind !== "delete" && value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
+    const data = { ...scope, key: variable.key, description: variable.description, exported: variable.exported,
+      value: { type: "plain" as const, value: value.type === "plain" ? value.value : "" } };
+    return variable.serviceId
+      ? kind === "delete" ? deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
+        : kind === "insert" ? createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
+        : updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } })
+      : variable.variableGroupId
+        ? kind === "delete" ? deleteVariableGroupVariableServerFn({ data: { ...scope, variableGroupId: variable.variableGroupId, variableId: variable.id } })
+          : kind === "insert" ? createVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, id: variable.id } })
+          : updateVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, variableId: variable.id } })
+        : Promise.reject(new Error("Variable has no owner."));
+  }
+
+  function edit(kind: "insert" | "update" | "delete", variable: VariableRecord) {
+    return editEnvironmentDocumentAfter(organizationSlug, scope, async () => {
       const document = Array.from(environments.values()).find((document) => variableOwners(document.intent)
         .some((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId));
       if (!document) throw new Error("Variable owner is not loaded.");
@@ -81,13 +64,32 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
         if (variable.value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
         authored = await plainVariableIntent(variable, document.intent);
       }
-      await persist({ environmentId: document.id, revision: document.revision, kind, variable, authored }).isPersisted.promise;
-    })();
-    return { isPersisted: { promise } };
+      return {
+        environmentId: document.id,
+        apply: (intent) => {
+          const owner = variableOwners(intent).find((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId);
+          if (!owner) return;
+          const index = owner.variables.findIndex((entry) => entry.id === variable.id);
+          if (kind === "delete") {
+            if (index !== -1) owner.variables.splice(index, 1);
+          } else if (authored) {
+            if (index === -1) owner.variables.push(authored);
+            else owner.variables[index] = authored;
+          }
+        },
+        save: (revision) => save(kind, variable, document.id, revision),
+        failureMessage: kind === "delete" ? "Could not delete this variable." : "Could not save this variable.",
+      };
+    }, "Could not save this variable.");
   }
   return { insert: (variable) => edit("insert", variable),
     update(id, updater) { const variable = currentVariable(id); updater(variable); return edit("update", variable); },
     delete: (id) => edit("delete", currentVariable(id)) };
+}
+
+/** Shows a variable as sealed until the server returns its encrypted value and fingerprint. */
+export function sealVariableIntent(variable: SavedVariableIntent) {
+  variable.value = { kind: "secret", encryptedValue: null };
 }
 
 export type PlainServiceVariableInsertInput = {
@@ -126,12 +128,11 @@ export function buildPlainServiceVariableRecord(
   };
 }
 
-export async function insertPlainServiceVariable(
+export function insertPlainServiceVariable(
   writer: VariableWriter,
   input: PlainServiceVariableInsertInput,
 ) {
-  const tx = writer.insert(buildPlainServiceVariableRecord(input));
-  await tx.isPersisted.promise;
+  return writer.insert(buildPlainServiceVariableRecord(input));
 }
 
 function buildPlainVariableGroupVariableRecord(
@@ -152,10 +153,9 @@ function buildPlainVariableGroupVariableRecord(
   };
 }
 
-export async function insertPlainVariableGroupVariable(
+export function insertPlainVariableGroupVariable(
   writer: VariableWriter,
   input: PlainVariableGroupVariableInsertInput,
 ) {
-  const tx = writer.insert(buildPlainVariableGroupVariableRecord(input));
-  await tx.isPersisted.promise;
+  return writer.insert(buildPlainVariableGroupVariableRecord(input));
 }

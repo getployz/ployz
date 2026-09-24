@@ -13,7 +13,6 @@ export function VolumeMountItem({
   editError,
   editPath,
   isEditing,
-  pending,
   onCancelEdit,
   onDetach,
   onEditPathChange,
@@ -25,7 +24,6 @@ export function VolumeMountItem({
   editError: string | null;
   editPath: string;
   isEditing: boolean;
-  pending: boolean;
   onCancelEdit: () => void;
   onDetach: () => void;
   onEditPathChange: (value: string) => void;
@@ -60,12 +58,11 @@ export function VolumeMountItem({
             <Button
               variant="outline"
               size="sm"
-              disabled={pending}
               onClick={onCancelEdit}
             >
               Cancel
             </Button>
-            <Button size="sm" disabled={pending} onClick={onSaveEdit}>
+            <Button size="sm" onClick={onSaveEdit}>
               Save
             </Button>
           </>
@@ -75,7 +72,6 @@ export function VolumeMountItem({
               variant="ghost"
               size="icon-sm"
               aria-label="Edit mount path"
-              disabled={pending}
               onClick={onStartEdit}
             >
               <PencilIcon />
@@ -84,7 +80,6 @@ export function VolumeMountItem({
               variant="ghost"
               size="icon-sm"
               aria-label="Remove mount"
-              disabled={pending}
               onClick={onDetach}
             >
               <Trash2Icon />

@@ -109,14 +109,8 @@ describe("VariableRow", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("shows pending feedback while the seal action is running", async () => {
-    let resolveSeal!: () => void;
-    const onSealVariable = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveSeal = resolve;
-        }),
-    );
+  it("closes the seal dialog at once because sealing is optimistic", async () => {
+    const onSealVariable = vi.fn();
 
     render(
       <VariableRow
@@ -130,16 +124,11 @@ describe("VariableRow", () => {
     fireEvent.click(await screen.findByText("Seal"));
     fireEvent.click(screen.getByRole("button", { name: "Seal variable" }));
 
+    expect(onSealVariable).toHaveBeenCalledOnce();
     await waitFor(() => {
-      expect(onSealVariable).toHaveBeenCalled();
+      expect(screen.queryByText("Seal Variable")).toBeNull();
     });
-    expect(await screen.findByText("Sealing…")).toBeTruthy();
-
-    resolveSeal();
-    await waitFor(() => {
-      expect(screen.queryByText("Sealing…")).toBeNull();
-    });
-    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.queryByText("Sealing…")).toBeNull();
   });
 
   it("does not call the seal action when confirmation is cancelled", async () => {

@@ -4,7 +4,9 @@ import { useServerFn } from "@tanstack/react-start";
 import { getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { prefetchRemote } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
+import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
@@ -13,6 +15,9 @@ import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organi
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
+  loader: async ({ params, context }) => {
+    await prefetchRemote(context, latestTeardownAttemptQueryOptions({ organizationSlug: params.organizationSlug, scope: "organization" }));
+  },
   component: RouteComponent,
 });
 

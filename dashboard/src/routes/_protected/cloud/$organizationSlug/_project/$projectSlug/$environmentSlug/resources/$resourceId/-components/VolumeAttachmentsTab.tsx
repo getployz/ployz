@@ -1,10 +1,7 @@
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useReducer } from "react";
 import { HardDriveIcon } from "lucide-react";
-import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   Empty,
   EmptyDescription,
@@ -53,7 +50,6 @@ type VolumeAttachmentsState = {
   editingServiceId: string | null;
   editPath: string;
   editError: string | null;
-  pending: boolean;
 };
 
 type VolumeAttachmentsAction =
@@ -69,7 +65,6 @@ const initialVolumeAttachmentsState: VolumeAttachmentsState = {
   editingServiceId: null,
   editPath: "",
   editError: null,
-  pending: false,
 };
 
 function volumeAttachmentsReducer(
@@ -99,17 +94,10 @@ function volumeAttachmentsReducer(
 }
 
 export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
-  const collectionScope = useCollectionScope();
+  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
   const attachVolume = useServerFn(attachServiceVolumeServerFn);
   const detachVolume = useServerFn(detachServiceVolumeServerFn);
   const updateMountPath = useServerFn(updateServiceVolumeMountPathServerFn);
-  const attachmentsCollection = getEnvironmentsCollection(state.organizationSlug, collectionScope);
-
-  const document = useEnvironmentDocument(state.organizationSlug, state.environmentId);
-  function revision() {
-    if (!document) throw new Error("Environment is not loaded.");
-    return document.revision;
-  }
   const volumeResourceId = state.resource.resource.id;
   const isRemoved = !state.resource.isAuthored;
   const serviceNameById = new Map(
@@ -139,7 +127,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
     );
   }
 
-  async function handleAttach() {
+  function handleAttach() {
     if (!mountState.addServiceId) {
       dispatchMountState({
         type: "patch",
@@ -174,36 +162,22 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
       return;
     }
 
-    dispatchMountState({ type: "patch", patch: { pending: true } });
-    try {
-      const result = await attachVolume({
-        data: {
-          organizationSlug: state.organizationSlug,
-          environmentId: state.environmentId,
-          revision: revision(),
-          serviceId: mountState.addServiceId,
-          volumeResourceId,
-          mountPath: parsed.success,
-        },
-      });
-      await attachmentsCollection.writeCommitted(result.data);
-      dispatchMountState({ type: "resetAddForm" });
-    } catch (error) {
-      dispatchMountState({
-        type: "patch",
-        patch: {
-          addError:
-            error instanceof Error
-              ? error.message
-              : "Failed to mount the volume.",
-        },
-      });
-    } finally {
-      dispatchMountState({ type: "patch", patch: { pending: false } });
-    }
+    const serviceId = mountState.addServiceId;
+    const mountPath = parsed.success;
+    editDocument({
+      environmentId: state.environmentId,
+      apply: (intent) => {
+        intent.services.find((node) => node.id === serviceId)?.volumeAttachments.push({ volumeResourceId, mountPath });
+      },
+      save: (revision) => attachVolume({ data: {
+        organizationSlug: state.organizationSlug, environmentId: state.environmentId, revision, serviceId, volumeResourceId, mountPath,
+      } }),
+      failureMessage: "Failed to mount the volume.",
+    });
+    dispatchMountState({ type: "resetAddForm" });
   }
 
-  async function handleSaveEdit(serviceId: string) {
+  function handleSaveEdit(serviceId: string) {
     const parsed = Schema.decodeUnknownResult(mountPathSchema)(
       mountState.editPath,
       strictParseOptions,
@@ -231,55 +205,34 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
       return;
     }
 
-    dispatchMountState({ type: "patch", patch: { pending: true } });
-    try {
-      const result = await updateMountPath({
-        data: {
-          organizationSlug: state.organizationSlug,
-          environmentId: state.environmentId,
-          revision: revision(),
-          serviceId,
-          volumeResourceId,
-          mountPath: parsed.success,
-        },
-      });
-      await attachmentsCollection.writeCommitted(result.data);
-      dispatchMountState({ type: "cancelEdit" });
-    } catch (error) {
-      dispatchMountState({
-        type: "patch",
-        patch: {
-          editError:
-            error instanceof Error
-              ? error.message
-              : "Failed to update the mount.",
-        },
-      });
-    } finally {
-      dispatchMountState({ type: "patch", patch: { pending: false } });
-    }
+    const mountPath = parsed.success;
+    editDocument({
+      environmentId: state.environmentId,
+      apply: (intent) => {
+        const mount = intent.services.find((node) => node.id === serviceId)?.volumeAttachments
+          .find((attachment) => attachment.volumeResourceId === volumeResourceId);
+        if (mount) mount.mountPath = mountPath;
+      },
+      save: (revision) => updateMountPath({ data: {
+        organizationSlug: state.organizationSlug, environmentId: state.environmentId, revision, serviceId, volumeResourceId, mountPath,
+      } }),
+      failureMessage: "Failed to update the mount.",
+    });
+    dispatchMountState({ type: "cancelEdit" });
   }
 
-  async function handleDetach(serviceId: string) {
-    dispatchMountState({ type: "patch", patch: { pending: true } });
-    try {
-      const result = await detachVolume({
-        data: {
-          organizationSlug: state.organizationSlug,
-          environmentId: state.environmentId,
-          revision: revision(),
-          serviceId,
-          volumeResourceId,
-        },
-      });
-      await attachmentsCollection.writeCommitted(result.data);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to remove the mount.",
-      );
-    } finally {
-      dispatchMountState({ type: "patch", patch: { pending: false } });
-    }
+  function handleDetach(serviceId: string) {
+    editDocument({
+      environmentId: state.environmentId,
+      apply: (intent) => {
+        const node = intent.services.find((node) => node.id === serviceId);
+        if (node) node.volumeAttachments = node.volumeAttachments.filter((attachment) => attachment.volumeResourceId !== volumeResourceId);
+      },
+      save: (revision) => detachVolume({ data: {
+        organizationSlug: state.organizationSlug, environmentId: state.environmentId, revision, serviceId, volumeResourceId,
+      } }),
+      failureMessage: "Failed to remove the mount.",
+    });
   }
 
   if (isRemoved) {
@@ -326,16 +279,15 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
                 editError={mountState.editError}
                 editPath={mountState.editPath}
                 isEditing={isEditing}
-                pending={mountState.pending}
                 onCancelEdit={() => dispatchMountState({ type: "cancelEdit" })}
-                onDetach={() => void handleDetach(mount.serviceId)}
+                onDetach={() => handleDetach(mount.serviceId)}
                 onEditPathChange={(value) =>
                   dispatchMountState({
                     type: "patch",
                     patch: { editPath: value, editError: null },
                   })
                 }
-                onSaveEdit={() => void handleSaveEdit(mount.serviceId)}
+                onSaveEdit={() => handleSaveEdit(mount.serviceId)}
                 onStartEdit={() =>
                   dispatchMountState({
                     type: "startEdit",
@@ -354,8 +306,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
         addMountPath={mountState.addMountPath}
         addServiceId={mountState.addServiceId}
         availableServices={availableServices}
-        pending={mountState.pending}
-        onAttach={() => void handleAttach()}
+        onAttach={() => handleAttach()}
         onMountPathChange={(value) =>
           dispatchMountState({
             type: "patch",

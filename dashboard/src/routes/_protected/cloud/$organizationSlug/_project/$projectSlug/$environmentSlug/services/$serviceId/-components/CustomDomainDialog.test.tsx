@@ -18,7 +18,7 @@ afterEach(() => {
 
 describe("CustomDomainDialog", () => {
   it("saves a blank target as following PORT rather than freezing the hint", async () => {
-    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onSubmit = vi.fn();
     render(
       <CustomDomainDialog
         defaultTargetPort={3000}
@@ -40,7 +40,7 @@ describe("CustomDomainDialog", () => {
   });
 
   it("enables saving a corrected port without requiring blur", async () => {
-    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onSubmit = vi.fn();
     render(
       <CustomDomainDialog
         route={{
@@ -69,9 +69,10 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  it("closes only after route persistence succeeds", async () => {
+  // Saving is optimistic: a failed write rolls back and toasts in the service writer.
+  it("closes as soon as the route is submitted", async () => {
     const onClose = vi.fn();
-    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onSubmit = vi.fn();
 
     render(
       <CustomDomainDialog
@@ -97,27 +98,5 @@ describe("CustomDomainDialog", () => {
         targetPort: 3000,
       })
     );
-  });
-
-  it("keeps the dialog open when persistence fails", async () => {
-    const onClose = vi.fn();
-    render(
-      <CustomDomainDialog
-        defaultTargetPort={8080}
-        onClose={onClose}
-        onSubmit={vi.fn().mockRejectedValue(new Error("Write failed."))}
-      />
-    );
-
-    fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "api.example.com" },
-    });
-    fireEvent.change(screen.getByLabelText("Target port"), {
-      target: { value: "3000" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save route" }));
-
-    await waitFor(() => expect(screen.getByText("Write failed.")).toBeTruthy());
-    expect(onClose).not.toHaveBeenCalled();
   });
 });

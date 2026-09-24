@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { listDeploymentBuildLogServerFn } from "./deployment.functions";
 
 type BuildLogPage = Awaited<ReturnType<typeof listDeploymentBuildLogServerFn>>;
@@ -8,17 +8,15 @@ export type BuildOutputRow = BuildLogPage["output"][number];
 type BuildLog = { steps: BuildStepRow[]; output: BuildOutputRow[]; finished: boolean };
 
 /** Polls the step tree while the attempt runs, resuming output from the last row already held. */
-export function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
-  const queryClient = useQueryClient();
+export function deploymentBuildLogQueryOptions(organizationSlug: string, deploymentId: string) {
   const queryKey = ["deployment-build-log", organizationSlug, deploymentId];
-  return useQuery<BuildLog>({
+  return queryOptions<BuildLog>({
     queryKey,
-    enabled,
     // Each mount resumes from the last held row; a running build also polls.
     staleTime: 0,
     refetchInterval: (query) => query.state.data?.finished ? false : 2_000,
-    queryFn: async ({ signal }) => {
-      const previous = queryClient.getQueryData<BuildLog>(queryKey);
+    queryFn: async ({ signal, client }) => {
+      const previous = client.getQueryData<BuildLog>(queryKey);
       let steps: BuildStepRow[] = [];
       const output: BuildOutputRow[] = [...previous?.output ?? []];
       let finished = false;
@@ -34,4 +32,8 @@ export function useBuildLog(organizationSlug: string, deploymentId: string, enab
       return { steps, output, finished };
     },
   });
+}
+
+export function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
+  return useQuery({ ...deploymentBuildLogQueryOptions(organizationSlug, deploymentId), enabled });
 }

@@ -1,16 +1,14 @@
 import { useState } from "react";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
+import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { discardEnvironmentChangesServerFn } from "#/modules/environment-design/working-document-restore.functions";
 import type { DiscardEnvironmentChangesInput } from "#/modules/environment-design/working-document-restore";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import {
-  getEnvironmentsCollection,
-} from "#/collections/collections";
 import type {
   CanvasEnvironmentChangeGroup,
   CanvasEnvironmentChangeState,
@@ -71,14 +69,17 @@ export function useCanvasChangeActions({
 }: UseCanvasChangeActionsInput) {
   const [reviewAction, setReviewAction] = useState<"save" | "deploy">("save");
   const collectionScope = useCollectionScope();
-  const document = useEnvironmentDocument(params.organizationSlug, environmentId);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
+  // Read at call time: after queued edits settle, the render-time document is stale.
   function workingReview() {
+    const document = documents.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
     return projectReviewedEnvironmentWorkingState(document);
   }
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const environments = getEnvironmentsCollection(params.organizationSlug, collectionScope);
+  // Discard runs in the document save queue; publishing reviews the saved working state, so queued edits land first.
+  const queue = useEnvironmentDocumentQueue(params.organizationSlug);
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
     status: runtime.status,
@@ -120,21 +121,25 @@ export function useCanvasChangeActions({
     },
   });
 
+  // Discarding queues behind in-flight edits so it saves against their revision; the editor toasts failures.
   async function discardChanges(command: DiscardEnvironmentChangesInput["command"]) {
     try {
-      if (!document) throw new Error("Environment is not loaded.");
-      const result = await discard({ data: {
-        organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
-        savedStateBasis, headToken: changeState.headToken, command,
-      } });
-      await environments.writeCommitted(result.data);
-      await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
-      await queryClient.invalidateQueries({
-        queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(params.organizationSlug),
-      });
+      await queue.enqueue({
+        environmentId,
+        save: (revision) => discard({ data: {
+          organizationSlug: params.organizationSlug, environmentId, revision,
+          savedStateBasis, headToken: changeState.headToken, command,
+        } }),
+        failureMessage: "Could not discard changes.",
+        afterSave: async () => {
+          await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
+          await queryClient.invalidateQueries({
+            queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(params.organizationSlug),
+          });
+        },
+      }).isPersisted.promise;
       return true;
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not discard changes.");
+    } catch {
       return false;
     }
   }
@@ -181,6 +186,7 @@ export function useCanvasChangeActions({
       return;
     }
     try {
+      await queue.settled(environmentId);
       await publicationMutation.mutateAsync({
         intent: action === "deploy" ? "manual_deploy" : "save",
         review: {
@@ -204,6 +210,7 @@ export function useCanvasChangeActions({
   }
 
   async function prepareDestructiveReview() {
+    await queue.settled(environmentId);
     const reviewedMutation = {
       savedStateBasis,
       workingStateFingerprint:

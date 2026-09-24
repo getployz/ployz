@@ -53,12 +53,9 @@ export function VariablesPanel({
   valueTargets?: ReferenceTarget[];
   /** Singular noun for the count heading, e.g. "Variable" or "Service Variable". */
   countNoun: string;
-  onCreateVariable: (input: VariableAddInput) => Promise<void>;
-  onSealVariable: (variable: PlainVariableRecord) => Promise<void>;
-  onUpdateMetadata?: (
-    variable: VariableRecord,
-    patch: VariableMetadataPatch,
-  ) => Promise<void>;
+  onCreateVariable: (input: VariableAddInput) => void;
+  onSealVariable: (variable: PlainVariableRecord) => void;
+  onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
   allowSealOnCreate?: boolean;
   /** Whether the "Exported" toggle starts checked (true for export-first owners like Variable Groups). */

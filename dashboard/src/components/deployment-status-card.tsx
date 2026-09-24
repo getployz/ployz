@@ -48,9 +48,9 @@ function preparationPresentation({ deployment, preparation, hasBuild, failed, ac
   return { state: "pending", detail: "Waiting to prepare images", ready: false } as const;
 }
 
-export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs, onLogsChange, expanded, onExpandedChange, actions, children, serviceId }: {
+export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs, onLogsChange, onLogsIntent, expanded, onExpandedChange, actions, children, serviceId }: {
   deployment: EnvironmentDeploymentSummary; progress: DeploymentProgress | null;
-  logsPanel: ReactNode; showLogs: boolean; onLogsChange: (open: boolean) => void; expanded: boolean; onExpandedChange: (open: boolean) => void;
+  logsPanel: ReactNode; showLogs: boolean; onLogsChange: (open: boolean) => void; onLogsIntent?: () => void; expanded: boolean; onExpandedChange: (open: boolean) => void;
   actions: ReactNode; children?: ReactNode; serviceId?: string;
 }) {
   const id = useId();
@@ -90,7 +90,7 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
     <header className="flex flex-wrap items-center gap-3 rounded-lg px-3 py-4 sm:gap-5 sm:px-5">
       <span className={cn("rounded-md bg-muted/50 px-2.5 py-1.5 text-xs font-medium capitalize", accent)}>{badge}</span>
       <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{serviceId ? `${rows[0]?.serviceName ?? "Service"} · ` : ""}{deployment.message ?? "Deployment"}</p><p className="mt-1 text-xs text-muted-foreground">{deployment.projectSlug} / {deployment.environmentSlug} · {formatRelativeTime(deployment.createdAt)}{!serviceId ? ` · ${deployment.serviceCount} ${deployment.serviceCount === 1 ? "service" : "services"}` : ""}</p></div>
-      <Button variant="outline" size="sm" onClick={() => { onLogsChange(!showLogs); onExpandedChange(true); }} aria-expanded={showLogs} aria-controls={`${id}-logs`}>{showLogs ? "Hide logs" : "View logs"}</Button>{actions}
+      <Button variant="outline" size="sm" onPointerEnter={onLogsIntent} onFocus={onLogsIntent} onClick={() => { onLogsChange(!showLogs); onExpandedChange(true); }} aria-expanded={showLogs} aria-controls={`${id}-logs`}>{showLogs ? "Hide logs" : "View logs"}</Button>{actions}
     </header>
     <button type="button" className={cn("flex w-full items-center gap-3 rounded-md bg-muted/30 px-4 py-3 text-left text-sm focus-visible:outline-2 focus-visible:outline-ring sm:px-6", accent)} aria-expanded={expanded} aria-controls={`${id}-steps`} onClick={() => onExpandedChange(!expanded)}>
       {successful ? <CheckIcon className="size-4" /> : failed || unknown ? <TriangleAlertIcon className="size-4" /> : active && deployment.status !== "queued" ? <Spinner className="size-4" /> : null}

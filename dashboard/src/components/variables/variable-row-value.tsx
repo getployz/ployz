@@ -15,7 +15,6 @@ const MASK = "*******";
 export function VariableRowValue({
   editing,
   editValue,
-  isSaving,
   isSealed,
   plainValue,
   unresolvedReferences = [],
@@ -28,7 +27,6 @@ export function VariableRowValue({
 }: {
   editing: boolean;
   editValue: string;
-  isSaving: boolean;
   isSealed: boolean;
   plainValue: string;
   unresolvedReferences?: readonly string[];
@@ -57,7 +55,6 @@ export function VariableRowValue({
           }
         }}
         className="font-mono text-xs"
-        disabled={isSaving}
       />
     );
   }

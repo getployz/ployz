@@ -1,13 +1,12 @@
 import { getVolumeRemoveAttemptsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/collections/collections";
 import { VolumeRemoveDataLossDialog } from "#/components/data-loss/data-loss-confirm-dialog";
 import {
   AlertDialog,
@@ -62,16 +61,10 @@ export function VolumeDrawer({
   params: VolumeResourceRouteParams;
   state: VolumeDrawerState;
 }) {
-  const collectionScope = useCollectionScope();
   const navigate = useNavigate();
+  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
   const deleteVolume = useServerFn(deleteVolumeResourceServerFn);
   const updateVolume = useServerFn(updateVolumeResourceServerFn);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const document = useEnvironmentDocument(state.organizationSlug, state.environmentId);
-  function revision() {
-    if (!document) throw new Error("Environment is not loaded.");
-    return document.revision;
-  }
   const resourceId = state.resource.resource.id;
   const isRemoved = !state.resource.isAuthored;
   const mountedCount = state.attachments.filter(
@@ -83,36 +76,29 @@ export function VolumeDrawer({
     excludeNode: { type: "volume", id: resourceId },
   });
 
-  async function handleDelete() {
-    setIsDeleting(true);
-    try {
-      const result = await deleteVolume({
-        data: {
-          organizationSlug: state.organizationSlug,
-          environmentId: state.environmentId,
-          revision: revision(),
-          resourceId,
-        },
-      });
-      await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
-      await navigate({
-        to: ENVIRONMENT_INDEX_ROUTE_TO,
-        params: {
-          organizationSlug: params.organizationSlug,
-          projectSlug: params.projectSlug,
-          environmentSlug: params.environmentSlug,
-        },
-        search: (prev) => prev,
-      });
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The volume couldn’t be deleted. Try again.",
-      );
-    } finally {
-      setIsDeleting(false);
-    }
+  function handleDelete() {
+    const { environmentId, organizationSlug } = state;
+    // Deleting only stages the removal, so the drawer closes at once and a failed save rolls it back.
+    editDocument({
+      environmentId,
+      apply: (intent) => {
+        intent.volumes = intent.volumes.filter((volume) => volume.resourceId !== resourceId);
+        for (const service of intent.services) {
+          service.volumeAttachments = service.volumeAttachments.filter((attachment) => attachment.volumeResourceId !== resourceId);
+        }
+      },
+      save: (revision) => deleteVolume({ data: { organizationSlug, environmentId, revision, resourceId } }),
+      failureMessage: "The volume couldn’t be deleted. Try again.",
+    });
+    void navigate({
+      to: ENVIRONMENT_INDEX_ROUTE_TO,
+      params: {
+        organizationSlug: params.organizationSlug,
+        projectSlug: params.projectSlug,
+        environmentSlug: params.environmentSlug,
+      },
+      search: (prev) => prev,
+    });
   }
 
   return (
@@ -124,15 +110,17 @@ export function VolumeDrawer({
           editTitle="Edit volume name"
           editDescription="Rename this volume."
           placeholder="Volume name"
-          onRename={async (value) => {
-            const result = await updateVolume({ data: {
-              organizationSlug: state.organizationSlug,
-              environmentId: state.environmentId,
-              revision: revision(),
-              resourceId,
-              name: value,
-            } });
-            await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
+          onRename={(name) => {
+            const { environmentId, organizationSlug } = state;
+            editDocument({
+              environmentId,
+              apply: (intent) => {
+                const volume = intent.volumes.find((volume) => volume.resourceId === resourceId);
+                if (volume) volume.name = name;
+              },
+              save: (revision) => updateVolume({ data: { organizationSlug, environmentId, revision, resourceId, name } }),
+              failureMessage: "Could not rename this volume.",
+            });
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Named volume</p>
@@ -177,7 +165,6 @@ export function VolumeDrawer({
                       <Button
                         variant="destructive"
                         className="shrink-0"
-                        disabled={isDeleting}
                       >
                         <Trash2Icon data-icon="inline-start" />
                         Delete volume
@@ -198,9 +185,7 @@ export function VolumeDrawer({
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
                       <AlertDialogAction
-                        onClick={() => {
-                          void handleDelete();
-                        }}
+                        onClick={handleDelete}
                       >
                         Delete
                       </AlertDialogAction>

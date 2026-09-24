@@ -1,5 +1,4 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { toast } from "sonner";
 import { useServiceWriter } from "#/modules/services/services.collection";
 import { deleteService } from "#/modules/services/delete-service";
 import {
@@ -12,17 +11,13 @@ export function useDeleteService(serviceId: string) {
   const navigate = useNavigate();
   const collection = useServiceWriter(params.organizationSlug);
 
-  return async function removeService() {
-    try {
-      await deleteService(collection, serviceId);
-      await navigate({
-        to: ENVIRONMENT_INDEX_ROUTE_TO,
-        params,
-        replace: true,
-        search: (prev) => prev,
-      });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to delete service.");
-    }
+  return function removeService() {
+    deleteService(collection, serviceId);
+    void navigate({
+      to: ENVIRONMENT_INDEX_ROUTE_TO,
+      params,
+      replace: true,
+      search: (prev) => prev,
+    });
   };
 }

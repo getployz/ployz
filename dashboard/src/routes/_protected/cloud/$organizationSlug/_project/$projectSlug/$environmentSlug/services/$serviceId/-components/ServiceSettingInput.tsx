@@ -7,11 +7,10 @@ type DraftState = {
   source: string;
   value: string;
   error: string | null;
-  pending: boolean;
 };
 
 function freshDraft(value: string): DraftState {
-  return { source: value, value, error: null, pending: false };
+  return { source: value, value, error: null };
 }
 
 /**
@@ -66,7 +65,7 @@ export function ServiceSettingInput({
   const active = draft.source === value ? draft : freshDraft(value);
   const isDirty = active.value !== value;
 
-  async function confirm(next = active.value) {
+  function confirm(next = active.value) {
     const raw = next.trim();
     const nextDraft = { ...active, value: raw };
     const error = validate?.(raw) ?? null;
@@ -75,13 +74,9 @@ export function ServiceSettingInput({
       return;
     }
 
-    setDraft({ ...nextDraft, error: null, pending: true });
-    try {
-      await onCommit(raw).isPersisted.promise;
-      setDraft(freshDraft(raw));
-    } catch {
-      setDraft({ ...nextDraft, error: "Could not save", pending: false });
-    }
+    // Optimistic: a failed save rolls `value` back and toasts, which resets this draft.
+    onCommit(raw);
+    setDraft(freshDraft(raw));
   }
 
   const inputProps = {
@@ -95,7 +90,6 @@ export function ServiceSettingInput({
     suffix,
     isChanged,
     isDirty,
-    isPending: active.pending,
     error: active.error,
     placeholder,
     onFocus,
@@ -105,11 +99,9 @@ export function ServiceSettingInput({
         : undefined,
     value: active.value,
     onValueChange: (next: string) =>
-      setDraft({ source: value, value: next, error: null, pending: false }),
+      setDraft({ source: value, value: next, error: null }),
     onCancel: () => setDraft(freshDraft(value)),
-    onConfirm: () => {
-      void confirm();
-    },
+    onConfirm: () => confirm(),
   };
 
   if (suggestions) {
@@ -120,7 +112,7 @@ export function ServiceSettingInput({
         suggestionsLoading={suggestionsLoading}
         suggestionsMessage={suggestionsMessage}
         suggestionsNotice={suggestionsNotice}
-        onSuggestionSelect={(next) => { void confirm(next); }}
+        onSuggestionSelect={(next) => confirm(next)}
       />
     );
   }

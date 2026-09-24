@@ -17,8 +17,9 @@ export function ServiceWatchPathsField({ state }: { state: ServiceDrawerState })
   function addWatchPath() {
     const next = watchInput.trim();
     if (!next || service.policy.watchPaths.includes(next)) return;
-    const transaction = updateWatchPaths([...service.policy.watchPaths, next]);
-    void transaction.isPersisted.promise.then(() => setWatchInput(""), () => { /* The metadata mutation reports the failure. */ });
+    // Optimistic: the metadata editor rolls back and toasts if saving fails.
+    updateWatchPaths([...service.policy.watchPaths, next]);
+    setWatchInput("");
   }
   return (
       <Field>

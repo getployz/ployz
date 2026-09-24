@@ -81,7 +81,7 @@ export function PrivateEndpointField({ state }: { state: ServiceDrawerState }) {
                 const tx = collection.update(service.id, (draft) => {
                   draft.privateDns = raw;
                 });
-                void tx.isPersisted.promise.then(() => setEditing(false));
+                setEditing(false);
                 return tx;
               }}
             />

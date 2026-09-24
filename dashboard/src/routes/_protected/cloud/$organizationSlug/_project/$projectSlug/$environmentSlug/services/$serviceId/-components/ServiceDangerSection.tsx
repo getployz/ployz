@@ -26,7 +26,7 @@ export function ServiceDangerSection({
       <Button
         variant="destructive"
         className="shrink-0"
-        onClick={() => void deleteService()}
+        onClick={deleteService}
       >
         <Trash2Icon data-icon="inline-start" />
         Delete service

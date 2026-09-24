@@ -77,7 +77,7 @@ export function CustomDomainDialog({
   route?: ServiceRoute;
   defaultTargetPort: number | null;
   onClose: () => void;
-  onSubmit: (next: ServiceRoute) => Promise<void>;
+  onSubmit: (next: ServiceRoute) => void;
 }) {
   const [saveFailure, setSaveFailure] = useState<string | null>(null);
 
@@ -87,19 +87,18 @@ export function CustomDomainDialog({
       hostname: route?.hostname ?? "",
       port: route?.targetPort == null ? "" : String(route.targetPort),
     },
-    onSubmit: async ({ schemaOutputs }) => {
+    onSubmit: ({ schemaOutputs }) => {
       setSaveFailure(null);
+      let next: ServiceRoute;
       try {
-        await onSubmit(
-          decodeStrict(serviceRouteSchema, {
-            id: route?.id ?? crypto.randomUUID(),
-            ...schemaOutputs[0],
-          })
-        );
-        onClose();
+        next = decodeStrict(serviceRouteSchema, { id: route?.id ?? crypto.randomUUID(), ...schemaOutputs[0] });
       } catch (error) {
         setSaveFailure(errorMessage(error));
+        return;
       }
+      // Optimistic: saving rolls back and toasts on failure.
+      onSubmit(next);
+      onClose();
     },
   });
 

@@ -1,6 +1,6 @@
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
-import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { useState } from "react";
@@ -32,7 +32,6 @@ import {
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import { getEnvironmentsCollection } from "#/collections/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";
@@ -58,7 +57,7 @@ export function ServiceVariablesTab({
 }: {
   state: ServiceDrawerState;
 }) {
-  const collectionScope = useCollectionScope();
+  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
   const { hostedDnsHostname } = useRuntimeStatus();
   const ployzManagedVariables = getManagedServiceExports(state.service, hostedDnsHostname);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
@@ -146,8 +145,9 @@ export function ServiceVariablesTab({
     serviceId: state.service.id,
   });
 
-  async function handleCreateVariable(input: VariableAddInput) {
-    await insertPlainServiceVariable(variableWriter, {
+  function handleCreateVariable(input: VariableAddInput) {
+    // Optimistic: the writer rolls back and toasts if saving fails.
+    insertPlainServiceVariable(variableWriter, {
       serviceId: state.service.id,
       key: input.key,
       value: input.value,
@@ -155,22 +155,19 @@ export function ServiceVariablesTab({
     });
   }
 
-  async function handleUpdateMetadata(
-    variable: VariableRecord,
-    patch: VariableMetadataPatch,
-  ) {
-    if (!document) throw new Error("Environment is not loaded.");
-    const result = await updateExport({
-      data: {
-        organizationSlug: state.organizationSlug,
-        revision: document.revision,
-        environmentId: state.service.environmentId,
-        serviceId: state.service.id,
-        variableId: variable.id,
-        exported: patch.exported ?? variable.exported,
+  function handleUpdateMetadata(variable: VariableRecord, patch: VariableMetadataPatch) {
+    const { organizationSlug } = state;
+    const { environmentId, id: serviceId } = state.service;
+    const exported = patch.exported ?? variable.exported;
+    editDocument({
+      environmentId,
+      apply: (intent) => {
+        const entry = intent.services.find((node) => node.id === serviceId)?.variables.find((entry) => entry.id === variable.id);
+        if (entry) entry.exported = exported;
       },
+      save: (revision) => updateExport({ data: { organizationSlug, revision, environmentId, serviceId, variableId: variable.id, exported } }),
+      failureMessage: "Could not update this variable.",
     });
-    await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   return (

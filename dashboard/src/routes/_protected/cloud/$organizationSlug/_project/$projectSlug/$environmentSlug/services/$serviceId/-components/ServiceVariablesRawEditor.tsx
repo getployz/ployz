@@ -1,6 +1,5 @@
 import { useReducer, useRef } from "react";
 import { Result } from "effect";
-import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -39,7 +38,6 @@ type RawEditorState = {
   jsonText: string;
   parseError: string | null;
   submitError: string | null;
-  isSubmitting: boolean;
 };
 
 type RawEditorAction =
@@ -52,7 +50,6 @@ const initialRawEditorState: RawEditorState = {
   jsonText: "",
   parseError: null,
   submitError: null,
-  isSubmitting: false,
 };
 
 function rawEditorReducer(
@@ -179,7 +176,7 @@ export function ServiceVariablesRawEditor({
     }
   }
 
-  async function handleSubmit() {
+  function handleSubmit() {
     dispatchEditor({
       type: "patch",
       patch: { parseError: null, submitError: null },
@@ -221,20 +218,9 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    dispatchEditor({ type: "patch", patch: { isSubmitting: true } });
-    const tx = applyRawVariables(diff);
-    try {
-      await tx.isPersisted.promise;
-      onOpenChange(false);
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The variables couldn’t be updated. Try again.",
-      );
-    } finally {
-      dispatchEditor({ type: "patch", patch: { isSubmitting: false } });
-    }
+    // Optimistic: the action rolls back and toasts if saving fails.
+    applyRawVariables(diff);
+    onOpenChange(false);
   }
 
   function handleOpenChange(nextOpen: boolean) {
@@ -299,9 +285,8 @@ export function ServiceVariablesRawEditor({
 
         <ServiceVariablesRawEditorFooter
           envText={editor.envText}
-          isSubmitting={editor.isSubmitting}
           onCancel={() => handleOpenChange(false)}
-          onSubmit={() => void handleSubmit()}
+          onSubmit={handleSubmit}
         />
       </DialogContent>
     </Dialog>

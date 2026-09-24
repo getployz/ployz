@@ -87,7 +87,7 @@ export function GitBranchSettings({
                   type="button"
                   variant="outline"
                   onClick={() => {
-                    const transaction = collection.update(service.id, (draft) => {
+                    collection.update(service.id, (draft) => {
                       if (draft.source.type !== "git") {
                         return;
                       }
@@ -107,7 +107,6 @@ export function GitBranchSettings({
                       });
                     });
 
-                    void transaction.isPersisted.promise;
                   }}
                 >
                   Disconnect
@@ -132,12 +131,11 @@ export function GitBranchSettings({
                   variant="outline"
                   disabled={!connectedAccess}
                   onClick={() => {
-                    const transaction = state.editMetadata({
+                    state.editMetadata({
                       environmentId: service.environmentId, serviceId: service.id,
                       edit: { kind: "policy", policy: { autoDeploy: !autoDeployEnabled } },
                     });
 
-                    void transaction.isPersisted.promise;
                   }}
                 >
                   {autoDeployEnabled ? "Disable" : "Enable"}
@@ -172,12 +170,11 @@ export function GitBranchSettings({
                 disabled={!connectedAccess}
                 checked={connectedAccess && service.policy.waitForCi}
                 onCheckedChange={(nextChecked) => {
-                  const transaction = state.editMetadata({
+                  state.editMetadata({
                     environmentId: service.environmentId, serviceId: service.id,
                     edit: { kind: "policy", policy: { waitForCi: nextChecked } },
                   });
 
-                  void transaction.isPersisted.promise;
                 }}
               />
             </ItemActions>
@@ -196,8 +193,8 @@ export function GitBranchSettings({
         repositoryFullName={source.repository}
         repositoryId={source.repositoryId}
         installationId={source.access.type === "public" ? null : source.access.installationId}
-        onSelectBranch={async (branchName) => {
-          const transaction = collection.update(service.id, (draft) => {
+        onSelectBranch={(branchName) => {
+          collection.update(service.id, (draft) => {
             if (draft.source.type !== "git") {
               return;
             }
@@ -213,8 +210,6 @@ export function GitBranchSettings({
               },
             });
           });
-
-          await transaction.isPersisted.promise;
         }}
       />
     </>

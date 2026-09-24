@@ -16,7 +16,6 @@ type CommandFieldDraftState = {
   sourceValue: string | null;
   draft: string | null;
   error: string | null;
-  isPending: boolean;
 };
 
 function createCommandFieldDraftState(
@@ -26,7 +25,6 @@ function createCommandFieldDraftState(
     sourceValue,
     draft: sourceValue,
     error: null,
-    isPending: false,
   };
 }
 
@@ -64,7 +62,7 @@ export function ServiceCommandField({
     draftState.sourceValue === value
       ? draftState
       : createCommandFieldDraftState(value);
-  const { draft, error, isPending } = activeDraftState;
+  const { draft, error } = activeDraftState;
   const updateDraftState = (
     updater: (state: CommandFieldDraftState) => CommandFieldDraftState,
   ) => {
@@ -81,7 +79,7 @@ export function ServiceCommandField({
   const draftValue = draft ?? "";
   const isDirty = draft != null && (value == null ? true : draftValue !== value);
 
-  async function handleConfirm() {
+  function handleConfirm() {
     if (draft == null) {
       return;
     }
@@ -107,28 +105,9 @@ export function ServiceCommandField({
       }
     }
 
-    updateDraftState((state) => ({
-      ...state,
-      error: null,
-      isPending: true,
-    }));
-
-    try {
-      const transaction = onCommit(nextValue);
-      await transaction.isPersisted.promise;
-      updateDraftState((state) => ({
-        ...state,
-        draft: nextValue,
-        error: null,
-        isPending: false,
-      }));
-    } catch {
-      updateDraftState((state) => ({
-        ...state,
-        error: "Could not save command",
-        isPending: false,
-      }));
-    }
+    // Optimistic: a failed save rolls `value` back and toasts, which resets this draft.
+    onCommit(nextValue);
+    updateDraftState((state) => ({ ...state, draft: nextValue, error: null }));
   }
 
   function handleCancel() {
@@ -147,7 +126,6 @@ export function ServiceCommandField({
               sourceValue: value,
               draft: "",
               error: null,
-              isPending: false,
             });
           }}
         >
@@ -166,11 +144,9 @@ export function ServiceCommandField({
         <ConfirmableInput
           aria-label={label}
           aria-invalid={error ? true : undefined}
-          disabled={isPending}
           error={error}
           isChanged={isChanged}
           isDirty={isDirty}
-          isPending={isPending}
           placeholder={placeholder}
           title={
             isChanged && baselineValue != null
@@ -187,7 +163,7 @@ export function ServiceCommandField({
           }}
           onCancel={handleCancel}
           onConfirm={() => {
-            void handleConfirm();
+            handleConfirm();
           }}
         />
       ) : (
@@ -200,7 +176,6 @@ export function ServiceCommandField({
               sourceValue: value,
               draft: "",
               error: null,
-              isPending: false,
             });
           }}
         >

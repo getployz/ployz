@@ -1,6 +1,4 @@
-import { getEnvironmentsCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useServerFn } from "@tanstack/react-start";
 import {
   Tabs,
@@ -28,13 +26,8 @@ export function VariableGroupDrawer({
   params: VariableGroupResourceRouteParams;
   state: VariableGroupDrawerState;
 }) {
-  const collectionScope = useCollectionScope();
+  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
   const updateVariableGroup = useServerFn(updateVariableGroupResourceServerFn);
-  const document = useEnvironmentDocument(state.organizationSlug, state.resource.resource.environmentId);
-  function revision() {
-    if (!document) throw new Error("Environment is not loaded.");
-    return document.revision;
-  }
   const resourceId = state.resource.resource.id;
   const nameSchema = createEnvironmentNodeNameSchema({
     schema: resourceNameSchema,
@@ -54,15 +47,19 @@ export function VariableGroupDrawer({
           editTitle="Edit Variable Group name"
           editDescription="Rename this Variable Group."
           placeholder="Variable Group name"
-          onRename={async (value) => {
-            const result = await updateVariableGroup({ data: {
-              organizationSlug: state.organizationSlug,
-              environmentId: state.resource.resource.environmentId,
-              revision: revision(),
-              resourceId,
-              name: value,
-            } });
-            await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
+          onRename={(name) => {
+            const environmentId = state.resource.resource.environmentId;
+            editDocument({
+              environmentId,
+              apply: (intent) => {
+                const group = intent.variableGroups.find((group) => group.resourceId === resourceId);
+                if (group) group.name = name;
+              },
+              save: (revision) => updateVariableGroup({ data: {
+                organizationSlug: state.organizationSlug, environmentId, revision, resourceId, name,
+              } }),
+              failureMessage: "Could not rename this Variable Group.",
+            });
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Variable Group</p>

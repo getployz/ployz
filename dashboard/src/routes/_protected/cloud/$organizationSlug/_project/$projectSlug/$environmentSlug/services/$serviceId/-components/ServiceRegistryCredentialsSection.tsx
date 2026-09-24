@@ -135,18 +135,14 @@ export function ServiceRegistryCredentialsSection({
   const usesSingleFieldUpdater =
     providerHelp.usernameLabel == null || fixedUsername != null;
 
-  async function handleSubmit(value: {
-    username: string | null;
-    secret: string;
-  }) {
-    const transaction = setCredentialAction(value);
-    await transaction.isPersisted.promise;
+  // Optimistic: the document editor rolls back and toasts if saving fails.
+  function handleSubmit(value: { username: string | null; secret: string }) {
+    setCredentialAction(value);
     setMode(null);
   }
 
-  async function handleDelete() {
-    const transaction = clearCredentialAction();
-    await transaction.isPersisted.promise;
+  function handleDelete() {
+    clearCredentialAction();
     setMode(null);
   }
 
@@ -177,7 +173,7 @@ export function ServiceRegistryCredentialsSection({
               }
               onEdit={() => setMode("edit")}
               onDelete={() => {
-                void handleDelete();
+                handleDelete();
               }}
             />
           ) : (
@@ -207,9 +203,7 @@ export function ServiceRegistryCredentialsSection({
                     username: fixedUsername,
                     secret: secret.trim(),
                   });
-                  void transaction.isPersisted.promise.then(() => {
-                    setMode(null);
-                  }, () => undefined);
+                  setMode(null);
                   return transaction;
                 }}
                 onClose={() => setMode(null)}

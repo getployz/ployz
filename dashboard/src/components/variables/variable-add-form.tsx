@@ -6,7 +6,6 @@ import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
-import { Spinner } from "#/components/ui/spinner";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
 import { getSealedVariableCollisionMessage } from "#/modules/environment-design/variable-raw-editor";
@@ -24,7 +23,6 @@ type VariableAddFormState = {
   value: string;
   sealed: boolean;
   exported: boolean;
-  isSubmitting: boolean;
   overwriteCandidate: {
     id: string;
     value: string;
@@ -36,8 +34,6 @@ type VariableAddFormAction =
   | { type: "valueChanged"; value: string }
   | { type: "sealedChanged"; checked: boolean }
   | { type: "exportedChanged"; checked: boolean }
-  | { type: "submitStarted" }
-  | { type: "submitFailed" }
   | { type: "overwriteRequested"; id: string; value: string }
   | { type: "overwriteCleared" }
   | { type: "reset"; defaults: VariableAddFormDefaults };
@@ -51,7 +47,6 @@ function createVariableAddFormState({
     value: "",
     sealed: allowSealOnCreate,
     exported: defaultExported,
-    isSubmitting: false,
     overwriteCandidate: null,
   };
 }
@@ -69,10 +64,6 @@ function variableAddFormReducer(
       return { ...state, sealed: action.checked };
     case "exportedChanged":
       return { ...state, exported: action.checked };
-    case "submitStarted":
-      return { ...state, isSubmitting: true };
-    case "submitFailed":
-      return { ...state, isSubmitting: false };
     case "overwriteRequested":
       return {
         ...state,
@@ -97,7 +88,7 @@ export function VariableAddForm({
 }: {
   variables: VariableRecord[];
   collection: VariableWriter;
-  onCreateVariable: (input: VariableAddInput) => Promise<void>;
+  onCreateVariable: (input: VariableAddInput) => void;
   onCancel: () => void;
   allowSealOnCreate: boolean;
   defaultExported: boolean;
@@ -116,7 +107,7 @@ export function VariableAddForm({
     onCancel();
   }
 
-  async function handleAdd() {
+  function handleAdd() {
     const key = state.key.trim().toUpperCase();
     if (!key) return;
 
@@ -134,42 +125,25 @@ export function VariableAddForm({
       return;
     }
 
-    dispatch({ type: "submitStarted" });
-    try {
-      await onCreateVariable({
-        key,
-        value: state.value,
-        sealed: state.sealed,
-        exported: state.exported,
-      });
-      closeForm();
-    } catch (error) {
-      dispatch({ type: "submitFailed" });
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The variable couldn’t be added. Check the name and try again.",
-      );
-    }
+    // Optimistic: the writer rolls back and toasts if saving fails.
+    onCreateVariable({
+      key,
+      value: state.value,
+      sealed: state.sealed,
+      exported: state.exported,
+    });
+    closeForm();
   }
 
-  async function handleConfirmOverwrite() {
+  function handleConfirmOverwrite() {
     if (!state.overwriteCandidate) return;
     const { id, value } = state.overwriteCandidate;
-    try {
-      const tx = collection.update(id, (draft) => {
-        draft.value = { type: "plain", value };
-        draft.updatedAt = new Date();
-      });
-      await tx.isPersisted.promise;
-      closeForm();
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The variable couldn’t be overwritten. Try again.",
-      );
-    }
+    // Optimistic: the writer rolls back and toasts if saving fails.
+    collection.update(id, (draft) => {
+      draft.value = { type: "plain", value };
+      draft.updatedAt = new Date();
+    });
+    closeForm();
   }
 
   return (
@@ -177,7 +151,7 @@ export function VariableAddForm({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          void handleAdd();
+          handleAdd();
         }}
       >
       <FieldGroup>
@@ -263,19 +237,14 @@ export function VariableAddForm({
         <div className="flex items-center gap-2">
           <Button
             type="submit"
-            disabled={!state.key.trim() || state.isSubmitting}
+            disabled={!state.key.trim()}
           >
-            {state.isSubmitting ? (
-              <Spinner data-icon="inline-start" />
-            ) : (
-              <CheckIcon data-icon="inline-start" />
-            )}
+            <CheckIcon data-icon="inline-start" />
             Add
           </Button>
           <Button
             type="button"
             variant="outline"
-            disabled={state.isSubmitting}
             onClick={closeForm}
           >
             Cancel

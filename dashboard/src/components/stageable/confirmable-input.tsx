@@ -2,7 +2,6 @@ import * as React from "react"
 import { CheckIcon, XIcon } from "lucide-react"
 import { cn } from "#/lib/utils"
 import { FieldError } from "#/components/ui/field"
-import { Spinner } from "#/components/ui/spinner"
 import {
   InputGroup,
   InputGroupAddon,
@@ -21,7 +20,6 @@ export type ConfirmableInputProps = Omit<
   onConfirm?: () => void
   onCancel?: () => void
   isDirty?: boolean
-  isPending?: boolean
   isChanged?: boolean
   suffix?: React.ReactNode
   error?: React.ReactNode
@@ -38,7 +36,6 @@ function ConfirmableInput({
   onConfirm,
   onCancel,
   isDirty = false,
-  isPending = false,
   isChanged = false,
   suffix,
   error,
@@ -126,11 +123,11 @@ function ConfirmableInput({
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || endAddon || (isDirty && !isPending) ? (
+        {suffix || endAddon || isDirty ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
             {endAddon}
-            {isDirty && !isPending ? (
+            {isDirty ? (
               <>
                 <InputGroupButton
                   size="icon-xs"
@@ -150,11 +147,6 @@ function ConfirmableInput({
                 </InputGroupButton>
               </>
             ) : null}
-          </InputGroupAddon>
-        ) : null}
-        {isPending ? (
-          <InputGroupAddon align="inline-end">
-            <Spinner />
           </InputGroupAddon>
         ) : null}
       </InputGroup>

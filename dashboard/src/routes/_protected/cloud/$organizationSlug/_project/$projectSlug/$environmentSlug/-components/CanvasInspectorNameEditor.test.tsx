@@ -7,7 +7,7 @@ import { CanvasInspectorNameEditor } from "./CanvasInspectorNameEditor";
 afterEach(cleanup);
 
 it("submits the rename form once and lets the dialog handle Escape without saving", async () => {
-  const rename = vi.fn().mockResolvedValue(undefined);
+  const rename = vi.fn();
   render(<CanvasInspectorNameEditor value="api" schema={Schema.String} onRename={rename}
     editTitle="Rename service" editDescription="Choose a name" placeholder="Name" />);
   fireEvent.click(screen.getByRole("button", { name: "api" }));

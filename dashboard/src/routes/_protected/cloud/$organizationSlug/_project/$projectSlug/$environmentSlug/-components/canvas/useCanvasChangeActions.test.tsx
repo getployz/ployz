@@ -14,6 +14,7 @@ import * as collections from "#/collections/collections";
 import * as documents from "#/modules/environment-design/environment-document.collection";
 import * as runtime from "#/modules/runtime/use-runtime-lens";
 import * as preflight from "#/modules/runtime/deploy-target-preflight";
+import * as restore from "#/modules/environment-design/working-document-restore.functions";
 import { asTestDouble } from "#/lib/test-double";
 
 const mocks = {
@@ -22,13 +23,20 @@ const mocks = {
   reconcile: vi.spyOn(deploymentCollections, "reconcileDeploymentCollections").mockResolvedValue(undefined),
   toast: vi.spyOn(toast, "error").mockReturnValue("toast"), open: vi.fn(), clearMessage: vi.fn(),
 };
-vi.spyOn(scopes, "useCollectionScope").mockReturnValue(asTestDouble<ReturnType<typeof scopes.useCollectionScope>>()({}));
-vi.spyOn(collections, "getEnvironmentsCollection").mockReturnValue(asTestDouble<ReturnType<typeof collections.getEnvironmentsCollection>>()({}));
-vi.spyOn(documents, "useEnvironmentDocument").mockImplementation(() => asTestDouble<NonNullable<ReturnType<typeof documents.useEnvironmentDocument>>>()({
+// The document editor caches per QueryClient, so the scope needs a real one.
+vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient: new QueryClient(), sessionId: "session", userId: "user" });
+const writeCommitted = vi.fn(async () => {});
+vi.spyOn(collections, "getEnvironmentsCollection").mockReturnValue(asTestDouble<ReturnType<typeof collections.getEnvironmentsCollection>>()({
+  get: () => ({ revision: "current-revision" }), writeCommitted,
+}));
+const discard = vi.spyOn(restore, "discardEnvironmentChangesServerFn");
+const reviewedDocument = {
   id: "env", revision: "reviewed-revision", compiled: compileSavedEnvironmentIntent({ environmentId: "env", intent: {
     version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [],
   } }),
-}));
+};
+vi.spyOn(documents, "getEnvironmentDocumentsCollection").mockReturnValue(
+  asTestDouble<ReturnType<typeof documents.getEnvironmentDocumentsCollection>>()({ get: () => reviewedDocument }));
 vi.spyOn(runtime, "useRuntimeLens").mockReturnValue(asTestDouble<ReturnType<typeof runtime.useRuntimeLens>>()({ status: "ready", machines: [{}], isLoading: false }));
 vi.spyOn(preflight, "getDeployTargetPreflight").mockReturnValue({ ok: true });
 
@@ -96,6 +104,21 @@ it.each([false, true])("reconciles a committed dispatch failure and reports it w
     expect(mocks.toast).toHaveBeenCalledWith("Changes saved, but deployment could not start. Review the failed deployment before retrying.");
     expect(mocks.clearMessage).toHaveBeenCalledWith("");
     expect(mocks.submit).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    queryClient.clear();
+  }
+});
+
+it("discards through the document save queue against the current revision", async () => {
+  discard.mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof restore.discardEnvironmentChangesServerFn>>>()({ data: { id: "env", revision: "discarded-revision" } }));
+  const { result, unmount, queryClient } = renderActions([]);
+  try {
+    let discarded = false;
+    await act(async () => { discarded = await result.current.discardAllChanges(); });
+    expect(discarded).toBe(true);
+    expect(discard).toHaveBeenCalledWith({ data: expect.objectContaining({ environmentId: "env", revision: "current-revision", command: { kind: "all" } }) });
+    expect(writeCommitted).toHaveBeenCalledWith({ id: "env", revision: "discarded-revision" });
   } finally {
     unmount();
     queryClient.clear();

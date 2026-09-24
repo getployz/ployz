@@ -1,7 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
-import type { SavedVariableIntent } from "./saved-intent";
-import { createOptimisticAction } from "@tanstack/react-db";
+import { editEnvironmentDocumentAfter, useEnvironmentDocumentEditor } from "./environment-document-edit";
 import { useServerFn } from "@tanstack/react-start";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import {
@@ -10,6 +9,7 @@ import {
 } from "#/modules/environment-design/variable-functions";
 import {
   buildPlainServiceVariableRecord,
+  sealVariableIntent,
 } from "#/modules/environment-design/variable-collections";
 import type {
   UpdateServiceVariableInput,
@@ -66,23 +66,21 @@ export function useSealServiceVariableAction({
   environmentId,
   serviceId,
 }: SealServiceVariableActionInput) {
-  const collectionScope = useCollectionScope();
-  const environments = getEnvironmentsCollection(organizationSlug, collectionScope);
+  const edit = useEnvironmentDocumentEditor(organizationSlug);
   const updateVariable = useServerFn(updateServiceVariableServerFn);
 
-  return async (variable: PlainVariableRecord) => {
-    const document = environments.get(environmentId);
-    if (!document) throw new Error("Environment is not loaded.");
-    const result = await updateVariable({
-      data: buildSealServiceVariableUpdateInput({
-        organizationSlug,
-        environmentId,
-        serviceId,
-        variable, revision: document.revision,
-      }),
-    });
-    await environments.writeCommitted(result.data);
-  };
+  // Optimistic: shows the variable as sealed; rolls back and toasts if sealing fails.
+  return (variable: PlainVariableRecord) => { edit({
+    environmentId,
+    apply: (intent) => {
+      const entry = intent.services.find((node) => node.id === serviceId)?.variables.find((entry) => entry.id === variable.id);
+      if (entry) sealVariableIntent(entry);
+    },
+    save: (revision) => updateVariable({
+      data: buildSealServiceVariableUpdateInput({ organizationSlug, environmentId, serviceId, variable, revision }),
+    }),
+    failureMessage: "Could not seal this variable.",
+  }); };
 }
 
 export function useApplyRawVariablesAction({
@@ -90,43 +88,31 @@ export function useApplyRawVariablesAction({
   environmentId,
   serviceId,
 }: UseApplyRawVariablesActionInput) {
-  const collectionScope = useCollectionScope();
-  const environments = getEnvironmentsCollection(organizationSlug, collectionScope);
+  const scope = useCollectionScope();
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
   const bulkUpdate = useServerFn(bulkUpdateServiceVariablesServerFn);
 
-  const persist = createOptimisticAction<{ diff: RawEditorDiff; revision: string; variables: SavedVariableIntent[] }>({
-    onMutate: ({ variables }) => {
-      environments.update(environmentId, (draft) => {
-        const node = draft.intent.services.find((node) => node.id === serviceId);
-        if (!node) throw new Error("Service is not loaded.");
-        node.variables = variables;
-      });
-    },
-    mutationFn: async ({ diff, revision }) => {
-      const result = await bulkUpdate({
-        data: {
-          organizationSlug, revision,
-          environmentId,
-          serviceId,
-          creates: diff.creates.map((create) => ({
-            id: create.id,
-            key: create.key,
-            description: null,
-            exported: false,
-            value: { type: "plain", value: create.value },
-          })),
-          updates: diff.updates.map((update) => ({
-            variableId: update.variableId,
-            key: update.key,
-            value: { type: "plain", value: update.value },
-          })),
-          deletes: diff.deletes,
-        },
-      });
-      await environments.writeCommitted(result.data);
+  const save = (diff: RawEditorDiff, revision: string) => bulkUpdate({
+    data: {
+      organizationSlug, revision,
+      environmentId,
+      serviceId,
+      creates: diff.creates.map((create) => ({
+        id: create.id,
+        key: create.key,
+        description: null,
+        exported: false,
+        value: { type: "plain", value: create.value },
+      })),
+      updates: diff.updates.map((update) => ({
+        variableId: update.variableId,
+        key: update.key,
+        value: { type: "plain", value: update.value },
+      })),
+      deletes: diff.deletes,
     },
   });
-  return (diff: RawEditorDiff) => ({ isPersisted: { promise: (async () => {
+  return (diff: RawEditorDiff) => editEnvironmentDocumentAfter(organizationSlug, scope, async () => {
     const document = environments.get(environmentId);
     const node = document?.intent.services.find((node) => node.id === serviceId);
     if (!document || !node) throw new Error("Service is not loaded.");
@@ -137,6 +123,14 @@ export function useApplyRawVariablesAction({
         key: update.key, value: { type: "plain", value: update.value } }, document.intent) : variable;
     }));
     for (const create of diff.creates) variables.push(await plainVariableIntent(buildPlainServiceVariableRecord({ ...create, serviceId }), document.intent));
-    await persist({ diff, revision: document.revision, variables }).isPersisted.promise;
-  })() } });
+    return {
+      environmentId,
+      apply: (intent) => {
+        const target = intent.services.find((node) => node.id === serviceId);
+        if (target) target.variables = variables;
+      },
+      save: (revision) => save(diff, revision),
+      failureMessage: "Could not apply these variables.",
+    };
+  }, "Could not apply these variables.");
 }

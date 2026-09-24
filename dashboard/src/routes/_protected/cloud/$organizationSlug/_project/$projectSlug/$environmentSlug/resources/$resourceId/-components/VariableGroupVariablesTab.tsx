@@ -1,14 +1,12 @@
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/collections/collections";
+import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import {
   VariablesPanel,
   type VariableAddInput,
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import { insertPlainVariableGroupVariable } from "#/modules/environment-design/variable-collections";
+import { insertPlainVariableGroupVariable, sealVariableIntent } from "#/modules/environment-design/variable-collections";
 import {
   createVariableGroupVariableServerFn,
   updateVariableGroupVariableMetadataServerFn,
@@ -28,7 +26,7 @@ export function VariableGroupVariablesTab({
 }: {
   state: VariableGroupDrawerState;
 }) {
-  const collectionScope = useCollectionScope();
+  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
   const createVariable = useServerFn(createVariableGroupVariableServerFn);
   const updateVariable = useServerFn(updateVariableGroupVariableServerFn);
   const updateVariableMetadata = useServerFn(
@@ -39,12 +37,7 @@ export function VariableGroupVariablesTab({
   const { environmentId } = state.resource.resource;
   const variableGroupId = state.resource.variableGroup.id;
 
-  const document = useEnvironmentDocument(organizationSlug, environmentId);
   const variables = [...state.resource.variables].sort((a, b) => a.key.localeCompare(b.key));
-  function revision() {
-    if (!document) throw new Error("Environment is not loaded.");
-    return document.revision;
-  }
 
   const valueTargets = useReferenceTargets({
     organizationSlug,
@@ -52,25 +45,25 @@ export function VariableGroupVariablesTab({
     owner: { kind: "variable_group", variableGroupId },
   });
 
-  async function handleCreateVariable(input: VariableAddInput) {
+  // Writes are optimistic: the document editor rolls back and toasts if saving fails.
+  function handleCreateVariable(input: VariableAddInput) {
     if (input.sealed) {
-      // Sealed values can't round-trip through the optimistic collection, so
-      // the create goes through the server function directly.
-      const result = await createVariable({
-        data: {
-          organizationSlug,
-          revision: revision(),
-          environmentId,
-          variableGroupId,
-          key: input.key,
-          description: null,
-          exported: input.exported,
-          value: { type: "sealed", value: input.value },
+      const id = crypto.randomUUID();
+      editDocument({
+        environmentId,
+        apply: (intent) => {
+          intent.variableGroups.find((group) => group.variableGroupId === variableGroupId)?.variables
+            .push({ id, key: input.key, description: null, exported: input.exported, valueFingerprint: "pending", value: { kind: "secret", encryptedValue: null } });
         },
+        save: (revision) => createVariable({ data: {
+          organizationSlug, revision, environmentId, variableGroupId, id,
+          key: input.key, description: null, exported: input.exported, value: { type: "sealed", value: input.value },
+        } }),
+        failureMessage: "Could not add this variable.",
       });
-      await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
     } else {
-      await insertPlainVariableGroupVariable(variableWriter, {
+      // Optimistic: the writer rolls back and toasts if saving fails.
+      insertPlainVariableGroupVariable(variableWriter, {
         variableGroupId,
         key: input.key,
         value: input.value,
@@ -79,39 +72,35 @@ export function VariableGroupVariablesTab({
     }
   }
 
-  async function handleSealVariable(variable: PlainVariableRecord) {
-    const result = await updateVariable({
-      data: {
-        organizationSlug,
-        revision: revision(),
-        environmentId,
-        variableGroupId,
-        variableId: variable.id,
-        key: variable.key,
-        description: variable.description,
-        exported: variable.exported,
-        value: { type: "sealed", value: variable.value.value },
+  function handleSealVariable(variable: PlainVariableRecord) {
+    editDocument({
+      environmentId,
+      apply: (intent) => {
+        const entry = intent.variableGroups.find((group) => group.variableGroupId === variableGroupId)?.variables.find((entry) => entry.id === variable.id);
+        if (entry) sealVariableIntent(entry);
       },
+      save: (revision) => updateVariable({ data: {
+        organizationSlug, revision, environmentId, variableGroupId, variableId: variable.id,
+        key: variable.key, description: variable.description, exported: variable.exported,
+        value: { type: "sealed", value: variable.value.value },
+      } }),
+      failureMessage: "Could not seal this variable.",
     });
-    await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
-  async function handleUpdateMetadata(
-    variable: VariableRecord,
-    patch: VariableMetadataPatch,
-  ) {
-    const result = await updateVariableMetadata({
-      data: {
-        organizationSlug,
-        revision: revision(),
-        environmentId,
-        variableGroupId,
-        variableId: variable.id,
-        description: variable.description,
-        exported: patch.exported ?? variable.exported,
+  function handleUpdateMetadata(variable: VariableRecord, patch: VariableMetadataPatch) {
+    const exported = patch.exported ?? variable.exported;
+    editDocument({
+      environmentId,
+      apply: (intent) => {
+        const entry = intent.variableGroups.find((group) => group.variableGroupId === variableGroupId)?.variables.find((entry) => entry.id === variable.id);
+        if (entry) entry.exported = exported;
       },
+      save: (revision) => updateVariableMetadata({ data: {
+        organizationSlug, revision, environmentId, variableGroupId, variableId: variable.id, description: variable.description, exported,
+      } }),
+      failureMessage: "Could not update this variable.",
     });
-    await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   return (

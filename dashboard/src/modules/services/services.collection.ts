@@ -5,7 +5,6 @@ import { variableDocumentRecord } from "#/modules/environment-design/variable-do
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { serviceDocumentRecord } from "#/modules/environment-design/service-document";
 import {
-  createOptimisticAction,
   collectionOptions, liveQueryCollectionOptions,
   eq,
   toArray,
@@ -13,10 +12,8 @@ import {
   type GetResult,
   type InitialQueryBuilder,
 } from "@tanstack/react-db";
-import { toast } from "sonner";
 import {
   getCanvasPositionsCollection,
-  getEnvironmentsCollection,
   getRawServicesCollection,
   getRawEnvironmentResourcesCollection,
   getResourceLineagesCollection,
@@ -28,6 +25,7 @@ import {
   createEnvironmentResourcesCollection,
   createVolumeResourcesCollection,
 } from "#/modules/environment-design/resource.collection";
+import { editEnvironmentDocument } from "#/modules/environment-design/environment-document-edit";
 import { updateServiceServerFn } from "#/modules/environment-design/service-functions";
 import {
   type ServiceDeploymentFieldSelection,
@@ -84,40 +82,10 @@ function createServiceWriter(
   scope: CollectionScope,
   services: ReturnType<typeof createServicesCollection>,
 ): ServiceWriter {
-  const environments = getEnvironmentsCollection(organizationSlug, scope);
-  type Edit = { serviceId: string; environmentId: string; revision: string;
-    settings: ServiceDeploymentFieldSelection };
-  const persist = createOptimisticAction<Edit>({
-    onMutate: ({ environmentId, serviceId, settings }) => {
-      environments.update(environmentId, (draft) => {
-        if (settings.deletedAt) {
-          draft.intent.services = draft.intent.services.filter((node) => node.id !== serviceId);
-        } else {
-          const node = draft.intent.services.find((node) => node.id === serviceId);
-          if (!node) throw new Error("Service is not loaded.");
-          const { deletedAt: _deletedAt, ...config } = settings;
-          Object.assign(node.config, config);
-        }
-      });
-    },
-    mutationFn: async ({ serviceId, environmentId, revision, settings }) => {
-      try {
-        const result = await updateServiceServerFn({
-          data: { organizationSlug, environmentId, serviceId, revision, ...settings },
-        });
-        await environments.writeCommitted(result.data);
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Something went wrong while saving this field.");
-        throw error;
-      }
-    },
-  });
   return {
     update(serviceId, updater) {
       const current = services.get(serviceId);
       if (!current) throw new Error("Service is not loaded.");
-      const document = environments.get(current.environmentId);
-      if (!document) throw new Error("Environment is not loaded.");
       const modified = structuredClone(current);
       updater(modified);
       const settings: ServiceDeploymentFieldSelection = {
@@ -129,7 +97,24 @@ function createServiceWriter(
         routes: modified.routes, managedHostnames: modified.managedHostnames, build: modified.build,
         deletedAt: modified.deletedAt ?? null,
       };
-      return persist({ serviceId, environmentId: document.id, revision: document.revision, settings });
+      const environmentId = current.environmentId;
+      return editEnvironmentDocument(organizationSlug, scope, {
+        environmentId,
+        apply: (intent) => {
+          if (settings.deletedAt) {
+            intent.services = intent.services.filter((node) => node.id !== serviceId);
+            return;
+          }
+          const node = intent.services.find((node) => node.id === serviceId);
+          if (!node) return;
+          const { deletedAt: _deletedAt, ...config } = settings;
+          Object.assign(node.config, config);
+        },
+        save: (revision) => updateServiceServerFn({
+          data: { organizationSlug, environmentId, serviceId, revision, ...settings },
+        }),
+        failureMessage: "Something went wrong while saving this field.",
+      });
     },
   };
 }

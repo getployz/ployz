@@ -75,19 +75,13 @@ export function SchemaFieldInput({
   });
   const form = useAppForm({
     ...formOptions,
-    onSubmit: async ({ schemaOutputs }) => {
+    onSubmit: ({ schemaOutputs }) => {
       const submittedValue = schemaOutputs[0].value;
-
       form.reset({
         value: submittedValue,
       });
-
-      try {
-        const transaction = onCommit(submittedValue);
-        await transaction.isPersisted.promise;
-      } catch {
-        form.setFieldValue("value", submittedValue);
-      }
+      // Optimistic: a failed save rolls the value back and toasts; show the rolled-back value.
+      void onCommit(submittedValue).isPersisted.promise.catch(() => form.reset({ value }));
     },
   });
 
@@ -97,39 +91,34 @@ export function SchemaFieldInput({
         const error = getFirstFieldError(field.errors);
 
         return (
-          <form.Subscribe selector={(state) => state.isSubmitting}>
-            {(isSubmitting) => (
-              <ConfirmableInput
-                aria-label={label}
-                aria-invalid={!!error}
-                disabled={disabled}
-                error={error}
-                isChanged={isChanged}
-                isDirty={!field.meta.isDefaultValue}
-                isPending={isSubmitting}
-                multiline={multiline}
-                placeholder={placeholder}
-                rows={rows}
-                title={
-                  isChanged && baselineValue != null
-                    ? `${baselineLabel}: ${baselineValue}`
-                    : undefined
-                }
-                type={type}
-                value={field.value}
-                onValueChange={(nextValue) => field.handleChange(nextValue)}
-                onCancel={() => {
-                  form.reset({
-                    value,
-                  });
-                }}
-                onConfirm={() => {
-                  field.handleBlur();
-                  void form.handleSubmit().catch(() => undefined);
-                }}
-              />
-            )}
-          </form.Subscribe>
+          <ConfirmableInput
+            aria-label={label}
+            aria-invalid={!!error}
+            disabled={disabled}
+            error={error}
+            isChanged={isChanged}
+            isDirty={!field.meta.isDefaultValue}
+            multiline={multiline}
+            placeholder={placeholder}
+            rows={rows}
+            title={
+              isChanged && baselineValue != null
+                ? `${baselineLabel}: ${baselineValue}`
+                : undefined
+            }
+            type={type}
+            value={field.value}
+            onValueChange={(nextValue) => field.handleChange(nextValue)}
+            onCancel={() => {
+              form.reset({
+                value,
+              });
+            }}
+            onConfirm={() => {
+              field.handleBlur();
+              void form.handleSubmit().catch(() => undefined);
+            }}
+          />
         );
       }}
     </form.Field>

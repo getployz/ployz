@@ -42,8 +42,11 @@ export async function prefetchOrgStore(context: RouteDataContext, organizationSl
   else void ready.catch(() => {});
 }
 
-/** Never throws: an SSR failure is retried by the page's `useSuspenseQuery`, whose boundary owns the error. */
-export async function prefetchRemote<T, K extends QueryKey>(context: RouteDataContext, options: FetchQueryOptions<T, Error, T, K>) {
-  const ready = context.queryClient.prefetchQuery(options);
+/**
+ * Starts every read together. Never throws: an SSR failure is retried by the page's
+ * `useSuspenseQuery`, whose boundary owns the error.
+ */
+export async function prefetchRemote<T, K extends QueryKey>(context: RouteDataContext, ...reads: Array<FetchQueryOptions<T, Error, T, K>>) {
+  const ready = Promise.all(reads.map((options) => context.queryClient.prefetchQuery(options)));
   if (environmentManager.isServer()) await ready;
 }

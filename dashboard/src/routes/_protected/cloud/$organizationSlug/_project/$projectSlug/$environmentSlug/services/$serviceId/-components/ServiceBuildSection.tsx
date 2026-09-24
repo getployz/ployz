@@ -82,10 +82,9 @@ export function ServiceBuildSection({
       : null;
 
   function updateBuild(patch: Partial<ServiceBuildConfig>) {
-    const transaction = collection.update(service.id, (draft) => {
+    collection.update(service.id, (draft) => {
       draft.build = { ...draft.build, ...patch };
     });
-    void transaction.isPersisted.promise;
   }
 
   function commitDockerfilePath(raw: string) {

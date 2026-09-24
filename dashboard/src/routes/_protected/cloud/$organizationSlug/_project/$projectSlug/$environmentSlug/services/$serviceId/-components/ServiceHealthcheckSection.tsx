@@ -23,10 +23,8 @@ const DEFAULT_TIMEOUT_SECONDS = 300;
 type HealthcheckDraftState = {
   draftPath: string | null;
   pathError: string | null;
-  isPathPending: boolean;
   draftTimeout: string;
   timeoutError: string | null;
-  isTimeoutPending: boolean;
 };
 
 type HealthcheckDraftAction =
@@ -50,8 +48,6 @@ function healthcheckDraftReducer(
         draftTimeout: action.draftTimeout,
         pathError: null,
         timeoutError: null,
-        isPathPending: false,
-        isTimeoutPending: false,
       };
   }
 }
@@ -91,10 +87,8 @@ function ServiceHealthcheckEditor({
   const [draft, dispatchDraft] = useReducer(healthcheckDraftReducer, {
     draftPath: baselinePath,
     pathError: null,
-    isPathPending: false,
     draftTimeout: String(baselineTimeout),
     timeoutError: null,
-    isTimeoutPending: false,
   });
 
   const isOpen = draft.draftPath !== null;
@@ -113,7 +107,7 @@ function ServiceHealthcheckEditor({
     });
   }
 
-  async function confirmPath() {
+  function confirmPath() {
     if (draft.draftPath === null) {
       return;
     }
@@ -159,35 +153,13 @@ function ServiceHealthcheckEditor({
       };
     }
 
-    dispatchDraft({
-      type: "patch",
-      patch: { isPathPending: true, pathError: null },
+    // Optimistic: a failed save rolls back and toasts; restore the path draft too.
+    void commit(next).isPersisted.promise.catch(() => {
+      dispatchDraft({ type: "patch", patch: { draftPath: baselinePath } });
     });
-    try {
-      await commit(next).isPersisted.promise;
-      if (next.type === "none") {
-        dispatchDraft({
-          type: "reset",
-          draftPath: null,
-          draftTimeout: String(DEFAULT_TIMEOUT_SECONDS),
-        });
-      } else {
-        dispatchDraft({
-          type: "reset",
-          draftPath: next.path,
-          draftTimeout: String(next.timeoutSeconds),
-        });
-      }
-    } catch {
-      dispatchDraft({
-        type: "patch",
-        patch: {
-          draftPath: baselinePath,
-          isPathPending: false,
-          pathError: "Could not save healthcheck",
-        },
-      });
-    }
+    dispatchDraft(next.type === "none"
+      ? { type: "reset", draftPath: null, draftTimeout: String(DEFAULT_TIMEOUT_SECONDS) }
+      : { type: "reset", draftPath: next.path, draftTimeout: String(next.timeoutSeconds) });
   }
 
   function cancelPath() {
@@ -197,7 +169,7 @@ function ServiceHealthcheckEditor({
     });
   }
 
-  async function confirmTimeout() {
+  function confirmTimeout() {
     if (healthcheck.type !== "http") {
       return;
     }
@@ -220,33 +192,16 @@ function ServiceHealthcheckEditor({
       return;
     }
 
-    dispatchDraft({
-      type: "patch",
-      patch: { isTimeoutPending: true, timeoutError: null },
+    // Optimistic: a failed save rolls back and toasts; restore the timeout draft too.
+    const previousTimeout = String(healthcheck.timeoutSeconds);
+    void commit({
+      type: "http",
+      path: healthcheck.path,
+      timeoutSeconds: result.success,
+    }).isPersisted.promise.catch(() => {
+      dispatchDraft({ type: "patch", patch: { draftTimeout: previousTimeout } });
     });
-    try {
-      await commit({
-        type: "http",
-        path: healthcheck.path,
-        timeoutSeconds: result.success,
-      }).isPersisted.promise;
-      dispatchDraft({
-        type: "patch",
-        patch: {
-          draftTimeout: String(result.success),
-          isTimeoutPending: false,
-        },
-      });
-    } catch {
-      dispatchDraft({
-        type: "patch",
-        patch: {
-          draftTimeout: String(healthcheck.timeoutSeconds),
-          isTimeoutPending: false,
-          timeoutError: "Could not save healthcheck timeout",
-        },
-      });
-    }
+    dispatchDraft({ type: "patch", patch: { draftTimeout: String(result.success), timeoutError: null } });
   }
 
   function cancelTimeout() {
@@ -274,11 +229,9 @@ function ServiceHealthcheckEditor({
           <ConfirmableInput
             aria-label="Healthcheck path"
             aria-invalid={draft.pathError ? true : undefined}
-            disabled={draft.isPathPending}
             error={draft.pathError}
             isChanged={pathDiff.changed}
             isDirty={isPathDirty}
-            isPending={draft.isPathPending}
             placeholder="/up"
             value={draft.draftPath ?? ""}
             onValueChange={(next) => {
@@ -289,7 +242,7 @@ function ServiceHealthcheckEditor({
             }}
             onCancel={cancelPath}
             onConfirm={() => {
-              void confirmPath();
+              confirmPath();
             }}
           />
         ) : (
@@ -316,12 +269,11 @@ function ServiceHealthcheckEditor({
           <ConfirmableInput
             aria-label="Healthcheck timeout"
             aria-invalid={draft.timeoutError ? true : undefined}
-            disabled={healthcheck.type !== "http" || draft.isTimeoutPending}
+            disabled={healthcheck.type !== "http"}
             error={draft.timeoutError}
             inputMode="numeric"
             isChanged={timeoutDiff.changed}
             isDirty={isTimeoutDirty}
-            isPending={draft.isTimeoutPending}
             placeholder="300"
             value={healthcheck.type === "http" ? draft.draftTimeout : ""}
             onValueChange={(next) => {
@@ -332,7 +284,7 @@ function ServiceHealthcheckEditor({
             }}
             onCancel={cancelTimeout}
             onConfirm={() => {
-              void confirmTimeout();
+              confirmTimeout();
             }}
           />
         </Field>

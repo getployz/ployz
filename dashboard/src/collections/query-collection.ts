@@ -71,3 +71,11 @@ export async function reconcileCollection(collection: ApiCollectionReadiness) {
     subscription.unsubscribe();
   }
 }
+
+export type Persistable = { isPersisted: { promise: Promise<unknown> } };
+
+/** Failures are toasted where they happen; observing them keeps fire-and-forget callers free of unhandled rejections. */
+export function observeFailure<T extends Persistable>(transaction: T): T {
+  transaction.isPersisted.promise.catch(() => {});
+  return transaction;
+}

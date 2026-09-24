@@ -13,8 +13,8 @@ export function VariableRowDialogs({
   variableKey: string;
   confirmSealOpen: boolean;
   confirmDeleteOpen: boolean;
-  onConfirmDelete: () => Promise<void>;
-  onConfirmSeal: () => Promise<void>;
+  onConfirmDelete: () => void;
+  onConfirmSeal: () => void;
   onDeleteOpenChange: (open: boolean) => void;
   onSealOpenChange: (open: boolean) => void;
 }) {

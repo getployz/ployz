@@ -19,7 +19,6 @@ export function VolumeMountForm({
   addMountPath,
   addServiceId,
   availableServices,
-  pending,
   onAttach,
   onMountPathChange,
   onServiceChange,
@@ -28,7 +27,6 @@ export function VolumeMountForm({
   addMountPath: string;
   addServiceId: string;
   availableServices: VolumeService[];
-  pending: boolean;
   onAttach: () => void;
   onMountPathChange: (value: string) => void;
   onServiceChange: (value: string | null) => void;
@@ -67,7 +65,7 @@ export function VolumeMountForm({
             placeholder="/data"
             onChange={(event) => onMountPathChange(event.target.value)}
           />
-          <Button disabled={pending} onClick={onAttach}>
+          <Button onClick={onAttach}>
             <PlusIcon data-icon="inline-start" />
             Mount
           </Button>

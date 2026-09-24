@@ -50,7 +50,7 @@ export function ServiceContextMenu({
         </ContextMenuGroup>
         <ContextMenuSeparator />
         <ContextMenuGroup>
-          <ContextMenuItem variant="destructive" onClick={() => void deleteService()}>
+          <ContextMenuItem variant="destructive" onClick={deleteService}>
             <Trash2Icon />
             Delete service
           </ContextMenuItem>
