@@ -5,7 +5,7 @@ import type { JsonValue } from "#/db/tables";
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 export const ENROLL_NOT_YET_RETRY_AFTER_SECONDS = 2;
-export const ENROLLMENT_PROTOCOL_VERSION = 2 as const;
+export const ENROLLMENT_PROTOCOL_VERSION = 1 as const;
 
 const OrganizationSlug = Schema.String.check(
   Schema.isTrimmed(),

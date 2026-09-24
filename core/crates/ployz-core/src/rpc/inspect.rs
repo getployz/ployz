@@ -7,37 +7,16 @@ use crate::{
     MachineStorageObservation, RttObservation, TelemetryObservation, WireGuardPublicKey,
 };
 
-use super::default_wireguard_port;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InspectRequest {
-    #[serde(default)]
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
     pub public_ip_override: Option<IpAddr>,
-    #[serde(default = "default_wireguard_port")]
-    pub wireguard_port: u16,
-    #[serde(default)]
     pub include_rtts: bool,
     /// Collect current local storage evidence for this inspection.
-    #[serde(default)]
     pub include_storage: bool,
     /// Fresh telemetry to collect for this inspection.
-    #[serde(default)]
     pub telemetry: InspectTelemetry,
-}
-
-impl Default for InspectRequest {
-    fn default() -> Self {
-        Self {
-            advertised_endpoints: Vec::new(),
-            public_ip_override: None,
-            wireguard_port: default_wireguard_port(),
-            include_rtts: false,
-            include_storage: false,
-            telemetry: InspectTelemetry::None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ts_rs::TS)]

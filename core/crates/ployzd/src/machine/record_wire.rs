@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 
 /// Untrusted persisted input; only checked conversion admits a local record.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct LocalMachineRecordWire {
     body: LocalMachineBody,
     wireguard_private_key: WireGuardPrivateKey,

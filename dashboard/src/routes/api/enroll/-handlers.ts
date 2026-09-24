@@ -83,7 +83,7 @@ export function handleMachineEnrollmentJoin<R>(
     if (asRecord(body)?.["protocolVersion"] !== ENROLLMENT_PROTOCOL_VERSION) {
       return response(
         {
-          error: `Enrollment protocol version ${ENROLLMENT_PROTOCOL_VERSION} is required. Upgrade the ployz CLI.`,
+          error: `Unsupported enrollment protocol version; Cloud accepts version ${ENROLLMENT_PROTOCOL_VERSION}.`,
         },
         426,
       );

@@ -144,7 +144,15 @@ fn placement_constraints_are_validated_and_canonical_on_the_wire() {
             "{expression}"
         );
     }
-    assert!(serde_json::from_value::<Placement>(json!({"machines": ["edge"]})).is_err());
+    // Placement rides in replicated Container rows, so unknown fields are ignored.
+    assert_eq!(
+        serde_json::from_value::<Placement>(
+            json!({"constraints": ["node.labels.zone==edge"], "future": true})
+        )
+        .unwrap(),
+        serde_json::from_value::<Placement>(json!({"constraints": ["node.labels.zone==edge"]}))
+            .unwrap()
+    );
 }
 
 #[test]

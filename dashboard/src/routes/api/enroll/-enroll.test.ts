@@ -15,7 +15,7 @@ const mocks = {
 const token = "pmet_secret";
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const identity = {
-  protocolVersion: 2 as const,
+  protocolVersion: 1 as const,
   machineId: "c".repeat(32),
   initialPolicy: {
     labels: {},
@@ -219,7 +219,7 @@ describe("machine enrollment routes", () => {
   it("rejects incomplete or non-Display publicKey identity bodies", async () => {
     for (const response of [
       await join({
-        protocolVersion: 2,
+        protocolVersion: 1,
       machineId: "c".repeat(32),
         initialPolicy: {
           labels: {},
@@ -237,19 +237,19 @@ describe("machine enrollment routes", () => {
     expect(mocks.enroll).not.toHaveBeenCalled();
   });
 
-  it("requires protocol version 2 before granting a founding directive", async () => {
+  it("requires protocol version 1 before granting a founding directive", async () => {
     for (const body of [
       {
         name: identity.name,
         publicKey: identity.publicKey,
         advertisedEndpoints: identity.advertisedEndpoints,
       },
-      { ...identity, protocolVersion: 1 },
+      { ...identity, protocolVersion: 2 },
     ]) {
       const response = await join(body);
       expect(response.status).toBe(426);
       await expect(response.json()).resolves.toEqual({
-        error: "Enrollment protocol version 2 is required. Upgrade the ployz CLI.",
+        error: "Unsupported enrollment protocol version; Cloud accepts version 1.",
       });
     }
     expect(mocks.enroll).not.toHaveBeenCalled();
@@ -268,7 +268,7 @@ describe("machine enrollment routes", () => {
     );
 
     const response = await join({
-      protocolVersion: 2,
+      protocolVersion: 1,
       machineId: "c".repeat(32),
       initialPolicy: {
         labels: {},
@@ -285,7 +285,7 @@ describe("machine enrollment routes", () => {
     expect(mocks.enroll).toHaveBeenCalledWith({
       token,
       identity: {
-        protocolVersion: 2,
+        protocolVersion: 1,
       machineId: "c".repeat(32),
         initialPolicy: {
           labels: {},

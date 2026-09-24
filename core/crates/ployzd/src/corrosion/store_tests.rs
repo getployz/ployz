@@ -759,3 +759,133 @@ async fn invalid_hosted_reservation_is_unavailable_and_explicit_release_recovers
     assert!(store.domain_reservation().await.unwrap().is_none());
     server.abort();
 }
+
+/// A newer Machine may add optional fields to any replicated body; this reader
+/// must still recover every value it knows.
+#[tokio::test]
+async fn replicated_bodies_ignore_fields_from_newer_machines() {
+    fn with_future_field(mut body: serde_json::Value) -> String {
+        body.as_object_mut()
+            .unwrap()
+            .insert("added_by_a_newer_machine".into(), json!({"any": [1]}));
+        body.to_string()
+    }
+    let machine: Machine = serde_json::from_value(json!({
+        "id": "a".repeat(32), "name": "peer", "subnet": "10.210.1.0/24",
+        "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+        "public_key": vec![1; 32], "advertised_endpoints": []
+    }))
+    .unwrap();
+    let container = identity_container(machine.id);
+    let volume = DockerVolume {
+        id: DockerVolumeId {
+            machine_id: machine.id,
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+        options: BTreeMap::new(),
+        labels: BTreeMap::new(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    };
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let reservation = crate::hosted_dns::Reservation::parse(
+        "https://dns.example".into(),
+        "cluster.example".into(),
+        "opaque-token".into(),
+    )
+    .unwrap();
+    let mut container_body = serde_json::to_value(&container).unwrap();
+    container_body
+        .get_mut("resolved_spec")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .insert("added_by_a_newer_machine".into(), json!(true));
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    db.execute(
+        "INSERT INTO machines (id, info) VALUES (?, ?)",
+        rusqlite::params![
+            machine.id.as_str(),
+            with_future_field(serde_json::to_value(&machine).unwrap())
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO containers (id, machine_id, container) VALUES (?, ?, ?)",
+        rusqlite::params![
+            container.container_id.as_str(),
+            machine.id.as_str(),
+            with_future_field(container_body)
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO volumes (machine_id, name, volume) VALUES (?, ?, ?)",
+        rusqlite::params![
+            machine.id.as_str(),
+            volume.id.name.as_str(),
+            with_future_field(serde_json::to_value(&volume).unwrap())
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO certificates (hostname, body) VALUES (?, ?)",
+        rusqlite::params![
+            hostname.as_str(),
+            with_future_field(json!({"last_error": "refused"}))
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
+        [with_future_field(
+            serde_json::to_value(&reservation).unwrap(),
+        )],
+    )
+    .unwrap();
+    let (store, task) = identity_store(db).await;
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine)
+    );
+    assert_eq!(
+        store.container(&container.container_id).await.unwrap(),
+        Some(container)
+    );
+    assert_eq!(store.volume(&volume.id).await.unwrap(), Some(volume));
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap().last_error(),
+        Some("refused")
+    );
+    assert_eq!(store.domain_reservation().await.unwrap(), Some(reservation));
+    task.abort();
+}
+
+#[tokio::test]
+async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
+    let material =
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap();
+    store
+        .publish_certificate(&hostname, &material)
+        .await
+        .unwrap();
+    store
+        .record_certificate_error(&hostname, "policy refused")
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&material));
+    assert_eq!(row.last_error(), Some("policy refused"));
+    assert_eq!(
+        store.certificates().await.unwrap(),
+        BTreeMap::from([(hostname, material)])
+    );
+    task.abort();
+}

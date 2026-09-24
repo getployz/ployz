@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 const DEFAULT_RETRY_AFTER: u64 = 2;
-const PROTOCOL_VERSION: u8 = 2;
+const PROTOCOL_VERSION: u8 = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -90,6 +90,8 @@ impl TryFrom<String> for PairingCredential {
 }
 
 /// Cloud Pairing as Cloud's enroll response names it: `{"secret": ...}`.
+///
+/// Strict by the Stable promise's security exception: it holds secret material.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CloudPairing {
@@ -189,9 +191,9 @@ pub(crate) enum Response {
     },
 }
 
-/// Enrollment responses admit only the declared wire fields.
+/// Enrollment responses ignore fields a newer Cloud adds; only the pairing is strict.
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
@@ -568,21 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn top_level_unknown_field_is_rejected() {
-        let value = serde_json::json!({
-            "kind": "join",
-            "storage": "none",
-            "pairing": {
-                "secret": "pairing-secret",
-            },
-            "registration": registration(),
-            "unexpectedCredential": "unexpected-value",
-        });
-        let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
-    }
-
-    #[test]
     fn enrollment_rejects_empty_pairing_credential() {
         let error = parse_enroll(
             br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":""}}"#,
@@ -612,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_requires_the_protocol_two_resume_directive() {
+    fn initialize_requires_the_resume_directive() {
         let error = parse_enroll(br#"{"kind":"initialize","pairing":{"secret":"pairing-secret"}}"#)
             .unwrap_err();
         assert!(error.to_string().contains("resumed"), "{error}");
@@ -664,13 +651,18 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_rejects_unknown_fields() {
-        for payload in [
-            br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#.as_slice(),
-            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#.as_slice(),
+    fn enrollment_ignores_fields_from_a_newer_cloud() {
+        for (newer, known) in [
+            (
+                br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#.as_slice(),
+                br#"{"kind":"not_yet","retryAfter":5}"#.as_slice(),
+            ),
+            (
+                br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#.as_slice(),
+                br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"}}"#.as_slice(),
+            ),
         ] {
-            let error = parse_enroll(payload).unwrap_err();
-            assert!(error.to_string().contains("unknown field"), "{error}");
+            assert_eq!(parse_enroll(newer).unwrap(), parse_enroll(known).unwrap());
         }
     }
 
@@ -945,7 +937,7 @@ mod tests {
             Default::default(),
         );
         let json = serde_json::to_value(&identity).unwrap();
-        assert_eq!(json.get("protocolVersion"), Some(&serde_json::json!(2)));
+        assert_eq!(json.get("protocolVersion"), Some(&serde_json::json!(1)));
         assert_eq!(
             json.get("publicKey"),
             Some(&serde_json::json!(

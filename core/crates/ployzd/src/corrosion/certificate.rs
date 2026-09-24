@@ -5,7 +5,6 @@ use std::time::SystemTime;
 use chrono::{DateTime, SecondsFormat, Utc};
 use ployz_core::{IssuanceClock, IssuanceFailure};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use super::Error;
 
@@ -311,36 +310,46 @@ impl CertificateRow {
     }
 
     pub(crate) fn encode(&self) -> Result<String, Error> {
-        Ok(serde_json::to_string(&json!({
-            "certificate": self.material.as_ref().map(CertificateMaterial::certificate).unwrap_or(""),
-            "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
-            "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
-            "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
-            "last_error": self.last_error().unwrap_or(""),
-            "next_attempt_at": self.clock().map(|clock| encode_attempt(clock.next_attempt_at())).unwrap_or_default(),
-            "failures": self.clock().map(|clock| clock.failures()).unwrap_or(0),
-            "last_failure": encode_failure(self.clock().map(|clock| clock.last_failure())),
-        }))?)
+        let clock = self.clock();
+        Ok(serde_json::to_string(&CertificateBody {
+            certificate: self
+                .material()
+                .map_or("", CertificateMaterial::certificate)
+                .into(),
+            private_key: self
+                .material()
+                .map_or("", CertificateMaterial::private_key)
+                .into(),
+            challenge_token: self
+                .challenge()
+                .map_or("", CertificateChallenge::token)
+                .into(),
+            challenge_response: self
+                .challenge()
+                .map_or("", CertificateChallenge::response)
+                .into(),
+            last_error: self.last_error().unwrap_or_default().into(),
+            next_attempt_at: clock
+                .map(|clock| encode_attempt(clock.next_attempt_at()))
+                .unwrap_or_default(),
+            failures: clock.map_or(0, |clock| clock.failures()),
+            last_failure: encode_failure(clock.map(|clock| clock.last_failure())).into(),
+        })?)
     }
 }
 
-#[derive(Deserialize)]
+/// Frozen JSON body of a `certificates` row. Every field defaults and unknown
+/// fields are ignored, so later releases may only add optional fields.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
 struct CertificateBody {
-    #[serde(default)]
     certificate: String,
-    #[serde(default)]
     private_key: String,
-    #[serde(default)]
     challenge_token: String,
-    #[serde(default)]
     challenge_response: String,
-    #[serde(default)]
     last_error: String,
-    #[serde(default)]
     next_attempt_at: String,
-    #[serde(default)]
     failures: u32,
-    #[serde(default)]
     last_failure: String,
 }
 

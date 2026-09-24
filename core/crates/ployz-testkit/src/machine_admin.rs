@@ -220,7 +220,7 @@ impl Cluster {
         self.corrosion_transaction(
             index,
             &format!(
-                r#"[{{"query":"INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, '{{}}', ?, datetime('now'))","params":["{container_id}","{machine_id}"]}}]"#,
+                r#"[{{"query":"INSERT INTO containers (id, container, machine_id) VALUES (?, '{{}}', ?)","params":["{container_id}","{machine_id}"]}}]"#,
             ),
         )
     }
@@ -235,7 +235,7 @@ impl Cluster {
         self.corrosion_transaction(
             index,
             &format!(
-                r#"[{{"query":"INSERT INTO machines (id, info, created_at, updated_at) SELECT ?, json_set(info, '$.id', ?, '$.name', ?), datetime('now'), datetime('now') FROM machines WHERE id = ?","params":["{id}","{id}","{name}","{}"]}}]"#,
+                r#"[{{"query":"INSERT INTO machines (id, info) SELECT ?, json_set(info, '$.id', ?, '$.name', ?) FROM machines WHERE id = ?","params":["{id}","{id}","{name}","{}"]}}]"#,
                 source.id
             ),
         )

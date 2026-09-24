@@ -135,7 +135,6 @@ impl fmt::Display for ContainerKind {
 
 /// Raw facts for admitting one Container observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 #[ts(rename = "ContainerObservation")]
 pub struct ContainerObservationParts {
     pub container_id: ContainerId,
@@ -717,12 +716,17 @@ mod tests {
                 "{label}"
             );
         }
-        let mut duplicated = serde_json::to_value(&observed).unwrap();
-        duplicated
+        // Replicated rows are read tolerantly: a stray grouping field is ignored,
+        // and grouping still comes from the retained spec.
+        let mut unknown = serde_json::to_value(&observed).unwrap();
+        unknown
             .as_object_mut()
             .unwrap()
             .insert("service_name".into(), "web".into());
-        assert!(serde_json::from_value::<ContainerObservation>(duplicated).is_err());
+        assert_eq!(
+            serde_json::from_value::<ContainerObservation>(unknown).unwrap(),
+            observed
+        );
         let previous = observed.clone();
         assert!(
             observed

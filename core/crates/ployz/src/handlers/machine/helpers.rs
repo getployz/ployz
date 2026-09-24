@@ -17,9 +17,6 @@ use crate::{
 };
 
 pub(super) fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest, Error> {
-    let port = *matches
-        .get_one::<u16>("wg-port")
-        .expect("WireGuard port has a default");
     let public_ip = match matches
         .get_one::<String>("public-ip")
         .map(String::as_str)
@@ -34,9 +31,8 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest,
         ),
     };
     Ok(MachineTokenRequest {
-        advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"), port)?,
+        advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"))?,
         public_ip,
-        wireguard_port: port,
     })
 }
 

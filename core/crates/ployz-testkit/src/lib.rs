@@ -407,7 +407,7 @@ impl Cluster {
     fn seed_observation(&self, index: usize) -> Result<(), TestkitError> {
         self.corrosion_transaction(
             index,
-            r#"[{"query":"INSERT INTO cluster (key, value, updated_at) VALUES ('l3_seed', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at","params":["seeded"]}]"#,
+            r#"[{"query":"INSERT INTO cluster (key, value) VALUES ('l3_seed', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value","params":["seeded"]}]"#,
         )
     }
 

@@ -110,7 +110,6 @@ impl std::fmt::Display for PlacementConstraint {
 
 /// A conjunction of Machine placement predicates, retained for future Machines.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct Placement {
     /// Empty adds no selector restriction.
     #[serde(default)]

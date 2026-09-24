@@ -131,7 +131,7 @@ fn endpoint_selection_preserves_unknown_down_rotation_and_reverse_learning() {
 #[tokio::test]
 async fn explicit_public_ip_is_added_without_a_reachability_probe() {
     let public = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
-    let endpoints = discover_network(51820, PublicIpDiscovery::Override(public))
+    let endpoints = discover_network(PublicIpDiscovery::Override(public))
         .await
         .unwrap()
         .endpoints;

@@ -28,8 +28,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     f"request {Handler.requests + 1} path {self.path!r}, expected {expected!r}"
                 )
             if Handler.requests == 0:
-                if body.get("protocolVersion") != 2:
-                    raise AssertionError("enroll protocolVersion was not 2")
+                if body.get("protocolVersion") != 1:
+                    raise AssertionError("enroll protocolVersion was not 1")
                 if body.get("name") != "qualify-1":
                     raise AssertionError("enroll Machine Name was not qualify-1")
                 if body.get("requestedStorage") != "none":

@@ -7,7 +7,7 @@ use std::{
 
 use ipnet::{IpNet, Ipv4Net};
 use ployz_core::{AdvertisedEndpoint, Machine, MachineId, SelectedEndpoint, WireGuardPublicKey};
-pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT};
+pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT, WIREGUARD_PORT};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -22,7 +22,6 @@ pub use linux::{NetworkPlane, inspect_wireguard_device};
 
 pub const DOCKER_NETWORK_NAME: &str = "ployz";
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";
-pub const WIREGUARD_PORT: u16 = 51820;
 pub const WIREGUARD_KEEPALIVE_SECONDS: u16 = 25;
 pub const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 pub const PEER_DOWN_INTERVAL: Duration = Duration::from_secs(180 + 5 + 90);

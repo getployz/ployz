@@ -95,7 +95,6 @@ pub struct VolumeSource {
 
 /// Checked Project and logical identity from which a physical name and owner labels derive.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct ScopedVolumeSource {
     project: ProjectName,
     logical_name: DockerVolumeName,

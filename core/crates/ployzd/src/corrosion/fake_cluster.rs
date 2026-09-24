@@ -167,7 +167,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
     let mut kv = kv.lock().unwrap();
     for statement in &statements {
         match statement.query.as_str() {
-            query if query.starts_with("INSERT INTO machines (id, info,") => {
+            query if query.starts_with("INSERT INTO machines (id, info)") => {
                 kv.machines.insert(
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),

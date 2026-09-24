@@ -470,7 +470,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
     assert_eq!(posts.first(), posts.get(1));
     assert_eq!(
         posts.first().and_then(|post| post.get("protocolVersion")),
-        Some(&json!(2))
+        Some(&json!(1))
     );
     assert!(
         String::from_utf8_lossy(&output.stderr)

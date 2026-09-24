@@ -897,6 +897,33 @@ fn image_ingest_contract_returns_the_management_address_destination() {
     assert_eq!(ImageIngestReason::from_details(&Value::Null), None);
 }
 
+/// A newer client may add optional fields to Machine RPC requests within
+/// `PROTOCOL_MAJOR`; this daemon must read the fields it knows unchanged.
+#[test]
+fn machine_rpc_requests_ignore_fields_from_newer_clients() {
+    fn tolerates<T: serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(known: Value) {
+        let mut newer = known.clone();
+        newer
+            .as_object_mut()
+            .unwrap()
+            .insert("added_by_a_newer_client".into(), json!({"any": [1]}));
+        assert_eq!(
+            serde_json::from_value::<T>(newer).unwrap(),
+            serde_json::from_value::<T>(known).unwrap()
+        );
+    }
+    tolerates::<MachineUpdate>(json!({"label_changes": {"zone": "east"}, "accepts_builds": false}));
+    tolerates::<ployz_core::InitialMachinePolicy>(json!({
+        "labels": {"zone": "east"}, "accepts_builds": true,
+        "accepts_services": false, "accepts_ingress": true,
+    }));
+    tolerates::<PullImageFromMachineRequest>(json!({
+        "pull": { "mode": "reference", "image": "api:latest" },
+        "source": { "management_address": "fdcc::7", "port": 5000 },
+        "platform": "linux/amd64",
+    }));
+}
+
 #[test]
 fn peer_image_pull_publication_requires_a_valid_digest_on_the_wire() {
     let request = |pull| {

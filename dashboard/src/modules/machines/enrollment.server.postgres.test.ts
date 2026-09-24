@@ -51,7 +51,7 @@ const enrollmentSettings = {
 
 function identity(index: number) {
   return {
-    protocolVersion: 2 as const,
+    protocolVersion: 1 as const,
     machineId: Schema.decodeUnknownSync(rustMachineIdSchema)((index + 1).toString(16).padStart(32, "0")),
     initialPolicy: {
       labels: {},

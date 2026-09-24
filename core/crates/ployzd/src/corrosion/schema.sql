@@ -3,17 +3,14 @@
 -- Cluster settings, one row per key.
 CREATE TABLE cluster (
   key TEXT PRIMARY KEY NOT NULL,
-  value ANY,
-  updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+  value ANY
 );
 
 -- Machines in the Cluster; `info` is the Machine record as JSON.
 CREATE TABLE machines (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT GENERATED ALWAYS AS (json_extract(info, '$.name')) VIRTUAL,
-  info TEXT NOT NULL CHECK (json_valid(info)) DEFAULT '{}',
-  created_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00',
-  updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+  info TEXT NOT NULL CHECK (json_valid(info)) DEFAULT '{}'
 );
 
 -- Observed containers; `container` is the observation as JSON.
@@ -23,15 +20,13 @@ CREATE TABLE containers (
   machine_id TEXT NOT NULL DEFAULT '',
   service_id TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.service_id')) VIRTUAL,
   project_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.project_name')) VIRTUAL,
-  service_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.name')) VIRTUAL,
-  updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+  service_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.name')) VIRTUAL
 );
 
 -- Issued certificates keyed by hostname.
 CREATE TABLE certificates (
   hostname TEXT PRIMARY KEY NOT NULL,
-  body TEXT NOT NULL CHECK (json_valid(body)) DEFAULT '{}',
-  updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+  body TEXT NOT NULL CHECK (json_valid(body)) DEFAULT '{}'
 );
 
 -- Volumes observed on each Machine.
@@ -39,7 +34,6 @@ CREATE TABLE volumes (
   machine_id TEXT NOT NULL,
   name TEXT NOT NULL CHECK (name != ''),
   volume TEXT NOT NULL CHECK (json_valid(volume)) DEFAULT '{}',
-  updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00',
   PRIMARY KEY (machine_id, name)
 );
 

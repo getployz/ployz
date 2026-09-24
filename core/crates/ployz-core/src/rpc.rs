@@ -201,28 +201,11 @@ pub struct DescribeContractRequest {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MachineTokenRequest {
-    #[serde(default)]
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
     pub public_ip: PublicIpDiscovery,
-    #[serde(default = "default_wireguard_port")]
-    pub wireguard_port: u16,
-}
-
-impl Default for MachineTokenRequest {
-    fn default() -> Self {
-        Self {
-            advertised_endpoints: Vec::new(),
-            public_ip: PublicIpDiscovery::Auto,
-            wireguard_port: default_wireguard_port(),
-        }
-    }
-}
-
-pub(super) fn default_wireguard_port() -> u16 {
-    51820
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -305,6 +288,8 @@ pub struct CreateContainerRequest {
 /// Exactly one admitted Cloud Pairing update: set it or clear it.
 ///
 /// Neither case carries a Cloud secret; the Pairing Credential stays with the CLI.
+/// Strict by the Stable promise's security exception: an unrecognized field may
+/// be secret material the daemon must never accept.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetCloudPairingRequest {
@@ -441,7 +426,6 @@ pub struct ImageIngestOpened {
 
 /// Pull one image from another Machine's image-ingest TCP destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PullImageFromMachineRequest {
     /// Select reference delivery or verified exact-content publication.
     pub pull: PeerImagePull,
@@ -452,6 +436,8 @@ pub struct PullImageFromMachineRequest {
 }
 
 /// Whether peer delivery follows a reference or publishes a tag for exact content.
+/// Strict by the Stable promise's security exception: the mode selects digest
+/// verification, so a stray field must not blur reference into publication.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PeerImagePull {

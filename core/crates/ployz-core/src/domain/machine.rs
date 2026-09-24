@@ -37,7 +37,6 @@ pub(super) fn resolve_machine_text<'a>(
 /// Complete admission policy committed with a Machine's initial assignment.
 /// Every field is required on the wire; defaults are explicit caller choices.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct InitialMachinePolicy {
     /// Operator classifications used by placement constraints.
     pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
@@ -249,7 +248,6 @@ pub enum PublicIpUpdate {
 
 /// One atomic metadata edit; omitted fields and Label keys preserve current values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MachineUpdate {
     /// One change per Label key: a value sets it, `None` removes it.
     #[serde(default)]

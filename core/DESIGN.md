@@ -38,7 +38,10 @@ Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
 repurposed; readers ignore unknown fields. Replicated bodies never use
 `deny_unknown_fields` — a newer Machine's row must remain readable by an older
-one in the same Cluster. There are no version gates and no store migrations;
+one in the same Cluster. Explicit security refusals are the only exception,
+and never on replicated bodies: a section holding secret or key material, or
+a request mode that selects verification, may refuse fields it does not
+recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
 
 A breaking release protects older Clusters from its own side. Daemons follow

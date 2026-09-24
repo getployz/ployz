@@ -6,7 +6,9 @@ use std::{
 use ployz_core::{AdvertisedEndpoint, PublicIpDiscovery};
 use serde::Deserialize;
 
-use super::{DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, checked_command};
+use super::{
+    DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command,
+};
 
 pub struct DiscoveredNetwork {
     pub public_ip: Option<IpAddr>,
@@ -14,7 +16,6 @@ pub struct DiscoveredNetwork {
 }
 
 pub async fn discover_network(
-    port: u16,
     public_ip: PublicIpDiscovery,
 ) -> Result<DiscoveredNetwork, NetworkError> {
     let mut addresses = routable_interface_addresses()?;
@@ -32,7 +33,7 @@ pub async fn discover_network(
         public_ip,
         endpoints: addresses
             .into_iter()
-            .map(|address| AdvertisedEndpoint(SocketAddr::new(address, port)))
+            .map(|address| AdvertisedEndpoint(SocketAddr::new(address, WIREGUARD_PORT)))
             .collect(),
     })
 }

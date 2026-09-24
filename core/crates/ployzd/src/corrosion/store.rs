@@ -212,7 +212,7 @@ impl ReplicatedStore {
         }
         self.api
             .execute([Statement::new(
-                "INSERT INTO machines (id, info, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now')) ON CONFLICT (id) DO UPDATE SET info = excluded.info, updated_at = excluded.updated_at",
+                "INSERT INTO machines (id, info) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET info = excluded.info",
                 [json!(machine.id), json!(serde_json::to_string(machine)?)],
             )])
             .await?;
@@ -222,7 +222,7 @@ impl ReplicatedStore {
     pub async fn publish_cluster_network(&self, network: Ipv4Net) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
-                "INSERT INTO cluster (key, value, updated_at) VALUES ('network', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                "INSERT INTO cluster (key, value) VALUES ('network', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 [json!(network.to_string())],
             )])
             .await?;
@@ -270,7 +270,7 @@ impl ReplicatedStore {
     ) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
-                "INSERT INTO cluster (key, value, updated_at) VALUES ('hosted_dns', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 [json!(serde_json::to_string(reservation)?)],
             )])
             .await
@@ -572,7 +572,7 @@ impl ReplicatedStore {
     ) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
-                "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+                "INSERT INTO certificates (hostname, body) VALUES (?, ?) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body",
                 [json!(hostname.as_str()), json!(row.encode()?)],
             )])
             .await
@@ -871,7 +871,7 @@ impl LocalVolumeSnapshot {
 
 fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Error> {
     Ok(Statement::new(
-        "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
+        "INSERT INTO containers (id, container, machine_id) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id",
         [
             json!(observation.container_id),
             json!(serde_json::to_string(observation)?),
@@ -880,9 +880,11 @@ fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Err
     ))
 }
 
+const VOLUME_UPSERT: &str = "INSERT INTO volumes (machine_id, name, volume) VALUES (?, ?, ?) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume";
+
 fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
     Ok(Statement::new(
-        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        VOLUME_UPSERT,
         [
             json!(volume.id.machine_id),
             json!(volume.id.name),
@@ -893,7 +895,7 @@ fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
 
 fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Statement {
     Statement::new(
-        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        VOLUME_UPSERT,
         [
             json!(machine_id),
             json!(name),

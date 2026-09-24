@@ -191,6 +191,34 @@ async fn set_cloud_pairing_persists_only_public_client_keys() {
     assert!(!text.contains(&serde_json::to_string(capability.client_secret()).unwrap()));
 }
 
+/// A later daemon may add optional fields anywhere in the record; this reader
+/// must reopen it without losing a known value.
+#[tokio::test]
+async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
+    let dir = TestDir::new("ployzd-record-unknown-fields");
+    let local = participating(&dir).await;
+    local
+        .set_cloud_pairing(SetCloudPairingRequest::Set {})
+        .await
+        .unwrap();
+    drop(local);
+    let known = LocalMachineStore::open(&dir.0).unwrap().record().clone();
+
+    let path = dir.0.join("machine.json");
+    let mut persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for pointer in ["/body/machine", ""] {
+        persisted
+            .pointer_mut(pointer)
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .insert("added_by_a_later_daemon".into(), serde_json::json!(1));
+    }
+    fs::write(&path, persisted.to_string()).unwrap();
+
+    assert_eq!(LocalMachineStore::open(&dir.0).unwrap().record(), &known);
+}
+
 #[tokio::test]
 async fn set_cloud_pairing_clear_persists() {
     let dir = TestDir::new("ployzd-clear-cloud-pairing");

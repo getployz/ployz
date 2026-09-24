@@ -428,7 +428,7 @@ fn plan(name: &str, machines: usize) -> ClusterPlan {
 fn publish_certificate_policy(cluster: &Cluster, index: usize, directory_url: &str) {
     let body = serde_json::json!({ "directory_url": directory_url }).to_string();
     let payload = serde_json::to_string(&serde_json::json!([{
-        "query": "INSERT INTO cluster (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        "query": "INSERT INTO cluster (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         "params": [CERTIFICATE_POLICY_CLUSTER_KEY, body],
     }]))
     .unwrap();

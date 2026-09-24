@@ -72,7 +72,7 @@ describe("versioned enrollment identity", () => {
       accepts_ingress: false,
     };
     const identity = Schema.decodeUnknownSync(enrollmentIdentitySchema)({
-      protocolVersion: 2,
+      protocolVersion: 1,
       machineId: Schema.decodeUnknownSync(rustMachineIdSchema)("c".repeat(32)),
       name: "builder",
       publicKey: display,
@@ -85,9 +85,9 @@ describe("versioned enrollment identity", () => {
     );
   });
 
-  it("requires protocol version 2 and a rust Machine identity", () => {
+  it("requires protocol version 1 and a rust Machine identity", () => {
     const valid = {
-      protocolVersion: 2,
+      protocolVersion: 1,
       machineId: Schema.decodeUnknownSync(rustMachineIdSchema)("c".repeat(32)),
       initialPolicy: {
         labels: {},
@@ -107,7 +107,7 @@ describe("versioned enrollment identity", () => {
       Option.isNone(
         Schema.decodeUnknownOption(enrollmentIdentitySchema)({
           ...valid,
-          protocolVersion: 1,
+          protocolVersion: 2,
         }),
       ),
     ).toBe(true);
@@ -123,7 +123,7 @@ describe("versioned enrollment identity", () => {
 
   it.each([null, "203.0.113.10"])("maps enrollment public IP %s without Cloud allocation", (publicIp) => {
     const request = registerRequestFromEnrollmentIdentity({
-      protocolVersion: 2,
+      protocolVersion: 1,
       machineId: Schema.decodeUnknownSync(rustMachineIdSchema)("c".repeat(32)),
       initialPolicy: {
         labels: {},

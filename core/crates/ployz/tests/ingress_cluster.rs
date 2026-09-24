@@ -860,7 +860,7 @@ fn publish_certificate_row(
         "private_key": private_key,
     });
     let payload = serde_json::to_string(&serde_json::json!([{
-        "query": "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+        "query": "INSERT INTO certificates (hostname, body) VALUES (?, ?) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body",
         "params": [hostname, body.to_string()],
     }]))
     .unwrap();
