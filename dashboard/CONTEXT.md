@@ -60,12 +60,16 @@ _Avoid_: Token use, bootstrap report, machine acceptance
 The Organization-scoped assignment of one Server to found its Organization Cluster. It has no automatic expiry or transfer; the matching Server resumes it until completion or an operator performs a Manual Founding Reset.
 _Avoid_: Token claim, founder election, leader election, founder failover
 
+**Cloud Pairing**:
+Cloud's Organization-scoped association with one Cluster generation, held on each Server as its `cloud` Management Client. The runtime knows only the Management Client, never the Organization or the Pairing Credential.
+_Avoid_: Management Client, Cluster membership, live connection
+
 **Connection Candidate**:
 An Organization's protected access descriptor for one Server in its current Cloud Pairing. It permits a connection attempt but establishes neither membership nor live presence.
 _Avoid_: Server catalog, online Server, registered member
 
 **Management Capability**:
-The protected bearer a Connection Candidate holds for reaching one Server over the in-process management transport. It grants shared administrative access; rotation revokes every previous holder, and removal is confirmed by a successful Clear response or an authenticated response explicitly confirming that the pairing is cleared, never by absence or timeout.
+The protected bearer a Connection Candidate holds for reaching one Server over the in-process management transport. It grants shared administrative access; rotation revokes every previous holder, and removal is confirmed by a successful Clear response or an authenticated response explicitly confirming that the Server's `cloud` Management Client is cleared, never by absence or timeout.
 _Avoid_: per-user permission, Pairing Credential, presence proof
 
 **Management Identity**:

@@ -328,11 +328,11 @@ The endpoint one observing Machine currently selects for reaching a target Machi
 _Avoid_: Advertised Endpoint, globally current endpoint
 
 **Cloud Pairing**:
-Cloud's Organization-scoped association with one Cluster generation. It scopes enrollment and connection candidates; it is neither Cluster membership nor evidence of reachability.
-_Avoid_: live connection, Cluster authority, per-Machine identity
+Cloud's Organization-scoped association with one Cluster generation, held on each Machine as the `cloud` Management Client. It scopes enrollment and connection candidates; the daemon never sees it, and it is neither Cluster membership nor evidence of reachability.
+_Avoid_: live connection, Cluster authority, per-Machine identity, Management Client
 
 **Standalone Cluster**:
-A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. It is fully operable but receives no Cloud-driven features; a Management Capability is only minted through a Cloud Pairing today.
+A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. It is fully operable but receives no Cloud-driven features; today only Cloud holds a Management Client.
 _Avoid_: self-hosted cluster, offline mode, unpaired as a fault
 
 **Release Channel**:
@@ -344,13 +344,17 @@ The Ployz-run service that grants a Cluster Domain and serves its public records
 _Avoid_: Uncloud DNS, Cloud DNS, generated domain as Cloud state
 
 **Pairing Credential**:
-The secret identifying the current Cloud Pairing and authenticating enrollment callbacks for that attempt. It is distinct from a Machine's Management Capability.
+The secret identifying the current Cloud Pairing and authenticating the CLI's enrollment callbacks to Cloud for that attempt. It never reaches the daemon and is distinct from a Machine's Management Capability.
 _Avoid_: Management Capability, Machine identity, presence proof
 
 **Management Capability**:
 A protected bearer granting shared administrative Machine RPC access to one Machine over the management transport. Possession does not prove the intended Machine identity or Cloud Organization authorization.
-It is shared administrative authority, not per-user access; rotation revokes every previous holder, and Cloud logout does not revoke a separately held capability.
+It is shared administrative authority, not per-user access; rotating a Management Client revokes every previous holder of that client's capability, and Cloud logout does not revoke a separately held capability.
 _Avoid_: per-user permission, read-only grant, Pairing Credential, management endpoint
+
+**Management Client**:
+One named holder slot on a Machine, such as `cloud`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections. The Machine knows holders, never the people or Organizations behind them.
+_Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Identity**:
 The Machine's iroh public key, identifying its management plane to Cloud and the remote CLI. It is not a mesh peer, a Machine ID, or the WireGuard key.
