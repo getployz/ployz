@@ -61,7 +61,6 @@ jobs:
       - run: bash core/scripts/test-cli-installer.sh
       - run: bash core/scripts/test-release-packaging.sh
       - run: bash core/scripts/test-daemon-lifecycle.sh
-      - run: bash core/scripts/test-qualify-clean-init.sh
       - uses: dtolnay/rust-toolchain@1.97.1
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
         with:

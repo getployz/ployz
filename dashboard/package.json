@@ -18,7 +18,6 @@
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
     "db:generate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs generate",
     "db:migrate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs migrate",
-    "db:migrate:fresh": "node --env-file-if-exists=.env scripts/db-migrate-fresh.mjs && node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs migrate",
     "db:reset": "node --env-file-if-exists=.env scripts/db-reset.mjs && node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs migrate",
     "db:studio": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs studio",
     "pr:check": "bash scripts/pr-check.sh",

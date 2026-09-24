@@ -13,7 +13,7 @@ RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
     "check-layer3-runner.sh",
     "run-layer3-tests.sh", "test-cli-installer.sh", "test-daemon-lifecycle.sh",
-    "test-qualify-clean-init.sh", "qualify-clean-init.sh", "uninstall.sh", "stage-ployz-sh-site.sh",
+    "uninstall.sh", "stage-ployz-sh-site.sh",
     "check-release-tag.sh", "release-tag.sh", "promote-release.sh",
     "publish-github-release.sh",
 }
