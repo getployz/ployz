@@ -249,7 +249,7 @@ fn create(
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     // Always supply a config, so ambient Buildx configuration cannot replace
-    // execution-host policy. Empty config retains the pinned BuildKit defaults.
+    // execution-host policy.
     let config = docker.working_dir.join("buildkitd.toml");
     fs::write(&config, resources.buildkit_config()).map_err(|error| {
         BuildError::Prerequisite(format!("write BuildKit host configuration: {error}"))

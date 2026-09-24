@@ -11,6 +11,7 @@ export {
   markDeploymentStatus,
   ownsDeploymentRun,
   persistSdkDeployPreview,
+  persistImageCleanup,
   persistSdkDeployOutcome,
   recordInngestRun,
 } from "./runtime-lifecycle.repository.server";

@@ -311,6 +311,16 @@ export const persistSdkDeployOutcome = Effect.fn(
   yield* dispatchReleasedVolumeRemoveAttempts(released);
 });
 
+/** Record Image Cleanup on a terminal Deployment; its status never changes. */
+export const persistImageCleanup = Effect.fn("Deployments.persistImageCleanup")(function* (
+  environmentDeploymentId: string, imageCleanup: NonNullable<DeploymentProgress["imageCleanup"]>,
+) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(schemaEnvironmentDeployment)
+    .set({ runtimeProgress: sql`jsonb_set(${schemaEnvironmentDeployment.runtimeProgress}, '{imageCleanup}', ${JSON.stringify(imageCleanup)}::jsonb)` })
+    .where(and(eq(schemaEnvironmentDeployment.id, environmentDeploymentId), isNotNull(schemaEnvironmentDeployment.runtimeProgress)));
+});
+
 export const persistSdkDeployPreview = Effect.fn(
   "Deployments.persistSdkDeployPreview",
 )(function* (input: {

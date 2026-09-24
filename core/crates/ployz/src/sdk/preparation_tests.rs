@@ -107,6 +107,92 @@ async fn deploy(
 }
 
 #[tokio::test]
+async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() {
+    for cleanup in [
+        crate::sdk::ImageCleanup::Auto,
+        crate::sdk::ImageCleanup::Manual,
+    ] {
+        let (root, service, _) = fixture();
+        let destination = machine('b', "application").machine.id;
+        let (session, server) = session(service).await;
+        let prepared = session
+            .prepare(input(&root, vec![git("one", "dockerfile")]))
+            .unwrap()
+            .finished()
+            .await
+            .unwrap();
+        assert_eq!(
+            prepared.prune_targets(),
+            [ployz_core::PruneTarget {
+                machine_id: destination,
+                repository: "ployz-build/one".into(),
+            }]
+        );
+        let running = prepared.confirm_with_log_id(None, cleanup).unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = running.next().await {
+            events.push(event);
+        }
+        running.finished().await.unwrap();
+        let last = events.pop().unwrap();
+        match cleanup {
+            crate::sdk::ImageCleanup::Auto => {
+                assert!(matches!(
+                    events.last(),
+                    Some(ployz_core::DeployEvent::Outcome { .. })
+                ));
+                assert_eq!(
+                    last,
+                    ployz_core::DeployEvent::ImagesPruned {
+                        report: ployz_core::ImageCleanupReport {
+                            machines: vec![ployz_core::MachineImageCleanup {
+                                machine_id: destination,
+                                result: ployz_core::MachineCleanupResult::Cleaned {
+                                    removals: Vec::new()
+                                },
+                            }],
+                        },
+                    }
+                );
+            }
+            crate::sdk::ImageCleanup::Manual => {
+                assert!(matches!(last, ployz_core::DeployEvent::Outcome { .. }));
+                let report = session
+                    .prune_images(prepared.prune_targets())
+                    .await
+                    .unwrap();
+                assert_eq!(report.machines.len(), 1);
+            }
+        }
+        session.close().await;
+        assert_eq!(
+            session
+                .prune_images(prepared.prune_targets())
+                .await
+                .unwrap_err()
+                .code,
+            RpcErrorCode::Unavailable
+        );
+        server.abort();
+    }
+}
+
+#[test]
+fn image_cleanup_mode_rejects_unknown_spellings() {
+    assert_eq!(
+        "manual".parse::<crate::sdk::ImageCleanup>().unwrap(),
+        crate::sdk::ImageCleanup::Manual
+    );
+    assert_eq!(
+        "later"
+            .parse::<crate::sdk::ImageCleanup>()
+            .unwrap_err()
+            .code,
+        RpcErrorCode::InvalidArgument
+    );
+}
+
+#[tokio::test]
 async fn automatic_preparation_builds_every_service_on_one_build_machine() {
     let (root, service, builds) = fixture();
     let created = service.created_specs();
@@ -360,7 +446,9 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
                 size: 1,
                 containers: 0,
                 platforms: vec!["linux/amd64".into()],
+                last_tagged: None,
             }],
+            docker_root: None,
         },
     );
     builds.pull_failures.lock().unwrap().insert(
@@ -486,7 +574,9 @@ async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
                 .iter()
                 .map(|platform| (*platform).to_owned())
                 .collect(),
+            last_tagged: None,
         }],
+        docker_root: None,
     };
     // The prototype's partial peer: the index is listed, ARM64 data is absent.
     builds
@@ -569,7 +659,9 @@ async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
                 .iter()
                 .map(|platform| (*platform).to_owned())
                 .collect(),
+            last_tagged: None,
         }],
+        docker_root: None,
     };
     // The tag is visible on both peers; only one holds the AMD64 content.
     builds

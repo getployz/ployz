@@ -5,6 +5,7 @@ import type {
   EnvironmentDeploymentStatus,
 } from "#/modules/deployments/tables";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
+import type { DeploymentProgress } from "./deployment-progress";
 import type { DeploymentTriggerOrigin } from "#/modules/deployments/deployment";
 import type {
   EnvironmentDeploySnapshot,
@@ -27,6 +28,7 @@ export type DeploymentContext = {
     variableProducers?: EnvironmentSnapshotVariableProducer[] | null;
     triggerOrigin?: DeploymentTriggerOrigin;
     serviceActionPolicy?: EnvironmentDeploymentServiceActionPolicy | null;
+    runtimeProgress?: DeploymentProgress | null;
   };
   environment: {
     id: string;

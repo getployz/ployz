@@ -1,5 +1,6 @@
 mod create;
 mod http_health;
+mod images;
 mod lifecycle;
 mod managed_service;
 mod observe;
@@ -32,7 +33,7 @@ use bollard::{
 use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
+    ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
     ImageSummary, MachineId, MachineImages, MachineTelemetry, ProjectName, QualifiedService,
     RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
@@ -147,7 +148,11 @@ impl ContainerRuntime {
         ))
     }
 
-    pub async fn list_images(&self, reference: Option<&str>) -> Result<MachineImages, Error> {
+    pub async fn list_images(
+        &self,
+        reference: Option<&str>,
+        last_tagged: bool,
+    ) -> Result<MachineImages, Error> {
         let filters = reference
             .map(|reference| HashMap::from([("reference", vec![reference])]))
             .unwrap_or_default();
@@ -156,18 +161,34 @@ impl ContainerRuntime {
             .filters(&filters)
             .manifests(true)
             .build();
-        let images = self
-            .docker
-            .client
-            .list_images(Some(options))
+        let listed = self.docker.client.list_images(Some(options)).await?;
+        let tagged = if last_tagged {
+            futures_util::future::try_join_all(
+                listed.iter().map(|image| self.last_tagged(&image.id)),
+            )
             .await?
+        } else {
+            vec![None; listed.len()]
+        };
+        let images = listed
             .into_iter()
-            .map(project_image)
+            .zip(tagged)
+            .map(|(image, last_tagged)| ImageSummary {
+                last_tagged,
+                ..project_image(image)
+            })
             .collect();
         let info = self.docker.client.info().await?;
         Ok(MachineImages {
             containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
             images,
+            docker_root: info
+                .docker_root_dir
+                .and_then(|root| crate::host_capacity::filesystem_space(&root).ok())
+                .map(|(total_bytes, free_bytes)| DiskSpace {
+                    total_bytes,
+                    free_bytes,
+                }),
         })
     }
 
@@ -369,6 +390,7 @@ fn project_image(image: bollard::models::ImageSummary) -> ImageSummary {
         size: image.size,
         containers: image.containers,
         platforms,
+        last_tagged: None,
     }
 }
 

@@ -113,6 +113,10 @@ class Client {
     return running.finished;
   }
 
+  pruneImages(targets) {
+    return withRpcError(this._inner.pruneImages(targets));
+  }
+
   removeVolumes(request) {
     return withRpcError(this._inner.removeVolumes(request));
   }
@@ -152,10 +156,11 @@ function wrapPreview(handle) {
     ...payload,
     noop: payload.operations.length === 0,
     buildReceipts: handle.buildReceipts(),
+    pruneTargets: handle.pruneTargets(),
     close: () => handle.close(),
     confirm(options = {}) {
       try {
-        return wrapRunning(handle.confirm(options?.deploymentId), options && options.signal);
+        return wrapRunning(handle.confirm(options?.deploymentId, options?.imageCleanup), options && options.signal);
       } catch (error) {
         throwRpcError(error);
       }

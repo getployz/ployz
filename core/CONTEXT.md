@@ -130,6 +130,10 @@ _Avoid_: Compose project, deployment resource
 A bounded operation that makes an image held by one Machine, such as a Build result, available on selected Machines without requiring an external registry. It preserves layer-aware transfer.
 _Avoid_: Unregistry, image ingest as a product term
 
+**Image Cleanup**:
+Removing superseded images that Direct Image Transfer left on the Machines a Deploy delivered to. It runs after the Deploy Outcome, keeps recent unused images for rollback, never touches an image a Container uses, and never changes the Outcome.
+_Avoid_: Image prune, garbage collection
+
 **Build**:
 The work to produce one container image from source and a build recipe. A Deploy with three Git-sourced Services has three Builds.
 _Avoid_: Deploy, whole-project build as one Build

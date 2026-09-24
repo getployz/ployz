@@ -99,7 +99,7 @@ export type DependencyCondition = "service_started" | "service_healthy";
 
 export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, };
 
-export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, };
+export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, } | { "type": "images_pruned", report: ImageCleanupReport, };
 
 export type DeployIntent = {
 /**
@@ -266,6 +266,12 @@ export type HttpHealthcheck = { path: string, port: number, timeout_seconds: num
 
 export type HttpProtocol = "http" | "https";
 
+export type ImageCleanupReport = { machines: Array<MachineImageCleanup>, };
+
+export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
+
+export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
+
 export type IngressHost = string;
 
 export type IngressHostname = { "kind": "cluster_domain", label: ClusterDomainLabel | null, } | { "kind": "explicit", hostname: IngressHost, };
@@ -324,6 +330,8 @@ accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubne
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
+export type MachineCleanupResult = { "status": "cleaned", removals: Array<ImageRemoval>, } | { "status": "unsupported" } | { "status": "unknown", message: string, };
+
 export type MachineDetails = { id: MachineId, phase: LocalMachinePhase, machine: Machine | null, public_key: WireGuardPublicKey, advertised_endpoints: Array<AdvertisedEndpoint>, store_version: { [key in string]: number }, rtts: Array<RttObservation>,
 /**
  * Labels of Management Client slots holding an accepted or pending key.
@@ -343,6 +351,8 @@ export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 export type MachineId = string & { readonly __brand: "MachineId" };
 
 export type MachineIdentity = { id: MachineId, name: MachineName, };
+
+export type MachineImageCleanup = { machine_id: MachineId, result: MachineCleanupResult, };
 
 export type MachineLabelKey = string;
 
@@ -531,6 +541,12 @@ export type ProjectName = string;
 export type ProvisionedVolumeMaximumBytes = number;
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services";
+
+export type PruneTarget = { machine_id: MachineId,
+/**
+ * Docker's short repository name, as `docker image ls` prints it.
+ */
+repository: string, };
 
 export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
 

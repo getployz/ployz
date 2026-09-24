@@ -34,7 +34,7 @@ const SPINNER_FILES = {
   "components/data-loss/data-loss-confirm-dialog.tsx": "submit in flight",
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
-  "components/deployment-status-card.tsx": "deployment running",
+  "components/deployment-status-card.tsx": "deployment or image cleanup running",
   "components/navigation-switcher.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",

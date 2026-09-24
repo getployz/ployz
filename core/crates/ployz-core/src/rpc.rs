@@ -363,6 +363,10 @@ pub struct MachineLogsRequest {
 pub struct ListImagesRequest {
     #[serde(default)]
     pub reference: Option<String>,
+    /// Inspect each listed image for [`ImageSummary::last_tagged`]; one Docker
+    /// read per image, so only narrow listings should ask.
+    #[serde(default)]
+    pub last_tagged: bool,
 }
 
 /// Empty payload of the command that returns this Machine's image-ingest TCP destination.
@@ -474,6 +478,44 @@ impl PeerImagePull {
 /// Successful `PullImageFromMachine` payload.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
+
+/// Remove image references from this Machine's store. Never forced: a reference
+/// whose image any Container uses is kept and reported in use.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoveImagesRequest {
+    pub references: Vec<String>,
+}
+
+/// One result per requested reference, in request order.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImagesRemoved {
+    pub results: Vec<ImageRemoval>,
+}
+
+/// What happened to one requested reference.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ImageRemoval {
+    pub reference: String,
+    pub outcome: ImageRemovalOutcome,
+}
+
+/// Per-reference removal result. Open: a status this build does not know decodes as
+/// `unrecognized`, so a newer Machine never breaks an older client's whole report.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ImageRemovalOutcome {
+    /// The reference no longer exists on this Machine.
+    Removed,
+    /// A Container, running or not, uses the image; it was kept.
+    InUse,
+    /// The Machine had no such reference.
+    NotFound,
+    /// Docker refused for another reason; the reference may remain.
+    Failed { message: String },
+    /// A status introduced after this build.
+    #[serde(other)]
+    Unrecognized,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 /// Request the exact generated Caddy configuration.
@@ -749,12 +791,26 @@ pub struct ImageSummary {
     pub size: i64,
     pub containers: i64,
     pub platforms: Vec<String>,
+    /// Unix seconds this Machine last tagged the image, when the listing asked.
+    /// Unlike `created`, it differs between reproducible builds.
+    #[serde(default)]
+    pub last_tagged: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineImages {
     pub containerd_store: bool,
     pub images: Vec<ImageSummary>,
+    /// Docker-root filesystem space, when the Machine could read it.
+    #[serde(default)]
+    pub docker_root: Option<DiskSpace>,
+}
+
+/// One filesystem's size and free bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiskSpace {
+    pub total_bytes: u64,
+    pub free_bytes: u64,
 }
 
 /// Exact Caddyfile consumed by the Ingress Proxy.
@@ -892,6 +948,7 @@ define_responses! {
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
+    ImagesRemoved(ImagesRemoved) => "images_removed";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";

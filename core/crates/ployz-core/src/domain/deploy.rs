@@ -726,6 +726,8 @@ pub enum DeployEvent {
     Outcome {
         outcome: DeployOutcome<ExecutionError>,
     },
+    /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
+    ImagesPruned { report: super::ImageCleanupReport },
 }
 
 /// One planned operation plus its current execution status.

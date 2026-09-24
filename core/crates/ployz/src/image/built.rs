@@ -123,9 +123,7 @@ impl Source {
         // Docker's reference filter does not match repository@digest; read the
         // whole store and compare identities.
         let store = cancellation
-            .race(
-                client.call::<op::ListImages>(ListImagesRequest { reference: None }, Some(&target)),
-            )
+            .race(client.call::<op::ListImages>(ListImagesRequest::default(), Some(&target)))
             .await??;
         if !store.containerd_store {
             return Err(PushError::UnsupportedImageStore);
@@ -324,7 +322,9 @@ mod tests {
                     .iter()
                     .map(|platform| (*platform).to_owned())
                     .collect(),
+                last_tagged: None,
             }],
+            docker_root: None,
         }
     }
 

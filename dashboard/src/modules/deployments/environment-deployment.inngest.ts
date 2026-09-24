@@ -23,6 +23,7 @@ import { parseErrorEvidence } from "#/lib/error-evidence";
 import { TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/runtime-contract";
 import { DeploymentExecutionError } from "#/modules/deployments/execution-error";
 import {
+  cleanUpDeploymentImages,
   executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
@@ -276,6 +277,12 @@ export async function executeProcessEnvironmentDeployment(
     ));
     if (completed && !isTerminalEnvironmentDeployment(completed)) {
       throw new DeploymentExecutionError({ failureCode: "sdk_deploy_outcome_unknown", message: "Runtime execution ended without a durable outcome; effects are unknown." });
+    }
+    // The terminal row released the Environment slot; cleanup never holds it.
+    if (completed?.deployment.runtimeProgress?.imageCleanup?.state === "running") {
+      await step.run("clean-up-images", () =>
+        runEffect(Effect.scoped(cleanUpDeploymentImages(environmentDeploymentId))),
+      );
     }
     return { environmentDeploymentId, status: completed?.deployment.status ?? "missing" };
 

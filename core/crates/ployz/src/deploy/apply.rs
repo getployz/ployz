@@ -305,7 +305,7 @@ fn progress_signature(event: &DeployEvent) -> String {
                 .collect();
             format!("{completed}:{}", kinds.join(","))
         }
-        DeployEvent::Outcome { .. } => String::new(),
+        DeployEvent::Outcome { .. } | DeployEvent::ImagesPruned { .. } => String::new(),
     }
 }
 

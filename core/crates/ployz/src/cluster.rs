@@ -598,7 +598,10 @@ impl Client {
             async move {
                 let response = client
                     .read::<op::ListImages>(
-                        ListImagesRequest { reference },
+                        ListImagesRequest {
+                            reference,
+                            last_tagged: false,
+                        },
                         &MachineTarget::from(&machine_id),
                     )
                     .await;

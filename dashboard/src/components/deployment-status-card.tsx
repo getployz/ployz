@@ -18,6 +18,16 @@ function Step({ title, detail, state, children }: { title: string; detail: strin
     </div>
   </div>;
 }
+// Finishing-up work after the Deployment is terminal: deliberately quiet, never a status.
+function ImageCleanupLine({ cleanup }: { cleanup: NonNullable<DeploymentProgress["imageCleanup"]> }) {
+  const machines = `${cleanup.machines} ${cleanup.machines === 1 ? "Server" : "Servers"}`;
+  const [icon, text] = {
+    running: [<Spinner className="size-3" />, "Cleaning up old images…"],
+    warning: [<TriangleAlertIcon className="size-3" />, `Old image cleanup incomplete · ${machines}`],
+    cleaned: [<CheckIcon className="size-3" />, `Cleaned up old images · ${machines}`],
+  }[cleanup.state];
+  return <p className="flex items-center gap-2 px-4 py-1.5 text-xs text-muted-foreground sm:px-6">{icon}{text}</p>;
+}
 export function summarizeRows(rows: readonly DeploymentProgressRow[]) {
   const replicas = rows.filter((r) => r.operation === "replace_container" || r.operation === "run_container");
   const done = rows.filter((r) => r.status === "completed").length;
@@ -112,6 +122,7 @@ export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs
         {unknown ? <p className="mt-2 text-xs text-muted-foreground">A complete runtime outcome was not received. Completed operations remain recorded; remaining effects are unknown.</p> : null}
       </Step>
       <Step title="Post-deploy" state={postDone ? "completed" : progress?.outcome === "success" && active ? "running" : "pending"} detail={postDone ? "Applied state recorded" : "Record applied state"} />
+      {progress?.imageCleanup ? <ImageCleanupLine cleanup={progress.imageCleanup} /> : null}
       {deployment.deployPreview?.warnings.length ? <details className="mx-6 my-2 text-xs"><summary className="cursor-pointer text-warning">{deployment.deployPreview.warnings.length} planning warnings</summary>{deployment.deployPreview.warnings.map((w, i) => <p key={i} className="mt-2 break-words">{JSON.stringify(w)}</p>)}</details> : null}
       {children}
     </div> : null}

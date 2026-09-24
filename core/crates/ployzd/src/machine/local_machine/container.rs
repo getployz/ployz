@@ -5,8 +5,8 @@ use std::{path::Path, sync::Arc};
 use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
     CreateVolumeRequest, DockerVolumeName, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    LocalMachinePhase, MachineStorageObservation, ProjectName, PullImageFromMachineRequest,
-    ResolvedServiceSpec, VolumeRemoved,
+    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, ProjectName,
+    PullImageFromMachineRequest, ResolvedServiceSpec, VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -216,6 +216,29 @@ impl LocalMachine {
                 .remove_volume(&name, force)
                 .await?;
             Ok(VolumeRemoved {})
+        })
+        .await
+    }
+
+    /// Remove unused image references while holding Machine mutation admission, so no
+    /// Container is created from a reference as it is removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot list
+    /// Containers.
+    pub(crate) async fn remove_images(
+        &self,
+        references: Vec<String>,
+    ) -> Result<ImagesRemoved, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            Ok(local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .remove_images(&references)
+                .await?)
         })
         .await
     }

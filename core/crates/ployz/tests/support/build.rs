@@ -36,6 +36,7 @@ impl BuildFixture {
             .unwrap_or(MachineImages {
                 containerd_store: true,
                 images: Vec::new(),
+                docker_root: None,
             })
     }
 
@@ -73,6 +74,7 @@ impl BuildFixture {
             let store = stores.entry(machine).or_insert(MachineImages {
                 containerd_store: true,
                 images: Vec::new(),
+                docker_root: None,
             });
             let platforms = vec![pull.platform.clone()];
             match store.images.iter_mut().find(|stored| stored.id == id) {
@@ -87,6 +89,7 @@ impl BuildFixture {
                     size: 1,
                     containers: 0,
                     platforms,
+                    last_tagged: None,
                 }),
             }
         }
@@ -201,6 +204,7 @@ impl BuildFixture {
                     let store = stores.entry(machine_id).or_insert(MachineImages {
                         containerd_store: true,
                         images: Vec::new(),
+                        docker_root: None,
                     });
                     // Keep content after another Build overwrites the requested tag.
                     for stored in &mut store.images {
@@ -215,6 +219,7 @@ impl BuildFixture {
                             size: 1,
                             containers: 0,
                             platforms: image.platforms.clone(),
+                            last_tagged: None,
                         }));
                     Outcome::Images { machine_id, images }
                 }

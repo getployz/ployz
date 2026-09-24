@@ -270,6 +270,7 @@ impl MachineRpc for DeployService {
                     ployz_core::BUILD_CAPABILITY,
                     ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY,
                     ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+                    ployz_core::REMOVE_IMAGES_CAPABILITY,
                 ]
                 .map(|name| CapabilityName::parse(name).unwrap()),
             );
@@ -735,6 +736,7 @@ impl MachineRpc for DeployService {
             .unwrap_or(MachineImages {
                 containerd_store: self.builds.is_some(),
                 images: Vec::new(),
+                docker_root: None,
             });
         encoded(RpcResponse::from(images))
     }
@@ -752,6 +754,12 @@ impl MachineRpc for DeployService {
             return encoded(RpcResponse::from(builds.open(&machine.machine)));
         }
         self.record_mutation();
+        unused()
+    }
+    async fn remove_images(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
     async fn pull_image_from_machine(

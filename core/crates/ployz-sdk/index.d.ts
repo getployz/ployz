@@ -6,6 +6,8 @@ import type {
   DeployPreview,
   VolumeRemoval,
   ExecutionError,
+  ImageCleanupReport,
+  PruneTarget,
   MachineId,
   MachineDetails,
   MachineTarget,
@@ -57,7 +59,11 @@ export type LogOptions = WatchOptions & { filter?: LogFilter; tail?: number; fol
 export type LogHistoryOptions = WatchOptions & { filter?: LogFilter; before: Record<string, string>; limit?: number };
 export type LogHistoryPage = { records: LogRecord[]; errors: LogSourceError[] };
 
-export type ConfirmOptions = WatchOptions & { deploymentId?: string };
+export type ConfirmOptions = WatchOptions & {
+  deploymentId?: string;
+  /** "auto" (default) cleans up after the Outcome, before `finished` settles. "manual" leaves it to `pruneImages(pruneTargets)`. */
+  imageCleanup?: "auto" | "manual";
+};
 
 export type RunOptions = WatchOptions;
 
@@ -76,6 +82,8 @@ export type BuildReceipts = Record<string, BuildReceipt>;
 export type PreparedDeploy = DeployPreview & {
   readonly buildReceipts: BuildReceipts;
   readonly noop: boolean;
+  /** Image Cleanup scope as plain data, for a later `pruneImages`. */
+  readonly pruneTargets: PruneTarget[];
   /** Release unconfirmed retained image resources. */
   close(): void;
   confirm(options?: ConfirmOptions): RunningDeploy;
@@ -145,6 +153,8 @@ export declare class Client {
     intent: DeployIntent,
     options?: RunOptions,
   ): Promise<DeployOutcome<ExecutionError>>;
+  /** Per-Machine results; never rejects for a Machine's failure. */
+  pruneImages(targets: readonly PruneTarget[]): Promise<ImageCleanupReport>;
   removeVolumes(
     request: RemoveVolumesRequest,
   ): Promise<VolumeRemoval[]>;

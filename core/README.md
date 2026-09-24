@@ -89,8 +89,9 @@ the builder.
 
 Configure the daemon user on each Build Machine in `~/.ployz/build.yaml`. If `HOME` is unset or empty, the user's account
 home is used. The file is read once at admission. All fields
-are optional; omitted CPU/memory limits are disabled and unconfigured GC keeps
-BuildKit 0.26.2 defaults:
+are optional; omitted CPU/memory limits are disabled. Without `cache_bytes` or
+`min_free_bytes`, GC keeps a fifth of the Docker root filesystem free, with no
+reserved cache floor:
 
 ```yaml
 cpu_cores: 0.5
@@ -113,6 +114,16 @@ output, before removing the ephemeral worker. Active work can exceed the cache
 targets, and GC may not meet an impossible free-space target. Reusable build
 layers persist across builder recreation; independent cache-mount reuse is not
 promised.
+
+Image Cleanup removes superseded build images from the Machines a Deploy delivered
+to. Direct Image Transfer tags each delivered image `repository:ployz-sha256-<digest>`;
+only those tags, in repositories the Deploy built, are candidates. Per repository,
+Ployz keeps the three newest unused images and removes older ones idle for seven
+days. Below 20% free on a Machine's Docker root it keeps one and removes the rest.
+A Machine never removes an image any Container uses, running or not. The SDK
+cleans up after each Deploy by default and reports it as the last `images_pruned`
+event; pass `imageCleanup: "manual"` to run `pruneImages(pruneTargets)` yourself.
+Cleanup never changes the Deploy Outcome.
 
 Run `ployz machine build-cache-clear` **on the execution host as its build user**
 to clear Ployz's retained builder cache. It preserves completed Docker images and

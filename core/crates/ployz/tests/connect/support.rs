@@ -1066,7 +1066,9 @@ impl MachineRpc for DiscoveryService {
                     size: 0,
                     containers: 0,
                     platforms: vec!["linux/amd64".into()],
+                    last_tagged: None,
                 }],
+                docker_root: None,
             })
             .encode()
             .unwrap(),
@@ -1093,6 +1095,12 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn remove_images(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,

@@ -31,6 +31,7 @@ mod logs;
 mod payloads;
 mod preparation;
 pub(crate) mod prepare;
+pub use deploy::ImageCleanup;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{BuildReceipt, PreparationInput};
 
@@ -77,6 +78,7 @@ pub struct PreparedDeploy {
     session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
     retained: std::sync::Mutex<Option<Vec<crate::build::BuiltService>>>,
+    prune_targets: Vec<ployz_core::PruneTarget>,
 }
 
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
@@ -317,12 +319,14 @@ impl Session {
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             let build_receipts = preparation::receipts(&captured.fingerprints, &retained);
+            let prune_targets = crate::image::prune_targets(&preview, &retained);
             Ok(PreparedDeploy {
                 preview,
                 build_receipts,
                 session,
                 confirmed: AtomicBool::new(false),
                 retained: std::sync::Mutex::new(Some(retained)),
+                prune_targets,
             })
         });
         Ok(RunningPreparation {
@@ -355,6 +359,7 @@ impl Session {
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
             retained: std::sync::Mutex::new(None),
+            prune_targets: Vec::new(),
         })
     }
 
@@ -381,6 +386,7 @@ impl Session {
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
             retained: std::sync::Mutex::new(None),
+            prune_targets: Vec::new(),
         })
     }
 

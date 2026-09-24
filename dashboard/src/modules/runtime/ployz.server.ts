@@ -21,6 +21,8 @@ import type {
   PreparationEvent,
   ProjectName,
   RemoveVolumesRequest,
+  ImageCleanupReport,
+  PruneTarget,
   RuntimeWatchView,
   WatchOptions,
   VolumeRemoval,
@@ -110,6 +112,9 @@ export interface PloyzSession {
   readonly removeVolumes: (
     request: RemoveVolumesRequest,
   ) => Effect.Effect<VolumeRemoval[], PloyzSdkError>;
+  readonly pruneImages: (
+    targets: readonly PruneTarget[],
+  ) => Effect.Effect<ImageCleanupReport, PloyzSdkError>;
   readonly prepare: (
     input: PreparationInput,
     onEvent: (event: PreparationEvent) => Promise<void>,
@@ -210,7 +215,7 @@ function wrapPrepared(prepared: PreparedDeploy): PloyzPreparedDeploy {
     ...prepared,
     confirm: (onEvent, cancellation, deploymentId) => Effect.scoped(Effect.gen(function* () {
       const running = yield* Effect.acquireRelease(
-        Effect.try({ try: () => prepared.confirm({ signal: cancellation, deploymentId }), catch: (cause) => asSdkFailure("confirm", cause) }),
+        Effect.try({ try: () => prepared.confirm({ signal: cancellation, deploymentId, imageCleanup: "manual" }), catch: (cause) => asSdkFailure("confirm", cause) }),
         (running, exit) => Effect.promise(async () => {
           if (Exit.isFailure(exit)) running.abort();
           await running.finished.catch(() => undefined);
@@ -286,6 +291,8 @@ function wrapClient(client: Client): PloyzSession {
       ),
     removeVolumes: (request) =>
       sdkPromise("remove volumes", () => client.removeVolumes(request)),
+    pruneImages: (targets) =>
+      sdkPromise("prune images", () => client.pruneImages(targets)),
     prepare: (input, onEvent, cancellation) => Effect.gen(function* () {
       const secrets = input.deployment.snapshots.flatMap((snapshot) => Object.values(snapshot.resolvedEnv ?? {}));
       const running = yield* Effect.acquireRelease(

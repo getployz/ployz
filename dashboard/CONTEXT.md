@@ -173,7 +173,7 @@ One command restoring a field, node, or the whole Environment to the Environment
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Cloud Deployment Stage**:
-The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Source acquisition, builder selection, building, and image delivery are progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
+The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Source acquisition, builder selection, building, and image delivery are progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
 
 **Deploy Preview**:

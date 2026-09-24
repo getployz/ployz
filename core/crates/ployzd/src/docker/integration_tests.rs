@@ -21,8 +21,8 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, MachineGateway, MachineName,
-    ManagementAddress, ProjectName, PullPolicy, ResolvedServiceSpec,
+    AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, ImageRemoval, ImageRemovalOutcome,
+    MachineGateway, MachineName, ManagementAddress, ProjectName, PullPolicy, ResolvedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -1168,4 +1168,111 @@ fn unused_address() -> std::net::SocketAddr {
         .unwrap()
         .local_addr()
         .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires Docker with the containerd image store and alpine:3.23.3"]
+async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
+    let root = TestDir::new("ployzd-image-cleanup");
+    let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(
+        docker.clone(),
+        MachineSpecStore::open(root.0.join("machine.db"))
+            .await
+            .unwrap(),
+    );
+    let repository = format!("ployz-cleanup-{}/web", MachineId::random());
+    let [unused, used] = ["a", "b"].map(|tag| format!("{repository}:ployz-sha256-{tag}"));
+    let (repo, tag) = used.rsplit_once(':').unwrap();
+    docker
+        .client
+        .tag_image(
+            "alpine:3.23.3",
+            Some(
+                bollard::query_parameters::TagImageOptionsBuilder::default()
+                    .repo(repo)
+                    .tag(tag)
+                    .build(),
+            ),
+        )
+        .await
+        .unwrap();
+    let container = docker
+        .client
+        .create_container(
+            None::<bollard::query_parameters::CreateContainerOptions>,
+            ContainerCreateBody {
+                image: Some(used.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    // A distinct image that no Container uses.
+    let (repo, tag) = unused.rsplit_once(':').unwrap();
+    docker
+        .client
+        .commit_container(
+            bollard::query_parameters::CommitContainerOptionsBuilder::default()
+                .container(&container.id)
+                .repo(repo)
+                .tag(tag)
+                .build(),
+            bollard::models::ContainerConfig::default(),
+        )
+        .await
+        .unwrap();
+
+    let listed = runtime
+        .list_images(Some(&format!("{repository}:ployz-sha256-*")), true)
+        .await
+        .unwrap();
+    assert_eq!(listed.images.len(), 2);
+    assert!(
+        listed
+            .images
+            .iter()
+            .all(|image| image.last_tagged.is_some())
+    );
+    assert!(listed.docker_root.is_some());
+    let missing = format!("{repository}:ployz-sha256-missing");
+    let removed = runtime
+        .remove_images(&[unused.clone(), used.clone(), missing.clone()])
+        .await
+        .unwrap();
+
+    docker
+        .client
+        .remove_container(
+            &container.id,
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+        )
+        .await
+        .unwrap();
+    docker
+        .client
+        .remove_image(
+            &used,
+            None::<bollard::query_parameters::RemoveImageOptions>,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        removed.results,
+        [
+            ImageRemoval {
+                reference: unused,
+                outcome: ImageRemovalOutcome::Removed
+            },
+            ImageRemoval {
+                reference: used,
+                outcome: ImageRemovalOutcome::InUse
+            },
+            ImageRemoval {
+                reference: missing,
+                outcome: ImageRemovalOutcome::NotFound
+            },
+        ]
+    );
 }

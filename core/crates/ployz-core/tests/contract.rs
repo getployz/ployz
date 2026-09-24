@@ -7,25 +7,26 @@ use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ContainerCreated, ContainerHostname,
     ContainerId, ContainerKind, ContainerLabels, ContainerObservationMap,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
-    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordType, DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, HttpProtocol,
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
-    IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment,
-    InspectMachineUpgradeRequest, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, QualifiedService,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestMachineUpgradeRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted,
-    ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource,
-    encode_grpc_frame, grpc_frames, op,
+    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace,
+    DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
+    FanoutOutcome, FanoutResponse, FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
+    GET_INGRESS_PROXY_CONFIG_CAPABILITY, GetContainerObservationsRequest,
+    GetIngressProxyConfigRequest, HealthObservation, HttpProtocol, ImageIngestDestination,
+    ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
+    ImageSummary, ImagesRemoved, IngressHost, IngressHostname, IngressProxyConfig,
+    IngressProxyFragment, InspectMachineUpgradeRequest, InspectWireGuardRequest,
+    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
+    MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess,
+    MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NameMatches,
+    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    PartialResult, PortPublication, ProjectName, PublicIpDiscovery, PublicIpUpdate,
+    PullImageFromMachineRequest, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId,
+    ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -805,6 +806,7 @@ fn replicated_container_observation_contract_is_batched_and_complete() {
 fn image_list_contract_keeps_machine_local_store_and_platforms() {
     let request = op::ListImages::into_request(ListImagesRequest {
         reference: Some("example.test/api:1.*".into()),
+        last_tagged: true,
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
@@ -817,7 +819,12 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
             size: 42,
             containers: 1,
             platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
+            last_tagged: Some(1_790_000_000),
         }],
+        docker_root: Some(DiskSpace {
+            total_bytes: 80,
+            free_bytes: 8,
+        }),
     };
     let response = RpcResponse::from(images.clone());
     assert_eq!(
@@ -833,6 +840,47 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
     assert_eq!(request.body.command(), "list_images");
     assert_ne!(request.body.command(), "ensure_image_ingest");
+}
+
+#[test]
+fn image_removal_contract_reports_each_reference_without_force() {
+    let request = op::RemoveImages::into_request(RemoveImagesRequest {
+        references: vec!["ployz-build/web:ployz-sha256-1".into()],
+    });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert_eq!(request.body.command(), "remove_images");
+
+    let removed = ImagesRemoved {
+        results: vec![
+            ImageRemoval {
+                reference: "a".into(),
+                outcome: ImageRemovalOutcome::InUse,
+            },
+            ImageRemoval {
+                reference: "b".into(),
+                outcome: ImageRemovalOutcome::Failed {
+                    message: "disk".into(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        serde_json::to_value(&removed).unwrap(),
+        json!({ "results": [
+            { "reference": "a", "outcome": { "status": "in_use" } },
+            { "reference": "b", "outcome": { "status": "failed", "message": "disk" } },
+        ] })
+    );
+    assert_eq!(
+        RpcResponse::from(removed.clone())
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::RemoveImages>()
+            .unwrap(),
+        removed
+    );
 }
 
 #[test]

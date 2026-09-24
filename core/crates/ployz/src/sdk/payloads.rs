@@ -77,6 +77,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::MachineDetails>();
     declarations.add::<ployz_core::SetManagementClientResponse>();
     declarations.add::<MachineTarget>();
+    declarations.add::<ployz_core::PruneTarget>();
     declarations.add::<ObservedDataLoss>();
     declarations.add::<PlanOptions>();
     declarations.add::<ProjectName>();

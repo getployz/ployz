@@ -28,9 +28,20 @@ export const preparationProgressSchema = Schema.Struct({
   work: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type PreparationProgress = typeof preparationProgressSchema.Type;
+// Image Cleanup runs after the Deployment is terminal and never changes its status.
+// While running, the row carries the pending targets as plain data.
+export const imageCleanupProgressSchema = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("running"), machines: Schema.Number,
+    targets: Schema.Array(Schema.Struct({ machine_id: Schema.String, repository: Schema.String })),
+  }),
+  Schema.Struct({ state: Schema.Literals(["cleaned", "warning"]), machines: Schema.Number }),
+]);
+export type ImageCleanupProgress = typeof imageCleanupProgressSchema.Type;
 export const deploymentProgressSchema = Schema.Struct({
   logsIncomplete: Schema.optional(Schema.Boolean),
   preparation: Schema.optional(preparationProgressSchema),
+  imageCleanup: Schema.optional(imageCleanupProgressSchema),
   completed: Schema.Number,
   total: Schema.Number,
   outcome: Schema.NullOr(Schema.Literals(["success", "failed"])),
@@ -71,7 +82,7 @@ function projectRow(row: OperationRow): DeploymentProgressRow {
   };
 }
 
-export function deploymentProgressForEvent(event: DeployEvent, planned: readonly OperationRow[]): DeploymentProgress {
+export function deploymentProgressForEvent(event: Exclude<DeployEvent, { type: "images_pruned" }>, planned: readonly OperationRow[]): DeploymentProgress {
   if (event.type === "progress") return { completed: event.completed, total: event.total, rows: event.rows.map(projectRow), outcome: null, compensation: [] };
   const outcome = event.outcome;
   const completed = outcome.completed.map((op) => JSON.stringify(op));

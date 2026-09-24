@@ -600,7 +600,11 @@ impl Cluster {
         Ok(response(
             client
                 .list_images(
-                    op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
+                    op::ListImages::into_request(ListImagesRequest {
+                        reference,
+                        last_tagged: false,
+                    })
+                    .encode()?,
                 )
                 .await?
                 .into_inner(),

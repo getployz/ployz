@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
-import type { DeployEvent, DeployIntent, PreparedDeploy } from "@ployz/sdk";
+import type { DeployEvent, DeployIntent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
 import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
 import { environmentDeployment } from "./tables";
@@ -10,6 +10,7 @@ import {
   loadDeploymentContext,
   loadResolvedDeployEnv,
   persistSdkDeployPreview,
+  persistImageCleanup,
   persistSdkDeployOutcome,
   markDeploymentStatus,
   type DeploymentContext,
@@ -218,7 +219,12 @@ export const executeEnvironmentDeployment = Effect.fn(
   let remoteStarted = false;
   const reporting = deploymentReporting();
   let latestProgress: DeploymentProgress = { completed: 0, total: 0, outcome: null, rows: [], compensation: [] };
-  const terminalProgress = () => ({ ...latestProgress, logsIncomplete: reporting.incomplete });
+  let pruneTargets: readonly PruneTarget[] = [];
+  const terminalProgress = (): DeploymentProgress => {
+    const progress: DeploymentProgress = { ...latestProgress, logsIncomplete: reporting.incomplete };
+    if (!pruneTargets.length) return progress;
+    return { ...progress, imageCleanup: { state: "running", machines: new Set(pruneTargets.map((t) => t.machine_id)).size, targets: pruneTargets } };
+  };
   const reportProgress = (progress: DeploymentProgress) => {
     latestProgress = { ...progress, logsIncomplete: reporting.incomplete };
     return persistDeploymentProgress(context.deployment.id, latestProgress);
@@ -287,7 +293,9 @@ export const executeEnvironmentDeployment = Effect.fn(
     // The SDK reports progress through a Promise callback. Run each persist with
     // this fiber's services (database, tracer, span, log annotations) instead of
     // a fresh default runtime.
+    pruneTargets = native.pruneTargets;
     const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
+      if (event.type === "images_pruned") return;
       const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
       const progress: DeploymentProgress = { ...raw, preparation: Object.keys(sources).length ? { ...collector.current(), phase: "ready" } : undefined, rows: raw.rows.map((row) => {
         const prior = latestProgress.rows.find((candidate) => candidate.index === row.index);
@@ -324,6 +332,30 @@ export const executeEnvironmentDeployment = Effect.fn(
     }).pipe(Effect.asVoid);
   }));
 });
+
+const cleanOutcomes: ReadonlySet<ImageRemovalOutcome["status"]> = new Set(["removed", "in_use", "not_found"]);
+
+/**
+ * Image Cleanup after the Environment slot is released. Never fails and never
+ * changes the Deployment status; a problem is a muted warning.
+ */
+export const cleanUpDeploymentImages = Effect.fn("Deployments.cleanUpDeploymentImages")(
+  function* (environmentDeploymentId: string) {
+    const context = yield* loadDeploymentContext(environmentDeploymentId);
+    const cleanup = context?.deployment.runtimeProgress?.imageCleanup;
+    if (!context || cleanup?.state !== "running") return;
+    // SAFETY: these targets were written from the SDK's own PruneTarget list; MachineId is only a brand.
+    const targets = cleanup.targets as readonly PruneTarget[];
+    const clean = yield* connectedRuntime(context.organization.id).pipe(
+      Effect.flatMap((sdk) => sdk.pruneImages(targets)),
+      // Unsupported and unanswered Servers were not cleaned; say so rather than hide it.
+      Effect.map((report) => report.machines.every(({ result }) =>
+        result.status === "cleaned" && result.removals.every(({ outcome }) => cleanOutcomes.has(outcome.status)))),
+      Effect.orElseSucceed(() => false),
+    );
+    yield* persistImageCleanup(environmentDeploymentId, { state: clean ? "cleaned" : "warning", machines: cleanup.machines });
+  },
+);
 
 export const executeLatestEnvironmentDeployment = Effect.fn(
   "Deployments.executeLatestEnvironmentDeployment",

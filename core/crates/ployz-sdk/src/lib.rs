@@ -4,7 +4,7 @@
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / session observation and registration /
 //! about / runtime.watch / preview / run / previewProjectRemoval /
-//! remove_volumes / dataLossIfMachineRemoved / removeMachine /
+//! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
 //! destroyCluster / close.
 use napi::bindgen_prelude::*;
@@ -280,6 +280,24 @@ impl Client {
         to_json(&result)
     }
 
+    /// Remove superseded build images from each target Machine; per-Machine results.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `targets` is not a
+    /// `PruneTarget` list or the session is closed.
+    #[napi]
+    pub async fn prune_images(&self, targets: serde_json::Value) -> Result<serde_json::Value> {
+        let targets: Vec<ployz_core::PruneTarget> =
+            serde_json::from_value(targets).map_err(invalid_argument)?;
+        let report = self
+            .inner
+            .prune_images(&targets)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&report)
+    }
+
     /// Live Observation of Data Loss that removing `machine` would cause.
     ///
     /// Mutates nothing. Not a complete Cluster view.
@@ -450,6 +468,14 @@ impl DeployPreviewHandle {
         to_json(self.inner.build_receipts())
     }
 
+    /// Machines and repositories Image Cleanup covers, as plain data.
+    /// # Errors
+    /// Returns when targets cannot be encoded as JSON.
+    #[napi]
+    pub fn prune_targets(&self) -> Result<serde_json::Value> {
+        to_json(&self.inner.prune_targets())
+    }
+
     /// Planned rows and warnings.
     ///
     /// # Errors
@@ -461,20 +487,31 @@ impl DeployPreviewHandle {
     }
 
     /// Execute these operations. Illegal after a previous confirm.
+    /// `image_cleanup` is `"auto"` (default) or `"manual"`.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when this preview already
-    /// confirmed.
+    /// confirmed or `image_cleanup` is unknown.
     #[napi]
-    pub fn confirm(&self, deployment_id: Option<String>) -> Result<RunningDeployHandle> {
+    pub fn confirm(
+        &self,
+        deployment_id: Option<String>,
+        image_cleanup: Option<String>,
+    ) -> Result<RunningDeployHandle> {
         let deployment_id = deployment_id
             .map(|id| id.parse::<ployz_core::DeploymentLogId>())
             .transpose()
             .map_err(|error| Error::from_reason(error.to_string()))?;
+        let cleanup = image_cleanup
+            .as_deref()
+            .map(str::parse::<sdk::ImageCleanup>)
+            .transpose()
+            .map_err(rpc_to_napi)?
+            .unwrap_or_default();
         let inner = self
             .inner
-            .confirm_with_log_id(deployment_id)
+            .confirm_with_log_id(deployment_id, cleanup)
             .map_err(rpc_to_napi)?;
         Ok(RunningDeployHandle { inner })
     }

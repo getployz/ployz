@@ -687,3 +687,31 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     );
     std::fs::remove_dir_all(data_dir).unwrap();
 }
+
+#[tokio::test]
+async fn image_removal_without_docker_reports_an_error() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-remove-images-{}",
+        ployz_core::MachineId::random()
+    ));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let service = MachineService::with_cluster(store, None);
+    let response = service
+        .remove_images(Request::new(
+            op::RemoveImages::into_request(ployz_core::RemoveImagesRequest {
+                references: vec!["ployz-build/web:ployz-sha256-a".into()],
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    let ployz_core::RpcResponseBody::Error(error) = response.body else {
+        panic!("removal without Docker must fail: {response:?}");
+    };
+    assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
+    let _ = std::fs::remove_dir_all(data_dir);
+}

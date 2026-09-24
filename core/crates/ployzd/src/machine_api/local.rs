@@ -596,10 +596,18 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let images = containers
-            .list_images(request.reference.as_deref())
+            .list_images(request.reference.as_deref(), request.last_tagged)
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
         respond(images)
+    }
+
+    async fn remove_images(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::RemoveImages>(request)?;
+        finish(self.local.remove_images(request.references).await)
     }
 
     async fn ensure_image_ingest(

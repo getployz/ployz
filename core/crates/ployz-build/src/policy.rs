@@ -4,6 +4,9 @@ use crate::{Admission, BuildError, Docker, HostPolicy, Streams, builder::Builder
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
 
+/// Without a configured GC target, keep this share of the Docker root free.
+const DEFAULT_MIN_FREE_PERCENT: u64 = 20;
+
 /// Parsed only from the execution host, never from captured source or requests.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -127,9 +130,15 @@ impl Resources {
     }
 
     pub(crate) fn collect_cache(&self, docker: &Docker<'_>) -> Result<(), BuildError> {
-        if self.cache_bytes.is_none() && self.min_free_bytes.is_none() {
-            return Ok(());
-        }
+        let min_free_bytes = match (self.cache_bytes, self.min_free_bytes) {
+            // An unreadable Docker root (remote endpoint, non-root user) skips this
+            // prune; the worker's percentage policy still applies on its own GC.
+            (None, None) => match docker_root_total_bytes(docker) {
+                Some(total) => Some(total / 100 * DEFAULT_MIN_FREE_PERCENT),
+                None => return Ok(()),
+            },
+            (_, min_free_bytes) => min_free_bytes,
+        };
         let mut arguments = vec![
             "buildx".into(),
             "prune".into(),
@@ -143,7 +152,7 @@ impl Resources {
         if let Some(bytes) = self.cache_bytes {
             arguments.extend(["--max-used-space".into(), bytes.to_string()]);
         }
-        if let Some(bytes) = self.min_free_bytes {
+        if let Some(bytes) = min_free_bytes {
             arguments.extend(["--min-free-space".into(), bytes.to_string()]);
         }
         docker
@@ -156,12 +165,12 @@ impl Resources {
     }
 
     pub(crate) fn buildkit_config(&self) -> String {
-        if self.cache_bytes.is_none() && self.min_free_bytes.is_none() {
-            return String::new();
-        }
         // BuildKit's default reservedSpace can exceed a small host budget.
         // Give its GC permission to reclaim down to zero; it owns all eviction.
         let mut config = "[worker.oci]\ngc = true\nreservedSpace = 0\n".to_owned();
+        if self.cache_bytes.is_none() && self.min_free_bytes.is_none() {
+            config.push_str(&format!("minFreeSpace = \"{DEFAULT_MIN_FREE_PERCENT}%\"\n"));
+        }
         if let Some(bytes) = self.cache_bytes {
             config.push_str(&format!("maxUsedSpace = {bytes}\n"));
         }
@@ -170,6 +179,18 @@ impl Resources {
         }
         config
     }
+}
+
+fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
+    let root = docker
+        .run(
+            "inspect the Docker root",
+            &["info", "--format", "{{.DockerRootDir}}"],
+            Streams::Captured,
+        )
+        .ok()?;
+    let stat = rustix::fs::statvfs(root.trim()).ok()?;
+    Some(stat.f_blocks.saturating_mul(stat.f_frsize))
 }
 
 /// Clear only this host user's Ployz-owned BuildKit cache. Run on the execution
@@ -234,11 +255,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_configuration_rejects_invalid_limits_and_keeps_defaults_disabled() {
+    fn host_configuration_rejects_invalid_limits_and_defaults_gc_to_a_fifth_free() {
         let defaults = Resources::parse(b"{}").unwrap();
         assert!(defaults.worker_arguments().is_empty());
         assert!(defaults.preparation_arguments().is_empty());
-        assert!(defaults.buildkit_config().is_empty());
+        assert_eq!(
+            defaults.buildkit_config(),
+            "[worker.oci]\ngc = true\nreservedSpace = 0\nminFreeSpace = \"20%\"\n"
+        );
+        assert_eq!(
+            Resources::parse(b"cache_bytes: 1073741824")
+                .unwrap()
+                .buildkit_config(),
+            "[worker.oci]\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 1073741824\n"
+        );
         for invalid in [
             "cpu_cores: 0",
             "cpu_cores: .nan",

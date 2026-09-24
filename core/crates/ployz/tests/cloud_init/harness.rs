@@ -927,9 +927,16 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(MachineImages {
             containerd_store: false,
             images: Vec::new(),
+            docker_root: None,
         })
     }
     async fn ensure_image_ingest(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn remove_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

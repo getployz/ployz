@@ -27,6 +27,7 @@ pub fn progress_text(event: &DeployEvent, title: &str) -> String {
             rows,
         } => report::paint_live(title, *completed, *total, rows, &Ink::plain()),
         DeployEvent::Outcome { outcome } => outcome_text(outcome),
+        DeployEvent::ImagesPruned { .. } => String::new(),
     }
 }
 
