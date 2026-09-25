@@ -8,10 +8,10 @@ import {
 } from "#/components/dashboard-navigation-model";
 
 describe("dashboard navigation model", () => {
-  it.each(["deployments", "logs"] as const)("names the legacy organization %s route without adding it to navigation", (section) => {
+  it("names the legacy organization logs route without adding it to navigation", () => {
     const scope = { kind: "all", organizationSlug: "acme" } as const;
-    expect(getDashboardSectionLabel(scope, section)).toBe(section === "deployments" ? "Deployments" : "Logs");
-    expect(createDashboardNavItems(scope).some((item) => item.section === section)).toBe(false);
+    expect(getDashboardSectionLabel(scope, "logs")).toBe("Logs");
+    expect(createDashboardNavItems(scope).some((item) => item.section === "logs")).toBe(false);
   });
 
   it("shows only organization destinations at organization scope", () => {
@@ -44,12 +44,11 @@ describe("dashboard navigation model", () => {
 
     expect(items.map((item) => item.label)).toEqual([
       "Architecture",
-      "Deployments",
       "Logs",
       "Settings",
     ]);
     expect(items[1]).toMatchObject({
-      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
+      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
       params: {
         organizationSlug: "acme",
         projectSlug: "storefront",
@@ -132,13 +131,6 @@ describe("dashboard navigation model", () => {
   });
 
   it("derives active sections from route IDs rather than URL positions", () => {
-    expect(
-      getDashboardSectionFromRouteId(
-        "/_protected/cloud/$organizationSlug/_org/~/deployments",
-      ),
-    ).toBe(
-      "deployments",
-    );
     expect(
       getDashboardSectionFromRouteId(
         "/_protected/cloud/$organizationSlug/_org/~/settings",

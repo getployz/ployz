@@ -1,4 +1,5 @@
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import type { ServiceRecord } from "./services";
 import type {
   EnvironmentNodeIdentity, EnvironmentNodeProjection, EnvironmentStateProjection,
@@ -32,7 +33,7 @@ export function buildCanvasEnvironmentChangeState(input: {
   deploymentEvidence: CanvasDeploymentEvidence | null;
   nodes: CanvasEnvironmentNodePresentation[];
 }): CanvasEnvironmentChangeState {
-  const submitted = input.deploymentEvidence && ["queued", "planning", "deploying"].includes(input.deploymentEvidence.status)
+  const submitted = input.deploymentEvidence && isActiveDeployment(input.deploymentEvidence.status)
     ? input.deploymentEvidence : null;
   const result = buildEnvironmentChangeSet({
     working: input.working, applied: input.applied,

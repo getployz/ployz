@@ -35,7 +35,6 @@ import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImpo
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/billing'
-import { Route as ProtectedCloudOrganizationSlugOrgChar126DeploymentsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/deployments'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126LogsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126SettingsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/settings'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/index'
@@ -182,12 +181,6 @@ const ProtectedCloudOrganizationSlugOrgChar126BillingRoute =
     path: '/~/billing',
     getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
   } as any)
-const ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute =
-  ProtectedCloudOrganizationSlugOrgChar126DeploymentsRouteImport.update({
-    id: '/~/deployments',
-    path: '/~/deployments',
-    getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
-  } as any)
 const ProtectedCloudOrganizationSlugOrgChar126LogsRoute =
   ProtectedCloudOrganizationSlugOrgChar126LogsRouteImport.update({
     id: '/~/logs',
@@ -308,7 +301,6 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  '/cloud/$organizationSlug/~/deployments': typeof ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute
   '/cloud/$organizationSlug/~/logs': typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -342,7 +334,6 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  '/cloud/$organizationSlug/~/deployments': typeof ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute
   '/cloud/$organizationSlug/~/logs': typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -382,7 +373,6 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_org/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  '/_protected/cloud/$organizationSlug/_org/~/deployments': typeof ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute
   '/_protected/cloud/$organizationSlug/_org/~/logs': typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   '/_protected/cloud/$organizationSlug/_org/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/_protected/cloud/$organizationSlug/_org/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -421,7 +411,6 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/billing'
-    | '/cloud/$organizationSlug/~/deployments'
     | '/cloud/$organizationSlug/~/logs'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~/'
@@ -455,7 +444,6 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/billing'
-    | '/cloud/$organizationSlug/~/deployments'
     | '/cloud/$organizationSlug/~/logs'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~'
@@ -494,7 +482,6 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_project/new'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
     | '/_protected/cloud/$organizationSlug/_org/~/billing'
-    | '/_protected/cloud/$organizationSlug/_org/~/deployments'
     | '/_protected/cloud/$organizationSlug/_org/~/logs'
     | '/_protected/cloud/$organizationSlug/_org/~/settings'
     | '/_protected/cloud/$organizationSlug/_org/~/'
@@ -706,13 +693,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
     }
-    '/_protected/cloud/$organizationSlug/_org/~/deployments': {
-      id: '/_protected/cloud/$organizationSlug/_org/~/deployments'
-      path: '/~/deployments'
-      fullPath: '/cloud/$organizationSlug/~/deployments'
-      preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126DeploymentsRouteImport
-      parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
-    }
     '/_protected/cloud/$organizationSlug/_org/~/logs': {
       id: '/_protected/cloud/$organizationSlug/_org/~/logs'
       path: '/~/logs'
@@ -802,7 +782,6 @@ declare module '@tanstack/react-router' {
 
 interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgChar126BillingRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute
   ProtectedCloudOrganizationSlugOrgChar126LogsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   ProtectedCloudOrganizationSlugOrgChar126SettingsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   ProtectedCloudOrganizationSlugOrgChar126IndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -813,8 +792,6 @@ const ProtectedCloudOrganizationSlugOrgRouteRouteChildren: ProtectedCloudOrganiz
   {
     ProtectedCloudOrganizationSlugOrgChar126BillingRoute:
       ProtectedCloudOrganizationSlugOrgChar126BillingRoute,
-    ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute:
-      ProtectedCloudOrganizationSlugOrgChar126DeploymentsRoute,
     ProtectedCloudOrganizationSlugOrgChar126LogsRoute:
       ProtectedCloudOrganizationSlugOrgChar126LogsRoute,
     ProtectedCloudOrganizationSlugOrgChar126SettingsRoute:

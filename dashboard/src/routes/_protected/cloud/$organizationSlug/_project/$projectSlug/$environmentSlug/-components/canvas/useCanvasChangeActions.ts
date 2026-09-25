@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { openStartedDeployments } from "#/auth/open-started-deployments";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
@@ -113,6 +114,10 @@ export function useCanvasChangeActions({
         ),
       });
 
+      // A manual Deploy opens its attempt unless the user opted out by leaving one they started while it ran.
+      if (result.state === "deployment_queued" && openStartedDeployments()) {
+        void navigate({ to: ".", search: (previous) => ({ ...previous, deployment: result.deploymentId }) });
+      }
       if (result.state === "attempt_dispatch_failed") {
         toast.error("Changes saved, but deployment could not start. Review the failed deployment before retrying.");
       }

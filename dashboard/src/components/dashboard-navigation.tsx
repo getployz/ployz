@@ -41,13 +41,14 @@ import {
   SidebarMenuButton,
 } from "./ui/sidebar";
 import { cn } from "#/lib/utils";
+import { useDeploymentMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
 import { useCanvasInspectorSelection } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/useCanvasInspectorSelection";
 import {
   nodeDestination,
   useEnvironmentNavigationNodes,
   type NavigationNode,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-node-navigation";
-import { SERVICE_PAGES } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/service-pages";
+import { SERVICE_PAGES, servicePagesFor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/service-pages";
 import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
@@ -93,17 +94,20 @@ function Destination({
 }
 
 function ResourceNavigation({
-  scope, node, selected, tab, onNavigate,
+  scope, node, selected, tab, deployment, prebuilt, onNavigate,
 }: {
   scope: EnvironmentScope;
   node: NavigationNode;
   selected: boolean;
   tab?: string;
+  deployment?: string;
+  /** The viewed attempt deployed a prebuilt image for this service: it has no Build logs. */
+  prebuilt: boolean;
   onNavigate?: (nodeId: string) => void;
 }) {
   const [open, setOpen] = useState(selected);
   const Icon = nodeIcons[node.type];
-  const pages = node.type === "service" ? SERVICE_PAGES : [SERVICE_PAGES[0]];
+  const pages = node.type === "service" ? servicePagesFor(deployment) : SERVICE_PAGES.filter((page) => page.id === "settings");
   return (
     <SidebarMenuItem>
       <Collapsible open={open} onOpenChange={setOpen}>
@@ -123,6 +127,7 @@ function ResourceNavigation({
             {pages.map((page) => (
               <SidebarMenuItem key={page.id}>
                 <SidebarMenuButton isActive={selected && (tab ?? "settings") === page.id}
+                  aria-disabled={page.id === "build-logs" && prebuilt ? true : undefined}
                   render={<Link {...nodeDestination(scope, node, page.id)}
                     onClick={() => onNavigate?.(node.id)}
                     aria-current={selected && (tab ?? "settings") === page.id ? "page" : undefined} />}>
@@ -147,7 +152,10 @@ export function EnvironmentNodeDirectory({
   onNavigate?: (nodeId: string) => void;
 }) {
   const [filter, setFilter] = useState("");
-  const { tab } = useSearch({ strict: false });
+  const { tab, deployment } = useSearch({ strict: false });
+  // Inside Deployment Mode (the panel header's picker), Build logs is disabled for a prebuilt image, as in the panel's tabs.
+  // The shell's sidebar sits outside the mode's context and lists it plainly; the panel redirects a prebuilt image.
+  const prebuilt = new Set(useDeploymentMode()?.view.nodes.flatMap((view) => view.build.state === "none" ? [view.nodeId] : []));
   const selected = nodes.find((node) => node.id === selectedId);
   const others = nodes.filter((node) => node.id !== selectedId &&
     node.name.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -159,12 +167,12 @@ export function EnvironmentNodeDirectory({
       ) : null}
       {selected ? (
         <SidebarMenu>
-          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} onNavigate={onNavigate} />
+          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} deployment={deployment} prebuilt={prebuilt.has(selected.id)} onNavigate={onNavigate} />
         </SidebarMenu>
       ) : null}
       <SidebarMenu className="max-h-64 overflow-y-auto overscroll-contain">
         {others.map((node) => (
-          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} onNavigate={onNavigate} />
+          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} deployment={deployment} prebuilt={prebuilt.has(node.id)} onNavigate={onNavigate} />
         ))}
       </SidebarMenu>
       {!others.length && (!selected || filter) ? (
@@ -459,12 +467,12 @@ export function DashboardNavigationPicker({
   const [open, setOpen] = useState(false);
   const section = useDashboardSection();
   const { isInspectorOpen, selectedServiceId } = useCanvasInspectorSelection();
-  const { tab } = useSearch({ strict: false });
+  const { tab, deployment } = useSearch({ strict: false });
   const navigationLabel = scope.kind === "all" ? "Organization navigation" : "Project navigation";
+  const pages = servicePagesFor(deployment);
   const title = isInspectorOpen
     ? selectedServiceId
-      ? (SERVICE_PAGES.find((page) => page.id === (tab ?? "settings"))?.label ??
-        "Settings")
+      ? (pages.find((page) => page.id === (tab ?? "settings"))?.label ?? "Settings")
       : "Settings"
     : getDashboardSectionLabel(scope, section);
   return (
@@ -503,7 +511,7 @@ export function MobileDashboardNavigation({
 }) {
   const { isInspectorOpen } = useCanvasInspectorSelection();
   return (
-    <div className="flex shrink-0 flex-col gap-2 border-b p-3 min-wf-nav:hidden">
+    <div data-mobile-navigation className="flex shrink-0 flex-col gap-2 border-b p-3 min-wf-nav:hidden">
       <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">
           <NavigationSwitcher projection="mobile" />

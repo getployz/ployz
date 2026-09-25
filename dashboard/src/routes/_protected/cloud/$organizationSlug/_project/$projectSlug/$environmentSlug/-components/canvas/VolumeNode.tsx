@@ -1,4 +1,5 @@
 import { Handle, Position } from "@xyflow/react";
+import { canvasNodeTransition } from "./constants";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
@@ -71,6 +72,7 @@ export function VolumeNode({
       }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={data.resourceId}
+      {...canvasNodeTransition(data.resourceId)}
       preload="intent"
       draggable={false}
       className="block h-36 w-72"

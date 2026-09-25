@@ -4,7 +4,6 @@ import {
   ActivityIcon,
   CreditCardIcon,
   LayoutGridIcon,
-  RocketIcon,
   ServerCogIcon,
   ServerIcon,
   Settings2Icon,
@@ -12,7 +11,6 @@ import {
 
 const sectionOrder = [
   "overview",
-  "deployments",
   "logs",
   "environment-settings",
   "servers",
@@ -63,12 +61,6 @@ const sectionDefinitions = {
     allPath: "/cloud/$organizationSlug/~",
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
-  },
-  deployments: {
-    label: "Deployments",
-    icon: RocketIcon,
-    environmentPath:
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
   },
   logs: {
     label: "Logs",
@@ -169,12 +161,9 @@ interface SectionByRouteId {
 
 const sectionByRouteId: SectionByRouteId = {
   "/_protected/cloud/$organizationSlug/_org/~/billing": "billing",
-  "/_protected/cloud/$organizationSlug/_org/~/deployments": "deployments",
   "/_protected/cloud/$organizationSlug/_org/~/logs": "logs",
   "/_protected/cloud/$organizationSlug/_org/~/settings": "server-settings",
   "/_protected/cloud/$organizationSlug/_org/~/servers/": "servers",
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments":
-    "deployments",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs":
     "logs",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings":

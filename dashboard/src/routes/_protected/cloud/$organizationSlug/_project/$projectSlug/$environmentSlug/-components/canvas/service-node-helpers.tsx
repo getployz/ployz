@@ -14,7 +14,7 @@ export function getServiceIcon(service: Pick<EnvironmentServiceViewRecord["servi
   }
 }
 
-export function getServiceSubtitle(service: EnvironmentServiceViewRecord["service"]) {
+export function getServiceSubtitle(service: Pick<EnvironmentServiceViewRecord["service"], "source">) {
   switch (service.source.type) {
     case "empty":
       return null;

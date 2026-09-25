@@ -80,6 +80,16 @@ it.live(
         }));
         assert.strictEqual(invalidPreference.status, 400);
 
+        assert.strictEqual(restored?.user.openStartedDeployments, true);
+        const userPreference = yield* auth.handler(new Request("http://localhost:3000/api/auth/update-user", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json", origin: "http://localhost:3000" },
+          body: JSON.stringify({ openStartedDeployments: false }),
+        }));
+        assert.strictEqual(userPreference.status, 200);
+        const updatedUser = yield* auth.getSession(new Headers({ cookie }));
+        assert.strictEqual(updatedUser?.user.openStartedDeployments, false);
+
         const anonymous = yield* Effect.exit(auth.resolveActor(new Headers()));
         assert.strictEqual(anonymous._tag, "Failure");
         if (anonymous._tag === "Failure") {

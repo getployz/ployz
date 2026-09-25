@@ -16,6 +16,7 @@ import * as runtime from "#/modules/runtime/use-runtime-lens";
 import * as preflight from "#/modules/runtime/deploy-target-preflight";
 import * as restore from "#/modules/environment-design/working-document-restore.functions";
 import { asTestDouble } from "#/lib/test-double";
+import * as preference from "#/auth/open-started-deployments";
 
 const mocks = {
   submit: vi.spyOn(commands, "submitReviewedPublicationServerFn"),
@@ -39,11 +40,13 @@ vi.spyOn(documents, "getEnvironmentDocumentsCollection").mockReturnValue(
   asTestDouble<ReturnType<typeof documents.getEnvironmentDocumentsCollection>>()({ get: () => reviewedDocument }));
 vi.spyOn(runtime, "useRuntimeLens").mockReturnValue(asTestDouble<ReturnType<typeof runtime.useRuntimeLens>>()({ status: "ready", machines: [{}], isLoading: false }));
 vi.spyOn(preflight, "getDeployTargetPreflight").mockReturnValue({ ok: true });
+const openStarted = vi.spyOn(preference, "openStartedDeployments");
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.prepare.mockResolvedValue([]);
-  mocks.submit.mockImplementation(async ({ data }) => ({ state: data.intent === "manual_deploy" ? "deployment_queued" : "saved" }));
+  mocks.submit.mockImplementation(async ({ data }) => data.intent === "manual_deploy" ? { state: "deployment_queued", deploymentId: "attempt-1" } : { state: "saved" });
+  openStarted.mockReturnValue(true);
 });
 
 function renderActions(destructiveServiceIds = ["removed-service"]) {
@@ -56,7 +59,7 @@ function renderActions(destructiveServiceIds = ["removed-service"]) {
     destructiveServiceIds, deletedDeployedVolumeIds: [], commitMessage: "Reviewed",
     setCommitMessage: mocks.clearMessage, setDestructiveConfirmationOpen: mocks.open,
   }), { initialProps: { savedId: "reviewed-saved", destructiveServiceIds }, wrapper: ({ children }) => <QueryClientProvider client={queryClient}><RouterContextProvider router={router}>{children}</RouterContextProvider></QueryClientProvider> });
-  return { ...hook, queryClient };
+  return { ...hook, queryClient, router };
 }
 
 it.each([false, true])("submits the captured review after live Saved changes and never resubmits a conflict (deploy=%s)", async (deploy) => {
@@ -119,6 +122,21 @@ it("discards through the document save queue against the current revision", asyn
     expect(discarded).toBe(true);
     expect(discard).toHaveBeenCalledWith({ data: expect.objectContaining({ environmentId: "env", revision: "current-revision", command: { kind: "all" } }) });
     expect(writeCommitted).toHaveBeenCalledWith({ id: "env", revision: "discarded-revision" });
+  } finally {
+    unmount();
+    queryClient.clear();
+  }
+});
+
+it.each([true, false])("opens the queued attempt after a manual Deploy only while the preference is on (on=%s)", async (on) => {
+  openStarted.mockReturnValue(on);
+  const { result, unmount, queryClient, router } = renderActions([]);
+  try {
+    await act(() => result.current.requestDeploy());
+    expect(mocks.submit).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(router.state.location.search).toEqual(on ? { deployment: "attempt-1" } : {}));
+    await act(() => result.current.requestSave());
+    expect(router.state.location.search).toEqual(on ? { deployment: "attempt-1" } : {});
   } finally {
     unmount();
     queryClient.clear();

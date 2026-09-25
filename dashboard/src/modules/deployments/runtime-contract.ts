@@ -26,3 +26,6 @@ export const ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES =
     "planning",
     "deploying",
   ]);
+
+/** Queued, planning or deploying: the attempt holds, or waits for, the Environment execution slot. */
+export const isActiveDeployment = (status: EnvironmentDeploymentStatus) => ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES.has(status);

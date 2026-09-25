@@ -7,7 +7,8 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
-import { BUILDING_KEY } from "#/modules/deployments/preparation-progress";
+import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-progress";
+import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -37,25 +38,19 @@ function useNow(active: boolean) {
 
 export const clock = (date: Date) => date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-/** Terminal colour and cursor sequences carry nothing the log needs. */
-const ESC = String.fromCharCode(27);
-const BEL = String.fromCharCode(7);
-const ansi = new RegExp(`${ESC}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL}]*(?:${BEL}|${ESC}\\\\)|[@-Z\\\\-_])`, "g");
-export const stripAnsi = (text: string) => text.replaceAll(ansi, "");
-
 const lastLine = (rows: readonly BuildOutputRow[]) => {
   const lines = stripAnsi(rows.map((row) => row.text).join("")).split("\n").filter((line) => line.trim());
   return lines.at(-1) ?? null;
 };
 
-export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() }: {
-  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; hasBuild: boolean; finished: boolean; now?: number;
+export function BuildLogs({ steps, output, finished, now = Date.now() }: {
+  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; now?: number;
 }) {
   // Rows the user toggled; failed rows open by default until toggled.
   const [toggled, setToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
   const started = steps.filter((step) => step.startedAt !== null);
   if (!started.length) {
-    return <p className="text-muted-foreground">{!hasBuild ? "This deployment uses prebuilt images. No build logs were produced." : finished ? "No retained build output for this deployment." : "Waiting for the build to start"}</p>;
+    return <p className="text-muted-foreground">{finished ? "No retained build output for this image." : "Waiting for the build to start"}</p>;
   }
   const outputByStep = new Map<number, BuildOutputRow[]>();
   for (const row of output) {
@@ -65,7 +60,7 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
   // One attempt may run BuildKit several times; the run's heading matters only then, or when it failed.
   const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
   const failedRuns = new Set(steps.filter((step) => step.error !== null).map((step) => step.build));
-  const shown = started.filter((step) => step.error !== null || (step.key !== "stage:Cleanup" && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
+  const shown = started.filter((step) => step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
   return <ol>
     {shown.map((step) => step.key === BUILDING_KEY && step.error === null
       ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
@@ -104,12 +99,12 @@ function StepRow({ step, lines, now, open: toggledOpen, onToggle }: {
   </li>;
 }
 
-function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress: DeploymentProgress }[], serviceId?: string): ContainerLogRow[] {
+function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress: DeploymentProgress }[], serviceId: string): ContainerLogRow[] {
   const previous = new Map<number, string>();
   const logs: ContainerLogRow[] = [];
   for (const event of events) {
     for (const row of event.progress.rows) {
-      if (serviceId && row.serviceId !== serviceId && row.serviceId !== null) continue;
+      if (row.serviceId !== serviceId && row.serviceId !== null) continue;
       if (row.status === "pending" || row.status === "unexecuted" || row.phase === "waiting_for_health") continue;
       const label = row.status === "failed" ? (row.error ?? "Deployment failed") : progressRowLabel(row);
       if (previous.get(row.index) === label) continue;
@@ -121,20 +116,27 @@ function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress:
   return logs;
 }
 
-export function DeploymentLogs({ organizationSlug, deploymentId, serviceId, hasBuild }: { organizationSlug: string; deploymentId: string; serviceId?: string; hasBuild: boolean }) {
+/** One service's Build logs in an attempt: only its own Image Build, which the engine names after the service's private DNS name. */
+export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { organizationSlug: string; deploymentId: string; image: string }) {
+  const build = useBuildLog(organizationSlug, deploymentId);
+  const now = useNow(build.data?.finished === false);
+  const steps = imageBuildSteps(build.data?.steps ?? [], image);
+  const ids = new Set(steps.map((step) => step.id));
+  return <>
+    {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
+    <BuildLogViewer key={`${deploymentId}:${image}`}>
+      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} now={now} />}
+    </BuildLogViewer>
+  </>;
+}
+
+/** One service's Deploy logs in an attempt: its rollout steps interleaved with the attempt's container output. */
+export function ServiceDeployLogs({ organizationSlug, deploymentId, serviceId }: { organizationSlug: string; deploymentId: string; serviceId: string }) {
   const collection = getDeploymentLogsCollection(organizationSlug, deploymentId, useCollectionScope());
   const { data: events = [] } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
-  const [tab, setTab] = useState<"Build logs" | "Deploy logs">(hasBuild ? "Build logs" : "Deploy logs");
   const request = useDeploymentLogsReadState(collection);
-  const build = useBuildLog(organizationSlug, deploymentId, tab === "Build logs");
-  const now = useNow(tab === "Build logs" && build.data?.finished === false);
-  const logs = lifecycleLogs(events, serviceId);
-  return <div className="rounded-lg bg-background p-4">
-    <div className="mb-3 flex items-center gap-4">{(["Build logs", "Deploy logs"] as const).map((t) => <button key={t} type="button" className={cn("text-xs underline-offset-8", tab === t ? "underline" : "text-muted-foreground")} aria-pressed={tab === t} onClick={() => setTab(t)}>{t}</button>)}</div>
+  return <>
     {request.isError ? <p role="alert">Could not load deployment logs. <Button variant="ghost" size="sm" disabled={request.isFetching} onClick={() => void collection.utils.refetch()}>Retry</Button></p> : null}
-    {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
-    {tab === "Deploy logs" ? <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={logs} /> : <BuildLogViewer key={`${deploymentId}:${serviceId ?? "all"}`}>
-      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={build.data?.steps ?? []} output={build.data?.output ?? []} hasBuild={hasBuild} finished={build.data?.finished ?? true} now={now} />}
-    </BuildLogViewer>}
-  </div>;
+    <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={lifecycleLogs(events, serviceId)} />
+  </>;
 }

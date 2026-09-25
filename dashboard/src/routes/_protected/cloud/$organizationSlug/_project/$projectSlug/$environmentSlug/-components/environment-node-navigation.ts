@@ -8,7 +8,7 @@ import {
   getVolumeResourcesCollection,
   type EnvironmentParams,
 } from "#/modules/services/services.collection";
-import type { ServicePage } from "../services/$serviceId/-components/service-pages";
+import type { DeploymentServicePage, ServicePage } from "../services/$serviceId/-components/service-pages";
 import {
   ENVIRONMENT_SERVICE_ROUTE_TO,
   ENVIRONMENT_RESOURCE_ROUTE_TO,
@@ -23,7 +23,7 @@ export type NavigationNode = {
 export function nodeDestination(
   params: EnvironmentParams,
   node: NavigationNode,
-  page?: ServicePage,
+  page?: ServicePage | DeploymentServicePage,
 ) {
   const { organizationSlug, projectSlug, environmentSlug } = params;
   return node.type === "service"

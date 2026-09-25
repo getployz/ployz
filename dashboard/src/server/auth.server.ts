@@ -6,7 +6,7 @@ import { betterAuth } from "better-auth";
 import { organization as organizationPlugin } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
-import { sessionAdditionalFields } from "#/auth/session-fields";
+import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
   account,
@@ -59,6 +59,7 @@ const AuthSession = Schema.Struct({
     email: Schema.String,
     name: Schema.String,
     image: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    openStartedDeployments: Schema.optionalKey(Schema.Boolean),
   }),
 });
 
@@ -187,6 +188,9 @@ const makeAuth = Effect.gen(function* () {
     },
     session: {
       additionalFields: sessionAdditionalFields,
+    },
+    user: {
+      additionalFields: userAdditionalFields,
     },
     advanced: { database: { generateId: "uuid" } },
     databaseHooks: {

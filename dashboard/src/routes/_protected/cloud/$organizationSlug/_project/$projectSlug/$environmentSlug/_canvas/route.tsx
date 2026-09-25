@@ -8,10 +8,12 @@ import {
   EnvironmentCanvasScene,
   PendingCanvas,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentCanvasScene";
+import { canvasRouteSearch } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
+  ...canvasRouteSearch,
   errorComponent: CanvasError,
   component: CanvasLayout,
 });

@@ -13,6 +13,7 @@ import { defaultShouldDehydrateQuery, environmentManager, QueryClient } from "@t
 import { NotFoundPage } from "./components/not-found-page";
 import { PloyzMark } from "./components/icons/ployz-logo";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
+import { shownDeployment } from "./routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 
 function AppPending() {
   const hydrated = useHydrated();
@@ -72,6 +73,11 @@ export function getRouter() {
       return { authSession: data?.session ?? null };
     },
     hydrate: (data: { authSession: AuthSession | null }) => initializeAuthSession(data.authSession),
+    // Entering or leaving Deployment Mode, from any link, Esc or browser Back, is a `deployment-mode` view transition.
+    // Only where the browser can scope it by type; everything else keeps its own transition or none.
+    defaultViewTransition: globalThis.CSS?.supports("selector(:active-view-transition-type(a))")
+      ? { types: ({ fromLocation, toLocation }) => fromLocation && shownDeployment(fromLocation.searchStr) !== shownDeployment(toLocation.searchStr) ? ["deployment-mode"] : false }
+      : undefined,
     defaultPreload: "viewport",
     defaultPreloadStaleTime: 0,
     defaultPendingMs: 220,

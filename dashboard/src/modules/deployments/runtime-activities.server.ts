@@ -22,7 +22,8 @@ import {
 import { Database, ReportingDatabase } from "#/server/database.server";
 import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
-import { deploymentProgressForEvent, type DeploymentProgress } from "./deployment-progress";
+import type { DeploymentProgress } from "./deployment-progress";
+import { deploymentProgressForEvent } from "./deployment-view";
 import { PloyzPreparationError, type PloyzPreparedDeploy } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
@@ -280,16 +281,11 @@ export const executeEnvironmentDeployment = Effect.fn(
     pruneTargets = native.pruneTargets;
     const { outcome, evidence } = yield* confirmRuntimeIntent(native, preview, async (event) => {
       if (event.type === "images_pruned") return;
-      const raw = deploymentProgressForEvent(event, native.operations);
-      const progress: DeploymentProgress = { ...raw, preparation: Object.keys(sources).length ? { ...collector.current(), phase: "ready" } : undefined, rows: raw.rows.map((row) => {
-        const prior = latestProgress.rows.find((candidate) => candidate.index === row.index);
-        const projected = {
-          ...row,
-          serviceId: context.snapshots.find((snapshot) => snapshot.config.privateDns === row.serviceName)?.serviceId ?? null,
-        };
-        if (row.status === "failed" && prior) return { ...projected, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health };
-        return projected;
-      }) };
+      const raw = deploymentProgressForEvent(event, native.operations, {
+        prior: latestProgress,
+        serviceIdFor: (serviceName) => context.snapshots.find((snapshot) => snapshot.config.privateDns === serviceName)?.serviceId ?? null,
+      });
+      const progress: DeploymentProgress = { ...raw, preparation: Object.keys(sources).length ? { ...collector.current(), phase: "ready" } : undefined };
       await persistProgress(reportProgress(progress));
     }, cancellation.signal, context.deployment.id);
     return { outcome, evidence };

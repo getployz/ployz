@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   getDashboardSectionLabel,
   type DashboardScope,
@@ -19,7 +20,7 @@ function EnvironmentName({
   );
 }
 
-export function DashboardPageHeader({ scope }: { scope: DashboardScope }) {
+export function DashboardPageHeader({ scope, children }: { scope: DashboardScope; children?: ReactNode }) {
   const section = useDashboardSection();
   return (
     <header
@@ -28,6 +29,7 @@ export function DashboardPageHeader({ scope }: { scope: DashboardScope }) {
     >
       <h1 className="truncate font-semibold">{getDashboardSectionLabel(scope, section)}</h1>
       {scope.kind === "environment" ? <EnvironmentName scope={scope} /> : null}
+      {children}
     </header>
   );
 }

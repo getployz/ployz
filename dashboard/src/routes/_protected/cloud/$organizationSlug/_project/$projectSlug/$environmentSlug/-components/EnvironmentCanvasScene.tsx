@@ -1,6 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { DashboardPageHeader } from "#/components/dashboard-header";
 import {
   Background,
@@ -17,6 +17,7 @@ import {
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
+import { shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
@@ -32,6 +33,10 @@ import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
+import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
+import { ApplyZoneSlot, DeployBar } from "./DeployBar";
+import { BackToLive, DeploymentModeProvider, useDeploymentMode } from "./deployment-mode";
+import { DeploymentServicePanel } from "./DeploymentServicePanel";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -199,26 +204,50 @@ function CanvasWithData() {
 }
 
 export function EnvironmentCanvasScene() {
+  return (
+    <DeploymentModeProvider>
+      <CanvasScene />
+    </DeploymentModeProvider>
+  );
+}
+
+function CanvasScene() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({
     from: ENVIRONMENT_ROUTE_FROM,
   });
+  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
+  const attempt = useDeploymentMode();
+  const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
+  // Deployment Mode opens only its read-only panel, and only for a service in the Attempt Target; the live panel edits.
+  const inspectedNodeId = !attempt ? selectedNodeId
+    : attempt.nodes.some((node) => node.nodeType === "service" && node.nodeId === selectedServiceId) ? selectedServiceId : null;
 
   return (
+    <ApplyZoneSlot.Provider value={applyZoneSlot}>
     <CanvasInspectorOverlay
-      selection={selectedNodeId ? {
-        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
-        nodeId: selectedNodeId,
+      selection={inspectedNodeId ? {
+        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${inspectedNodeId}`,
+        nodeId: inspectedNodeId,
       } : null}
-      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />}
-      canvas={
+      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }}>
+        {attempt ? <>
+          <span className="ml-auto font-mono text-muted-foreground">{shortDeploymentId(attempt.deployment.id)}</span>
+          <BackToLive />
+        </> : null}
+      </DashboardPageHeader>}
+      canvas={<>
         <Suspense fallback={<PendingCanvas />}>
-          <CanvasWithData key={canvasKey} />
+          {attempt
+            ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
+            : <CanvasWithData key={canvasKey} />}
         </Suspense>
-      }
+        <Suspense fallback={null}><DeployBar><div ref={setApplyZoneSlot} className="contents" /></DeployBar></Suspense>
+      </>}
     >
-      {selectedNodeId ? <Outlet /> : null}
+      {!inspectedNodeId ? null : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
     </CanvasInspectorOverlay>
+    </ApplyZoneSlot.Provider>
   );
 }

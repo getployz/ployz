@@ -4,6 +4,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { cancelEnvironmentDeploymentServerFn } from "#/modules/deployments/deployment.functions";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from "#/components/ui/alert-dialog";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
@@ -16,7 +17,7 @@ export function CancelDeploymentDialog({ open, onOpenChange, organizationSlug, d
 }) {
   const [pending, setPending] = useState(false);
   const scope = useCollectionScope();
-  const active = !deployment.cancellationRequestedAt && ["queued", "planning", "deploying"].includes(deployment.status);
+  const active = !deployment.cancellationRequestedAt && isActiveDeployment(deployment.status);
 
   async function cancel() {
     if (pending || !active) return;

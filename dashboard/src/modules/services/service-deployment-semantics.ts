@@ -1,4 +1,5 @@
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 
 export type ServiceDeploymentSurfaceState =
   | "success"
@@ -30,11 +31,6 @@ const DEPLOYMENT_ATTEMPT_STATUSES = new Set<EnvironmentDeploymentStatus>([
   "failed",
 ]);
 
-const ACTIVE_DEPLOYMENT_STATUSES = new Set<EnvironmentDeploymentStatus>([
-  "queued",
-  "planning",
-  "deploying",
-]);
 
 export function getServiceDeploymentSemantics(
   input: ServiceDeploymentSemanticInput,
@@ -45,7 +41,7 @@ export function getServiceDeploymentSemantics(
   const hasEditsAfterCancelledAttempt =
     input.latestDeploymentStatus === "cancelled" &&
     input.currentDiffRowCount > 0;
-  const isDeploying = input.latestDeploymentStatus != null && ACTIVE_DEPLOYMENT_STATUSES.has(input.latestDeploymentStatus);
+  const isDeploying = input.latestDeploymentStatus != null && isActiveDeployment(input.latestDeploymentStatus);
   const lastDeployFailed = input.latestDeploymentStatus === "failed";
 
   if (lastDeployFailed) {

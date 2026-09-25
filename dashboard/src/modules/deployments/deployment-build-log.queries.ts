@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions, skipToken, useQuery } from "@tanstack/react-query";
 import { listDeploymentBuildLogServerFn } from "./deployment.functions";
 
 type BuildLogPage = Awaited<ReturnType<typeof listDeploymentBuildLogServerFn>>;
@@ -34,6 +34,9 @@ export function deploymentBuildLogQueryOptions(organizationSlug: string, deploym
   });
 }
 
-export function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
-  return useQuery({ ...deploymentBuildLogQueryOptions(organizationSlug, deploymentId), enabled });
+/** Reads nothing without an attempt. */
+export function useBuildLog(organizationSlug: string, deploymentId: string | null) {
+  return useQuery(deploymentId === null
+    ? { queryKey: ["deployment-build-log", organizationSlug, null], queryFn: skipToken }
+    : deploymentBuildLogQueryOptions(organizationSlug, deploymentId));
 }

@@ -11,18 +11,21 @@ it("turns phases and BuildKit steps into one step tree with attributed output", 
     progress: { phase: "build", serviceId: null, machineId: null, machineName: null, message: "Uploading source" },
     steps: [{ build: 0, key: "stage:Upload", name: "Uploading source", startedAt: new Date(1_000), completedAt: null, cached: false, error: null }], output: [],
   });
-  // Building heads the first BuildKit run; the engine then names its targets.
+  // Building heads each image's own BuildKit run; the engine then names that image.
   expect(keys(progress.event({ Build: { Stage: "Building" } }).steps)).toEqual([[0, "stage:Upload", null], [1, "stage:Building", null]]);
-  expect(progress.event({ Build: { Target: { name: "web", outcome: "Unknown" } } }).steps.map((step) => step.name)).toEqual(["web"]);
-  expect(progress.event({ Build: { Target: { name: "api", outcome: "Unknown" } } }).steps.map((step) => step.name)).toEqual(["web, api"]);
+  expect(progress.event({ Build: { Target: { name: "web", outcome: "Unknown" } } }).steps.map((step) => [step.build, step.key, step.name])).toEqual([[1, "stage:Building", "web"]]);
   expect(progress.event({ Build: { Step: { id: "sha256:a", name: "[sdk 1/2] RUN cargo build", started: "2026-09-22T21:09:06Z", completed: null, cached: false, error: null } } }).steps).toEqual([
     { build: 1, key: "sha256:a", name: "[sdk 1/2] RUN cargo build", startedAt: new Date("2026-09-22T21:09:06Z"), completedAt: null, cached: false, error: null },
   ]);
   expect(progress.event({ Build: { StepOutput: { step: "sha256:a", stderr: true, text: "Compiling\n" } } }).output).toEqual([{ build: 1, step: "sha256:a", stderr: true, text: "Compiling\n" }]);
   expect(keys(progress.event({ Build: { Stage: "Output" } }).steps)).toEqual([[1, "stage:Building", null], [1, "stage:Output", null]]);
-  // A second run gets its own ordinal, so identical digests never collide.
+  // The run's result names the same image, so its Image Build is unchanged.
+  expect(progress.event({ Build: { Target: { name: "web", outcome: "Unknown" } } }).steps).toEqual([]);
+  // The next image's run gets its own ordinal, so a shared step shows again, cached, under that image.
   expect(keys(progress.event({ Build: { Stage: "Building" } }).steps)).toEqual([[1, "stage:Output", null], [2, "stage:Building", null]]);
-  expect(progress.event({ Build: { Step: { id: "sha256:a", name: "[1/1] FROM alpine", started: "2026-09-22T21:10:00Z", completed: null, cached: false, error: null } } }).steps.map((step) => step.build)).toEqual([2]);
+  expect(progress.event({ Build: { Target: { name: "api", outcome: "Unknown" } } }).steps.map((step) => [step.build, step.key, step.name])).toEqual([[2, "stage:Building", "api"]]);
+  expect(progress.event({ Build: { Step: { id: "sha256:a", name: "[sdk 1/2] RUN cargo build", started: "2026-09-22T21:10:00Z", completed: "2026-09-22T21:10:00Z", cached: true, error: null } } }).steps.map((step) => [step.build, step.cached])).toEqual([[2, true]]);
+  expect(progress.event({ Build: { StepOutput: { step: "sha256:a", stderr: false, text: "cached\n" } } }).output.map((row) => row.build)).toEqual([2]);
   expect(keys(progress.event({ Build: { Stage: "Cleanup" } }).steps)).toEqual([[2, "stage:Building", null], [2, "stage:Cleanup", null]]);
   expect(keys(progress.event("Transfer").steps)).toEqual([[2, "stage:Cleanup", null], [2, "transfer", null]]);
   expect(progress.event({ Delivered: { image: "web:1", machine_id: "m1" as MachineId } }).output).toEqual([{ build: 2, step: "transfer", stderr: false, text: "Delivered web:1 to m1\n" }]);

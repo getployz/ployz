@@ -145,7 +145,7 @@ export const submitReviewedPublication = Effect.fn(
       environmentDeploymentId: attempt.data.environmentDeploymentId,
       environmentId: context.environment.id,
     }).pipe(
-      Effect.as({ state: "deployment_queued" as const }),
+      Effect.as({ state: "deployment_queued" as const, deploymentId: attempt.data.environmentDeploymentId }),
       Effect.catchTag("InngestEventSendError", () =>
         Effect.succeed({ state: "attempt_dispatch_failed" as const }),
       ),

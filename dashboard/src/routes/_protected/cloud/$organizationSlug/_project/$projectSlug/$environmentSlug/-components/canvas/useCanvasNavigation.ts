@@ -32,7 +32,7 @@ function getCanvasInspectorGeometryKey() {
     inspectorPane?.getBoundingClientRect().width ?? 0,
   );
   const controls = wrapper?.closest(".environment-canvas-scene")
-    ?.querySelector<HTMLElement>(".canvas-change-controls");
+    ?.querySelector<HTMLElement>(".deploy-bar");
 
   return `${flowWidth}:${paneWidth}:${wrapper?.clientHeight ?? 0}:${controls?.offsetHeight ?? 0}`;
 }
@@ -139,7 +139,7 @@ function centerOnNode(
   }
   const viewport = flow.getViewport();
   const controls = wrapper.closest(".environment-canvas-scene")
-    ?.querySelector<HTMLElement>(".canvas-change-controls");
+    ?.querySelector<HTMLElement>(".deploy-bar");
   const dx = getNodePanDelta(
     node.position.x * viewport.zoom + viewport.x,
     (node.measured?.width ?? SERVICE_NODE_WIDTH) * viewport.zoom,

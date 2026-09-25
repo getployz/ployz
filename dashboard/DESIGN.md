@@ -251,7 +251,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Desktop and tablet place the change count and Review action in the persistent environment header; mobile uses a structural footer. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Details (the review) and Deploy in the deploy bar's apply zone. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
 ### Deployment Mode
 

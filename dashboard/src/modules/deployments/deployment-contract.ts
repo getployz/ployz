@@ -1,5 +1,6 @@
 import { deploymentSourcePinsSchema } from "./source-pins";
 import { deploymentProgressSchema } from "./deployment-progress";
+import { DeploymentTriggerOrigin } from "./deployment";
 import { Schema } from "effect";
 import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
@@ -106,6 +107,8 @@ export const deploymentOperationEvidencePageQuerySchema = Schema.Struct({
 
 export const environmentDeploymentSummarySchema = Schema.Struct({
   id: Uuid,
+  environmentId: Uuid,
+  triggerOrigin: DeploymentTriggerOrigin,
   status: Schema.Literals(ENVIRONMENT_DEPLOYMENT_STATUSES),
   message: Schema.NullOr(Schema.String),
   failureMessage: Schema.NullOr(Schema.String),
@@ -177,7 +180,7 @@ export type DestructiveVolumeSubmissionOutcome =
     };
 export type EnvironmentPublicationSubmissionOutcome =
   | { state: "saved" }
-  | { state: "deployment_queued" }
+  | { state: "deployment_queued"; deploymentId: string }
   | { state: "attempt_dispatch_failed" }
   | Extract<
       DestructiveVolumeSubmissionOutcome,

@@ -1,4 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
+import { canvasNodeTransition } from "./constants";
 import { HardDriveIcon } from "lucide-react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
@@ -68,6 +69,7 @@ function ServiceListItem({
         }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
+        {...canvasNodeTransition(service.id)}
         aria-current={selected ? "page" : undefined}
         className="block"
       >
@@ -150,6 +152,7 @@ export function CanvasNodeList({
             search={(previous) => ({ ...previous, tab: selected ? previous.tab : undefined })}
             className="block"
             data-canvas-node={resource.resource.id}
+            {...canvasNodeTransition(resource.resource.id)}
             aria-current={selected ? "page" : undefined}
           >
             <Card state={removed ? "destructive" : diffRowCount > 0 ? "changed" : undefined} data-selected={selected}>

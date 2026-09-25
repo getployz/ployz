@@ -16,6 +16,7 @@ export const user = pgTable(
     emailVerified: boolean("email_verified").default(false).notNull(),
     name: text("name").notNull(),
     image: text("image"),
+    openStartedDeployments: boolean("open_started_deployments").default(true).notNull(),
   },
   (table) => [unique().on(table.email)],
 );

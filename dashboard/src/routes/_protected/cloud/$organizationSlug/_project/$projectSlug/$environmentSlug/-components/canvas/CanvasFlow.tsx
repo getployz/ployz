@@ -13,7 +13,7 @@ import { Button } from "#/components/ui/button";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import { ApplyChangesBar } from "./ApplyChangesBar";
+import { ApplyZone } from "./ApplyZone";
 import { SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
@@ -114,6 +114,7 @@ export function CanvasFlow({
     discardRowChange,
     requestSave,
     requestDeploy,
+    isSubmittingDeploymentSnapshot,
     prepareDestructiveReview,
     confirmDestructiveAction,
     reviewAction,
@@ -198,11 +199,11 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <ApplyChangesBar
+      <ApplyZone
           key={locationKey}
           groups={diffGroups}
           totalChanges={totalChanges}
-          canDeploy={canDeploy}
+          canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}
           commitMessage={commitMessage}
           canSaveWithoutDeploying={canSave}
           onCommitMessageChange={setCommitMessage}

@@ -303,7 +303,6 @@ pub fn execute_admitted(
         cancellation: Some(&admission.cancellation),
         progress: Some(progress),
     };
-    let metadata = request.working_dir.join("build-metadata.json");
     progress(Progress::Stage(Stage::Preparation));
     // Preflight processes also use private inputs. Persist ownership before
     // spawning them, including across a daemon crash or uncertain termination.
@@ -340,43 +339,39 @@ pub fn execute_admitted(
             .into_iter()
             .partition(|target| target.target.platforms.len() > 1);
         let mut images = Vec::new();
-        // A successful per-target push is publication evidence. A failed batch
-        // cannot tell us which of its registry exports completed.
-        let batch_size = if request.output == Output::Registry {
-            1
-        } else {
-            ordinary.len().max(1)
-        };
-        for batch in ordinary.chunks(batch_size) {
-            let mut arguments = bake_arguments(request, batch, &metadata, overrides.as_deref());
-            for target in batch {
-                arguments.push("--set".into());
-                arguments.push(format!(
-                    "{}.platform={}",
-                    target.bake,
-                    target
-                        .target
-                        .platforms
-                        .first()
-                        .map_or(native.as_str(), String::as_str)
-                ));
-            }
+        // One image per Bake run, one run after another under the held builder
+        // lock: each run's steps and output belong to one Image Build, and a
+        // failed run cannot hide which earlier exports completed.
+        for target in &ordinary {
+            // Per-run metadata, so a failed run never reads an earlier result.
+            let metadata = request
+                .working_dir
+                .join(format!("build-metadata-{}.json", target.bake));
+            let mut arguments = bake_arguments(request, target, &metadata, overrides.as_deref());
+            arguments.push("--set".into());
+            arguments.push(format!(
+                "{}.platform={}",
+                target.bake,
+                target
+                    .target
+                    .platforms
+                    .first()
+                    .map_or(native.as_str(), String::as_str)
+            ));
             progress(Progress::Stage(Stage::Building));
             if let Err(error) = builder.run(&arguments, || {
-                for target in batch {
-                    progress(Progress::Target {
-                        name: target.target.name.clone(),
-                        outcome: TargetEvidence::Unknown,
-                    });
-                }
+                progress(Progress::Target {
+                    name: target.target.name.clone(),
+                    outcome: TargetEvidence::Unknown,
+                });
             }) {
-                // Bake may have imported a prefix before a later target failed.
+                // Bake may have imported the image before the run failed.
                 // Only verify after termination is known; keep the original failure.
                 if request.output == Output::Load
                     && !error.is_unknown()
                     && metadata.is_file()
                     && let Err(verification) =
-                        built_images(&docker.releasing(), &metadata, batch, progress)
+                        built_image(&docker.releasing(), &metadata, target, progress)
                 {
                     return Err(error.at(Stage::Building).with_later_failure(verification));
                 }
@@ -384,24 +379,18 @@ pub fn execute_admitted(
             }
             progress(Progress::Stage(Stage::Output));
             match request.output {
-                Output::Load => {
-                    images.extend(
-                        built_images(&docker, &metadata, batch, progress)
-                            .map_err(|error| error.at(Stage::Output))?,
-                    );
-                }
-                Output::Registry | Output::Validate => {
-                    for target in batch {
-                        progress(Progress::Target {
-                            name: target.target.name.clone(),
-                            outcome: if request.output == Output::Validate {
-                                TargetEvidence::Validated
-                            } else {
-                                TargetEvidence::Published
-                            },
-                        });
-                    }
-                }
+                Output::Load => images.push(
+                    built_image(&docker, &metadata, target, progress)
+                        .map_err(|error| error.at(Stage::Output))?,
+                ),
+                Output::Registry | Output::Validate => progress(Progress::Target {
+                    name: target.target.name.clone(),
+                    outcome: if request.output == Output::Validate {
+                        TargetEvidence::Validated
+                    } else {
+                        TargetEvidence::Published
+                    },
+                }),
             }
         }
         for target in &multi {
@@ -462,7 +451,7 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
 
 fn bake_arguments(
     request: &Request<'_>,
-    planned: &[Planned<'_>],
+    planned: &Planned<'_>,
     metadata: &Path,
     overrides: Option<&Path>,
 ) -> Vec<String> {
@@ -503,73 +492,54 @@ fn bake_arguments(
         arguments.push("--set".to_owned());
         arguments.push(format!("*.args.{argument}"));
     }
-    arguments.extend(planned.iter().map(|planned| planned.bake.clone()));
+    arguments.push(planned.bake.clone());
     arguments
 }
 
-fn built_images(
+fn built_image(
     docker: &Docker<'_>,
     metadata: &Path,
-    planned: &[Planned<'_>],
+    planned: &Planned<'_>,
     progress: &(dyn Fn(Progress) + Sync),
-) -> Result<Vec<BuiltImage>, BuildError> {
+) -> Result<BuiltImage, BuildError> {
     let content = std::fs::read(metadata)
         .map_err(|error| BuildError::Result(format!("read the build result: {error}")))?;
     let results: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&content)
         .map_err(|error| BuildError::Result(format!("parse the build result: {error}")))?;
-    let mut first_error: Option<BuildError> = None;
-    let images = planned
-        .iter()
-        .map(|planned| {
-            let name = &planned.target.name;
-            let result = results
-                .get(&planned.bake)
-                .ok_or_else(|| {
-                    BuildError::Result(format!("the build reported no result for '{name}'"))
-                })
-                .and_then(|value| {
-                    TargetMetadata::deserialize(value).map_err(|error| {
-                        BuildError::Result(format!(
-                            "the build result for '{name}' is incomplete: {error}"
-                        ))
-                    })
-                })?;
-            let tags = result.tags();
-            if tags.is_empty() {
-                return Err(BuildError::Result(format!(
-                    "the build tagged no image for '{name}'"
-                )));
-            }
-            let reference = result.digest;
-            let platform = verify(
-                docker,
-                &reference,
-                planned.target.platforms.first().map(String::as_str),
-            )?;
-            let image = BuiltImage {
-                reference,
-                tags,
-                platforms: vec![platform],
-                location: docker.location(),
-            };
-            progress(Progress::Target {
-                name: name.clone(),
-                outcome: TargetEvidence::Image(image.clone()),
-            });
-            Ok(image)
-        })
-        .filter_map(|result| match result {
-            Ok(image) => Some(image),
-            Err(error) => {
-                first_error = Some(match first_error.take() {
-                    Some(first) => first.with_later_failure(error),
-                    None => error,
-                });
-                None
-            }
-        })
-        .collect();
-    first_error.map_or(Ok(images), Err)
+    let name = &planned.target.name;
+    let result = results
+        .get(&planned.bake)
+        .ok_or_else(|| BuildError::Result(format!("the build reported no result for '{name}'")))
+        .and_then(|value| {
+            TargetMetadata::deserialize(value).map_err(|error| {
+                BuildError::Result(format!(
+                    "the build result for '{name}' is incomplete: {error}"
+                ))
+            })
+        })?;
+    let tags = result.tags();
+    if tags.is_empty() {
+        return Err(BuildError::Result(format!(
+            "the build tagged no image for '{name}'"
+        )));
+    }
+    let reference = result.digest;
+    let platform = verify(
+        docker,
+        &reference,
+        planned.target.platforms.first().map(String::as_str),
+    )?;
+    let image = BuiltImage {
+        reference,
+        tags,
+        platforms: vec![platform],
+        location: docker.location(),
+    };
+    progress(Progress::Target {
+        name: name.clone(),
+        outcome: TargetEvidence::Image(image.clone()),
+    });
+    Ok(image)
 }
 
 /// Confirm the execution host holds exactly the content this attempt claims,

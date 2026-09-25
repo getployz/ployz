@@ -15,6 +15,9 @@ const stageNames = new Map([
 ]);
 const stageName = (stage: string) => stageNames.get(stage) ?? stage;
 export const BUILDING_KEY = "stage:Building";
+/** Attempt-wide rows the engine files under the last build run: image cleanup and delivery. */
+export const CLEANUP_KEY = "stage:Cleanup";
+export const TRANSFER_KEY = "transfer";
 
 /**
  * Which step a failed attempt is pinned on: the failed BuildKit step already
@@ -35,8 +38,9 @@ const rowId = (build: number, key: string) => `${build}:${key}`;
 /**
  * Folds one attempt's preparation events into progress plus build-log writes.
  * Ployz phases become steps like BuildKit's own, so the log is one tree. An
- * attempt may run BuildKit more than once (per platform, per registry push);
- * every run gets its own ordinal so identical steps never collide.
+ * attempt runs BuildKit once per image (and per platform); every run gets its
+ * own ordinal so identical steps never collide, and its Building row names the
+ * image, attributing the run's steps and output to that Image Build.
  * Provider errors and rejection dumps are never logs.
  */
 export function preparationProgressCollector(now: () => Date = () => new Date()) {
@@ -46,7 +50,6 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
   const rows = new Map<string, BuildStepWrite>();
   let open: string | null = null;
   let build = 0;
-  let targets: string[] = [];
   let stepFailed = false;
   let finished = false;
   const create = (key: string, name: string): BuildStepWrite => {
@@ -77,7 +80,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
     event(event: PreparationEvent): PreparationWrites {
       if (event === "Transfer") {
         current = { ...current, phase: "transfer", message: "Delivering images" };
-        return { progress: current, steps: begin("transfer", "Delivering images"), output: [] };
+        return { progress: current, steps: begin(TRANSFER_KEY, "Delivering images"), output: [] };
       }
       if ("Selected" in event) {
         current = { ...current, machineId: event.Selected.machine.id, machineName: event.Selected.machine.name, message: "Builder selected" };
@@ -92,18 +95,15 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
       if ("Stage" in build_) {
         const name = stageName(build_.Stage);
         current = { ...current, phase: "build", message: name };
-        if (build_.Stage === "Building") {
-          build += 1;
-          targets = [];
-        }
+        if (build_.Stage === "Building") build += 1;
         return { progress: current, steps: begin(stageKey(build_.Stage), name), output: [] };
       }
       if ("Target" in build_) {
-        // The engine names each target as its run starts; the run's header row lists them.
+        // Each run builds one image and the engine names it as the run starts,
+        // so the run is that image's Image Build: its heading row carries the image.
         const heading = rows.get(rowId(build, BUILDING_KEY));
-        if (!heading || targets.includes(build_.Target.name)) return none();
-        targets.push(build_.Target.name);
-        heading.name = targets.join(", ");
+        if (!heading || heading.name === build_.Target.name) return none();
+        heading.name = build_.Target.name;
         return { progress: null, steps: [{ ...heading }], output: [] };
       }
       if ("Output" in build_) return builderLine(decoder.decode(Uint8Array.from(build_.Output), { stream: true }));

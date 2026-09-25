@@ -53,8 +53,7 @@ pub(crate) fn build(
             for (number, platform) in target.target.platforms.iter().enumerate() {
                 let archive = request.working_dir.join("private/railpack/variant.tar");
                 let metadata = request.working_dir.join("private/railpack/variant.json");
-                let mut args =
-                    bake_arguments(request, std::slice::from_ref(target), &metadata, overrides);
+                let mut args = bake_arguments(request, target, &metadata, overrides);
                 args.retain(|arg| arg != "--load");
                 for setting in [
                     format!("{}.platform={platform}", target.bake),

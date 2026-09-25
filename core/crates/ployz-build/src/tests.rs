@@ -242,6 +242,95 @@ exit 0
 }
 
 #[test]
+fn each_loaded_image_builds_in_its_own_sequential_bake_run() {
+    let directory = std::env::temp_dir().join(format!("ployz-runs-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(
+        &directory,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        &format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  'context show') echo default ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+  'buildx bake')
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --metadata-file) shift; metadata="$1" ;;
+        *.platform=*) target="${{1%%.platform=*}}" ;;
+      esac
+      shift
+    done
+    echo "$target" >> runs
+    printf '{{"%s":{{"containerimage.digest":"sha256:%s","image.name":"example.test/%s"}}}}' "$target" "$target" "$target" > "$metadata" ;;
+  'image inspect') printf '{{"Os":"linux","Architecture":"amd64","Descriptor":{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s"}}}}' "$3" ;;
+esac
+exit 0
+"#,
+            builder_name()
+        ),
+    );
+    let targets = [target("api", None), target("web", None)];
+    let environment = BTreeMap::new();
+    let request = Request {
+        image_contexts: &BTreeMap::new(),
+        railpack: &[],
+        compose_file: &directory.join("compose.json"),
+        working_dir: &directory,
+        environment: &environment,
+        docker: Some(&program),
+        targets: &targets,
+        build_args: &[],
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    let admission = Admission::try_acquire_with(&HostPolicy {
+        docker: program.clone(),
+        state_directory: directory.clone(),
+        configuration_file: directory.join("build.yaml"),
+        ..Default::default()
+    })
+    .unwrap();
+    let events = std::sync::Mutex::new(Vec::new());
+    let images = execute_admitted(&request, admission, &|event| {
+        if let Progress::Target { name, outcome } = event {
+            let proven = matches!(outcome, TargetEvidence::Image(_));
+            events.lock().unwrap().push((name, proven));
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        images
+            .iter()
+            .map(|image| image.reference.as_str())
+            .collect::<Vec<_>>(),
+        ["sha256:api", "sha256:web"]
+    );
+    // Each run names its one image before its steps, and finishes before the next.
+    assert_eq!(
+        events.into_inner().unwrap(),
+        [
+            ("api".to_owned(), false),
+            ("api".to_owned(), true),
+            ("web".to_owned(), false),
+            ("web".to_owned(), true),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("runs")).unwrap(),
+        "api\nweb\n"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn targets_that_would_share_one_build_name_are_refused() {
     let distinct = [target("api.internal", None), target("web", None)];
     let planned = plan(&distinct).unwrap();
@@ -272,8 +361,9 @@ fn an_observed_platform_covers_a_request_without_its_variant() {
 #[test]
 fn requested_output_selects_exclusive_bake_behavior() {
     let environment = BTreeMap::new();
-    let targets = [target("api", Some("linux/arm64")), target("web", None)];
+    let targets = [target("api", Some("linux/arm64"))];
     let planned = plan(&targets).unwrap();
+    let planned = planned.first().unwrap();
     let metadata = Path::new("/private/build-metadata.json");
     let build_args = ["MODE=release".to_owned()];
     let image_contexts = BTreeMap::new();
@@ -291,12 +381,12 @@ fn requested_output_selects_exclusive_bake_behavior() {
         pull: false,
     };
 
-    let validate = bake_arguments(&request(Output::Validate), &planned, metadata, None);
+    let validate = bake_arguments(&request(Output::Validate), planned, metadata, None);
     assert!(validate.contains(&"--check".to_owned()));
     assert!(!validate.contains(&"--load".to_owned()));
     assert!(!validate.contains(&"--metadata-file".to_owned()));
 
-    let load = bake_arguments(&request(Output::Load), &planned, metadata, None);
+    let load = bake_arguments(&request(Output::Load), planned, metadata, None);
     assert!(load.contains(&"--load".to_owned()));
     assert!(!load.contains(&"--push".to_owned()));
     assert!(load.contains(&"--no-cache".to_owned()));
@@ -304,9 +394,9 @@ fn requested_output_selects_exclusive_bake_behavior() {
     assert!(load.contains(&"*.args.MODE=release".to_owned()));
     // The captured Compose file carries platforms; bake reads them there.
     assert!(!load.iter().any(|argument| argument.contains(".platform")));
-    assert_eq!(load.last().map(String::as_str), Some("web"));
+    assert_eq!(load.last().map(String::as_str), Some("api"));
 
-    let registry = bake_arguments(&request(Output::Registry), &planned, metadata, None);
+    let registry = bake_arguments(&request(Output::Registry), planned, metadata, None);
     assert!(registry.contains(&"--push".to_owned()));
     assert!(!registry.contains(&"--load".to_owned()));
     assert!(!registry.contains(&"--metadata-file".to_owned()));

@@ -1,4 +1,5 @@
 import { Handle, Position } from "@xyflow/react";
+import { canvasNodeTransition } from "./constants";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Link, useParams } from "@tanstack/react-router";
 import {
@@ -101,6 +102,7 @@ export function ServiceNode({
         }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
+        {...canvasNodeTransition(service.id)}
         preload="intent"
         draggable={false}
         className="block h-36 w-72"

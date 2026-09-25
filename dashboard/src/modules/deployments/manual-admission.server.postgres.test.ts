@@ -207,10 +207,13 @@ describe("manual environment saved-state persistence", () => {
     expect(await harness.db.select().from(schema.environmentSavedStateSnapshot)).toHaveLength(1);
     expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(1);
     expect(inngest.send).not.toHaveBeenCalled();
-    expect(await harness.runEffect(submit(shouldDeploy, { ...review, destructiveServiceIds: [serviceId] })))
-      .toEqual({ state: shouldDeploy ? "deployment_queued" : "saved" });
+    const outcome = await harness.runEffect(submit(shouldDeploy, { ...review, destructiveServiceIds: [serviceId] }));
+    expect(outcome.state).toBe(shouldDeploy ? "deployment_queued" : "saved");
     expect(await harness.db.select().from(schema.environmentSavedStateSnapshot)).toHaveLength(2);
-    expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(shouldDeploy ? 2 : 1);
+    const attempts = await harness.db.select().from(schema.environmentDeployment);
+    expect(attempts).toHaveLength(shouldDeploy ? 2 : 1);
+    // The publish outcome names the attempt it queued, so the canvas can open it.
+    if (outcome.state === "deployment_queued") expect(attempts.map((attempt) => attempt.id)).toContain(outcome.deploymentId);
     expect(inngest.send).toHaveBeenCalledTimes(shouldDeploy ? 1 : 0);
   });
 
@@ -248,8 +251,9 @@ describe("manual environment saved-state persistence", () => {
       expect(await harness.runEffect(recordInngestRun({ environmentDeploymentId: attempt.id, runId: "claimed-before-send-failure" }))).toBe(true);
       throw new Error("late send error");
     });
-    await expect(harness.runEffect(submit(true, await publicationReview()))).resolves.toEqual({ state: "deployment_queued" });
+    const outcome = await harness.runEffect(submit(true, await publicationReview()));
     const [attempt] = await harness.db.select().from(schema.environmentDeployment);
+    expect(outcome).toEqual({ state: "deployment_queued", deploymentId: attempt?.id });
     expect(attempt).toMatchObject({ status: "queued", inngestRunId: "claimed-before-send-failure", finishedAt: null });
   });
 
@@ -987,7 +991,7 @@ describe("manual environment saved-state persistence", () => {
       observedMachine = "a".repeat(32);
     }
     expect(await harness.runEffect(submit(true, { ...retryReview, destructiveVolumeReviews: freshReviews }, runtime)))
-      .toEqual({ state: "deployment_queued" });
+      .toMatchObject({ state: "deployment_queued" });
     const removals = await harness.db.select().from(schema.volumeRemoveAttempt);
     expect(removals).toHaveLength(2);
     expect(removals.map(row => row.status).sort()).toEqual(["awaiting_deployment", "failed"]);

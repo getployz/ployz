@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import { BuildLogs, clock, formatDuration, splitStepName, stripAnsi } from "./deployment-logs";
+import { BuildLogs, clock, formatDuration, splitStepName } from "./deployment-logs";
+import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import type { BuildOutputRow, BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 
 const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
@@ -21,7 +22,7 @@ it("renders started steps as rows, tails the running step, and opens only the fa
     step(5, "[go 1/1] FROM golang", { startedAt: null }),
   ];
   const output = [line(1, 2, "<script>alert(1)</script>\n"), line(2, 3, "\u001b[32mCompiling\u001b[0m ployz-core\n   Compiling ployz\n"), line(3, 4, "npm ERR! missing script\n", true)];
-  const html = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: false, steps, output, now: at(9).getTime() }));
+  const html = renderToStaticMarkup(createElement(BuildLogs, { finished: false, steps, output, now: at(9).getTime() }));
   expect(html.match(/<li/g)).toHaveLength(4);
   expect(html).toContain("cached");
   expect(html).toContain("&lt;script&gt;");
@@ -41,9 +42,9 @@ it("renders started steps as rows, tails the running step, and opens only the fa
 
 it("heads each BuildKit run only when the attempt ran more than one", () => {
   const heading = (id: number, build: number, name: string) => step(id, name, { build, key: "stage:Building", completedAt: at(id) });
-  const one = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: true, steps: [heading(1, 1, "web, api"), step(2, "[sdk 1/1] RUN true", { completedAt: at(2) })], output: [] }));
+  const one = renderToStaticMarkup(createElement(BuildLogs, { finished: true, steps: [heading(1, 1, "web, api"), step(2, "[sdk 1/1] RUN true", { completedAt: at(2) })], output: [] }));
   expect(one).not.toContain("Building web, api");
-  const two = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: true, steps: [heading(1, 1, "web"), step(2, "[1/1] RUN true", { completedAt: at(2) }), heading(3, 2, "worker"), step(4, "[1/1] RUN true", { build: 2, completedAt: at(4) })], output: [] }));
+  const two = renderToStaticMarkup(createElement(BuildLogs, { finished: true, steps: [heading(1, 1, "web"), step(2, "[1/1] RUN true", { completedAt: at(2) }), heading(3, 2, "worker"), step(4, "[1/1] RUN true", { build: 2, completedAt: at(4) })], output: [] }));
   expect(two).toContain("Building web");
   expect(two).toContain("Building worker");
 });
@@ -51,7 +52,7 @@ it("heads each BuildKit run only when the attempt ran more than one", () => {
 it("keeps the target heading when a single run has a failed vertex", () => {
   const heading = step(1, "web, api", { key: "stage:Building", completedAt: at(2) });
   const html = renderToStaticMarkup(createElement(BuildLogs, {
-    hasBuild: true, finished: true, output: [], steps: [heading, step(2, "RUN false", { completedAt: at(2), error: "exit code: 1" })],
+    finished: true, output: [], steps: [heading, step(2, "RUN false", { completedAt: at(2), error: "exit code: 1" })],
   }));
   expect(html).toContain("Building web, api");
   expect(html).toContain("exit code: 1");
@@ -61,7 +62,7 @@ it("hides normal cleanup and shows cleanup failures", () => {
   for (const completedAt of [null, at(2)]) {
     const cleanup = step(2, "Cleaning up", { key: "stage:Cleanup", completedAt });
     const render = (error: string | null) => renderToStaticMarkup(createElement(BuildLogs, {
-      hasBuild: true, finished: completedAt !== null, steps: [step(1, "RUN true"), { ...cleanup, error }], output: [],
+      finished: completedAt !== null, steps: [step(1, "RUN true"), { ...cleanup, error }], output: [],
     }));
     expect(render(null)).not.toContain("Cleaning up");
     expect(render("builder removal failed")).toContain("Cleaning up");
@@ -70,10 +71,25 @@ it("hides normal cleanup and shows cleanup failures", () => {
 });
 
 it("names the empty states", () => {
-  const render = (hasBuild: boolean, finished: boolean) => renderToStaticMarkup(createElement(BuildLogs, { steps: [], output: [], hasBuild, finished }));
-  expect(render(true, true)).toContain("No retained build output");
-  expect(render(true, false)).toContain("Waiting for the build to start");
-  expect(render(false, true)).toContain("uses prebuilt images");
+  const render = (finished: boolean) => renderToStaticMarkup(createElement(BuildLogs, { steps: [], output: [], finished }));
+  expect(render(true)).toContain("No retained build output");
+  expect(render(false)).toContain("Waiting for the build to start");
+});
+
+it("keeps one Image Build's runs, not other images or the attempt-wide cleanup and delivery filed under the last run", () => {
+  const heading = (id: number, build: number, name: string) => step(id, name, { build, key: "stage:Building" });
+  const steps = [
+    step(1, "Uploading source", { build: 0, key: "stage:Upload" }),
+    heading(2, 1, "web"), step(3, "[1/1] RUN web", { build: 1 }),
+    heading(4, 2, "worker"), step(5, "[1/1] RUN worker", { build: 2 }),
+    // Railpack runs a multi-platform image once per platform; both runs name the same image.
+    heading(6, 3, "web"), step(7, "[1/1] RUN web arm64", { build: 3 }),
+    step(8, "Cleaning up", { build: 3, key: "stage:Cleanup" }), step(9, "Delivering images", { build: 3, key: "transfer" }),
+  ];
+  expect(imageBuildSteps(steps, "web").map((row) => row.id)).toEqual([2, 3, 6, 7]);
+  expect(imageBuildSteps(steps, "worker").map((row) => row.id)).toEqual([4, 5]);
+  // A shared pre-build failure stopped every image.
+  expect(imageBuildSteps([step(1, "Uploading source", { build: 0, key: "stage:Upload", error: "upload failed" }), ...steps.slice(1)], "worker").map((row) => row.id)).toEqual([1, 4, 5]);
 });
 
 it("splits BuildKit step names, rounds durations like Railway, and strips terminal sequences", () => {
