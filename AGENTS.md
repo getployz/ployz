@@ -9,4 +9,6 @@
 
 For `$implement`, `$four-axis-review` supersedes `$code-review`. After implementation, follow its incremental rerun loop until all four axes pass. Do not run `$four-axis-review` on docs, CI, research, or scripts.
 
+For `$implement-spec`, implementer subagents run no review. The only review is its final step: once every ticket is merged, run `$four-axis-review` on the PR branch in place of `/code-review`, following its loop until all four axes pass.
+
 Prefer simple diagrams. Use `$i-have-adhd` output.
