@@ -265,6 +265,8 @@ Choosing a deployment puts the canvas into that deployment: the header and canva
 
 The switch between live and a deployment is the product's one moment of flair, and it stays minimal: the tint and frame sweep in and reverse on Back to live. Motion is short, moves the same elements rather than swapping them, and falls back to a crossfade under reduced motion.
 
+The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
+
 **The One Vocabulary Rule.** A state looks and behaves the same in every field, resource, drawer, diff row, and toolbar. Local reinvention is a defect.
 
 ## Do's and Don'ts

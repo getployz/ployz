@@ -48,6 +48,20 @@ _Avoid_: Server settings draft, machine config, cluster-wide roles
 The explicit, user-chosen kind of a Cloud Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local; the kind is chosen at creation and shown with its trade-offs, never inferred from whether a size was typed.
 _Avoid_: Storage class, volume type dropdown, managed volume toggle
 
+**Dedicated Volume**:
+A Volume mounted by exactly one Service, presented as part of that Service rather than as its own element. Usage, not storage: a Dedicated Volume may be of either Volume Kind.
+_Avoid_: Attached volume (attachment is the mount relationship, whatever the count)
+
+**Shared Volume**:
+A Volume mounted by two or more Services, presented as its own element linked to each of them.
+
+**Unmounted Volume**:
+A Volume no Service mounts, presented as its own element with no Links.
+
+**Link**:
+A variable reference or a Volume mount between two Environment Nodes, read as one node using another. Links arrange the canvas; they do not order deployment.
+_Avoid_: Dependency (deployment ordering, references only), edge, connection
+
 **Cloud Bootstrap Token**:
 The single-redemption bearer secret embedded in a copied Cloud Bootstrap Invite command. The token is not the org, cluster, machine identity, join token, or callback credential.
 _Avoid_: Bootstrap token, server bootstrap token, callback token
@@ -125,7 +139,7 @@ The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into run
 _Avoid_: Prepared snapshot, build workflow, Core Deploy
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity, Node Introduction, and canvas position when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Cluster Domain**:
