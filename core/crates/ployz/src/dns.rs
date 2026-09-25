@@ -46,15 +46,14 @@ fn ingress_targets_from_ports<'a>(
     targets
 }
 
-fn warnings_from_targets(
-    targets: BTreeMap<&IngressHost, bool>,
+fn warnings_from_targets<'a>(
+    verdicts: impl IntoIterator<Item = (&'a IngressHost, bool, HostnameVerdict)>,
     cluster_addresses: &[IpAddr],
-    mut verdict: impl FnMut(&IngressHost) -> HostnameVerdict,
 ) -> Vec<IngressDnsWarning> {
-    targets
+    verdicts
         .into_iter()
-        .filter_map(|(hostname, mentions_certificates)| {
-            let HostnameVerdict::Refused(refusal) = verdict(hostname) else {
+        .filter_map(|(hostname, mentions_certificates, verdict)| {
+            let HostnameVerdict::Refused(refusal) = verdict else {
                 return None;
             };
             let body = refusal_reason(hostname, refusal, cluster_addresses);
@@ -71,12 +70,15 @@ fn warnings_from_targets(
 pub fn ingress_dns_warnings<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     cluster_addresses: &[IpAddr],
-    verdict: impl FnMut(&IngressHost) -> HostnameVerdict,
+    mut verdict: impl FnMut(&IngressHost) -> HostnameVerdict,
 ) -> Vec<IngressDnsWarning> {
     warnings_from_targets(
-        ingress_targets_from_ports(specs.into_iter().flat_map(|spec| spec.ports.iter())),
+        ingress_targets_from_ports(specs.into_iter().flat_map(|spec| spec.ports.iter()))
+            .into_iter()
+            .map(|(hostname, mentions_certificates)| {
+                (hostname, mentions_certificates, verdict(hostname))
+            }),
         cluster_addresses,
-        verdict,
     )
 }
 
@@ -150,14 +152,13 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     else {
         return Vec::new();
     };
-    let mut verdicts = BTreeMap::new();
-    for hostname in targets.keys().copied() {
-        verdicts.insert(
-            hostname,
-            probe_ingress_hostname(&client, hostname, machine_ids, cluster_addresses).await,
-        );
+    let mut verdicts = Vec::with_capacity(targets.len());
+    for (hostname, mentions_certificates) in targets {
+        let verdict =
+            probe_ingress_hostname(&client, hostname, machine_ids, cluster_addresses).await;
+        verdicts.push((hostname, mentions_certificates, verdict));
     }
-    warnings_from_targets(targets, cluster_addresses, |hostname| verdicts[hostname])
+    warnings_from_targets(verdicts, cluster_addresses)
 }
 
 #[cfg(test)]

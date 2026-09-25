@@ -551,6 +551,7 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            build_concurrency: None,
         },
         MembershipObservation::Up,
     )

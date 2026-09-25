@@ -30,6 +30,7 @@ async fn run_reports_subscription_failure() {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: MachineRuntime::default(),
+        build_concurrency: None,
     };
     let (replicated, replicated_server) = fake_cluster::store().await;
 

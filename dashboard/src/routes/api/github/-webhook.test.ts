@@ -91,6 +91,12 @@ it.live(
         assert.match(serialized, /delivery-installation/);
         assert.notMatch(serialized, /must-not-leave-boundary/);
 
+        const workflowRun = yield* handleGithubWebhookRequest(
+          request("workflow_run", "delivery-workflow-run", { action: "completed" }),
+        );
+        assert.strictEqual(workflowRun.status, 200);
+        assert.strictEqual(sent.length, 1);
+
         const rejected = yield* handleGithubWebhookRequest(
           request("push", "delivery-malformed", {
             installation: { id: 17 },

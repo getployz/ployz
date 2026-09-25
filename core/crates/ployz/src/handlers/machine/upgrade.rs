@@ -427,6 +427,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: MachineRuntime::default(),
+            build_concurrency: None,
         }
     }
 }

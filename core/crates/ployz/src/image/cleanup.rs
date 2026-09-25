@@ -25,7 +25,8 @@ const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const PRESSURE_FREE_PERCENT: u64 = 20;
 const MACHINE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Each built repository paired with each Machine the plan runs its Service on.
+/// Each built repository paired with each Machine the plan runs its Service on, and
+/// with the Machine holding the build, which a Build Grant push may have tagged.
 #[must_use]
 pub(crate) fn prune_targets(plan: &DeployPlan, builds: &[BuiltService]) -> Vec<PruneTarget> {
     let mut targets = builds
@@ -40,8 +41,10 @@ pub(crate) fn prune_targets(plan: &DeployPlan, builds: &[BuiltService]) -> Vec<P
                             .spec()
                             .is_some_and(|spec| spec.name == service.name)
                     })
-                    .map(move |row| PruneTarget {
-                        machine_id: row.machine_id,
+                    .map(|row| row.machine_id)
+                    .chain([service.machine_id])
+                    .map(move |machine_id| PruneTarget {
+                        machine_id,
                         repository: repository.clone(),
                     }),
             )

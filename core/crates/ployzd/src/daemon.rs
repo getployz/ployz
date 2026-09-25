@@ -199,11 +199,14 @@ impl Daemon {
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
+        let grants = Arc::new(management::BuildGrants::default());
+        let builds = crate::build::Runner::new(build_policy, shutdown.clone())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let running_builds = builds.running_builds();
+        builds.follow(local.watch());
         let machine_api = MachineApi::builder(local.clone())
-            .with_builds(
-                crate::build::Runner::new(build_policy, shutdown.clone())
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
-            )
+            .with_build_grants(Arc::clone(&grants))
+            .with_builds(builds)
             .with_cluster(
                 corrosion
                     .as_ref()
@@ -219,8 +222,12 @@ impl Daemon {
             UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
             shutdown.clone().cancelled_owned(),
         );
-        let publisher =
-            run_machine_publisher(replicated_store.clone(), local.clone(), shutdown.clone());
+        let publisher = run_machine_publisher(
+            replicated_store.clone(),
+            local.clone(),
+            running_builds,
+            shutdown.clone(),
+        );
         let (management_listener, gateway_listener) = machine_api_listeners
             .map_or((None, None), |(management, gateway)| {
                 (Some(management), Some(gateway))
@@ -249,6 +256,7 @@ impl Daemon {
                             management_endpoint,
                             crate::machine::LocalMachine::new(local.clone()),
                             machine_api.clone(),
+                            grants,
                             shutdown.clone(),
                         )
                         .await;

@@ -25,6 +25,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     assert_eq!(
         paths,
         [
+            "build",
             "cloud",
             "cloud enroll",
             // Shell tooling, not a Cluster operation.

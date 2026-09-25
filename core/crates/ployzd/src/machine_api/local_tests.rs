@@ -666,3 +666,34 @@ async fn image_removal_without_docker_reports_an_error() {
     assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
     let _ = std::fs::remove_dir_all(data_dir);
 }
+
+#[tokio::test]
+async fn ending_an_unknown_build_grant_is_not_found() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-build-grant-{}",
+        ployz_core::MachineId::random()
+    ));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let service = MachineService::with_cluster(store, None);
+    let code = |body: RpcResponseBody| {
+        let RpcResponseBody::Error(error) = body else {
+            panic!("expected a refusal: {body:?}");
+        };
+        error.code
+    };
+    let response = service
+        .end_build_grant(Request::new(
+            op::EndBuildGrant::into_request(ployz_core::EndBuildGrantRequest {
+                id: ployz_core::BuildGrantId::parse("a".repeat(64)).unwrap(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert_eq!(code(response.body), RpcErrorCode::NotFound);
+    let _ = std::fs::remove_dir_all(data_dir);
+}

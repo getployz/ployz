@@ -31,8 +31,8 @@ const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
 #[derive(Clone, Debug)]
 pub struct ManagementRelay {
-    url: RelayUrl,
-    tls: CaTlsConfig,
+    pub(super) url: RelayUrl,
+    pub(super) tls: CaTlsConfig,
 }
 
 impl Default for ManagementRelay {

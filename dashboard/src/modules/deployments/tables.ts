@@ -1,7 +1,11 @@
-import type { PruneRefusal } from "@ployz/sdk";
+import type { BuilderReason, MachineId, PruneRefusal } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type JsonValue, updatedAt } from "#/db/tables";
 
 import { type DeploymentTriggerOrigin } from "#/modules/deployments/deployment";
+
+import { type BuildOrder } from "#/modules/deployments/build-order";
+
+import type { GithubImageBuild, SkipReason } from "#/modules/deployments/image-build";
 
 import { type EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
 
@@ -160,7 +164,6 @@ export const environmentDeploymentSecret = pgTable(
     environmentDeploymentId: uuid("environment_deployment_id")
       .primaryKey()
       .references(() => environmentDeployment.id, { onDelete: "cascade" }),
-    encryptedBuildReceipts: jsonb("encrypted_build_receipts").$type<EncryptedSecretValue>(),
     encryptedRuntimeOutcome: jsonb("encrypted_runtime_outcome").$type<EncryptedSecretValue>(),
   },
 );
@@ -219,7 +222,9 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   id: bigserial("id", { mode: "number" }).primaryKey(),
   organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
-  /** Which BuildKit run of the attempt the step belongs to; 0 before the first. One attempt may run several. */
+  /** The Image Build that reported the step, by image name; null for the deploy step's own preparation. */
+  image: text("image"),
+  /** Which BuildKit run of the Image Build the step belongs to; 0 before the first. One build may run several (per platform). */
   build: integer("build").notNull().default(0),
   /** BuildKit digest or `stage:<Stage>`; stable across repeated reports within one run. */
   key: text("key").notNull(),
@@ -230,7 +235,7 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   error: text("error"),
   createdAt,
   updatedAt,
-}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.build, table.key)]);
+}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.image, table.build, table.key).nullsNotDistinct()]);
 
 /** Append-only output attributed to one build step. */
 export const environmentDeploymentBuildOutput = pgTable("environment_deployment_build_output", {
@@ -242,3 +247,61 @@ export const environmentDeploymentBuildOutput = pgTable("environment_deployment_
   text: text("text").notNull(),
   createdAt,
 }, (table) => [index("environment_deployment_build_output_cursor_idx").on(table.deploymentId, table.id)]);
+
+export type ImageBuildStatus = "building" | "built" | "failed" | "cancelled";
+
+/** The Server the Engine chose for an Image Build, named as it was then, and why. */
+export type ServerChoice = { machineName: string; reason: BuilderReason };
+
+/**
+ * One Image Build of a Cloud Deployment Attempt: one Git Service's image, started at admission.
+ * Only a built row holds a Build Receipt; no row stays building once its attempt ends.
+ */
+export const environmentDeploymentImageBuild = pgTable("environment_deployment_image_build", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
+  deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
+  serviceId: text("service_id").notNull(),
+  /** The Service's private DNS name: names the image in Build Steps and Build Receipts. */
+  image: text("image").notNull(),
+  status: text("status").notNull().default("building").$type<ImageBuildStatus>(),
+  /** The Server that built, or already held, the image; for GitHub, the Machine it pushed into. */
+  machineId: text("machine_id").$type<MachineId>(),
+  /** Which Server the Engine chose to build on and why, recorded when it chose. */
+  serverChoice: jsonb("server_choice").$type<ServerChoice>(),
+  /** Private: fingerprints include effective secret build variables. */
+  encryptedReceipt: jsonb("encrypted_receipt").$type<EncryptedSecretValue>(),
+  failureMessage: text("failure_message"),
+  inngestRunId: text("inngest_run_id").notNull(),
+  finishedAt: timestamp("finished_at", { mode: "date", withTimezone: true }),
+  /** The Builder that holds the build now. */
+  builder: text("builder").notNull().default("server").$type<ImageBuilder>(),
+  /** GitHub's dispatched run: the check-in and the start-limit skip race on it. */
+  githubRunId: bigint("github_run_id", { mode: "number" }),
+  /** The runner checked in: the build started on GitHub and never moves. */
+  checkedInAt: timestamp("checked_in_at", { mode: "date", withTimezone: true }),
+  /** GitHub's run details, grant and Build Steps; present exactly while GitHub is the Builder. */
+  github: jsonb("github").$type<GithubImageBuild>(),
+  /** Why each Builder tried before this one didn't take the build, in order: the skip trail. */
+  skips: jsonb("skips").notNull().default(sql`'[]'::jsonb`).$type<readonly SkipReason[]>(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  unique("environment_deployment_image_build_service_unique").on(table.deploymentId, table.serviceId),
+  check("environment_deployment_image_build_receipt_check", sql`(${table.status} = 'built') = (${table.encryptedReceipt} is not null)`),
+  check("environment_deployment_image_build_builder_check", sql`${table.builder} in ('server', 'github')`),
+  check("environment_deployment_image_build_github_check", sql`(${table.builder} = 'github') = (${table.github} is not null and ${table.githubRunId} is not null)`),
+  check("environment_deployment_image_build_check_in_check", sql`${table.checkedInAt} is null or ${table.builder} = 'github'`),
+]);
+
+export type ImageBuilder = "server" | "github";
+
+/** Where the Organization's Image Builds run, tried in order. No row means servers only. Never staged. */
+export const organizationBuildOrder = pgTable("organization_build_order", {
+  organizationId: uuid("organization_id").primaryKey().references(() => organization.id, { onDelete: "cascade" }),
+  buildOrder: text("build_order").notNull().$type<BuildOrder>(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  check("organization_build_order_check", sql`${table.buildOrder} in ('servers-only', 'github-then-servers', 'servers-then-github', 'github-only')`),
+]);

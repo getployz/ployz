@@ -8,7 +8,9 @@ import {
 import { rejectMalformedGithubDelivery } from "#/modules/github/github-ingestion.repository";
 import type { GithubMalformedDeliveryInput } from "#/modules/github/github-ingestion.repository.types";
 import { verifyWebhookSignature } from "#/modules/github/github.server";
+import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
 import {
+  createGithubBuildRunCompletedEvent,
   createGithubCheckSuiteReceivedEvent,
   createGithubInstallationReceivedEvent,
   createGithubInstallationRepositoriesReceivedEvent,
@@ -16,6 +18,11 @@ import {
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { publicErrorResponse } from "#/server/public-error";
+
+const workflowRunPayloadSchema = Schema.Struct({
+  action: Schema.String,
+  workflow_run: Schema.Struct({ id: Schema.Number, path: Schema.String }),
+});
 
 class GithubWebhookReadError extends Data.TaggedError(
   "GithubWebhookReadError",
@@ -72,6 +79,14 @@ export const handleGithubWebhookRequest = Effect.fn(
       : new Response("Malformed webhook", { status: 400 });
   }
   if (event === "ping") return new Response("OK", { status: 200 });
+  // A completed build workflow run settles its waiting Image Build; every other run is ignored.
+  if (event === "workflow_run") {
+    const run = Schema.decodeUnknownOption(workflowRunPayloadSchema)(payload.value);
+    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
+      yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ deliveryId, runId: run.value.workflow_run.id }));
+    }
+    return new Response("OK", { status: 200 });
+  }
 
   if (event === "push") {
     const decoded = decodeGithubPushPayload(payload.value);

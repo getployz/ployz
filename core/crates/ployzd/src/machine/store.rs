@@ -238,6 +238,7 @@ impl LocalMachineStore {
             public_ip,
             advertised_endpoints,
             runtime: local_runtime(),
+            build_concurrency: None,
         };
         let mut initialized = self.record.clone();
         initialized.body = LocalMachineBody::Participating {

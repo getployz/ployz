@@ -47,6 +47,14 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   name: Schema.String,
   publicIp: Schema.NullOr(Schema.String),
   endpoints: Schema.Array(Schema.String),
+  /** Server Policy as observed; Cloud keeps no desired copy. */
+  acceptsBuilds: Schema.Boolean,
+  /** Explicit build concurrency; null means automatic. */
+  buildConcurrency: Schema.NullOr(Schema.Number),
+  /** The build concurrency the Server enforces: the explicit value or the automatic one. */
+  effectiveBuildConcurrency: Schema.Number,
+  /** Builds the Server reports running now; display only. */
+  runningBuilds: NonnegativeInt,
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,

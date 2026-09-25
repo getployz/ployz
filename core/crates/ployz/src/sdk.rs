@@ -1,10 +1,9 @@
 //! Native Cloud session: connect, observe_enrollment, register,
-//! about, publish_certificate_material, runtime.watch, preview, run, preview_project_removal, remove_volumes,
-//! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
-//! destroy_project, destroy_cluster, and close.
+//! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
+//! preview_project_removal, remove_volumes, Data Loss for Machine, Project, and
+//! Cluster destroy, remove_machine, destroy_project, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -26,28 +25,55 @@ use ployz_core::{
 
 pub use payloads::typescript_declarations;
 
+mod build;
 mod deploy;
 mod logs;
 mod payloads;
-mod preparation;
+pub(crate) mod preparation;
 pub(crate) mod prepare;
+mod running;
+pub use build::BuildOutcome;
 pub use deploy::ImageCleanup;
-pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
-pub use preparation::{BuildReceipt, PreparationInput};
+pub use running::Running;
 
-/// The public SDK Watch frame: the RPC frame plus the Services this observer
-/// derives from its Containers. The RPC frame carries only Container observations.
+/// Cancellable preparation whose progress is retained until read, within a byte budget.
+pub type RunningPreparation = Running<PreparedDeploy>;
+
+/// Cancellable Image Build whose progress is retained until read, within a byte budget.
+pub type RunningBuild = Running<BuildOutcome>;
+pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
+pub use preparation::{BuildReceipt, PreparationInput, VERSION, expected_fingerprints};
+
+/// The public SDK Watch frame: the RPC frame plus what this observer derives
+/// from it: the Services of its Containers, and each Machine's build
+/// concurrency in effect (its explicit value, or the automatic one).
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 pub struct RuntimeWatchView {
     #[serde(flatten)]
     pub frame: RuntimeWatchFrame,
     pub services: Vec<ServiceObservation>,
+    pub effective_build_concurrency:
+        std::collections::BTreeMap<ployz_core::MachineId, ployz_core::BuildConcurrency>,
 }
 
 impl From<RuntimeWatchFrame> for RuntimeWatchView {
     fn from(frame: RuntimeWatchFrame) -> Self {
         let services = frame.services();
-        Self { frame, services }
+        let effective_build_concurrency = frame
+            .machines
+            .iter()
+            .map(|observed| {
+                (
+                    observed.machine.id,
+                    observed.machine.effective_build_concurrency(),
+                )
+            })
+            .collect();
+        Self {
+            frame,
+            services,
+            effective_build_concurrency,
+        }
     }
 }
 
@@ -226,6 +252,38 @@ impl Session {
         self.unary::<op::PublishCertificateMaterial>(request).await
     }
 
+    /// Mint a Build Grant on the entry Machine: one image push into `repository`.
+    /// Not retried: a lost reply leaves an unused grant that expires by itself.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, an `invalid_argument` repository, or
+    /// the Machine's image ingest failure.
+    pub async fn mint_build_grant(
+        &self,
+        request: ployz_core::MintBuildGrantRequest,
+    ) -> Result<ployz_core::BuildGrantMinted, RpcError> {
+        let client = self.client()?;
+        self.until_closed(async {
+            client
+                .call_unretried::<op::MintBuildGrant>(request, None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
+    /// End a Build Grant on the entry Machine and read what it received. Idempotent.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or `not_found` once the grant expired
+    /// or the Machine restarted.
+    pub async fn end_build_grant(
+        &self,
+        request: ployz_core::EndBuildGrantRequest,
+    ) -> Result<ployz_core::BuildGrantEnded, RpcError> {
+        self.unary::<op::EndBuildGrant>(request).await
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors
@@ -285,19 +343,10 @@ impl Session {
     /// Rejects a closed session. Preparation failures arrive through `finished`.
     pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
         let mut client = self.client()?;
-        let cancel = self.inner.cancel.child_token();
-        let token = cancel.clone();
+        let token = self.inner.cancel.child_token();
         let session = Arc::downgrade(&self.inner);
-        // Lossless while the consumer keeps up: structured state is never
-        // dropped, and output is only replaced by a marker beyond the budget.
-        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let buffered = Arc::new(AtomicUsize::new(0));
-        let producer_buffered = Arc::clone(&buffered);
-        let budget = std::sync::Mutex::new(OutputBudget::default());
-        let join = tokio::spawn(async move {
-            let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
-                .await
-                .map_err(|_| invalid_argument("source capture task failed".into()))??;
+        Ok(Running::spawn(token.clone(), move |reporter| async move {
+            let captured = capture(input).await?;
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,
@@ -309,16 +358,9 @@ impl Session {
                 captured.intent,
                 captured.build,
                 &captured.reusable,
+                captured.preference,
                 &token,
-                |progress| {
-                    let frame = budget
-                        .lock()
-                        .expect("budgeting never panics while holding the marker flag")
-                        .frame(progress, &producer_buffered);
-                    if let Some(frame) = frame {
-                        let _ = events.send(frame);
-                    }
-                },
+                |progress| reporter.report(progress),
             )
             .await
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
@@ -333,13 +375,43 @@ impl Session {
                 retained: std::sync::Mutex::new(Some(retained)),
                 prune_targets,
             })
-        });
-        Ok(RunningPreparation {
-            cancel,
-            events: Mutex::new(receiver),
-            buffered,
-            join: Mutex::new(Some(join)),
-        })
+        }))
+    }
+
+    /// Start one Image Build. `input` holds exactly one Git Service with its
+    /// checkout and commit; its receipt, if any, is a reuse hint. When
+    /// `start_within` passes before a Build Machine admits the build, the build
+    /// is withdrawn and `finished` reports [`BuildOutcome::Queued`]. An admitted
+    /// build always runs to its end. The Machine's temporary image retention
+    /// ends with the call; a later `prepare` reuses the image by digest.
+    ///
+    /// # Errors
+    /// Rejects a closed session. Build failures arrive through `finished`.
+    pub fn build(
+        &self,
+        input: PreparationInput,
+        start_within: Option<std::time::Duration>,
+    ) -> Result<RunningBuild, RpcError> {
+        let client = self.client()?;
+        let token = self.inner.cancel.child_token();
+        Ok(Running::spawn(token.clone(), move |reporter| {
+            build::run(client, input, start_within, token, reporter)
+        }))
+    }
+
+    /// The Build Platform Requirement of the one Service in `deployment`
+    /// (`PreparationInput.deployment`), read from the Machines it may be placed on.
+    ///
+    /// # Errors
+    /// Rejects a closed session or invalid deployment; returns transport errors,
+    /// or `invalid_argument` naming a Machine no build platform runs.
+    pub async fn build_platforms(
+        &self,
+        deployment: serde_json::Value,
+    ) -> Result<Vec<String>, RpcError> {
+        let client = self.client()?;
+        let token = self.inner.cancel.child_token();
+        build::platforms(client, deployment, token).await
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -482,6 +554,31 @@ impl Session {
         let mut client = self.client()?;
         self.until_closed(client.remove_machine(&target, confirm_data_loss))
             .await
+    }
+
+    /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine` and return its updated record.
+    ///
+    /// One-shot: a lost response is read back from observation, never replayed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the update is empty or illegal, or the Machine
+    /// does not respond.
+    pub async fn update_machine(
+        &self,
+        machine: &str,
+        update: ployz_core::MachineUpdate,
+    ) -> Result<ployz_core::MachineUpdated, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        self.until_closed(client.invoke::<op::UpdateMachine>(
+            ployz_core::UpdateMachineRequest { update },
+            &target,
+            Some(crate::connect::TARGET_RPC_TIMEOUT),
+        ))
+        .await
     }
 
     /// Live Observation of Data Loss that destroying `project` would cause.
@@ -709,121 +806,13 @@ fn invalid_argument(message: String) -> RpcError {
     }
 }
 
-/// Most build output retained ahead of a slow consumer before it is dropped.
-const OUTPUT_BUDGET: usize = 64 * 1024 * 1024;
-
-const DROPPED_MARKER: &str = "… output dropped: the consumer fell behind\n";
-
-/// Drops output beyond the budget, marking the first drop on the step it hit,
-/// until the consumer is back under half the budget. Structured progress
-/// always passes.
-#[derive(Default)]
-struct OutputBudget {
-    dropping: bool,
+/// Capture checkouts off the async runtime.
+async fn capture(input: PreparationInput) -> Result<preparation::CapturedPreparation, RpcError> {
+    tokio::task::spawn_blocking(move || preparation::capture(input))
+        .await
+        .map_err(|_| invalid_argument("source capture task failed".into()))?
 }
 
-impl OutputBudget {
-    /// The frame to send with its accounted size, or none when dropped.
-    fn frame(
-        &mut self,
-        mut progress: crate::sdk::prepare::Progress,
-        buffered: &AtomicUsize,
-    ) -> Option<(usize, Value)> {
-        use crate::sdk::prepare::Progress;
-        use ployz_build::Progress as Build;
-        let held = buffered.load(Ordering::Relaxed);
-        if held < OUTPUT_BUDGET / 2 {
-            self.dropping = false;
-        }
-        let size = match &mut progress {
-            Progress::Build(Build::StepOutput { text, .. }) => {
-                match self.admit(held, text.len())? {
-                    Admitted::Marker => *text = DROPPED_MARKER.into(),
-                    Admitted::Output => {}
-                }
-                text.len()
-            }
-            Progress::Build(Build::Output(bytes)) => {
-                match self.admit(held, bytes.len())? {
-                    Admitted::Marker => *bytes = DROPPED_MARKER.as_bytes().to_vec(),
-                    Admitted::Output => {}
-                }
-                bytes.len()
-            }
-            Progress::Build(
-                Build::Stage(_) | Build::Step(_) | Build::Timing { .. } | Build::Target { .. },
-            )
-            | Progress::Platforms(_)
-            | Progress::Selected(_)
-            | Progress::Transfer
-            | Progress::Delivered { .. } => 0,
-        };
-        buffered.fetch_add(size, Ordering::Relaxed);
-        let value = serde_json::to_value(progress).expect("preparation progress serializes");
-        Some((size, value))
-    }
-
-    /// Whether output of `len` bytes may be sent, or none while dropping.
-    /// Dropping continues until the consumer is under half the budget so the
-    /// stream cannot alternate between passing and silently dropping.
-    fn admit(&mut self, held: usize, len: usize) -> Option<Admitted> {
-        if self.dropping {
-            return None;
-        }
-        if held + len > OUTPUT_BUDGET {
-            self.dropping = true;
-            return Some(Admitted::Marker);
-        }
-        Some(Admitted::Output)
-    }
-}
-
-enum Admitted {
-    Output,
-    Marker,
-}
-
-/// Cancellable preparation whose progress is retained until read, within a byte budget.
-pub struct RunningPreparation {
-    cancel: CancellationToken,
-    events: Mutex<tokio::sync::mpsc::UnboundedReceiver<(usize, Value)>>,
-    buffered: Arc<AtomicUsize>,
-    join: Mutex<Option<tokio::task::JoinHandle<Result<PreparedDeploy, RpcError>>>>,
-}
-impl RunningPreparation {
-    /// Request cancellation; finished reports whether remote termination was confirmed.
-    pub fn abort(&self) {
-        self.cancel.cancel();
-    }
-    /// Read one progress frame; frames are retained until read, within the budget.
-    pub async fn next(&self) -> Option<Value> {
-        let (size, value) = self.events.lock().await.recv().await?;
-        self.buffered.fetch_sub(size, Ordering::Relaxed);
-        Some(value)
-    }
-    /// Await preparation without draining or blocking on progress consumption.
-    ///
-    /// # Errors
-    /// Returns typed preparation failure/unknown or rejects a second await.
-    pub async fn finished(&self) -> Result<PreparedDeploy, RpcError> {
-        let join = self
-            .join
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| invalid_argument("preparation already awaited".into()))?;
-        join.await.map_err(|_| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "preparation task failed".into(),
-            details: Value::Null,
-        })?
-    }
-}
-impl Drop for RunningPreparation {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
 fn preparation_error(
     error: crate::sdk::prepare::PreparationError,
     cancellation_requested: bool,

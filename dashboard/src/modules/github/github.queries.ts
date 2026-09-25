@@ -1,5 +1,7 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
+import { githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
 import {
+  listGithubBuildRepositoriesServerFn,
   getGithubRepoAccessStateServerFn,
   listGithubBranchesServerFn,
   getGithubInstallUrlServerFn,
@@ -67,5 +69,27 @@ export function githubBranchesQueryOptions(input: {
           installationId: input.installationId,
         },
       }),
+  });
+}
+
+export function githubBuildRepositoriesQueryOptions(organizationSlug: string) {
+  return queryOptions({
+    queryKey: [...githubKeys.all, "build-repositories", organizationSlug] as const,
+    queryFn: () => listGithubBuildRepositoriesServerFn({ data: { organizationSlug } }),
+    // The workflow lands in GitHub, usually from another tab: refetch on focus, and poll while one is awaited.
+    staleTime: 30_000,
+    refetchOnWindowFocus: "always",
+  });
+}
+
+/** Repositories the organization builds from, polled every 10s while one in `opened` still needs its workflow. */
+export function useGithubBuildRepositories(organizationSlug: string, opened: ReadonlySet<string> = new Set()) {
+  // Not suspense: a GitHub failure must not take the Servers page down with it.
+  return useQuery({
+    ...githubBuildRepositoriesQueryOptions(organizationSlug),
+    refetchInterval: (query) =>
+      query.state.data?.some((repository) => repository.readiness === "setup_needed" && opened.has(githubBuildRepositoryKey(repository)))
+        ? 10_000
+        : false,
   });
 }

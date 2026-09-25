@@ -135,6 +135,7 @@ pub fn allocate_enrollment(
         accepts_builds: request.initial_policy.accepts_builds,
         accepts_services: request.initial_policy.accepts_services,
         accepts_ingress: request.initial_policy.accepts_ingress,
+        build_concurrency: None,
     };
     for other in snapshot
         .machines

@@ -892,6 +892,18 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn mint_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    async fn end_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn remove_images(
         &self,
         _request: Request<OpaquePayload>,
@@ -1034,6 +1046,7 @@ fn joiner_machine() -> Machine {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }
 
@@ -1050,5 +1063,6 @@ pub fn founder_machine() -> Machine {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }

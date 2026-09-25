@@ -22,6 +22,9 @@ const runtimeWatchMachineSchema = Schema.Struct({
     name: Schema.String,
     public_ip: Schema.NullOr(Schema.String),
     advertised_endpoints: Schema.Array(Schema.String),
+    accepts_builds: Schema.Boolean,
+    build_concurrency: Schema.NullOr(Schema.Number),
+    runtime: Schema.Struct({ running_builds: Schema.Number }),
   }),
   membership: Schema.String,
 });
@@ -58,6 +61,8 @@ const runtimeWatchServiceSchema = Schema.Struct({
 export const runtimeWatchFrameSchema = Schema.Struct({
   services: Schema.Array(runtimeWatchServiceSchema),
   machines: Schema.Array(runtimeWatchMachineSchema),
+  /** Each Machine's build concurrency in effect, by Machine id. */
+  effective_build_concurrency: Schema.Record(Schema.String, Schema.Number),
   containers: Schema.Array(runtimeWatchContainerSchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
   incomplete_ids: Schema.Struct({
@@ -106,9 +111,13 @@ export function runtimeWatchFrameForTransport(
         name: machine.machine.name,
         public_ip: machine.machine.public_ip,
         advertised_endpoints: [...machine.machine.advertised_endpoints],
+        accepts_builds: machine.machine.accepts_builds,
+        build_concurrency: machine.machine.build_concurrency,
+        runtime: { running_builds: machine.machine.runtime.running_builds },
       },
       membership: machine.membership,
     })),
+    effective_build_concurrency: { ...frame.effective_build_concurrency },
     containers: frame.containers.map(runtimeWatchContainerForTransport),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
@@ -165,6 +174,10 @@ export function runtimeSnapshotFromWatchFrame(
       name: machine.machine.name,
       publicIp: machine.machine.public_ip,
       endpoints: [...machine.machine.advertised_endpoints],
+      acceptsBuilds: machine.machine.accepts_builds,
+      buildConcurrency: machine.machine.build_concurrency,
+      effectiveBuildConcurrency: frame.effective_build_concurrency[machine.machine.id] ?? 1,
+      runningBuilds: machine.machine.runtime.running_builds,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,

@@ -1,3 +1,4 @@
+import { asTestDouble } from "#/lib/test-double";
 import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
@@ -12,7 +13,6 @@ import {
   executeProcessEnvironmentDeployment,
   executeProcessEnvironmentDeploymentOnFailure,
   executeMarkCancelledRowBackedWorkflow,
-  PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY,
   type EnvironmentDeploymentStepTools,
 } from "./environment-deployment.inngest";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -21,15 +21,15 @@ import * as runtimeCancellation from "#/modules/deployments/runtime-cancellation
 import * as runtimeHydration from "#/modules/deployments/runtime-hydration.repository.server";
 import * as runtimeLifecycle from "#/modules/deployments/runtime-lifecycle.repository.server";
 import * as runtimeActivities from "#/modules/deployments/runtime-activities.server";
+import * as imageBuilds from "#/modules/deployments/image-builds.server";
+import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
 import {
   createImageServiceSource,
   createDefaultServiceHealthcheck,
   createDefaultServiceRestartPolicy,
   projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
-import {
-  DeploymentRuntimeInvalid,
-} from "#/modules/deployments/runtime-activities.server";
+import { DeploymentRuntimeInvalid } from "#/modules/deployments/runtime-session.server";
 
 const sdkPreview = {
   project_name: "production",
@@ -77,6 +77,8 @@ function runtimeFailure(
 
 useServiceFreeEffectRunner();
 
+// Image-only targets: no Image Builds. Fan-out is covered by the engine tests.
+vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.succeed([]));
 vi.spyOn(
   runtimeHydration,
   "loadDeploymentContext",
@@ -119,6 +121,7 @@ vi.spyOn(
 ).mockImplementation((runId, message) =>
   Effect.promise(() => message === undefined ? mocks.markCancelledByInngestRunId(runId) : mocks.markCancelledByInngestRunId(runId, message)),
 );
+vi.spyOn(githubImageBuilds, "cancelGithubImageBuilds").mockImplementation(() => Effect.succeed(0));
 vi.spyOn(
   runtimeActivities,
   "executeLatestEnvironmentDeployment",
@@ -152,6 +155,7 @@ function createStepTools({
     run,
     sleep: vi.fn(async () => undefined),
     sendEvent: vi.fn(async () => ({ ids: [] })),
+    waitForEvent: asTestDouble<EnvironmentDeploymentStepTools["waitForEvent"]>()(vi.fn(async () => null)),
   };
 }
 
@@ -396,12 +400,6 @@ describe("process environment deployment", () => {
       message,
       failureCode,
     });
-  });
-
-  it("keeps one in-flight deploy per environment", () => {
-    expect(PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY).toEqual([
-      { key: "event.data.environmentId", limit: 1 },
-    ]);
   });
 
   it("marks the durable row cancelled when Inngest cancels the run", async () => {

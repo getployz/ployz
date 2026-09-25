@@ -4,7 +4,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
-import { watchDeploymentCancellation } from "./runtime-activities.server";
+import { watchDeploymentCancellation } from "./runtime-session.server";
 import { expandManagedHostnames } from "#/modules/environment-design/managed-hostnames.server";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createImageServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";

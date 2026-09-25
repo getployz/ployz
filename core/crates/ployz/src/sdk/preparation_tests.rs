@@ -70,6 +70,8 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
             .map(|name| (name, "a".repeat(40)))
             .collect(),
         build_receipts: BTreeMap::new(),
+        build_index: 0,
+        preferred_machine: None,
     }
 }
 
@@ -113,6 +115,7 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
         crate::sdk::ImageCleanup::Manual,
     ] {
         let (root, service, _) = fixture();
+        let builder = machine('a', "builder").machine.id;
         let destination = machine('b', "application").machine.id;
         let (session, server) = session(service).await;
         let prepared = session
@@ -121,12 +124,13 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
             .finished()
             .await
             .unwrap();
+        // The Machine holding the build is cleaned as well as the destination.
         assert_eq!(
             prepared.prune_targets(),
-            [ployz_core::PruneTarget {
-                machine_id: destination,
+            [builder, destination].map(|machine_id| ployz_core::PruneTarget {
+                machine_id,
                 repository: "ployz-build/one".into(),
-            }]
+            })
         );
         let running = prepared.confirm_with_log_id(None, cleanup).unwrap();
         let mut events = Vec::new();
@@ -145,12 +149,14 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
                     last,
                     ployz_core::DeployEvent::ImagesPruned {
                         report: ployz_core::ImageCleanupReport {
-                            machines: vec![ployz_core::MachineImageCleanup {
-                                machine_id: destination,
-                                result: ployz_core::MachineCleanupResult::Cleaned {
-                                    removals: Vec::new()
-                                },
-                            }],
+                            machines: [builder, destination]
+                                .map(|machine_id| ployz_core::MachineImageCleanup {
+                                    machine_id,
+                                    result: ployz_core::MachineCleanupResult::Cleaned {
+                                        removals: Vec::new()
+                                    },
+                                })
+                                .to_vec(),
                         },
                     }
                 );
@@ -161,7 +167,7 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
                     .prune_images(prepared.prune_targets())
                     .await
                     .unwrap();
-                assert_eq!(report.machines.len(), 1);
+                assert_eq!(report.machines.len(), 2);
             }
         }
         session.close().await;
@@ -749,6 +755,7 @@ async fn builder_selection_filters_observations_without_using_service_policy_or_
             &mut client,
             &build_targets(&["linux/amd64"]),
             &visible,
+            Default::default(),
             &Default::default()
         )
         .await
@@ -777,6 +784,7 @@ async fn builder_selection_reports_missing_capability() {
         &mut client,
         &build_targets(&["linux/amd64"]),
         &visible,
+        Default::default(),
         &Default::default(),
     )
     .await
@@ -811,6 +819,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
         &mut client,
         &build_targets(&["linux/arm64"]),
         &visible,
+        Default::default(),
         &Default::default(),
     )
     .await
@@ -821,6 +830,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
         &mut client,
         &targets,
         &visible,
+        Default::default(),
         &Default::default(),
     )
     .await
@@ -830,6 +840,157 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     assert!(error.contains("cannot build linux/arm64"), "{error}");
     assert!(error.contains("cannot build linux/amd64"), "{error}");
     assert!(builds.definitions.lock().unwrap().is_empty());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Build one Service through the SDK and return the Selected event's Machine and reason.
+async fn selected_by_build(
+    session: &crate::sdk::Session,
+    input: crate::sdk::PreparationInput,
+) -> (String, Value) {
+    let running = session.build(input, None).unwrap();
+    let mut selected = None;
+    while let Some(event) = running.next().await {
+        if let Some(builder) = event.get("Selected") {
+            selected = Some((
+                builder
+                    .pointer("/machine/name")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned(),
+                builder.get("reason").unwrap().clone(),
+            ));
+        }
+    }
+    running.finished().await.unwrap();
+    selected.expect("every build selects a Machine")
+}
+
+fn two_builders() -> (PathBuf, DeployService) {
+    let (root, service, _) = fixture();
+    let mut spare = machine('c', "spare");
+    spare.machine.accepts_services = false;
+    let service = service.with_machines(vec![
+        machine('a', "builder"),
+        {
+            let mut application = machine('b', "application");
+            application.machine.accepts_builds = false;
+            application
+        },
+        spare,
+    ]);
+    (root, service)
+}
+
+#[tokio::test]
+async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can() {
+    let (root, service) = two_builders();
+    let (sdk, server) = session(service.clone()).await;
+    // A stale receipt still names the Machine whose build cache is warm.
+    let receipt: crate::sdk::preparation::BuildReceipt = serde_json::from_value(json!({
+        "fingerprint": "0".repeat(64), "machine_id": "c".repeat(32),
+        "image": {"reference": format!("sha256:{}", "f".repeat(64)), "tags": [],
+            "platforms": ["linux/amd64"], "location": "unused"}
+    }))
+    .unwrap();
+    let hinted = |index| {
+        let mut input = input(&root, vec![git("one", "dockerfile")]);
+        input
+            .build_receipts
+            .insert(ServiceName::parse("one").unwrap(), receipt.clone());
+        input.build_index = index;
+        input
+    };
+    for index in 0..2 {
+        assert_eq!(
+            selected_by_build(&sdk, hinted(index)).await,
+            ("spare".into(), json!({"kind": "had_cache"}))
+        );
+    }
+    sdk.close().await;
+    server.abort();
+
+    // Once the holder stops accepting Builds, the build spreads and says why.
+    let mut holder = machine('c', "spare");
+    holder.machine.accepts_builds = false;
+    let (sdk, server) = session(service.with_machines(vec![machine('a', "builder"), holder])).await;
+    assert_eq!(
+        selected_by_build(&sdk, hinted(1)).await,
+        (
+            "builder".into(),
+            json!({"kind": "cache_holder_unavailable", "holder": "c".repeat(32), "name": "spare"})
+        )
+    );
+    sdk.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_preferred_server_is_the_clusters_first_choice() {
+    let (root, service) = two_builders();
+    let preferring = || {
+        let mut input = input(&root, vec![git("one", "dockerfile")]);
+        input.preferred_machine = Some(machine('c', "spare").machine.id);
+        input
+    };
+    let (sdk, server) = session(service.clone()).await;
+    // Index 0 alone would spread to "builder".
+    assert_eq!(
+        selected_by_build(&sdk, preferring()).await,
+        ("spare".into(), json!({"kind": "preferred"}))
+    );
+    sdk.close().await;
+    server.abort();
+
+    // Once it stops accepting Builds, the Cluster chooses without it and says why.
+    let mut stopped = machine('c', "spare");
+    stopped.machine.accepts_builds = false;
+    let (sdk, server) = session(
+        service
+            .clone()
+            .with_machines(vec![machine('a', "builder"), stopped]),
+    )
+    .await;
+    assert_eq!(
+        selected_by_build(&sdk, preferring()).await,
+        (
+            "builder".into(),
+            json!({"kind": "preferred_unavailable", "preferred": "c".repeat(32), "name": "spare"})
+        )
+    );
+    sdk.close().await;
+    server.abort();
+    // Gone from the Cluster: no name to show.
+    let (sdk, server) = session(service.with_machines(vec![machine('a', "builder")])).await;
+    assert_eq!(
+        selected_by_build(&sdk, preferring()).await,
+        (
+            "builder".into(),
+            json!({"kind": "preferred_unavailable", "preferred": "c".repeat(32), "name": null})
+        )
+    );
+    sdk.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn an_attempts_builds_spread_across_servers_that_accept_builds() {
+    let (root, service) = two_builders();
+    let (session, server) = session(service).await;
+    let mut chosen = Vec::new();
+    for index in 0..4 {
+        let mut input = input(&root, vec![git("one", "dockerfile")]);
+        input.build_index = index;
+        let (name, reason) = selected_by_build(&session, input).await;
+        assert_eq!(reason, json!({"kind": "spread"}));
+        chosen.push(name);
+    }
+    // The Machine without the Builds role is never chosen.
+    assert_eq!(chosen, ["builder", "spare", "builder", "spare"]);
+    session.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
@@ -873,6 +1034,8 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
         sources: BTreeMap::from([(name.clone(), root.clone())]),
         source_commits: BTreeMap::from([(name.clone(), commit)]),
         build_receipts: receipts,
+        build_index: 0,
+        preferred_machine: None,
     };
     let first = session
         .prepare(input(deployment.clone(), BTreeMap::new(), "a".repeat(40)))
@@ -997,6 +1160,142 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
     }
     mixed.close();
     session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn one_image_build_returns_the_receipt_prepare_reuses() {
+    let (root, service, builds) = fixture();
+    let (session, server) = session(service).await;
+    let built = session
+        .build(input(&root, vec![git("one", "dockerfile")]), None)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let crate::sdk::BuildOutcome::Built { receipt } = built else {
+        panic!("an admitted build must finish with a receipt: {built:?}");
+    };
+    assert_eq!(
+        receipt.image.reference,
+        format!("sha256:{}", "1".repeat(64))
+    );
+    assert_eq!(receipt.machine_id, machine('a', "builder").machine.id);
+    let name = ServiceName::parse("one").unwrap();
+    let mut prepared = input(&root, vec![git("one", "dockerfile")]);
+    prepared
+        .build_receipts
+        .insert(name.clone(), receipt.clone());
+    let prepared = session.prepare(prepared).unwrap().finished().await.unwrap();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        1,
+        "prepare must reuse the receipt instead of building again"
+    );
+    assert_eq!(
+        prepared.build_receipts().get(&name).unwrap().fingerprint,
+        receipt.fingerprint
+    );
+    prepared.close();
+
+    // Anything but one Git Service with its commit is refused before building.
+    let two = input(
+        &root,
+        vec![git("one", "dockerfile"), git("two", "dockerfile")],
+    );
+    let error = session
+        .build(two, None)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(builds.definitions.lock().unwrap().len(), 1);
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_build_still_queued_at_its_start_limit_reports_queued_and_starts_nothing() {
+    let (root, service, builds) = fixture();
+    builds.hold_in_queue.store(true, Ordering::SeqCst);
+    let (session, server) = session(service).await;
+    let running = session
+        .build(
+            input(&root, vec![git("one", "dockerfile")]),
+            Some(std::time::Duration::from_millis(300)),
+        )
+        .unwrap();
+    let outcome = running.finished().await.unwrap();
+    assert!(
+        matches!(outcome, crate::sdk::BuildOutcome::Queued),
+        "{outcome:?}"
+    );
+    let mut stages = Vec::new();
+    while let Some(event) = running.next().await {
+        if let Some(stage) = event.pointer("/Build/Stage") {
+            stages.push(stage.clone());
+        }
+    }
+    assert!(stages.contains(&json!("Queued")), "{stages:?}");
+    assert!(!stages.contains(&json!("Upload")), "{stages:?}");
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_a_build_stops_it_without_a_receipt() {
+    let (root, service, builds) = fixture();
+    builds.hold_in_queue.store(true, Ordering::SeqCst);
+    let (session, server) = session(service).await;
+    let running = session
+        .build(input(&root, vec![git("one", "dockerfile")]), None)
+        .unwrap();
+    while let Some(event) = running.next().await {
+        if event.pointer("/Build/Stage") == Some(&json!("Queued")) {
+            running.abort();
+        }
+    }
+    let error = running.finished().await.unwrap_err();
+    assert_eq!(
+        error.details.pointer("/preparation/kind").unwrap(),
+        "cancelled",
+        "{error:?}"
+    );
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn build_platforms_refuse_an_invalid_deployment_and_an_unbuildable_placement() {
+    let (root, service, _) = fixture();
+    let (sdk, server) = session(service.clone()).await;
+    let error = sdk
+        .build_platforms(json!({"projectName": "app"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    sdk.close().await;
+    server.abort();
+
+    // The Service may land on a Machine no build platform runs.
+    let mut odd = machine('b', "odd");
+    odd.machine.runtime.architecture = "riscv64".into();
+    let (sdk, server) = session(service.with_machines(vec![odd])).await;
+    let deployment = input(&root, vec![git("one", "dockerfile")]).deployment;
+    let error = sdk.build_platforms(deployment).await.unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(
+        error.message.contains("odd") && error.message.contains("riscv64"),
+        "{error:?}"
+    );
+    sdk.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }

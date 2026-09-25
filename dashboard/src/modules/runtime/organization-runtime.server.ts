@@ -27,6 +27,9 @@ export const PAIRING_CHANGE_POLL = "1 second";
  */
 export const ORGANIZATION_CONNECT_TIMEOUT = "30 seconds";
 
+/** How long Cloud waits for a Cluster's first Runtime Watch frame when it reads the Cluster once. */
+export const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
+
 export type ConnectedRuntimeClient = PloyzSession;
 
 export type ScopedRuntimeClientSession =

@@ -561,6 +561,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            build_concurrency: None,
         };
         let mut peer = machine.clone();
         peer.id = MachineId::random();

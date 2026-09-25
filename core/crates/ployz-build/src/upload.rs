@@ -64,7 +64,7 @@ impl Admission {
         targets: &[crate::Target],
     ) -> Result<(), BuildError> {
         let _ownership = self.lock.clone();
-        let mut upload = Upload::owned(self.lock.directory.join("build-upload"))
+        let mut upload = Upload::owned(self.lock.upload_directory())
             .map_err(|error| BuildError::Prerequisite(error.to_string()))?;
         let environment = environment(&upload.root);
         let docker = crate::Docker {
@@ -99,7 +99,7 @@ impl AdmittedUpload {
         admission
             .check()
             .map_err(|error| InputError::from(error.to_string()))?;
-        let upload = Upload::owned(admission.lock.directory.join("build-upload"))?;
+        let upload = Upload::owned(admission.lock.upload_directory())?;
         Ok(Self { upload, admission })
     }
 

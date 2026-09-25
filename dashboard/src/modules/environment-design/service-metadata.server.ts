@@ -31,8 +31,9 @@ export const editServiceMetadata = Effect.fn("EnvironmentDesign.editServiceMetad
         return yield* new Conflict({ message: getDuplicateEnvironmentNodeNameMessage(edit.name) });
       }
       const { drizzle } = yield* Database;
+      // A null policy key is cleared: a Preferred Builder of null goes back to Auto.
       const [row] = yield* drizzle.update(service)
-        .set({ ...(edit.kind === "rename" ? { name: edit.name } : { policy: sql`${service.policy} || ${JSON.stringify(edit.policy)}::jsonb` }), updatedAt: new Date() })
+        .set({ ...(edit.kind === "rename" ? { name: edit.name } : { policy: sql`jsonb_strip_nulls(${service.policy} || ${JSON.stringify(edit.policy)}::jsonb)` }), updatedAt: new Date() })
         .where(and(eq(service.id, input.serviceId), eq(service.environmentId, input.environmentId))).returning();
       if (!row) return yield* new NotFound({ message: "Service not found." });
       return row;

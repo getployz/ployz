@@ -247,6 +247,7 @@ impl BuildError {
 /// Returns the completed images in the order of `targets`. Validation and
 /// registry publication retain no local image, so they return none. Cancellation
 /// is supplied by the caller; this function never installs process signal handlers.
+/// Progress renders to stderr and also reaches `observe`.
 ///
 /// # Errors
 /// Returns a prerequisite error when Docker cannot serve the Build, a request
@@ -257,6 +258,7 @@ impl BuildError {
 pub fn execute(
     request: &Request<'_>,
     cancellation: &Cancellation,
+    observe: &(dyn Fn(&Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     let renderer = PlainRenderer::default();
     execute_admitted(request, Admission::wait(cancellation)?, &|event| {
@@ -264,6 +266,7 @@ pub fn execute(
             use std::io::Write as _;
             let _ = std::io::stderr().write_all(text.as_bytes());
         }
+        observe(&event);
     })
 }
 
@@ -330,8 +333,14 @@ pub fn execute_admitted(
         let native = builder
             .native_platform(request.targets, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
-        preparation = railpack::prepare(&docker, request, &native, &admission.resources)
-            .map_err(|error| error.at(Stage::Preparation))?;
+        preparation = railpack::prepare(
+            &docker,
+            request,
+            &native,
+            builder.name(),
+            &admission.resources,
+        )
+        .map_err(|error| error.at(Stage::Preparation))?;
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
@@ -347,7 +356,13 @@ pub fn execute_admitted(
             let metadata = request
                 .working_dir
                 .join(format!("build-metadata-{}.json", target.bake));
-            let mut arguments = bake_arguments(request, target, &metadata, overrides.as_deref());
+            let mut arguments = bake_arguments(
+                request,
+                builder.name(),
+                target,
+                &metadata,
+                overrides.as_deref(),
+            );
             arguments.push("--set".into());
             arguments.push(format!(
                 "{}.platform={}",
@@ -415,7 +430,7 @@ pub fn execute_admitted(
     let result = result.and_then(|images| {
         admission
             .resources
-            .collect_cache(&docker.releasing())
+            .collect_cache(&docker.releasing(), builder.name())
             .map_err(|error| error.at(Stage::Cleanup))?;
         Ok(images)
     });
@@ -451,6 +466,7 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
 
 fn bake_arguments(
     request: &Request<'_>,
+    builder: &str,
     planned: &Planned<'_>,
     metadata: &Path,
     overrides: Option<&Path>,
@@ -459,7 +475,7 @@ fn bake_arguments(
         "buildx".to_owned(),
         "bake".to_owned(),
         "--builder".to_owned(),
-        builder_name(),
+        builder.to_owned(),
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];
@@ -486,6 +502,17 @@ fn bake_arguments(
     }
     if request.pull {
         arguments.push("--pull".to_owned());
+    }
+    // A GitHub Actions runner's cache service, which only `ployz build` passes through.
+    // Scoped per target so one repository's Services don't evict each other.
+    if request.environment.contains_key("ACTIONS_RUNTIME_TOKEN") {
+        for (field, mode) in [("cache-from", ""), ("cache-to", ",mode=max")] {
+            arguments.push("--set".to_owned());
+            arguments.push(format!(
+                "{bake}.{field}=type=gha,scope={bake}{mode}",
+                bake = planned.bake
+            ));
+        }
     }
     // Platforms travel in the captured Compose file, which upstream reads.
     for argument in request.build_args {

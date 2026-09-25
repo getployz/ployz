@@ -1,5 +1,7 @@
+mod build_grant;
 mod management;
 
+pub use build_grant::{GrantRegistry, open_grant_registry};
 pub use management::ManagementRelay;
 use management::connect_management;
 

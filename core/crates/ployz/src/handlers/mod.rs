@@ -6,6 +6,7 @@ use clap_complete::{Shell, generate};
 
 use crate::failure::Failure;
 
+mod build;
 mod cloud;
 mod context;
 mod data_loss;
@@ -200,6 +201,7 @@ fn handler_for(path: &str) -> Option<Handler> {
                     .map(String::as_str),
             )
         },
+        "build" => build::build,
         "cloud enroll" => cloud::enroll,
         "machine add" => machine::add,
         "machine init" => machine::init,

@@ -6,7 +6,9 @@ use std::{
 };
 use ts_rs::TS;
 
+mod build_grant;
 mod upgrade;
+pub use build_grant::*;
 pub use upgrade::*;
 
 use ipnet::Ipv4Net;
@@ -824,7 +826,7 @@ impl IngressProxyConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateMaterialPublished {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdated {
     pub machine: Machine,
 }
@@ -936,6 +938,8 @@ define_responses! {
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
     ImagesRemoved(ImagesRemoved) => "images_removed";
+    BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
+    BuildGrantEnded(BuildGrantEnded) => "build_grant_ended";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";
@@ -1085,6 +1089,7 @@ mod set_management_client_wire {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            build_concurrency: None,
         }
     }
 

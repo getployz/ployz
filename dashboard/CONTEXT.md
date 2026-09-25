@@ -13,7 +13,7 @@ The display name of a Service, stored on its stable identity and saved immediate
 _Avoid_: Deployable name, DNS alias
 
 **Deployment Policy**:
-Immediate Service preferences controlling automated admission: automatic Git deployment, waiting for CI, watch paths, and image update preference. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
+Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
 _Avoid_: Staged source settings, runtime configuration
 
 **Registry Credential**:
@@ -224,16 +224,20 @@ The build of one Service image within a Cloud Deployment Attempt, with its own B
 _Avoid_: Build batch, combined build log, Bake run
 
 **Builder**:
-A place that runs Image Builds: the Organization Cluster, which chooses one of its Servers, or GitHub Actions in the Service's own repository.
+A place that runs Image Builds: the Organization Cluster, which chooses one of its Servers, or GitHub Actions in the Service's own repository. The Cluster picks the Server named in the Service's latest Build Receipt while it accepts Builds and is reachable (its build cache is warm), otherwise it spreads the attempt's builds across Servers that accept Builds; each Image Build records the Server and why it was chosen.
 _Avoid_: Build host, build runner, builder Server; Builder for Dockerfile or Railpack
 
 **Build Order**:
-The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service's Preferred Builder is tried before it. A build that has started never moves.
+The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service's Preferred Builder is tried before it. A build that has started never moves. Until the Organization chooses one, its Build Order is its servers only, then GitHub first once any repository its Services build from has the Build Workflow.
 _Avoid_: Build pool, build preference, fallback builder
 
 **Preferred Builder**:
-One Builder a Service tries first, before the Organization's Build Order: GitHub Actions or one specific Server. When it does not start the build in time, the Image Build continues with the Build Order; it never forbids the others.
+One Builder a Service tries first, before the Organization's Build Order: GitHub Actions or one specific Server. When it does not start the build in time, the Image Build continues with the Build Order; it never forbids the others. A preferred Server that is gone or no longer accepts Builds when the build starts sends the Image Build back to Auto (the Build Order alone), and the Image Build records why.
 _Avoid_: Builder override, pinned builder, build target
+
+**Build Workflow**:
+The `.github/workflows/ployz-build.yml` file that lets GitHub Actions be a Builder for one repository. It only runs when Cloud dispatches it, and calls the `getployz/build` Action. A repository is ready when the workflow is active on its default branch; Cloud checks this from GitHub and never writes the file itself.
+_Avoid_: CI pipeline, build config, GitHub integration
 
 **Build Method**:
 How a Service's image is described for building: a Dockerfile or Railpack.

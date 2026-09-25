@@ -1,6 +1,6 @@
 //! Pinned Railpack preparation feeding the same Buildx solve and image result.
 
-use crate::{BuildError, Docker, Output, Request, Streams, builder_name};
+use crate::{BuildError, Docker, Output, Request, Streams};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -54,6 +54,7 @@ pub(crate) fn prepare(
     docker: &Docker<'_>,
     request: &Request<'_>,
     native: &str,
+    builder: &str,
     resources: &crate::policy::Resources,
 ) -> Result<Option<Preparation>, BuildError> {
     if request.railpack.is_empty() {
@@ -95,14 +96,7 @@ pub(crate) fn prepare(
         // Ployz-owned builder; replace this cold rebuild when upstream supports them.
         docker.run(
             "refresh Railpack build cache",
-            &[
-                "buildx",
-                "prune",
-                "--builder",
-                &builder_name(),
-                "--all",
-                "--force",
-            ],
+            &["buildx", "prune", "--builder", builder, "--all", "--force"],
             Streams::Inherited,
         )?;
     }
@@ -145,6 +139,7 @@ pub(crate) fn prepare(
             &request.working_dir.join(&recipe.context),
             &script,
             &plan,
+            builder,
             resources,
         )?;
         // Length-delimited, sorted JSON prevents ambiguous concatenations. Only
@@ -179,9 +174,10 @@ fn prepare_container(
     context: &Path,
     script: &Path,
     plan: &Path,
+    builder: &str,
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
-    let name = format!("{}-prepare", builder_name());
+    let name = format!("{builder}-prepare");
     let mut arguments = vec![
         "--network".into(),
         "host".into(),

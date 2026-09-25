@@ -1,7 +1,7 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
-import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
+import { loadBuildReceipts } from "./image-builds.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { resolveLogFilter } from "#/modules/runtime/container-logs.server";
 import { Header } from "tar";
@@ -180,7 +180,7 @@ describe("deployment runtime persistence", () => {
   });
 
   it.each(["valid", "corrupt ciphertext", "invalid JSON", "incompatible schema", "rotated key", "reporting unavailable", "reporting stalls", "reporting recovers"])(
-    "recovers and retains private build receipts across Git deployments: %s", async (evidence) => {
+    "delivers with the attempt's private Build Receipts, tolerating unreadable ones: %s", async (evidence) => {
     if (evidence === "reporting unavailable" || evidence === "reporting recovers") {
       await harness.pool.query("ALTER TABLE environment_deployment_event ADD CONSTRAINT reject_test_event CHECK (false)");
       await harness.pool.query("ALTER TABLE environment_deployment_build_step ADD CONSTRAINT reject_test_step CHECK (false)");
@@ -208,7 +208,7 @@ describe("deployment runtime persistence", () => {
     const client = asTestDouble<Client>()({
       prepare: (input: Parameters<Client["prepare"]>[0]) => {
         expect(input.source_commits).toEqual({ api: "a".repeat(40) });
-        expect(input.build_receipts).toEqual(attempt === 0 || (attempt === 1 && (evidence !== "valid" && !evidence.startsWith("reporting"))) ? {} : receipt);
+        expect(input.build_receipts).toEqual(attempt === 0 && evidence !== "valid" && !evidence.startsWith("reporting") ? {} : receipt);
         const prepared = asTestDouble<PreparedDeploy>()({
           ...preview(), buildReceipts: receipt, pruneTargets: [], close: () => undefined,
           confirm: () => {
@@ -237,6 +237,16 @@ describe("deployment runtime persistence", () => {
         triggerOrigin: { origin: "manual", actorId: userId }, message: null,
       }));
       await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+      // The attempt's Image Build left its receipt; an unreadable one only means prepare builds.
+      const unreadable = attempt > 0 || evidence === "valid" || evidence.startsWith("reporting") ? null
+        : evidence === "invalid JSON" ? encryption.encrypt("{")
+        : evidence === "incompatible schema" ? encryption.encrypt(JSON.stringify({ ...receipt.api, version: 2 }))
+        : evidence === "rotated key" ? makeSecretEncryption("previous-encryption-secret").encrypt(JSON.stringify(receipt.api))
+        : { ...encryption.encrypt(JSON.stringify(receipt.api)), ciphertext: "corrupt" };
+      await harness.db.insert(schema.environmentDeploymentImageBuild).values({
+        organizationId, deploymentId: admitted.id, serviceId: apiNodeId, image: "api", status: "built", inngestRunId: "build-run",
+        encryptedReceipt: unreadable ?? encryption.encrypt(JSON.stringify(receipt.api)), finishedAt: new Date(),
+      });
       const context: DeploymentContext = {
         deployment: { id: admitted.id, environmentId, status: "planning", inngestRunId: null, sourcePins: { [apiNodeId]: { commitSha: "a".repeat(40) } } },
         environment: { id: environmentId, namespace: "production" }, project: { id: projectId, organizationId }, organization: { id: organizationId, slug: "runtime" },
@@ -257,24 +267,8 @@ describe("deployment runtime persistence", () => {
         const logs = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 50 }));
         expect(logs.steps.some((step) => step.key === "stage:Upload")).toBe(true);
       }
-      const [secret] = await harness.db.select().from(schema.environmentDeploymentSecret).where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, admitted.id));
-      expect(secret?.encryptedBuildReceipts).toBeTruthy();
-      if (!secret?.encryptedBuildReceipts) throw new Error("Missing build evidence");
-      expect(JSON.parse(encryption.decrypt(secret.encryptedBuildReceipts))).toEqual(receipt);
-      expect(JSON.stringify(secret)).not.toContain(receipt.api.fingerprint);
-      // Receipt writes cannot mutate a completed or differently owned attempt.
-      await expect(harness.runEffect(persistBuildReceipts(context, receipt).pipe(Effect.provideService(SecretEncryption, encryption))))
-        .rejects.toMatchObject({ failureCode: "build_receipts_not_owned" });
-      expect(await harness.runEffect(loadBuildReceipts({ ...context, organization: { id: userId, slug: "other" } }).pipe(Effect.provideService(SecretEncryption, encryption)))).toEqual({});
-      if (attempt === 0 && (evidence !== "valid" && !evidence.startsWith("reporting"))) {
-        const unreadable = evidence === "invalid JSON" ? encryption.encrypt("{")
-          : evidence === "incompatible schema" ? encryption.encrypt(JSON.stringify({ api: { ...receipt.api, version: 2 } }))
-          : evidence === "rotated key" ? makeSecretEncryption("previous-encryption-secret").encrypt(JSON.stringify(receipt))
-          : { ...secret.encryptedBuildReceipts, ciphertext: "corrupt" };
-        await harness.db.update(schema.environmentDeploymentSecret)
-          .set({ encryptedBuildReceipts: unreadable })
-          .where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, admitted.id));
-      }
+      // Receipts are scoped to their environment.
+      expect(await harness.runEffect(loadBuildReceipts({ environmentId: projectId }).pipe(Effect.provideService(SecretEncryption, encryption)))).toEqual({});
       attempt++;
     }
     expect(confirmed).toBe(3);
@@ -652,7 +646,7 @@ describe("deployment runtime persistence", () => {
     await expect(admit()).rejects.toMatchObject({ _tag: "Conflict" });
     await harness.db.update(schema.environmentDeployment).set({ deployPreview: preview() }).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
-      { organizationId, environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null, encryptedBuildReceipts: null },
+      { organizationId, environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null },
     ]);
     const outcome = { version: 1, outcome: { type: "success" as const, completed: [] } };
     await harness.runEffect(persistSdkDeployOutcome({

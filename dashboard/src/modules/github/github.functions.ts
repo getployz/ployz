@@ -11,6 +11,7 @@ import {
   searchGithubFiles,
 } from "#/modules/github/github.server";
 import { listCachedGithubRepositoriesForUser } from "#/modules/github/github.repository";
+import { listGithubBuildRepositories } from "#/modules/github/github-build.server";
 import {
   actorMiddleware,
   publicErrorMiddleware,
@@ -67,3 +68,8 @@ export const listGithubRepositoriesServerFn = createServerFn({ method: "GET" })
     setResponseHeader("cache-control", "private, no-store");
     return runActor(context, listCachedGithubRepositoriesForUser(context.actor.userId));
   });
+
+export const listGithubBuildRepositoriesServerFn = createServerFn({ method: "GET" })
+  .middleware(authenticated)
+  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.NonEmptyString.check(Schema.isMaxLength(256)) })))
+  .handler(({ context, data }) => runActor(context, listGithubBuildRepositories(context.actor, data)));

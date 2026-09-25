@@ -5,8 +5,8 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    AdvertisedEndpoint, MachineName, MachineTarget, MachineUpdate, PublicIpUpdate,
-    UpdateMachineRequest, op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, MachineName, MachineTarget, MachineUpdate,
+    PublicIpUpdate, UpdateMachineRequest, op,
 };
 
 use crate::{connect::TARGET_RPC_TIMEOUT, context::Config};
@@ -149,6 +149,14 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
                 .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
         ),
     };
+    let build_concurrency = match matches
+        .get_one::<String>("build-concurrency")
+        .map(String::as_str)
+    {
+        None => BuildConcurrencyUpdate::Keep,
+        Some("auto") => BuildConcurrencyUpdate::Automatic,
+        Some(value) => BuildConcurrencyUpdate::Set(value.parse()?),
+    };
     let advertised_endpoints = if matches.get_many::<String>("wg-endpoint").is_some() {
         Some(parse_endpoints(&string_values(matches, "wg-endpoint"))?)
     } else {
@@ -158,6 +166,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         name,
         public_ip,
         advertised_endpoints,
+        build_concurrency,
         ..parse_policy(matches)?
     };
     if update.is_empty() {
@@ -289,6 +298,28 @@ mod tests {
             parse_update(leaf_matches(&remove)).unwrap().public_ip,
             PublicIpUpdate::Remove
         );
+
+        let concurrency = |value: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "machine",
+                    "update",
+                    "node-a",
+                    &format!("--build-concurrency={value}"),
+                ])
+                .unwrap();
+            parse_update(leaf_matches(&matches)).map(|update| update.build_concurrency)
+        };
+        assert_eq!(
+            concurrency("auto").unwrap(),
+            BuildConcurrencyUpdate::Automatic
+        );
+        assert_eq!(
+            concurrency("3").unwrap(),
+            BuildConcurrencyUpdate::Set("3".parse().unwrap())
+        );
+        assert!(concurrency("0").is_err());
     }
 
     #[test]

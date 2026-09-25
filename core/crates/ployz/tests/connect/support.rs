@@ -574,6 +574,7 @@ impl MachineRpc for DiscoveryService {
             public_ip: body.public_ip,
             advertised_endpoints: body.advertised_endpoints,
             runtime: body.runtime,
+            build_concurrency: None,
         };
         let visible_peers = self
             .machines
@@ -1057,6 +1058,18 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn mint_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    async fn end_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn remove_images(
         &self,
         _request: Request<OpaquePayload>,
@@ -1115,9 +1128,30 @@ impl MachineRpc for DiscoveryService {
 
     async fn update_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let target = ployz_core::MachineTarget::parse(
+            request.metadata().get("machine").unwrap().to_str().unwrap(),
+        )
+        .unwrap();
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::UpdateMachine(ployz_core::UpdateMachineRequest { update }) =
+            request.body
+        else {
+            return Err(Status::invalid_argument("expected update_machine"));
+        };
+        let observed = self
+            .machines
+            .iter()
+            .find(|observed| ployz_core::machine_matches_target(&observed.machine, &target))
+            .ok_or_else(|| Status::not_found("unknown Machine"))?;
+        let machine = ployz_core::apply_machine_update(&observed.machine, &[], update)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::MachineUpdated { machine })
+                .encode()
+                .unwrap(),
+        ))
     }
 
     async fn remove_local_machine(
@@ -1218,6 +1252,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            build_concurrency: None,
         },
         MembershipObservation::Up,
     )

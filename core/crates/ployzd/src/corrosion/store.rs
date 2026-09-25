@@ -61,9 +61,19 @@ impl MachinePublicationGuard<'_> {
         Ok(completed)
     }
 
-    pub(crate) fn publishable_machine(&self, local: &LocalMachineRecord) -> Option<Machine> {
+    /// This Machine as it publishes: its record with the Builds it runs now,
+    /// an observation the record itself never holds.
+    pub(crate) fn publishable_machine(
+        &self,
+        local: &LocalMachineRecord,
+        running_builds: u32,
+    ) -> Option<Machine> {
         match local.body() {
-            LocalMachineBody::Participating { machine, .. } => Some(machine.clone()),
+            LocalMachineBody::Participating { machine, .. } => {
+                let mut machine = machine.clone();
+                machine.runtime.running_builds = running_builds;
+                Some(machine)
+            }
             LocalMachineBody::Uninitialized { .. }
             | LocalMachineBody::Joining { .. }
             | LocalMachineBody::Resetting { .. } => None,

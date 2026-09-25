@@ -35,8 +35,8 @@ pub use record_owner::{RecordOwner, RecordOwnerStopped};
 use store::PENDING_RESET_FILE_NAME;
 pub use store::{LocalMachineStore, StoreError};
 
+pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
-pub(crate) use local_machine::{MutationAdmission, RuntimeWatchTelemetry};
 
 #[cfg(test)]
 mod register_tests;
@@ -523,6 +523,11 @@ pub fn local_runtime() -> MachineRuntime {
             })
             .unwrap_or_default(),
         kernel_version: read_trimmed("/proc/sys/kernel/osrelease"),
+        memory_total_bytes: crate::host_capacity::memory_capacity()
+            .ok()
+            .map(|(total, _)| total),
+        // Publication overlays the live count; the record never holds one.
+        running_builds: 0,
     }
 }
 

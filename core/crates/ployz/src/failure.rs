@@ -44,7 +44,7 @@ impl fmt::Display for Usage {
 impl Error for Usage {}
 
 impl Failure {
-    fn command(error: impl Error + Send + Sync + 'static) -> Self {
+    pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
             inner: Inner::Command(Box::new(error)),
         }

@@ -3,7 +3,7 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / preview / run / previewProjectRemoval /
+//! about / runtime.watch / prepare / build / preview / run / previewProjectRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
 //! destroyCluster / close.
@@ -116,6 +116,34 @@ impl PreparationHandle {
     }
 }
 
+/// Native cancellable Image Build.
+#[napi]
+pub struct BuildHandle {
+    inner: sdk::RunningBuild,
+}
+
+#[napi]
+impl BuildHandle {
+    /// Request cancellation and await finished for termination evidence.
+    #[napi]
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+    /// Bounded progress; lagging readers receive a truncation frame.
+    #[napi]
+    pub async fn next(&self) -> Option<serde_json::Value> {
+        self.inner.next().await
+    }
+    /// Await the `BuildOutcome` independently of progress consumption.
+    ///
+    /// # Errors
+    /// Returns structured Build failure or unknown outcome.
+    #[napi]
+    pub async fn finished(&self) -> Result<serde_json::Value> {
+        to_json(&self.inner.finished().await.map_err(rpc_to_napi)?)
+    }
+}
+
 /// In-flight execution of one Deploy Preview.
 #[napi]
 pub struct RunningDeployHandle {
@@ -190,6 +218,38 @@ impl Client {
         )
     }
 
+    /// Mint a Build Grant on this Machine for one image push into a repository.
+    ///
+    /// # Errors
+    /// Returns malformed input, transport failures, or the Machine's refusal.
+    #[napi]
+    pub async fn mint_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let request = serde_json::from_value(request).map_err(invalid_argument)?;
+        to_json(
+            &self
+                .inner
+                .mint_build_grant(request)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
+    /// End a Build Grant and read the digest this Machine received under it.
+    ///
+    /// # Errors
+    /// Returns malformed input, transport failures, or `not_found` for an expired grant.
+    #[napi]
+    pub async fn end_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let request = serde_json::from_value(request).map_err(invalid_argument)?;
+        to_json(
+            &self
+                .inner
+                .end_build_grant(request)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors
@@ -239,6 +299,37 @@ impl Client {
         Ok(PreparationHandle {
             inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
         })
+    }
+
+    /// Start one Image Build; `start_within_ms` withdraws it if not admitted in time.
+    ///
+    /// # Errors
+    /// Rejects malformed input or closed sessions.
+    #[napi]
+    pub fn build(
+        &self,
+        input: serde_json::Value,
+        start_within_ms: Option<u32>,
+    ) -> Result<BuildHandle> {
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let start_within = start_within_ms.map(|ms| std::time::Duration::from_millis(ms.into()));
+        Ok(BuildHandle {
+            inner: self.inner.build(input, start_within).map_err(rpc_to_napi)?,
+        })
+    }
+
+    /// The platforms the one Service in `deployment` may be placed on run: what
+    /// a GitHub runner must build.
+    ///
+    /// # Errors
+    /// Returns a generated [`RpcError`] JSON payload for a closed session,
+    /// invalid deployment, transport failure, or an unbuildable architecture.
+    #[napi]
+    pub async fn build_platforms(&self, deployment: serde_json::Value) -> Result<Vec<String>> {
+        self.inner
+            .build_platforms(deployment)
+            .await
+            .map_err(rpc_to_napi)
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -361,6 +452,30 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         to_json(&removed)
+    }
+
+    /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine`.
+    ///
+    /// `update` is a partial MachineUpdate; omitted fields keep their values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `update` is not a
+    /// MachineUpdate, the session is closed, or the Machine refuses the edit.
+    #[napi]
+    pub async fn update_machine(
+        &self,
+        machine: String,
+        update: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let update: ployz_core::MachineUpdate =
+            serde_json::from_value(update).map_err(invalid_argument)?;
+        let updated = self
+            .inner
+            .update_machine(&machine, update)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&updated)
     }
 
     /// Live Observation of Data Loss that destroying `project_name` would cause.
@@ -645,6 +760,49 @@ pub fn allocate_enrollment(
             })
         })?;
     to_json(&assignment)
+}
+
+/// Fingerprints a build of these pinned commits would carry, without a checkout.
+/// Input: `{deployment, source_commits}` as in preparation.
+///
+/// # Errors
+/// Rejects an invalid deployment or a commit for a non-Git Service.
+#[napi]
+pub fn build_fingerprints(input: serde_json::Value) -> Result<serde_json::Value> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        deployment: serde_json::Value,
+        source_commits: std::collections::BTreeMap<ployz_core::ServiceName, String>,
+    }
+    let input: Input = serde_json::from_value(input).map_err(invalid_argument)?;
+    to_json(
+        &sdk::expected_fingerprints(input.deployment, input.source_commits).map_err(rpc_to_napi)?,
+    )
+}
+
+/// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
+#[napi]
+#[must_use]
+pub fn ployz_version() -> String {
+    sdk::VERSION.to_owned()
+}
+
+/// The tag a Build Grant push retains `digest` under in `repository`, as Image
+/// Cleanup knows it: `repository:ployz-sha256-<hex>`.
+///
+/// # Errors
+/// Rejects a repository or digest a Build Grant could not have pushed.
+#[napi]
+pub fn build_grant_tag(repository: String, digest: String) -> Result<String> {
+    let repository =
+        ployz_core::BuildGrantRepository::parse(repository).map_err(invalid_argument)?;
+    let digest = ployz_core::ImageDigest::parse(digest).map_err(invalid_argument)?;
+    Ok(format!(
+        "{repository}:{}{}",
+        ployz_core::RETAINED_DIGEST_TAG_PREFIX,
+        digest.hex()
+    ))
 }
 
 /// Cancellable Container log reader.

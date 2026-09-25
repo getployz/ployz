@@ -7,7 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "#/components/ui/tabs";
 import { asTestDouble } from "#/lib/test-double";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import { runtimeWatchCertificateFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
+import { runtimeWatchCertificateFixture, runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { orgStoreSeed } from "#/test/org-store-tables";
 import {
   createEmptyServiceSource,
@@ -20,7 +21,7 @@ import type { ServiceDrawerState } from "./useServiceDrawerState";
 
 const clients: QueryClient[] = [];
 /** The Runtime Watch frame the stubbed event stream delivers, if any. */
-let frame: ReturnType<typeof runtimeWatchFrameFixture> | null = null;
+let frame: object | null = null;
 beforeEach(() => {
   vi.stubGlobal("scrollTo", () => {});
   vi.stubGlobal("EventSource", class {
@@ -147,6 +148,27 @@ it("saves and clears the Railpack build command using the command control", asyn
   fireEvent.change(screen.getByRole("textbox", { name: "Build command" }), { target: { value: "" } });
   fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
   await waitFor(() => expect(state.service.build.command).toBeNull());
+});
+
+it("saves the Preferred builder as Service policy at once, from GitHub Actions and the servers that build", async () => {
+  frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({ machines: [
+    runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("a".repeat(32), "fast") }),
+    runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("b".repeat(32), "app", { accepts_builds: false }) }),
+  ] }));
+  const { update } = await show(createGitServiceSource({ repository: "acme/api", repositoryId: 1, access: { type: "github-installation", installationId: 2 } }));
+  const select = screen.getByRole("combobox", { name: "Preferred builder" });
+  expect(select.textContent).toContain("Auto");
+  fireEvent.click(select);
+  await screen.findByRole("option", { name: "fast" });
+  expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["Auto", "GitHub Actions", "fast"]);
+  const fast = screen.getByRole("option", { name: "fast" });
+  // Base UI commits a click only on a highlighted item, or a touch.
+  fireEvent.pointerDown(fast, { pointerType: "touch" });
+  fireEvent.click(fast);
+  // Policy, not staged configuration: it goes through the metadata editor, never the collection.
+  await waitFor(() => expect(update).toHaveBeenCalledWith({
+    environmentId: "environment", serviceId: "service", edit: { kind: "policy", policy: { preferredBuilder: "a".repeat(32) } },
+  }));
 });
 
 it("shows a managed hostname's certificate status from the published wildcard that covers it", async () => {

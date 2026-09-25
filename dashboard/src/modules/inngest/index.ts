@@ -18,6 +18,7 @@ import {
   createCancelMachineRemove,
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
+import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
 import {
   createCancelTeardown,
   createProcessTeardown,
@@ -45,6 +46,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createScheduleGithubRepositorySync(inngest),
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
+    createApplyServerPolicyChange(inngest),
     createProcessVolumeRemove(inngest),
     createCancelVolumeRemove(inngest),
     createProcessTeardown(inngest),

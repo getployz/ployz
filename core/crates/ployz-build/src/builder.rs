@@ -1,5 +1,9 @@
 //! The pinned BuildKit builder: replaced for each attempt, removed afterwards,
 //! and leaving its dedicated cache volume behind for the next one.
+//!
+//! A Machine running several Builds at once gives each its own build slot:
+//! a lock, builder container, cache volume, and upload staging directory.
+//! Slot 0 keeps the historical names, so local CLI Builds share its cache.
 
 use std::{
     fs,
@@ -33,7 +37,7 @@ impl<'a> Builder<'a> {
         lock: Lock,
         resources: &crate::policy::Resources,
     ) -> Result<Self, BuildError> {
-        let name = builder_name();
+        let name = lock.name();
         let mut builder = Self {
             docker,
             name,
@@ -48,6 +52,11 @@ impl<'a> Builder<'a> {
             return builder.finish(Err(error));
         }
         Ok(builder)
+    }
+
+    /// Buildx name of this slot's builder.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
 
     /// Read the running worker, not the Machine's advertised architecture.
@@ -291,13 +300,14 @@ fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
     }
 }
 
-/// Serializes local attempts sharing one builder and its retained cache.
+/// Serializes local attempts sharing one build slot's builder and retained cache.
 ///
-/// Held for the whole attempt. Uncertain termination quarantines the retained state.
+/// Held for the whole attempt. Uncertain termination quarantines the slot.
 #[derive(Clone)]
 pub(crate) struct Lock {
     file: std::sync::Arc<LockedFile>,
     pub(crate) directory: PathBuf,
+    slot: usize,
 }
 
 struct LockedFile(fs::File);
@@ -330,34 +340,65 @@ impl Lock {
     }
 
     pub(crate) fn try_acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
-        let lock = Self::open_locked(directory)?;
+        Self::try_acquire_slot(directory, 0)
+    }
+
+    pub(crate) fn try_acquire_slot(
+        directory: &std::path::Path,
+        slot: usize,
+    ) -> Result<Self, BuildError> {
+        let lock = Self::open_locked(directory, slot)?;
         if lock.file.0.metadata().map_err(lock_error)?.len() != 0 {
             return Err(lock.uncertain());
         }
         Ok(lock)
     }
 
+    /// Slots that have ever been used in `directory`. Slot 0 always exists.
+    pub(crate) fn known_slots(directory: &std::path::Path) -> impl Iterator<Item = usize> + '_ {
+        (0..=usize::from(u8::MAX))
+            .filter(|&slot| slot == 0 || directory.join(lock_file(slot)).exists())
+    }
+
+    /// Buildx name of this slot's builder.
+    pub(crate) fn name(&self) -> String {
+        slot_name(self.slot)
+    }
+
+    /// Private staging for this slot's uploads.
+    pub(crate) fn upload_directory(&self) -> PathBuf {
+        self.directory.join(match self.slot {
+            0 => "build-upload".to_owned(),
+            slot => format!("build-upload-{slot}"),
+        })
+    }
+
     fn uncertain(&self) -> BuildError {
         BuildError::UncertainTermination(format!(
             "retained builder state is quarantined; confirm builder {} and its host processes have stopped before clearing {}",
-            builder_name(),
-            self.directory
-                .join(format!("{}.lock", builder_name()))
-                .display()
+            self.name(),
+            self.directory.join(lock_file(self.slot)).display()
         ))
     }
 
-    /// One bounded teardown of an abandoned builder on daemon startup. The
-    /// marker remains: removing a container cannot prove an orphaned host
+    /// One bounded teardown of every abandoned builder slot on daemon startup.
+    /// Markers remain: removing a container cannot prove an orphaned host
     /// process stopped, so cleanup alone must never authorize conflicting work.
+    /// Every slot is attempted; the first failure is reported.
     pub(crate) fn cleanup_abandoned(policy: &crate::HostPolicy) -> Result<(), BuildError> {
-        let lock = Self::open_locked(&policy.state_directory)?;
+        Self::known_slots(&policy.state_directory)
+            .map(|slot| Self::cleanup_abandoned_slot(policy, slot))
+            .fold(Ok(()), Result::and)
+    }
+
+    fn cleanup_abandoned_slot(policy: &crate::HostPolicy, slot: usize) -> Result<(), BuildError> {
+        let lock = Self::open_locked(&policy.state_directory, slot)?;
         if lock.file.0.metadata().map_err(lock_error)?.len() == 0 {
-            return crate::upload::remove_abandoned(&lock.directory.join("build-upload")).map_err(
-                |error| BuildError::Prerequisite(format!("remove abandoned Build upload: {error}")),
-            );
+            return crate::upload::remove_abandoned(&lock.upload_directory()).map_err(|error| {
+                BuildError::Prerequisite(format!("remove abandoned Build upload: {error}"))
+            });
         }
-        let environment = crate::upload::environment(&lock.directory.join("build-upload"));
+        let environment = crate::upload::environment(&lock.upload_directory());
         let docker = Docker {
             program: &policy.docker,
             environment: &environment,
@@ -366,7 +407,7 @@ impl Lock {
             cancellation: None,
             progress: None,
         };
-        if let Err(error) = remove(&docker, &builder_name()) {
+        if let Err(error) = remove(&docker, &lock.name()) {
             return Err(BuildError::UncertainTermination(format!(
                 "{}; abandoned builder cleanup failed: {error}",
                 lock.uncertain()
@@ -375,7 +416,7 @@ impl Lock {
         Err(lock.uncertain())
     }
 
-    fn open_locked(directory: &std::path::Path) -> Result<Self, BuildError> {
+    fn open_locked(directory: &std::path::Path, slot: usize) -> Result<Self, BuildError> {
         use rustix::fs::{FlockOperation, flock};
         use std::os::unix::fs::MetadataExt as _;
         match fs::DirBuilder::new().mode(0o700).create(directory) {
@@ -392,7 +433,7 @@ impl Lock {
                 "builder state must be an owned directory without group/other write access".into(),
             ));
         }
-        let path = directory.join(format!("{}.lock", builder_name()));
+        let path = directory.join(lock_file(slot));
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -410,6 +451,7 @@ impl Lock {
         Ok(Self {
             file: std::sync::Arc::new(LockedFile(file)),
             directory: directory.to_owned(),
+            slot,
         })
     }
 
@@ -434,6 +476,18 @@ impl Drop for LockedFile {
         // CLOEXEC descriptor. Release ownership now, without waiting for exec.
         let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
     }
+}
+
+/// Slot 0 keeps the historical builder name; others are numbered after it.
+fn slot_name(slot: usize) -> String {
+    match slot {
+        0 => builder_name(),
+        slot => format!("{}-{slot}", builder_name()),
+    }
+}
+
+fn lock_file(slot: usize) -> String {
+    format!("{}.lock", slot_name(slot))
 }
 
 /// Stable across HOME, captures, and Docker configuration directories: a local

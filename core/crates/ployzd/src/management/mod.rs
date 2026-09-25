@@ -24,7 +24,7 @@ use iroh::{
     },
     tls::CaTlsConfig,
 };
-use ployz_core::{DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, Rpc, op};
+use ployz_core::{BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, Rpc, op};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -34,6 +34,9 @@ use tonic::{
 };
 
 use crate::machine::{LocalMachine, LocalMachineRecord};
+
+pub mod build_grant;
+pub use build_grant::BuildGrants;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.
 pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
@@ -103,7 +106,8 @@ impl std::fmt::Debug for ManagementSecret {
     }
 }
 
-/// Bind the management endpoint: one ALPN, no address lookup, only the configured relay.
+/// Bind the management endpoint: the Machine RPC and Build Grant ALPNs, no address
+/// lookup, only the configured relay.
 ///
 /// # Errors
 /// Returns the iroh bind error when the UDP port or crypto provider is unavailable.
@@ -118,7 +122,7 @@ pub async fn bind(
         .build();
     Endpoint::builder(presets::Minimal)
         .secret_key(secret.secret_key())
-        .alpns(vec![MANAGEMENT_ALPN.to_vec()])
+        .alpns(vec![MANAGEMENT_ALPN.to_vec(), BUILD_GRANT_ALPN.to_vec()])
         .relay_mode(RelayMode::custom([config.relay_url.clone()]))
         .ca_tls_config(config.relay_tls.clone())
         .transport_config(transport)
@@ -139,8 +143,16 @@ pub async fn bind(
 /// revokes only that key's connections: in-flight `SetManagementClient` responses, such
 /// as the caller's own Clear, are delivered and acknowledged, every other stream ends at
 /// once, and the connection then closes with [`REVOKED`].
-pub async fn serve<S>(endpoint: Endpoint, local: LocalMachine, api: S, shutdown: CancellationToken)
-where
+///
+/// Connections on the Build Grant ALPN are served by [`build_grant`] alone: only a live
+/// grant's key is admitted there, and no Management Client key reaches it.
+pub async fn serve<S>(
+    endpoint: Endpoint,
+    local: LocalMachine,
+    api: S,
+    grants: Arc<BuildGrants>,
+    shutdown: CancellationToken,
+) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
         + Clone
         + Send
@@ -167,6 +179,7 @@ where
             permit,
             records.clone(),
             api.clone(),
+            Arc::clone(&grants),
             shutdown.clone(),
         ));
     }
@@ -179,6 +192,7 @@ async fn serve_connection<S>(
     permit: OwnedSemaphorePermit,
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     api: S,
+    grants: Arc<BuildGrants>,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -194,6 +208,11 @@ async fn serve_connection<S>(
             return;
         }
     };
+    if connection.alpn() == BUILD_GRANT_ALPN {
+        drop(permit);
+        build_grant::serve(connection, &grants, shutdown).await;
+        return;
+    }
     let remote = *connection.remote_id().as_bytes();
     // Marking this version seen before waiting for peer input means any later
     // change wakes `revoked`: a delayed first stream cannot escape key rotation.

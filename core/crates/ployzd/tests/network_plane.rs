@@ -151,6 +151,7 @@ fn machine(seed: u8) -> Machine {
         public_ip: None,
         advertised_endpoints: vec![endpoint(seed)],
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }
 

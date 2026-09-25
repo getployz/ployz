@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     net::{IpAddr, SocketAddr},
-    num::NonZeroU64,
+    num::{NonZeroU8, NonZeroU64},
     str::FromStr,
 };
 use ts_rs::TS;
@@ -91,9 +91,20 @@ pub struct Machine {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
+    /// Builds this Machine runs at once; absent means automatic.
+    #[serde(default)]
+    pub build_concurrency: Option<BuildConcurrency>,
 }
 
 impl Machine {
+    /// The set build concurrency, or the automatic value from this record.
+    #[must_use]
+    pub fn effective_build_concurrency(&self) -> BuildConcurrency {
+        self.build_concurrency.unwrap_or_else(|| {
+            BuildConcurrency::automatic(self.accepts_services, self.runtime.memory_total_bytes)
+        })
+    }
+
     /// Management-plane address derived solely from this Machine's public key.
     #[must_use]
     pub fn management_address(&self) -> ManagementAddress {
@@ -119,6 +130,79 @@ pub struct MachineRuntime {
     pub architecture: String,
     pub os_pretty_name: String,
     pub kernel_version: String,
+    /// Host memory, absent when the daemon could not observe it.
+    #[ts(optional = nullable)]
+    pub memory_total_bytes: Option<u64>,
+    /// Builds this Machine's daemon is running now; live, never persisted.
+    pub running_builds: u32,
+}
+
+/// How many Builds one Machine runs at once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct BuildConcurrency(NonZeroU8);
+
+impl BuildConcurrency {
+    /// One Build at a time.
+    pub const ONE: Self = Self(NonZeroU8::MIN);
+    const AUTOMATIC_MAX: u64 = 4;
+    const AUTOMATIC_BYTES_PER_BUILD: u64 = 4_000_000_000;
+
+    /// Parse an explicit count of simultaneous Builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] unless `value` is an integer from 1 to 255.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        value
+            .parse::<NonZeroU8>()
+            .map(Self)
+            .map_err(|_| ValueError::new("Build concurrency", value, "an integer from 1 to 255"))
+    }
+
+    /// 1 for a Machine that accepts Services, otherwise one Build per 4 GB of
+    /// RAM, clamped to 1–4. Unknown memory builds one at a time.
+    #[must_use]
+    pub fn automatic(accepts_services: bool, memory_total_bytes: Option<u64>) -> Self {
+        let builds = match memory_total_bytes {
+            Some(bytes) if !accepts_services => {
+                (bytes / Self::AUTOMATIC_BYTES_PER_BUILD).clamp(1, Self::AUTOMATIC_MAX)
+            }
+            _ => 1,
+        };
+        Self(NonZeroU8::new(u8::try_from(builds).expect("clamped to 1–4")).expect("clamped to 1–4"))
+    }
+}
+
+impl From<BuildConcurrency> for usize {
+    fn from(value: BuildConcurrency) -> Self {
+        usize::from(value.0.get())
+    }
+}
+
+impl fmt::Display for BuildConcurrency {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for BuildConcurrency {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+/// Keep, clear to automatic, or set a Machine's build concurrency.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case", tag = "action", content = "value")]
+pub enum BuildConcurrencyUpdate {
+    #[default]
+    Keep,
+    Automatic,
+    Set(BuildConcurrency),
 }
 
 /// Storage preparation requested while enrolling one Machine.
@@ -237,7 +321,7 @@ pub struct MachineIdentity {
     pub name: MachineName,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "action", content = "value")]
 pub enum PublicIpUpdate {
     #[default]
@@ -247,7 +331,7 @@ pub enum PublicIpUpdate {
 }
 
 /// One atomic metadata edit; omitted fields and Label keys preserve current values.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdate {
     /// One change per Label key: a value sets it, `None` removes it.
     #[serde(default)]
@@ -270,6 +354,9 @@ pub struct MachineUpdate {
     /// Replace all Advertised Endpoints, or preserve them when omitted.
     #[serde(default)]
     pub advertised_endpoints: Option<Vec<AdvertisedEndpoint>>,
+    /// Explicitly preserve, clear to automatic, or set build concurrency.
+    #[serde(default)]
+    pub build_concurrency: BuildConcurrencyUpdate,
 }
 
 impl MachineUpdate {
@@ -283,6 +370,7 @@ impl MachineUpdate {
             && self.name.is_none()
             && self.public_ip == PublicIpUpdate::Keep
             && self.advertised_endpoints.is_none()
+            && self.build_concurrency == BuildConcurrencyUpdate::Keep
     }
 }
 
@@ -349,6 +437,13 @@ pub fn apply_machine_update(
     }
     if let Some(endpoints) = update.advertised_endpoints {
         updated.advertised_endpoints = endpoints;
+    }
+    match update.build_concurrency {
+        BuildConcurrencyUpdate::Keep => {}
+        BuildConcurrencyUpdate::Automatic => updated.build_concurrency = None,
+        BuildConcurrencyUpdate::Set(concurrency) => {
+            updated.build_concurrency = Some(concurrency);
+        }
     }
     Ok(updated)
 }
@@ -633,7 +728,9 @@ impl MembershipObservation {
 mod placement_tests {
     use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
 
-    use super::{Machine, machine_matches_placement};
+    use super::{
+        BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineUpdate, machine_matches_placement,
+    };
 
     fn machine(hex: char, name: &str) -> Machine {
         Machine {
@@ -648,7 +745,69 @@ mod placement_tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            build_concurrency: None,
         }
+    }
+
+    #[test]
+    fn automatic_build_concurrency_follows_services_role_and_ram() {
+        const GB: u64 = 1_000_000_000;
+        let automatic =
+            |services, memory| usize::from(BuildConcurrency::automatic(services, memory));
+        assert_eq!(automatic(true, Some(64 * GB)), 1);
+        assert_eq!(automatic(false, None), 1);
+        assert_eq!(automatic(false, Some(2 * GB)), 1);
+        assert_eq!(automatic(false, Some(8 * GB + 1)), 2);
+        assert_eq!(automatic(false, Some(12 * GB)), 3);
+        assert_eq!(automatic(false, Some(64 * GB)), 4);
+        assert!(BuildConcurrency::parse("0").is_err());
+        assert!(BuildConcurrency::parse("256").is_err());
+        assert_eq!(usize::from(BuildConcurrency::parse("8").unwrap()), 8);
+    }
+
+    #[test]
+    fn older_records_decode_as_automatic_and_updates_keep_clear_or_set() {
+        let mut machine = machine('a', "builder");
+        machine.accepts_services = false;
+        machine.runtime.memory_total_bytes = Some(16_500_000_000);
+        let mut wire = serde_json::to_value(&machine).unwrap();
+        let object = wire.as_object_mut().unwrap();
+        object.remove("build_concurrency");
+        object
+            .get_mut("runtime")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("memory_total_bytes");
+        let older: Machine = serde_json::from_value(wire).unwrap();
+        assert_eq!(older.build_concurrency, None);
+        assert_eq!(older.runtime.memory_total_bytes, None);
+        assert_eq!(usize::from(machine.effective_build_concurrency()), 4);
+
+        let two = BuildConcurrency::parse("2").unwrap();
+        let update = |machine: &Machine, build_concurrency| {
+            super::apply_machine_update(
+                machine,
+                &[],
+                MachineUpdate {
+                    build_concurrency,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert!(
+            !MachineUpdate {
+                build_concurrency: BuildConcurrencyUpdate::Automatic,
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        let set = update(&machine, BuildConcurrencyUpdate::Set(two));
+        assert_eq!(set.effective_build_concurrency(), two);
+        assert_eq!(update(&set, BuildConcurrencyUpdate::Keep), set);
+        let cleared = update(&set, BuildConcurrencyUpdate::Automatic);
+        assert_eq!(cleared.build_concurrency, None);
+        assert_eq!(usize::from(cleared.effective_build_concurrency()), 4);
     }
 
     #[test]

@@ -33,7 +33,9 @@ impl ValueError {
     }
 }
 
-fn is_lower_hex(value: &str, len: usize) -> bool {
+/// Whether `value` is exactly `len` lowercase hexadecimal characters.
+#[must_use]
+pub fn is_lower_hex(value: &str, len: usize) -> bool {
     value.len() == len
         && value
             .bytes()
@@ -212,6 +214,31 @@ validated_string_newtype!(
     })
 );
 
+validated_string_newtype!(
+    /// A manifest digest as the Machine stored it: `sha256:` and 64 lowercase hex.
+    ImageDigest, "image digest", "`sha256:` followed by 64 lowercase hexadecimal characters",
+    |value| value.strip_prefix("sha256:").is_some_and(|hex| is_lower_hex(hex, 64))
+);
+
+impl ImageDigest {
+    /// The digest without its `sha256:` algorithm prefix.
+    #[must_use]
+    pub fn hex(&self) -> &str {
+        &self.as_str()["sha256:".len()..]
+    }
+}
+
+validated_string_newtype!(
+    /// The one repository a Build Grant may push into, in Docker's short form:
+    /// lowercase path components and no registry or tag (`ployz-build/web`).
+    BuildGrantRepository, "Build Grant repository", "a Docker repository path without a registry or tag",
+    |value| (1..=255).contains(&value.len())
+        && value.split('/').all(|component| {
+            component.bytes().next().is_some_and(|byte| byte.is_ascii_alphanumeric())
+                && component.bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+        })
+);
+
 pub(crate) fn is_swarm_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"_-.".contains(&byte)
 }
@@ -263,6 +290,13 @@ hex_id_newtype!(
     "Tunnel ID",
     32,
     "32 lowercase hexadecimal characters"
+);
+hex_id_newtype!(
+    /// Public handle of one Build Grant: its key's public half. Not secret.
+    BuildGrantId,
+    "Build Grant ID",
+    64,
+    "64 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
     ContainerId,
@@ -901,6 +935,33 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_build_grant_repository_is_a_short_docker_repository_path() {
+        assert!(super::BuildGrantRepository::parse("ployz-build/web").is_ok());
+        for refused in ["", "registry.example:5000/web", "web:tag", "Web", "a//b"] {
+            assert!(
+                super::BuildGrantRepository::parse(refused).is_err(),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_image_digest_is_lowercase_sha256() {
+        let digest = super::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap();
+        assert_eq!(digest.hex(), "a".repeat(64));
+        for refused in [
+            "a".repeat(64),
+            format!("sha256:{}", "A".repeat(64)),
+            "sha256:abc".into(),
+        ] {
+            assert!(
+                super::ImageDigest::parse(refused.clone()).is_err(),
+                "{refused}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

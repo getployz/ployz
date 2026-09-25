@@ -48,7 +48,7 @@ async fn remote_dockerfile_runs_on_selected_machine_and_bounds_abandoned_attempt
         serde_json::json!({"MESSAGE": "literal-$LATER"}),
         Recipe::Dockerfile(root.join("Dockerfile")),
     )
-    .execute_remote_images(&client, selected, CancellationToken::new(), |_| {})
+    .execute_remote_images(&client, selected, None, CancellationToken::new(), |_| {})
     .await
     .unwrap();
     let [built] = built.as_slice() else {
@@ -138,7 +138,7 @@ async fn remote_dockerfile_runs_on_selected_machine_and_bounds_abandoned_attempt
         let cancel = cancellation.clone();
         let result = tokio::time::timeout(
             Duration::from_secs(120),
-            capture.execute_remote_images(&client, selected, cancellation, |event| {
+            capture.execute_remote_images(&client, selected, None, cancellation, |event| {
                 let active = match &event {
                     Progress::Output(bytes) => {
                         String::from_utf8_lossy(bytes).contains("REMOTE_BUILD_ACTIVE")
@@ -334,7 +334,7 @@ async fn queue_upload_timeout_and_daemon_restart_discard_waiters_before_a_safe_b
             serde_json::json!({}),
             Recipe::Dockerfile(root.join("Dockerfile")),
         )
-        .execute_remote_images(&client, selected, CancellationToken::new(), |_| {}),
+        .execute_remote_images(&client, selected, None, CancellationToken::new(), |_| {}),
     )
     .await
     .unwrap()
@@ -514,6 +514,8 @@ async fn railpack_preparation_derives_machine_platforms() {
             sources: BTreeMap::from([(name, root.to_owned())]),
             source_commits: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
+            build_index: 0,
+            preferred_machine: None,
         })
         .unwrap();
     let mut platforms = None;

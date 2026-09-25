@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Effect, Option, Redacted, type Schema } from "effect";
 import {
   environmentDeployment as schemaEnvironmentDeployment,
+  environmentDeploymentImageBuild,
   environmentDeploymentSecret,
 } from "#/modules/deployments/tables";
 import { service as schemaService } from "#/modules/environment-design/tables";
@@ -133,6 +134,11 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
           )
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
+        // An ended attempt stops its Image Builds; a running build step observes this and aborts.
+        if (TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES.has(input.status)) {
+          yield* tx.update(environmentDeploymentImageBuild).set({ status: "cancelled", finishedAt: updatedAt, updatedAt })
+            .where(and(eq(environmentDeploymentImageBuild.deploymentId, input.environmentDeploymentId), eq(environmentDeploymentImageBuild.status, "building")));
+        }
         if (input.status === "cancelled") {
           yield* tx.update(coreOperationWatch).set({ observationState: "cloud_cancelled", terminalAt: updatedAt, updatedAt })
             .where(and(eq(coreOperationWatch.observationState, "active"), sql`exists (

@@ -12,7 +12,12 @@ const getServiceMetadataEditor = cachedByCollectionScope((organizationSlug, scop
   return createOptimisticAction<Omit<ServiceMetadataEdit, "organizationSlug">>({
     onMutate: ({ serviceId, edit }) => identities.update(serviceId, draft => {
       if (edit.kind === "rename") draft.name = edit.name;
-      else Object.assign(draft.policy, structuredClone(edit.policy));
+      else {
+        const { preferredBuilder, ...policy } = structuredClone(edit.policy);
+        Object.assign(draft.policy, policy);
+        if (preferredBuilder === null) delete draft.policy.preferredBuilder;
+        else if (preferredBuilder !== undefined) draft.policy.preferredBuilder = preferredBuilder;
+      }
     }),
     mutationFn: async (input) => {
       try {

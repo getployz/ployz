@@ -132,6 +132,31 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
 }
 
 #[tokio::test]
+async fn node_build_returns_one_build_receipt() {
+    let session = UnixSession::start().await;
+    let mut description = support::test_description();
+    description.machine_id = support::machine_id('a');
+    description
+        .capabilities
+        .insert(BUILD_CAPABILITY.parse().unwrap());
+    let recorder = Arc::new(support::BuildRecorder {
+        queued: true,
+        ..Default::default()
+    });
+    let mut service = support::DiscoveryService::new(description.clone());
+    let mut machine = support::machine('a', "builder");
+    machine.machine.runtime.architecture = "x86_64".into();
+    service.machines = vec![machine];
+    service.builds = Some(recorder.clone());
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    session
+        .assert_sdk_script("node_build.js", description.machine_id, &[])
+        .await;
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 1);
+    assert!(!recorder.created.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn node_preparation_cancels_a_quiet_build_and_awaits_its_terminal_evidence() {
     let session = UnixSession::start().await;
     let mut description = support::test_description();

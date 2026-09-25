@@ -131,16 +131,27 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     session.close().await;
 }
 
-/// A Cloud session through the entry Machine's plain TCP endpoint.
+/// A Cloud session through the entry Machine's plain TCP endpoint, once the daemon's
+/// restart after initialization has it listening again.
 async fn session(cluster: &Cluster) -> Session {
-    ployz::sdk::connect_connections(
-        vec![ployz::context::Connection::tcp(
-            cluster.api_socket_address(0).unwrap(),
-        )],
-        Arc::new(ployz::connect::SystemConnector::default()),
-    )
-    .await
-    .unwrap()
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let connected = ployz::sdk::connect_connections(
+            vec![ployz::context::Connection::tcp(
+                cluster.api_socket_address(0).unwrap(),
+            )],
+            Arc::new(ployz::connect::SystemConnector::default()),
+        )
+        .await;
+        match connected {
+            Ok(session) => return session,
+            Err(error) if Instant::now() < deadline => {
+                eprintln!("waiting for the entry Machine: {}", error.message);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(error) => panic!("entry Machine never accepted a session: {error:?}"),
+        }
+    }
 }
 
 /// One Git Service `app` in Project `build`, as Cloud freezes it. `MESSAGE`
@@ -169,6 +180,8 @@ async fn prepare(
             sources: BTreeMap::from([(name.clone(), root.to_owned())]),
             source_commits: BTreeMap::from([(name, "a".repeat(40))]),
             build_receipts: BTreeMap::new(),
+            build_index: 0,
+            preferred_machine: None,
         })
         .unwrap()
         .finished()
@@ -200,6 +213,9 @@ fn capture(root: &Path, image: &str, variables: Value, recipe: Recipe) -> Captur
     )
     .unwrap()
 }
+
+#[path = "build_layer3/grant.rs"]
+mod grant;
 
 #[path = "build_layer3/policy.rs"]
 mod policy;

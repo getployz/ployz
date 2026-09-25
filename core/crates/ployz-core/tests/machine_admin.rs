@@ -223,6 +223,7 @@ fn machine(id: char, name: &str, seed: u8) -> Machine {
             format!("192.0.2.{seed}:51820").parse().unwrap(),
         )],
         runtime: MachineRuntime::default(),
+        build_concurrency: None,
     }
 }
 

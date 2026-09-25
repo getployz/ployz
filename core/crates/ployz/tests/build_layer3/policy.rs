@@ -95,6 +95,7 @@ exit "$status"
             .execute_remote_images(
                 &self.client,
                 self.selected,
+                None,
                 CancellationToken::new(),
                 |_| {},
             )

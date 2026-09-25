@@ -78,27 +78,24 @@ class Client {
     return withRpcError(this._inner.publishCertificateMaterial(request));
   }
 
+  buildPlatforms(deployment) {
+    return withRpcError(this._inner.buildPlatforms(deployment));
+  }
+
+  mintBuildGrant(request) {
+    return withRpcError(this._inner.mintBuildGrant(request));
+  }
+
+  endBuildGrant(request) {
+    return withRpcError(this._inner.endBuildGrant(request));
+  }
+
   prepare(input, options = {}) {
-    options.signal?.throwIfAborted();
-    let pending;
-    try { pending = this._inner.prepare(input); } catch (error) { throwRpcError(error); }
-    const stop = () => pending.abort();
-    options.signal?.addEventListener("abort", stop, { once: true });
-    const finished = withRpcError(pending.finished()).then(wrapPreview)
-      .finally(() => options.signal?.removeEventListener("abort", stop));
-    // Callers may consume progress before awaiting the terminal result.
-    void finished.catch(() => {});
-    return {
-      abort: stop,
-      finished,
-      async *[Symbol.asyncIterator]() {
-        for (;;) {
-          const value = await withRpcError(pending.next());
-          if (value == null) return;
-          yield value;
-        }
-      },
-    };
+    return wrapProgress(() => this._inner.prepare(input), options.signal, wrapPreview);
+  }
+
+  build(input, options = {}) {
+    return wrapProgress(() => this._inner.build(input, options.startWithinMs), options.signal);
   }
 
   async preview(intent) {
@@ -133,6 +130,10 @@ class Client {
     return withRpcError(this._inner.removeMachine(machine, confirmDataLoss));
   }
 
+  updateMachine(machine, update) {
+    return withRpcError(this._inner.updateMachine(machine, update));
+  }
+
   dataLossIfProjectDestroyed(projectName, destroyVolumes = false) {
     return withRpcError(this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes));
   }
@@ -152,6 +153,29 @@ class Client {
   close() {
     return this._inner.close();
   }
+}
+
+function wrapProgress(start, signal, wrap = value => value) {
+  signal?.throwIfAborted();
+  let pending;
+  try { pending = start(); } catch (error) { throwRpcError(error); }
+  const stop = () => pending.abort();
+  signal?.addEventListener("abort", stop, { once: true });
+  const finished = withRpcError(pending.finished()).then(wrap)
+    .finally(() => signal?.removeEventListener("abort", stop));
+  // Callers may consume progress before awaiting the terminal result.
+  void finished.catch(() => {});
+  return {
+    abort: stop,
+    finished,
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        const value = await withRpcError(pending.next());
+        if (value == null) return;
+        yield value;
+      }
+    },
+  };
 }
 
 function wrapPreview(handle) {
@@ -294,6 +318,13 @@ async function connect(options) {
 module.exports = {
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
+  },
+  buildFingerprints: (input) => {
+    try { return native.buildFingerprints(input); } catch (error) { throwRpcError(error); }
+  },
+  ployzVersion: () => native.ployzVersion(),
+  buildGrantTag: (repository, digest) => {
+    try { return native.buildGrantTag(repository, digest); } catch (error) { throwRpcError(error); }
   },
   connect,
   Client,

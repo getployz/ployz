@@ -73,6 +73,8 @@ pub(super) enum Completion {
         stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
     },
     Report(Outcome),
+    /// No admission by the caller's deadline; the Build was withdrawn before any source left.
+    Withdrawn,
 }
 
 pub(super) async fn execute(
@@ -80,6 +82,7 @@ pub(super) async fn execute(
     definition: Definition,
     client: &Client,
     machine_id: MachineId,
+    admit_by: Option<tokio::time::Instant>,
     cancellation: CancellationToken,
     progress: impl Fn(Progress),
 ) -> Completion {
@@ -90,6 +93,7 @@ pub(super) async fn execute(
         definition,
         client,
         machine_id,
+        admit_by,
         cancellation,
         |event| {
             match &event {
@@ -203,27 +207,44 @@ async fn execute_attempt(
     definition: Definition,
     client: &Client,
     machine_id: MachineId,
+    admit_by: Option<tokio::time::Instant>,
     cancellation: CancellationToken,
     mut progress: impl FnMut(Progress),
 ) -> Completion {
+    let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
+    if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
+        return Completion::Report(
+            failed(Stage::Preparation, error.to_string()).with_work(evidence),
+        );
+    }
+    let expected = definition.targets.len();
+    let admission = open_and_admit(
+        client,
+        Input::Start(definition),
+        machine_id,
+        &cancellation,
+        &mut progress,
+        &evidence,
+    );
+    let admitted = match admit_by {
+        None => admission.await,
+        Some(deadline) => tokio::select! {
+            biased;
+            admitted = admission => admitted,
+            // Dropping the stream removes its waiter; no source has left this client.
+            () = tokio::time::sleep_until(deadline) => return Completion::Withdrawn,
+        },
+    };
+    let Admitted {
+        sender,
+        mut responses,
+        active_timeout,
+    } = match admitted {
+        Ok(admitted) => admitted,
+        Err(outcome) => return Completion::Report(outcome),
+    };
     let mut retained = None;
     let outcome = async {
-        let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
-        if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
-            return failed(Stage::Preparation, error.to_string()).with_work(evidence);
-        }
-        let expected = definition.targets.len();
-        let Admitted { sender, mut responses, active_timeout } = match open_and_admit(
-            client,
-            Input::Start(definition),
-            machine_id,
-            &cancellation,
-            &mut progress,
-            &evidence,
-        ).await {
-            Ok(admitted) => admitted,
-            Err(outcome) => return outcome,
-        };
         progress(Progress::Stage(Stage::Upload));
         let stop = cancellation.child_token();
         let _stop_upload = stop.clone().drop_guard();

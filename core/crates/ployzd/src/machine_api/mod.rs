@@ -66,6 +66,12 @@ impl MachineApiBuilder {
     }
 
     #[must_use]
+    pub(crate) fn with_build_grants(mut self, grants: Arc<crate::management::BuildGrants>) -> Self {
+        self.service.grants = grants;
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
         self.service = self.service.with_cluster_option(cluster);
         self

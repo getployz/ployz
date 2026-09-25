@@ -49,7 +49,11 @@ export type GithubObservationOperation =
   | "resolve_file_ref"
   | "list_files"
   | "installation_token"
-  | "download_source";
+  | "download_source"
+  | "fetch_workflow"
+  | "dispatch_workflow"
+  | "cancel_run"
+  | "fetch_run";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -145,6 +149,9 @@ export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   url: string;
   operation: GithubObservationOperation;
   schema: S;
+  /** A POST sends `body` as JSON; an empty response reads as `{}`. */
+  method?: "POST";
+  body?: unknown;
 };
 
 export interface GithubApiService {
@@ -511,7 +518,9 @@ export const GithubApiLive = Layer.effect(
         const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
         if (token !== null) headers.Authorization = `Bearer ${token}`;
         const response = yield* Effect.tryPromise({
-          try: (signal) => fetch(input.url, { signal, headers }),
+          try: (signal) => fetch(input.url, input.method === "POST"
+            ? { signal, method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
+            : { signal, headers }),
           catch: () =>
             githubObservationError({
               code: "request_failed",
@@ -530,7 +539,8 @@ export const GithubApiLive = Layer.effect(
         }
         const parsedJson = yield* Effect.tryPromise({
           try: async () => {
-            const body: unknown = await response.json();
+            const text = await response.text();
+            const body: unknown = text === "" ? {} : JSON.parse(text);
             return body;
           },
           catch: () =>

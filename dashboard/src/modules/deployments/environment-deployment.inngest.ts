@@ -1,4 +1,4 @@
-import { environmentDeployCancelRequestedEvent } from "#/modules/inngest/events";
+import { environmentDeployCancelRequestedEvent, githubBuildRunCompletedEvent } from "#/modules/inngest/events";
 import { NonRetriableError } from "inngest";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -26,6 +26,23 @@ import {
   cleanUpDeploymentImages,
   executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
+import {
+  settleImageBuild,
+  START_WITHIN_MINUTES,
+  startImageBuilds,
+  type ImageBuildAttempt,
+  type ImageBuildTarget,
+} from "#/modules/deployments/image-builds.server";
+import type { BuildCandidate } from "#/modules/deployments/build-order";
+import { planImageBuildWalk } from "#/modules/deployments/build-order.server";
+import { skipReasonText, type SkipReason } from "#/modules/deployments/image-build";
+import { buildOnServers } from "#/modules/deployments/server-image-builds.server";
+import {
+  cancelGithubImageBuilds,
+  checkGithubImageBuild,
+  GITHUB_CHECK_INTERVAL,
+  startGithubImageBuild,
+} from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.repository.server";
 import {
@@ -67,6 +84,8 @@ function decodeEnvironmentDeployFailureEnvelope(
 }
 
 export const DEPLOY_ADMISSION_POLL_INTERVAL = "15s";
+/** How many of one attempt's Image Builds run at once; Services beyond that wait their turn. */
+export const IMAGE_BUILDS_AT_ONCE = 32;
 
 function deploymentContext<T>(value: T): DeploymentContext | null {
   // SAFETY: Inngest Jsonify-wraps step.run results; loaders return DeploymentContext | null.
@@ -120,17 +139,66 @@ function terminalizeDeploymentFailure(
   );
 }
 
-export const PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY = [
-  {
-    key: "event.data.environmentId",
-    limit: 1,
-  },
-] as const;
-
 export type EnvironmentDeploymentStepTools = Pick<
   PloyzStepTools,
-  "run" | "sleep" | "sendEvent"
+  "run" | "sleep" | "sendEvent" | "waitForEvent"
 >;
+
+/** Where one Builder's go at an Image Build sits in its walk. */
+type Walk = { key: string; last: boolean; step: EnvironmentDeploymentStepTools; runEffect: DeploymentInngestEffectRunner };
+type Builder = (build: ImageBuildTarget, candidate: BuildCandidate, walk: Walk) => Promise<ImageBuildAttempt>;
+
+/** Your servers: one Cluster build, which is withdrawn unstarted at "start within" unless it is last. */
+const walkServers: Builder = (build, candidate, { key, last, step, runEffect }) =>
+  step.run(`build-image-${key}`, () => runEffect(buildOnServers(build, candidate, last ? undefined : START_WITHIN_MINUTES * 60_000)));
+
+/**
+ * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The Workflow run
+ * webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
+ * that landed between two waits. Not last: the first check is the "start within" limit, and a run
+ * that hasn't checked in by then is withdrawn. Last: it waits for the run to start without a limit.
+ */
+const walkGithub: Builder = async (build, candidate, { key, last, step, runEffect }) => {
+  const started = await step.run(`start-github-build-${key}`, () => runEffect(startGithubImageBuild(build, candidate)));
+  if (started.kind !== "dispatched") return started;
+  const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
+  for (let check = 0; ; check += 1) {
+    const startLimit = check === 0 && !last;
+    const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });
+    const found = await step.run(`check-github-build-${key}-${check}`, () => runEffect(checkGithubImageBuild(build, { ended: ended !== null, startLimit })));
+    if (found.kind !== "waiting") return found;
+  }
+};
+
+const BUILDERS = { servers: walkServers, github: walkGithub } satisfies Record<BuildCandidate["builder"], Builder>;
+
+/**
+ * One Image Build walks its Builders in turn: its Service's Preferred Builder, then the Build Order.
+ * Each but the last has "start within" to start it, else the next gets it; the last waits. A Builder
+ * that can't take it is skipped at once. A build that started never moves. Every skip lands on the
+ * Image Build's trail.
+ *
+ *   candidates ─▶ [servers | github] ─ skipped ─▶ next ─ … ─▶ none left: failed
+ *                        └─ settled (built / failed / cancelled) ─▶ done
+ */
+async function runImageBuild(
+  build: ImageBuildTarget,
+  step: EnvironmentDeploymentStepTools,
+  runEffect: DeploymentInngestEffectRunner,
+) {
+  const candidates = await step.run(`plan-image-build-${build.serviceId}`, () => runEffect(planImageBuildWalk(build)));
+  let skipped: SkipReason | null = null;
+  for (const [index, candidate] of candidates.entries()) {
+    const walk = { key: `${build.serviceId}-${index}`, last: index === candidates.length - 1, step, runEffect };
+    const attempt = await BUILDERS[candidate.builder](build, candidate, walk);
+    if (attempt.kind === "settled") return attempt.result;
+    skipped = attempt.reason;
+  }
+  const message = skipped ? skipReasonText(skipped) : "No Builder can take this build.";
+  const failed = await step.run(`fail-image-build-${build.serviceId}`, () =>
+    runEffect(settleImageBuild(build, { status: "failed", message, machineId: null })));
+  return failed.result;
+}
 
 export type EnvironmentDeployEventData =
   Partial<EnvironmentDeployRequestedEventData>;
@@ -176,6 +244,8 @@ export async function executeProcessEnvironmentDeploymentOnFailure(
     },
     runEffect,
   );
+  // A crash mid-walk leaves the rows cancelled; their GitHub runs and grants must stop too.
+  await runEffect(cancelGithubImageBuilds(failedRunId));
 }
 
 export async function executeProcessEnvironmentDeployment(
@@ -236,6 +306,15 @@ export async function executeProcessEnvironmentDeployment(
   }
 
   try {
+    // Admission fan-out: every Image Build starts now, in parallel, without holding the Environment slot.
+    const builds = await step.run("start-image-builds", () => runEffect(startImageBuilds(context, runId)));
+    const settled = await Promise.all(builds.map((build) => runImageBuild(build, step, runEffect)));
+    // Every build settles first, so the ones that finished keep their receipts for a retry.
+    const unbuilt = settled.filter(({ status }) => status !== "built").map(({ image }) => image);
+    if (unbuilt.length) {
+      throw new DeploymentExecutionError({ failureCode: "image_build_failed", message: `Image Build failed: ${unbuilt.join(", ")}.` });
+    }
+
     while (true) {
       const planning = await step.run(
         "mark-deployment-planning",
@@ -361,6 +440,8 @@ export async function executeMarkCancelledRowBackedWorkflow(
     "mark-environment-deployment-cancelled",
     () => runEffect(markCancelledByInngestRunId(runId)),
   );
+  // The attempt's rows are cancelled; its GitHub runs and grants must stop too.
+  await input.step.run("cancel-github-builds", () => runEffect(cancelGithubImageBuilds(runId)));
   return { functionId, runId, marked };
 }
 
@@ -375,7 +456,12 @@ export const createProcessEnvironmentDeployment = (
     retries: 0,
     cancelOn: [{ event: environmentDeployCancelRequestedEvent, match: "data.environmentDeploymentId" }],
     triggers: [{ event: environmentDeployRequestedEventType }],
-    concurrency: [...PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY],
+    // Inngest counts executing steps. Keyed per Environment, an earlier attempt's deploy step would
+    // stall a queued attempt's Image Builds; limited to 1 per attempt, its parallel builds would run
+    // one at a time. So: per attempt, with room for its builds side by side; beyond that many, the
+    // rest wait their turn. The Environment execution slot is the database's partial unique index,
+    // and one run owns an attempt through its recorded run id.
+    concurrency: [{ key: "event.data.environmentDeploymentId", limit: IMAGE_BUILDS_AT_ONCE }],
     onFailure: async ({ event, error }) =>
       executeProcessEnvironmentDeploymentOnFailure(
         { event, error },

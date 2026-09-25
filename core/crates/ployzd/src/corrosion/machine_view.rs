@@ -201,6 +201,7 @@ mod tests {
                 format!("192.0.2.{octet}:51820").parse().unwrap(),
             )],
             runtime: MachineRuntime::default(),
+            build_concurrency: None,
         }
     }
 

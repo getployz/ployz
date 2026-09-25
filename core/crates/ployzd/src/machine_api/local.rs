@@ -36,6 +36,7 @@ pub struct MachineService {
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
     pub(crate) builds: Arc<crate::build::Runner>,
+    pub(crate) grants: Arc<crate::management::BuildGrants>,
 }
 
 impl MachineService {
@@ -52,6 +53,7 @@ impl MachineService {
             runtime_watch: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
+            grants: Arc::default(),
         }
     }
 
@@ -633,6 +635,35 @@ impl MachineRpc for MachineService {
             });
         }
         finish(self.local.pull_image_from_machine(request).await)
+    }
+
+    async fn mint_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::MintBuildGrant>(request)?;
+        match crate::management::build_grant::mint_for(
+            &self.grants,
+            &self.local,
+            Arc::clone(&self.ingest),
+            request,
+        )
+        .await
+        {
+            Ok(minted) => respond(minted),
+            Err(error) => local_error(error),
+        }
+    }
+
+    async fn end_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::EndBuildGrant>(request)?;
+        match self.grants.end(&request.id) {
+            Ok(ended) => respond(ended),
+            Err(error) => respond(error),
+        }
     }
 
     async fn get_ingress_proxy_config(

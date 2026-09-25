@@ -747,6 +747,18 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
+    async fn mint_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    async fn end_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn remove_images(
         &self,
         _request: Request<OpaquePayload>,
@@ -996,6 +1008,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            build_concurrency: None,
         },
         MembershipObservation::Up,
     )

@@ -6,6 +6,7 @@ import type { WebhookSubscriptionRevokedPayload } from "@polar-sh/sdk/models/com
 import type { WebhookSubscriptionUncanceledPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionuncanceledpayload";
 import type { WebhookSubscriptionUpdatedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionupdatedpayload";
 import { Schema } from "effect";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { eventType, staticSchema } from "inngest";
 import {
   githubCheckSuiteReceivedEventDataSchema,
@@ -81,6 +82,7 @@ export const githubPushReceivedEvent = "github/push.received";
 export const githubCheckSuiteReceivedEvent = "github/check-suite.received";
 export const volumeRemoveRequestedEvent = "cloud/volume-remove.requested";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
+export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
 export const teardownRequestedEvent = "cloud/teardown.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 
@@ -105,6 +107,12 @@ export type OrganizationBillingSyncRequestedEventData = {
 export type EnvironmentDeployRequestedEventData = {
   environmentDeploymentId: string;
   environmentId: string;
+};
+
+export type ServerPolicyChangeRequestedEventData = {
+  organizationId: string;
+  machineId: string;
+  change: ServerPolicyChange;
 };
 
 export type MachineRemoveRequestedEventData = {
@@ -173,6 +181,10 @@ export const volumeRemoveRequestedEventType = eventType(
 export const machineRemoveRequestedEventType = eventType(
   machineRemoveRequestedEvent,
   { schema: staticSchema<MachineRemoveRequestedEventData>() },
+);
+export const serverPolicyChangeRequestedEventType = eventType(
+  serverPolicyChangeRequestedEvent,
+  { schema: staticSchema<ServerPolicyChangeRequestedEventData>() },
 );
 export const teardownRequestedEventType = eventType(
   teardownRequestedEvent,
@@ -249,6 +261,12 @@ export function createMachineRemoveRequestedEvent(
     name: machineRemoveRequestedEvent,
     data,
   } as const;
+}
+
+export function createServerPolicyChangeRequestedEvent(
+  data: ServerPolicyChangeRequestedEventData,
+) {
+  return { name: serverPolicyChangeRequestedEvent, data } as const;
 }
 
 export function createTeardownRequestedEvent(
@@ -421,6 +439,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubRepositoriesSyncRequestedEvent>
   | ReturnType<typeof createVolumeRemoveRequestedEvent>
   | ReturnType<typeof createMachineRemoveRequestedEvent>
+  | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createTeardownRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
@@ -429,7 +448,14 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
-  | ReturnType<typeof createGithubCheckSuiteReceivedEvent>;
+  | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
+  | ReturnType<typeof createGithubBuildRunCompletedEvent>;
+
+/** A dispatched GitHub build run completed, whatever its conclusion. The waiting Image Build settles. */
+export const githubBuildRunCompletedEvent = "github/build-run.completed";
+export function createGithubBuildRunCompletedEvent(data: { deliveryId: string; runId: number }) {
+  return { id: data.deliveryId, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
+}
 
 export const environmentDeployCancelRequestedEvent = "environment/deploy.cancel.requested";
 export function createEnvironmentDeployCancelRequestedEvent(environmentDeploymentId: string) {

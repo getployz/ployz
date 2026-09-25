@@ -262,6 +262,7 @@ fn machine(id: char, name: &str, subnet: u8) -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }
 

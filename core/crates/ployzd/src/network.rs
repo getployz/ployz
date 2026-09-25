@@ -387,6 +387,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: advertised,
             runtime: MachineRuntime::default(),
+            build_concurrency: None,
         }
     }
 

@@ -138,6 +138,10 @@ _Avoid_: Image prune, garbage collection
 The work to produce one container image from source and a build recipe. A Deploy with three Git-sourced Services has three Builds.
 _Avoid_: Deploy, whole-project build as one Build
 
+**Build Concurrency**:
+How many Build Attempts one Machine runs at once, recorded on its Machine record. Unset means automatic: 1 when the Machine accepts Services, otherwise one per 4 GB of RAM, clamped to 1–4. Each running Build Attempt holds one build slot and never the Machine's mutation lock.
+_Avoid_: build parallelism, worker count
+
 **Build Receipt**:
 Evidence associating captured build inputs with a completed image and its verified platforms. It does not establish that the image remains available or that a Deploy succeeded.
 _Avoid_: Applied State, cached deployment

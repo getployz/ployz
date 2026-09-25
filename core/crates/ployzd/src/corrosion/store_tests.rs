@@ -211,7 +211,17 @@ async fn publication_guard_rechecks_the_local_phase() {
     );
     let (machine, local) = participating_record();
     let publication = store.machine_publication().await;
-    assert_eq!(publication.publishable_machine(&local), Some(machine));
+    assert_eq!(
+        publication.publishable_machine(&local, 0),
+        Some(machine.clone())
+    );
+    // Running Builds are an observation on the published Machine, never in the record.
+    let mut building = machine;
+    building.runtime.running_builds = 2;
+    assert_eq!(publication.publishable_machine(&local, 2), Some(building));
+    assert!(
+        matches!(local.body(), LocalMachineBody::Participating { machine, .. } if machine.runtime.running_builds == 0)
+    );
 
     let LocalMachineBody::Participating {
         machine: body_machine,
@@ -230,7 +240,7 @@ async fn publication_guard_rechecks_the_local_phase() {
         local.private_key().clone(),
     )
     .unwrap();
-    assert_eq!(publication.publishable_machine(&local), None);
+    assert_eq!(publication.publishable_machine(&local, 0), None);
 }
 
 fn participating_record() -> (Machine, LocalMachineRecord) {

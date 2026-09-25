@@ -131,6 +131,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        build_concurrency: None,
     };
     second
         .join(
@@ -347,6 +348,8 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         architecture: "stale".into(),
         os_pretty_name: "stale".into(),
         kernel_version: "stale".into(),
+        memory_total_bytes: None,
+        running_builds: 0,
     })
     .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
@@ -384,6 +387,7 @@ fn machine_update_is_atomic_and_durable() {
                 name: Some(MachineName::parse("after").unwrap()),
                 public_ip: PublicIpUpdate::Set("203.0.113.7".parse().unwrap()),
                 advertised_endpoints: Some(endpoints.clone()),
+                build_concurrency: ployz_core::BuildConcurrencyUpdate::Set("3".parse().unwrap()),
                 ..Default::default()
             },
             std::slice::from_ref(&original),
@@ -404,6 +408,7 @@ fn machine_update_is_atomic_and_durable() {
     );
     assert!(!updated.accepts_services);
     assert!(updated.accepts_builds && updated.accepts_ingress);
+    assert_eq!(updated.build_concurrency, Some("3".parse().unwrap()));
     drop(store);
 
     let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
@@ -817,6 +822,7 @@ fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> 
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }
 

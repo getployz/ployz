@@ -11,6 +11,35 @@ export type BindRecursive = "disabled" | "writable" | "readonly";
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
+export type BuildConcurrency = number;
+
+export type BuildConcurrencyUpdate = { "action": "keep" } | { "action": "automatic" } | { "action": "set", "value": BuildConcurrency };
+
+export type BuildGrantEnded = {
+/**
+ * `sha256:` digest of the manifest the Machine verified and stored, when the
+ * push completed; absent when nothing was pushed.
+ */
+pushed: ImageDigest | null, };
+
+export type BuildGrantId = string & { readonly __brand: "BuildGrantId" };
+
+export type BuildGrantMinted = {
+/**
+ * Handle for [`EndBuildGrantRequest`]; not secret.
+ */
+id: BuildGrantId,
+/**
+ * Secret-bearing grant for the pusher only.
+ */
+grant: string,
+/**
+ * The grant ends by itself this long after minting.
+ */
+expires_in_seconds: number, };
+
+export type BuildGrantRepository = string;
+
 export type BuildMethod = "dockerfile" | "railpack";
 
 export type ByteQuantity = number;
@@ -222,6 +251,8 @@ used_bytes: number, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
+export type EndBuildGrantRequest = { id: BuildGrantId, };
+
 export type EnrollmentAssignment = {
 /**
  * Retry identity inputs, excluding assigned subnet and runtime observations.
@@ -278,6 +309,8 @@ export type HttpProtocol = "http" | "https";
 
 export type ImageCleanupReport = { machines: Array<MachineImageCleanup>, };
 
+export type ImageDigest = string;
+
 export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
 
 export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
@@ -332,7 +365,11 @@ accepts_services: boolean,
 /**
  * Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
  */
-accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime,
+/**
+ * Builds this Machine runs at once; absent means automatic.
+ */
+build_concurrency: BuildConcurrency | null, };
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
@@ -380,7 +417,15 @@ rtt: RttStatistics | null, };
 
 export type MachinePath = string;
 
-export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string, };
+export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string,
+/**
+ * Host memory, absent when the daemon could not observe it.
+ */
+memory_total_bytes?: number | null,
+/**
+ * Builds this Machine's daemon is running now; live, never persisted.
+ */
+running_builds: number, };
 
 export type MachineStorageBudget = {
 /**
@@ -450,9 +495,51 @@ docker_root_total_bytes: number,
  */
 docker_root_free_bytes: number, };
 
+export type MachineUpdate = {
+/**
+ * One change per Label key: a value sets it, `None` removes it.
+ */
+label_changes: { [key in MachineLabelKey]: MachineLabelValue | null },
+/**
+ * Change Build acceptance independently; `None` preserves it and existing work remains.
+ */
+accepts_builds: boolean | null,
+/**
+ * Change application Service acceptance independently; `None` preserves it.
+ */
+accepts_services: boolean | null,
+/**
+ * Change trusted Ingress acceptance independently; `None` preserves it.
+ */
+accepts_ingress: boolean | null,
+/**
+ * Replace the Machine Name, or preserve it when omitted.
+ */
+name: MachineName | null,
+/**
+ * Explicitly preserve, remove, or replace the advertised public IP.
+ */
+public_ip: PublicIpUpdate,
+/**
+ * Replace all Advertised Endpoints, or preserve them when omitted.
+ */
+advertised_endpoints: Array<AdvertisedEndpoint> | null,
+/**
+ * Explicitly preserve, clear to automatic, or set build concurrency.
+ */
+build_concurrency: BuildConcurrencyUpdate, };
+
+export type MachineUpdated = { machine: Machine, };
+
 export type ManagementClientLabel = string;
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
+
+export type MintBuildGrantRequest = {
+/**
+ * The only repository the push may write, as Docker names it (`ployz-build/web`).
+ */
+repository: BuildGrantRepository, };
 
 export type ObservationKind = "container" | "volume";
 
@@ -553,6 +640,8 @@ export type PruneTarget = { machine_id: MachineId,
  * Docker's short repository name, as `docker image ls` prints it.
  */
 repository: string, };
+
+export type PublicIpUpdate = { "action": "keep" } | { "action": "remove" } | { "action": "set", "value": string };
 
 export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
 
@@ -687,7 +776,7 @@ reason: RuntimeFailureKind, };
 
 export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<CertificateHost>, };
 
-export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, incomplete_ids: RuntimeWatchIncompleteIds,
+export type RuntimeWatchView = { services: Array<ServiceObservation>, effective_build_concurrency: { [key in MachineId]: BuildConcurrency }, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, incomplete_ids: RuntimeWatchIncompleteIds,
 /**
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */

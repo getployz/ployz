@@ -72,25 +72,11 @@ impl ManagementCapability {
     /// # Errors
     /// Returns a redacted [`ValueError`] when the prefix, encoding or body length is wrong.
     pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
-        let encoded = value
-            .as_ref()
-            .strip_prefix(PREFIX)
-            .ok_or_else(framing_error)?;
-        // base64url rejects whitespace and control characters, so a multiline value fails here.
-        let body = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(|_| framing_error())?;
-        if body.len() != BODY_LEN {
-            return Err(framing_error());
-        }
-        let (machine, client_secret) = body.split_at(32);
+        let (machine, client_secret) =
+            decode_keys(PREFIX, value.as_ref()).ok_or_else(framing_error)?;
         Ok(Self {
-            machine: ManagementIdentity::from_bytes(
-                machine.try_into().expect("split at 32 of a 64-byte body"),
-            ),
-            client_secret: client_secret
-                .try_into()
-                .expect("split at 32 of a 64-byte body"),
+            machine: ManagementIdentity::from_bytes(machine),
+            client_secret,
         })
     }
 
@@ -109,11 +95,28 @@ impl ManagementCapability {
     /// Secret-bearing string form for serialization or a context file. Do not log it.
     #[must_use]
     pub fn to_secret_string(&self) -> String {
-        let mut body = [0; BODY_LEN];
-        body[..32].copy_from_slice(self.machine.as_bytes());
-        body[32..].copy_from_slice(&self.client_secret);
-        format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(body))
+        encode_keys(PREFIX, &self.machine, &self.client_secret)
     }
+}
+
+/// A Management Identity and a secret key: `prefix` plus unpadded base64url of 64 bytes.
+pub(super) fn decode_keys(prefix: &str, value: &str) -> Option<([u8; 32], [u8; 32])> {
+    // base64url rejects whitespace and control characters, so a multiline value fails here.
+    let body = URL_SAFE_NO_PAD.decode(value.strip_prefix(prefix)?).ok()?;
+    let body: [u8; BODY_LEN] = body.try_into().ok()?;
+    let (machine, secret) = body.split_at(32);
+    Some((
+        machine.try_into().expect("split at 32 of a 64-byte body"),
+        secret.try_into().expect("split at 32 of a 64-byte body"),
+    ))
+}
+
+/// Inverse of [`decode_keys`]. The result carries the secret; do not log it.
+pub(super) fn encode_keys(prefix: &str, machine: &ManagementIdentity, secret: &[u8; 32]) -> String {
+    let mut body = [0; BODY_LEN];
+    body[..32].copy_from_slice(machine.as_bytes());
+    body[32..].copy_from_slice(secret);
+    format!("{prefix}{}", URL_SAFE_NO_PAD.encode(body))
 }
 
 impl fmt::Debug for ManagementCapability {

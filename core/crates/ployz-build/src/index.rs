@@ -4,7 +4,7 @@
 
 use crate::{
     BuildError, BuiltImage, Docker, Planned, Progress, Request, Stage, Streams, TargetEvidence,
-    TargetMetadata, bake_arguments, builder::Builder, builder_name,
+    TargetMetadata, bake_arguments, builder::Builder,
 };
 use std::{collections::BTreeMap, path::Path};
 
@@ -23,7 +23,7 @@ pub(crate) fn build(
     target: &Planned<'_>,
     overrides: Option<&Path>,
 ) -> Result<BuiltImage, BuildError> {
-    let name = format!("{}-assemble", builder_name());
+    let name = format!("{}-assemble", builder.name());
     docker.with_container(
         &name,
         &[
@@ -53,7 +53,8 @@ pub(crate) fn build(
             for (number, platform) in target.target.platforms.iter().enumerate() {
                 let archive = request.working_dir.join("private/railpack/variant.tar");
                 let metadata = request.working_dir.join("private/railpack/variant.json");
-                let mut args = bake_arguments(request, target, &metadata, overrides);
+                let mut args =
+                    bake_arguments(request, builder.name(), target, &metadata, overrides);
                 args.retain(|arg| arg != "--load");
                 for setting in [
                     format!("{}.platform={platform}", target.bake),

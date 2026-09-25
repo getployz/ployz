@@ -10,7 +10,11 @@ import {
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { preferredBuilderSchema } from "#/modules/environment-design/service-policy";
+import { Option, Schema } from "effect";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
@@ -58,6 +62,50 @@ function DockerfilePathInput({
       isChanged={isChanged}
       onCommit={onCommit}
     />
+  );
+}
+
+/** Service Deployment Policy: saved at once, never staged, so Discard doesn't undo it. */
+function PreferredBuilderField({ state }: { state: ServiceDrawerState }) {
+  const { service } = state;
+  const { machines } = useRuntimeLens(state.organizationSlug);
+  const builders = [
+    { id: "github", label: "GitHub Actions" },
+    ...machines.filter((machine) => machine.acceptsBuilds).map((machine) => ({ id: machine.id, label: machine.name })),
+  ];
+  // The collection row widens the MachineId brand; the Select speaks plain strings.
+  const value = String(service.policy.preferredBuilder ?? "auto");
+  const label = value === "auto" ? "Auto"
+    : builders.find((builder) => builder.id === value)?.label ?? machines.find((machine) => machine.id === value)?.name ?? "A removed server";
+  return (
+    <Field>
+      <FieldLabel>Preferred builder</FieldLabel>
+      <FieldDescription>
+        Tried first. If it can’t start the build in time, the build follows your organization’s build order.
+      </FieldDescription>
+      <Select value={value} onValueChange={(next) => {
+        if (next === null || next === value) return;
+        const chosen = Schema.decodeUnknownOption(preferredBuilderSchema)(next);
+        if (next !== "auto" && Option.isNone(chosen)) return;
+        state.editMetadata({ environmentId: service.environmentId, serviceId: service.id,
+          edit: { kind: "policy", policy: { preferredBuilder: Option.getOrNull(chosen) } } });
+      }}>
+        <SelectTrigger aria-label="Preferred builder" className="w-64">
+          <SelectValue>{label}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="auto" label="Auto">Auto</SelectItem>
+          </SelectGroup>
+          <SelectSeparator />
+          <SelectGroup>
+            {builders.map((builder) => (
+              <SelectItem key={builder.id} value={builder.id} label={builder.label}>{builder.label}</SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </Field>
   );
 }
 
@@ -160,6 +208,7 @@ export function ServiceBuildSection({
         </Field>
       ) : null}
 
+      <PreferredBuilderField state={state} />
     </FieldGroup>
   );
 }

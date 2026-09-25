@@ -3,7 +3,7 @@ import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@plo
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { parseServiceConfig } from "@ployz/sdk/config";
-import { deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
+import { builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
 
 function row(index: number, operation?: DeployOperation): OperationRow {
   const spec = resolvedServiceSpecFixture();
@@ -14,8 +14,8 @@ function row(index: number, operation?: DeployOperation): OperationRow {
 /** The Engine serializes keys alphabetically, unlike the planned rows. */
 const engineOrdered = <T,>(value: T): T => JSON.parse(canonicalJson(value)) as T;
 const context = { serviceIdFor: (name: string | null) => name };
-const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null) =>
-  ({ id, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
+const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image: string | null = null) =>
+  ({ id, image, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
   ({ status, failureMessage: null, deployPreview: null, ...extra });
 /** A service in the Attempt Target; `image` makes it a built one. */
@@ -97,6 +97,45 @@ describe("deployment view projection", () => {
     expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 4 deployed");
   });
 
+  it("says which Server each image builds on and why, only once the Engine chose", () => {
+    const view = deploymentView({
+      deployment: deployment("queued"), progress: null,
+      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail", "cron"].map((image) => node({ nodeId: image, changed: true, image })),
+      buildLog: {
+        steps: [], output: [],
+        imageBuilds: [
+          { image: "site", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/1", reason: "first_in_build_order" }, skips: [] },
+          { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } }, github: null, skips: [] },
+          { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } }, github: null, skips: [] },
+          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "c".repeat(32) as MachineId, name: "nuc" } }, github: null, skips: [] },
+          { image: "worker", serverChoice: null, github: null, skips: [] },
+          { image: "blog", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/2", reason: "next_in_build_order" }, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] },
+          { image: "wiki", serverChoice: null, github: null, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }, { builder: "servers", kind: "preferred_unavailable", machineId: "e".repeat(32) as MachineId, name: null }] },
+          { image: "shop", serverChoice: { machineName: "fast", reason: { kind: "preferred" } }, github: null, skips: [] },
+          { image: "mail", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/3", reason: "preferred" }, skips: [] },
+          { image: "cron", serverChoice: { machineName: "hel-1", reason: { kind: "preferred_unavailable", preferred: "d".repeat(32) as MachineId, name: null } }, github: null, skips: [] },
+        ],
+      },
+    });
+    expect(view.nodes.map((n) => n.builtOn)).toEqual([
+      { server: "nuc", reason: "had this Service's build cache", skipped: [] },
+      { server: "hel-1", reason: "spread across Servers", skipped: [] },
+      { server: "hel-1", reason: "nuc has the cache but is offline or no longer builds", skipped: [] },
+      null,
+      { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1", skipped: [] },
+      { server: "GitHub Actions", reason: "next in the build order", runUrl: "https://github.com/o/r/actions/runs/2", skipped: ["Your servers: none started it in 3 min"] },
+      { server: null, reason: null, skipped: ["GitHub: no workflow in o/r", "Preferred server: no longer in the Cluster"] },
+      { server: "fast", reason: "preferred builder", skipped: [] },
+      { server: "GitHub Actions", reason: "preferred builder", runUrl: "https://github.com/o/r/actions/runs/3", skipped: [] },
+      { server: "hel-1", reason: "Preferred server: no longer in the Cluster", skipped: [] },
+    ]);
+    // The skip trail reads after the Builder that took the build, or alone before one did.
+    expect(view.nodes.slice(5, 7).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([
+      "Built on GitHub Actions · next in the build order · skipped Your servers: none started it in 3 min",
+      "Skipped GitHub: no workflow in o/r · skipped Preferred server: no longer in the Cluster",
+    ]);
+  });
+
   it("tails the image building now while the next image waits its turn", () => {
     const view = deploymentView({
       deployment: deployment("planning"),
@@ -106,6 +145,28 @@ describe("deployment view projection", () => {
         output: [{ stepId: 2, text: "one\ntwo\n" }, { stepId: 2, text: "three\n" }] },
     });
     expect(view.nodes.map((n) => [n.outcome, n.build.state, n.tail])).toEqual([["building", "running", ["two", "three"]], ["queued", "queued", []]]);
+  });
+
+  it("shows a queued attempt's Image Builds in parallel, and one failing while another still builds", () => {
+    const view = deploymentView({
+      deployment: deployment("queued"), progress: null,
+      nodes: [node({ nodeId: "api", changed: true, image: "api" }), node({ nodeId: "web", changed: true, image: "web" }), node({ nodeId: "docs", changed: true, image: "docs" })],
+      buildLog: {
+        steps: [
+          step(1, 1, "stage:Building", "api", 0, null, null, "api"), step(2, 1, "sha256:a", "[1/2] RUN make", 1, null, null, "api"),
+          step(3, 1, "stage:Building", "web", 0, 5, null, "web"), step(4, 1, "sha256:b", "[1/2] RUN make", 1, 5, "exit code: 2", "web"),
+          step(5, 0, "stage:Reused", "Reused image", 2, 2, null, "docs"),
+        ],
+        output: [{ stepId: 2, text: "compiling\n" }, { stepId: 4, text: "boom\n" }],
+      },
+    });
+    expect(view.status).toBe("building");
+    expect(view.nodes.map((n) => [n.outcome, n.build.state, n.tail])).toEqual([
+      ["building", "running", ["compiling"]],
+      ["failed", "failed", ["boom", "exit code: 2"]],
+      ["queued", "done", []],
+    ]);
+    expect(view.nodes[1]?.failure).toEqual({ message: "Image build failed", containerId: null });
   });
 
   it("marks a node the attempt removed as Removed and counts it as deployed", () => {

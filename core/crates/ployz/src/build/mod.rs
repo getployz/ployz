@@ -20,8 +20,11 @@ use inputs::BuildInputs;
 
 mod ignore;
 mod inputs;
+mod local;
 mod platforms;
+pub use platforms::placement_platforms;
 mod remote;
+pub use local::LocalImage;
 mod reuse;
 
 /// How one Service's checked-out source becomes an image.
@@ -75,6 +78,10 @@ pub enum Error {
     },
     #[error("{0}")]
     Io(String),
+    /// No Build Machine admitted the Build by its deadline; it was withdrawn
+    /// before any source left the client.
+    #[error("no Build Machine admitted the Build in time; nothing was uploaded")]
+    Withdrawn,
 }
 
 /// A Service whose image this preparation built, bound to the content produced.
@@ -260,14 +267,16 @@ impl CapturedBuild {
     }
 
     /// Run each Build in order on one resolved Machine over the authenticated
-    /// Ployz stream, and bind each completed image to its Service.
+    /// Ployz stream, and bind each completed image to its Service. With
+    /// `admit_by`, a Build the Machine hasn't admitted by then is withdrawn.
     ///
     /// # Errors
-    /// Reports failed or unknown work and leaves the remaining targets unattempted.
+    /// Reports failed, unknown, or withdrawn work and leaves the remaining targets unattempted.
     pub async fn execute_remote_images(
         self,
         client: &crate::connect::Client,
         machine_id: MachineId,
+        admit_by: Option<tokio::time::Instant>,
         cancellation: tokio_util::sync::CancellationToken,
         progress: impl Fn(Progress),
     ) -> Result<Vec<BuiltService>, Error> {
@@ -296,6 +305,7 @@ impl CapturedBuild {
                 },
                 client,
                 machine_id,
+                admit_by,
                 cancellation.clone(),
                 &progress,
             )
@@ -331,6 +341,7 @@ impl CapturedBuild {
                     }
                     return Err(remote_error(outcome.with_work(work)));
                 }
+                remote::Completion::Withdrawn => return Err(Error::Withdrawn),
                 remote::Completion::Report(
                     Outcome::CapabilitiesChecked { .. }
                     | Outcome::Validated { .. }

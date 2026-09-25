@@ -4,11 +4,12 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getDeploymentLogsCollection, useDeploymentLogsReadState } from "#/modules/deployments/deployment-log.collection";
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
+import { Item, ItemActions, ItemContent, ItemDescription } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-progress";
-import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
+import { builtOn, builtOnLine, imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -122,8 +123,15 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));
+  const server = builtOn(build.data, image);
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
+    {server ? <Item size="xs">
+      <ItemContent><ItemDescription>{builtOnLine(server)}</ItemDescription></ItemContent>
+      {server.server !== null && server.runUrl ? <ItemActions>
+        <Button variant="link" size="xs" nativeButton={false} render={<a href={server.runUrl} target="_blank" rel="noreferrer" />}>View run ↗</Button>
+      </ItemActions> : null}
+    </Item> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
       {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} now={now} />}
     </BuildLogViewer>

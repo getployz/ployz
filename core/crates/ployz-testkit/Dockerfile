@@ -8,7 +8,7 @@ FROM docker:29.1.3-dind AS docker-bin
 
 FROM ubuntu:24.04
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl dnsmasq dnsutils docker.io iproute2 iptables openssh-client openssh-server skopeo socat sqlite3 util-linux wireguard-tools \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl dnsmasq dnsutils docker.io git iproute2 iptables openssh-client openssh-server skopeo socat sqlite3 util-linux wireguard-tools \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=docker-bin /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/ctr /usr/local/bin/docker /usr/local/bin/docker-init /usr/local/bin/docker-proxy /usr/local/bin/dockerd /usr/local/bin/runc /usr/local/bin/
 COPY --from=docker-bin /usr/local/bin/dind /usr/local/bin/dind

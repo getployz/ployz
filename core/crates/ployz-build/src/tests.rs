@@ -381,12 +381,24 @@ fn requested_output_selects_exclusive_bake_behavior() {
         pull: false,
     };
 
-    let validate = bake_arguments(&request(Output::Validate), planned, metadata, None);
+    let validate = bake_arguments(
+        &request(Output::Validate),
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
     assert!(validate.contains(&"--check".to_owned()));
     assert!(!validate.contains(&"--load".to_owned()));
     assert!(!validate.contains(&"--metadata-file".to_owned()));
 
-    let load = bake_arguments(&request(Output::Load), planned, metadata, None);
+    let load = bake_arguments(
+        &request(Output::Load),
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
     assert!(load.contains(&"--load".to_owned()));
     assert!(!load.contains(&"--push".to_owned()));
     assert!(load.contains(&"--no-cache".to_owned()));
@@ -396,10 +408,32 @@ fn requested_output_selects_exclusive_bake_behavior() {
     assert!(!load.iter().any(|argument| argument.contains(".platform")));
     assert_eq!(load.last().map(String::as_str), Some("api"));
 
-    let registry = bake_arguments(&request(Output::Registry), planned, metadata, None);
+    let registry = bake_arguments(
+        &request(Output::Registry),
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
     assert!(registry.contains(&"--push".to_owned()));
     assert!(!registry.contains(&"--load".to_owned()));
     assert!(!registry.contains(&"--metadata-file".to_owned()));
+    assert!(!load.iter().any(|argument| argument.contains("type=gha")));
+
+    // Only a runner exposing its cache service gets the GitHub cache.
+    let environment = BTreeMap::from([("ACTIONS_RUNTIME_TOKEN".to_owned(), "t".to_owned())]);
+    let runner = bake_arguments(
+        &Request {
+            environment: &environment,
+            ..request(Output::Load)
+        },
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
+    assert!(runner.contains(&"api.cache-from=type=gha,scope=api".to_owned()));
+    assert!(runner.contains(&"api.cache-to=type=gha,scope=api,mode=max".to_owned()));
 }
 
 #[test]
@@ -473,7 +507,7 @@ esac
             no_cache: false,
             pull: false,
         };
-        execute(&request, &Cancellation::new()).unwrap();
+        execute(&request, &Cancellation::new(), &|_| ()).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
         Command::new("kill")
             .args([&signal, &std::process::id().to_string()])

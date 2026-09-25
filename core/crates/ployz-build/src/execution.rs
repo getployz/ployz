@@ -1,6 +1,7 @@
 //! Admission and connection-scoped cancellation for the shared host executor.
 
 use crate::{BuildError, Deadline, EXECUTION_TIMEOUT, builder::Lock};
+use ployz_core::BuildConcurrency;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, time::Duration};
 
@@ -201,15 +202,44 @@ impl Admission {
         crate::upload::AdmittedUpload::new(self)
     }
 
-    /// Acquire under host policy, including the deadline that starts before upload.
+    /// Acquire the first build slot under host policy, including the deadline
+    /// that starts before upload.
     /// # Errors
     /// Refuses busy or quarantined state and reports filesystem failures.
     pub fn try_acquire_with(policy: &HostPolicy) -> Result<Self, BuildError> {
+        Self::try_acquire_within(policy, BuildConcurrency::ONE)
+    }
+
+    /// Acquire any free, unquarantined slot among the first `concurrency`
+    /// build slots. Each slot has its own builder, cache, and upload staging,
+    /// so concurrent attempts never touch each other's state.
+    /// # Errors
+    /// Refuses when every slot is busy or quarantined (quarantine wins, so
+    /// uncertainty is reported), and reports filesystem failures.
+    pub fn try_acquire_within(
+        policy: &HostPolicy,
+        concurrency: BuildConcurrency,
+    ) -> Result<Self, BuildError> {
+        let mut quarantined = None;
+        for slot in 0..usize::from(concurrency) {
+            match Self::try_acquire_slot(policy, slot) {
+                Ok(admission) => return Ok(admission),
+                Err(BuildError::Busy) => {}
+                Err(error) if error.is_unknown() => {
+                    quarantined.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(quarantined.unwrap_or(BuildError::Busy))
+    }
+
+    pub(crate) fn try_acquire_slot(policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
         policy.validate()?;
         let resources = crate::policy::Resources::load(&policy.configuration_file)?;
         Ok(Self {
             resources,
-            lock: Lock::try_acquire_in(&policy.state_directory)?,
+            lock: Lock::try_acquire_slot(&policy.state_directory, slot)?,
             deadline: Deadline::starting_now(policy.active_timeout),
             cancellation: Cancellation::default(),
         })
@@ -318,6 +348,66 @@ mod tests {
                 .err()
                 .unwrap()
                 .is_unknown()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_admissions_own_separate_slots_and_quarantine_stays_per_slot() {
+        let root = std::env::temp_dir().join(format!("ployz-build-slots-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let policy = HostPolicy {
+            state_directory: root.clone(),
+            docker: root.join("docker"),
+            ..Default::default()
+        };
+        crate::tests::executable(&policy.docker, "#!/bin/sh\nexit 0\n");
+        let two = BuildConcurrency::parse("2").unwrap();
+        let first = Admission::try_acquire_within(&policy, two).unwrap();
+        let second = Admission::try_acquire_within(&policy, two).unwrap();
+        assert_ne!(first.lock.name(), second.lock.name());
+        assert_ne!(
+            first.lock.upload_directory(),
+            second.lock.upload_directory()
+        );
+        assert!(matches!(
+            Admission::try_acquire_within(&policy, two),
+            Err(BuildError::Busy)
+        ));
+        let first = first.upload().unwrap();
+        let second = second.upload().unwrap();
+        drop(first);
+        drop(second);
+
+        let mut lock = Lock::try_acquire_in(&root).unwrap();
+        lock.quarantine().unwrap();
+        drop(lock);
+        assert!(
+            Admission::try_acquire_with(&policy)
+                .err()
+                .unwrap()
+                .is_unknown()
+        );
+        // Another slot has its own builder and staging, so it stays usable.
+        let other = Admission::try_acquire_within(&policy, two).unwrap();
+        assert!(
+            Admission::try_acquire_within(&policy, two)
+                .err()
+                .unwrap()
+                .is_unknown(),
+            "a full Machine with a quarantined slot must report the uncertainty"
+        );
+        drop(other);
+        std::fs::create_dir_all(root.join("build-upload-1/abandoned")).unwrap();
+        assert!(
+            Admission::cleanup_abandoned(&policy)
+                .unwrap_err()
+                .is_unknown()
+        );
+        assert!(
+            !root.join("build-upload-1").exists(),
+            "startup skipped a later slot's abandoned upload"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

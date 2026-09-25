@@ -49,6 +49,23 @@ impl CapturedBuild {
     }
 }
 
+/// The platforms the Machines the Deploy's Services may be placed on run
+/// natively, whatever their Build Method: what a Builder outside the Cluster
+/// must produce for them.
+///
+/// # Errors
+/// Names a Machine whose architecture neither build platform runs.
+pub fn placement_platforms(
+    intent: &DeployIntent,
+    machines: &[MachineObservation],
+) -> Result<BTreeSet<String>, Error> {
+    let mut required = BTreeSet::new();
+    for spec in &intent.target {
+        required.extend(machine_platforms(spec, &intent.project_name, machines)?);
+    }
+    Ok(required)
+}
+
 /// Railpack platforms the Machines a Service may be placed on run natively.
 ///
 /// # Errors
@@ -125,9 +142,45 @@ mod tests {
                     architecture: architecture.into(),
                     ..Default::default()
                 },
+                build_concurrency: None,
             },
             membership,
         )
+    }
+
+    #[test]
+    fn placement_platforms_are_what_the_services_machines_run() {
+        let machines = [
+            observed(1, "x86_64", MembershipObservation::Up),
+            observed(2, "aarch64", MembershipObservation::Up),
+            observed(3, "aarch64", MembershipObservation::Down),
+        ];
+        let mut pinned = super::super::tests::intent(&["pinned"]);
+        pinned.target.get_mut(0).unwrap().placement.constraints =
+            [ployz_core::PlacementConstraint::parse(format!(
+                "node.id=={}",
+                machines[0].machine.id
+            ))
+            .unwrap()]
+            .into();
+        assert_eq!(
+            placement_platforms(&pinned, &machines).unwrap(),
+            BTreeSet::from(["linux/amd64".to_owned()])
+        );
+        let anywhere = super::super::tests::intent(&["anywhere"]);
+        assert_eq!(
+            placement_platforms(&anywhere, &machines).unwrap(),
+            BTreeSet::from(["linux/amd64".to_owned(), "linux/arm64".to_owned()])
+        );
+        // A placement no build platform runs refuses, naming the Machine.
+        let unbuildable = [observed(4, "riscv64", MembershipObservation::Up)];
+        let error = placement_platforms(&anywhere, &unbuildable)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("machine-4") && error.contains("riscv64"),
+            "{error}"
+        );
     }
 
     #[test]

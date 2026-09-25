@@ -13,3 +13,6 @@ export const Client = fail;
 export const RpcError = fail;
 
 export const allocateEnrollment = fail;
+export const buildFingerprints = fail;
+export const ployzVersion = fail;
+export const buildGrantTag = fail;

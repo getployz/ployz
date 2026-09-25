@@ -24,6 +24,7 @@ export const changeNameSources = {
   volume_remove_attempt: ["volume_remove_attempt"],
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
+  organization_build_order: ["organization_build_order"],
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 
 export function collectionsOf(sourceTables: Iterable<ChangeSource>) {

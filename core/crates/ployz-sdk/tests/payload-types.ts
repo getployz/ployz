@@ -38,6 +38,8 @@ import type {
   ServiceObservation,
   Ulimit,
   VolumeSource,
+  MachineTarget,
+  MachineUpdated,
 } from "../generated/payloads";
 import {
   applyAll,
@@ -200,6 +202,10 @@ const connectOptions = {
   connections: [{ unix: "/tmp/machine.sock", machine_id: "machine" as MachineId }],
 };
 connect(connectOptions) satisfies Promise<Client>;
+client.updateMachine("machine" as MachineTarget, {
+  accepts_builds: false,
+  build_concurrency: { action: "set", value: 2 },
+}) satisfies Promise<MachineUpdated>;
 const identity: RegisterRequest = {
   machine_id: "machine" as MachineId,
   assigned_subnet: null,
@@ -221,6 +227,7 @@ const identity: RegisterRequest = {
     architecture: "arm64",
     os_pretty_name: "macOS",
     kernel_version: "1",
+    running_builds: 0,
   },
 };
 applyAll("app" as ProjectName, [web]) satisfies DeployIntent;

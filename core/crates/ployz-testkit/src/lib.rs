@@ -1063,6 +1063,7 @@ mod tests {
                         .unwrap(),
                 )],
                 runtime: Default::default(),
+                build_concurrency: None,
             }
         }
 

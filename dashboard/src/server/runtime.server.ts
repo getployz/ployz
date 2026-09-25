@@ -6,6 +6,7 @@ import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { PolarLive } from "#/modules/billing/polar-provider.server";
 import { GithubApiLive } from "#/modules/github/github-observation.api";
+import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
 import { InngestLive } from "#/modules/inngest/client";
 import { AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -17,6 +18,7 @@ const InfrastructureLive = Layer.mergeAll(
   PolarLive,
   InngestLive,
   GithubApiLive,
+  GithubOidcKeysLive,
   ReportingDatabaseLive,
 ).pipe(
   Layer.provideMerge(DatabaseLive),

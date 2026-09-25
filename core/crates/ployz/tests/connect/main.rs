@@ -39,6 +39,7 @@ mod sdk_destroy_project;
 mod sdk_prepare;
 mod sdk_register;
 mod sdk_remove_machine;
+mod sdk_update_machine;
 mod sdk_volumes;
 mod sdk_watch;
 mod support;

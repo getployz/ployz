@@ -64,7 +64,11 @@ pub fn typescript_declarations() -> String {
         seen: BTreeSet::new(),
         by_name: BTreeMap::new(),
     };
+    declarations.add::<ployz_core::BuildGrantEnded>();
+    declarations.add::<ployz_core::BuildGrantMinted>();
     declarations.add::<ClusterTeardown>();
+    declarations.add::<ployz_core::EndBuildGrantRequest>();
+    declarations.add::<ployz_core::MintBuildGrantRequest>();
     declarations.add::<ContractDescription>();
     declarations.add::<DataLossConfirmation>();
     declarations.add::<DeployEvent>();
@@ -75,6 +79,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<LocalMachineRemoved>();
     declarations.add::<MachineId>();
     declarations.add::<ployz_core::MachineDetails>();
+    declarations.add::<ployz_core::MachineUpdate>();
+    declarations.add::<ployz_core::MachineUpdated>();
     declarations.add::<ployz_core::SetManagementClientResponse>();
     declarations.add::<MachineTarget>();
     declarations.add::<ployz_core::PruneTarget>();

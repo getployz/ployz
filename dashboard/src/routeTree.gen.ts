@@ -26,6 +26,8 @@ import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/event
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
+import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
+import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
 import { Route as ApiEnrollTokenCallbackRouteImport } from './routes/api/enroll/$token/callback'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
@@ -127,6 +129,16 @@ const ProtectedCloudOrganizationSlugProjectRouteRoute =
     id: '/_project',
     getParentRoute: () => ProtectedCloudOrganizationSlugRouteRoute,
   } as any)
+const ApiBuildsBuildCheckInRoute = ApiBuildsBuildCheckInRouteImport.update({
+  id: '/api/builds/$build/check-in',
+  path: '/api/builds/$build/check-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBuildsBuildStepsRoute = ApiBuildsBuildStepsRouteImport.update({
+  id: '/api/builds/$build/steps',
+  path: '/api/builds/$build/steps',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiEnrollTokenCallbackRoute = ApiEnrollTokenCallbackRouteImport.update({
   id: '/callback',
   path: '/callback',
@@ -261,6 +273,8 @@ export interface FileRoutesByFullPath {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
+  '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
+  '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -290,6 +304,8 @@ export interface FileRoutesByTo {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/cloud': typeof ProtectedCloudIndexRoute
+  '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
+  '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
@@ -323,6 +339,8 @@ export interface FileRoutesById {
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
   '/_protected/cloud/$organizationSlug/_org': typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
+  '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
+  '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -356,6 +374,8 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/cloud/'
+    | '/api/builds/$build/check-in'
+    | '/api/builds/$build/steps'
     | '/api/enroll/$token/callback'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
@@ -385,6 +405,8 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/cloud'
+    | '/api/builds/$build/check-in'
+    | '/api/builds/$build/steps'
     | '/api/enroll/$token/callback'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
@@ -417,6 +439,8 @@ export interface FileRouteTypes {
     | '/_protected/cloud/'
     | '/_protected/cloud/$organizationSlug/_org'
     | '/_protected/cloud/$organizationSlug/_project'
+    | '/api/builds/$build/check-in'
+    | '/api/builds/$build/steps'
     | '/api/enroll/$token/callback'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
@@ -445,6 +469,8 @@ export interface RootRouteChildren {
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
+  ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
+  ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -567,6 +593,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugRouteRoute
+    }
+    '/api/builds/$build/check-in': {
+      id: '/api/builds/$build/check-in'
+      path: '/api/builds/$build/check-in'
+      fullPath: '/api/builds/$build/check-in'
+      preLoaderRoute: typeof ApiBuildsBuildCheckInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/builds/$build/steps': {
+      id: '/api/builds/$build/steps'
+      path: '/api/builds/$build/steps'
+      fullPath: '/api/builds/$build/steps'
+      preLoaderRoute: typeof ApiBuildsBuildStepsRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/enroll/$token/callback': {
       id: '/api/enroll/$token/callback'
@@ -870,6 +910,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
+  ApiBuildsBuildCheckInRoute: ApiBuildsBuildCheckInRoute,
+  ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

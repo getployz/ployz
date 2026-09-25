@@ -145,8 +145,12 @@ Copy the Client ID to `GITHUB_CLIENT_ID` and a new client secret to `GITHUB_CLIE
 | Homepage URL | `https://cloud.example.com` |
 | Webhook URL | `https://cloud.example.com/api/github/webhook` (Active) |
 | Webhook secret | `openssl rand -hex 32`, also `GITHUB_APP_WEBHOOK_SECRET` |
-| Repository permissions | Contents: Read-only, Checks: Read-only, Metadata: Read-only |
-| Subscribe to events | Push, Check suite |
+| Repository permissions | Contents: Read-only, Checks: Read-only, Metadata: Read-only, Actions: Read and write |
+| Subscribe to events | Push, Check suite, Workflow run |
+
+Actions: Read and write and the Workflow run event are for GitHub builds: Cloud checks for
+the `ployz-build.yml` workflow and dispatches it. Installations created before you add
+them keep building on servers until their owner approves the new permissions in GitHub.
 
 Installation events are delivered without subscribing. Copy the App ID to
 `GITHUB_APP_ID`, the URL name from `github.com/apps/<slug>` to `GITHUB_APP_SLUG`,

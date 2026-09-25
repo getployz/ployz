@@ -2,13 +2,12 @@ import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import type { DeployEvent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
-import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
+import { Cause, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
 import { environmentDeployment } from "./tables";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
 import {
   loadDeploymentContext,
-  loadResolvedDeployEnv,
   persistSdkDeployPreview,
   persistImageCleanup,
   persistSdkDeployOutcome,
@@ -16,7 +15,6 @@ import {
   type DeploymentContext,
 } from "#/modules/deployments/runtime-repository.server";
 import {
-  compileSdkPreparationInput,
   parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
 import { Database, ReportingDatabase } from "#/server/database.server";
@@ -25,15 +23,12 @@ import { persistBuildLog, persistDeploymentProgress } from "./deployment-events.
 import type { DeploymentProgress } from "./deployment-progress";
 import { deploymentProgressForEvent } from "./deployment-view";
 import { PloyzPreparationError, type PloyzPreparedDeploy } from "#/modules/runtime/ployz.server";
-import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
-import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
+import { loadBuildReceipts } from "./image-builds.server";
 import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { expandManagedHostnames } from "#/modules/environment-design/managed-hostnames.server";
+import { compileRuntimeIntent, connectedRuntime, DeploymentRuntimeInvalid, watchDeploymentCancellation } from "./runtime-session.server";
 
 export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof confirmRuntimeIntent>>["outcome"];
 
@@ -51,93 +46,6 @@ type SdkDeployPreviewInput =
   | EnvironmentDeploymentPreview
   | SdkPreparedPreviewInput
   | null;
-
-export class DeploymentRuntimeUnavailable extends Data.TaggedError(
-  "DeploymentRuntimeUnavailable",
-)<{
-  readonly failureCode: "runtime_not_connected" | "runtime_unreachable";
-  readonly message: string;
-}> {
-  get retriable() {
-    return this.failureCode !== "runtime_not_connected";
-  }
-}
-
-export class DeploymentRuntimeInvalid extends Data.TaggedError(
-  "DeploymentRuntimeInvalid",
-)<{
-  readonly failureCode:
-    | "sdk_preview_invalid"
-    | "sdk_outcome_invalid";
-  readonly message: string;
-  readonly cause?: unknown;
-}> {
-  readonly retriable = false as const;
-}
-
-/** The Organization's Cluster Domain name. The first deploy that needs one reserves it; a Hosted DNS failure refuses the deploy. */
-const requireClusterDomain = (organizationId: string) =>
-  reserveClusterDomain(organizationId).pipe(
-    Effect.map((row) => row.name),
-    Effect.catchTag("HostedDnsError", (cause) => Effect.fail(new DeploymentExecutionError({
-      failureCode: "cluster_domain_unreserved",
-      message: "Hosted DNS couldn’t reserve the Organization’s domain. Deploy again shortly.",
-      cause,
-    }))),
-  );
-
-function compileRuntimeIntent(context: DeploymentContext, clusterDomain: string | null) {
-  return Effect.gen(function* () {
-    const resolvedEnv = yield* loadResolvedDeployEnv(context, clusterDomain);
-    // requireClusterDomain already refused a deploy with managed hostnames and no Cluster Domain.
-    const snapshots = context.snapshots.map((snapshot) => ({
-      ...snapshot,
-      config: clusterDomain === null ? snapshot.config : expandManagedHostnames(snapshot.config, clusterDomain),
-      resolvedEnv: resolvedEnv.get(snapshot.serviceId),
-    }));
-    return yield* Effect.try({
-      try: () =>
-        compileSdkPreparationInput({
-          projectName: context.environment.namespace,
-          snapshots,
-          volumes: context.volumes,
-          variableProducers: context.deployment.variableProducers ?? [],
-        }),
-      catch: (cause) => {
-        return new DeploymentRuntimeInvalid({
-          failureCode: "sdk_preview_invalid",
-          message: cause instanceof Error ? cause.message : "The immutable deployment target could not be compiled.",
-          cause,
-        });
-      },
-    });
-  });
-}
-
-function connectedRuntime(organizationId: string) {
-  return Effect.gen(function* () {
-    const runtime = yield* OrganizationRuntime;
-    const session = yield* runtime.open(organizationId);
-    switch (session.status) {
-      case "connected":
-        return session.connected;
-      case "no_connection":
-        return yield* new DeploymentRuntimeUnavailable({
-          failureCode: "runtime_not_connected",
-          message: "The Organization has no connected runtime.",
-        });
-      case "unreachable":
-        return yield* new DeploymentRuntimeUnavailable({
-          failureCode: "runtime_unreachable",
-          message: "The Organization runtime is unreachable.",
-        });
-      default: {
-        const exhaustive: never = session;
-        return exhaustive;
-      }
-    }
-  });
-}
 
 export const decodeSdkDeployPreview = Effect.fn(
   "Deployments.decodeSdkDeployPreview",
@@ -183,28 +91,6 @@ const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
   return { outcome: projected.summary, evidence: Redacted.make(evidence) };
 });
 
-/** Poll failure is fatal: a quiet operation must never outlive its cancellation observer. */
-export function watchDeploymentCancellation<E, R>(
-  readStatus: Effect.Effect<readonly { status: string; cancellationRequestedAt: Date | null }[], E, R>,
-  cancellation: AbortController,
-) {
-  return Effect.gen(function* () {
-    while (true) {
-      const [deployment] = yield* readStatus;
-      if (!deployment || deployment.status !== "deploying" || deployment.cancellationRequestedAt) {
-        cancellation.abort();
-        return yield* Effect.never;
-      }
-      yield* Effect.sleep("1 second");
-    }
-  }).pipe(
-    Effect.tapError(() => Effect.sync(() => cancellation.abort())),
-    Effect.mapError((cause) => new DeploymentExecutionError({
-      failureCode: "sdk_deploy_outcome_unknown", message: "Cancellation monitoring failed; remote execution outcome is unknown.", cause,
-    })),
-  );
-}
-
 export const executeEnvironmentDeployment = Effect.fn(
   "Deployments.executeEnvironmentDeployment",
 )(function* (context: DeploymentContext, expectedInngestRunId?: string) {
@@ -239,7 +125,8 @@ export const executeEnvironmentDeployment = Effect.fn(
     if (initial.cancellationRequestedAt) {
       return { outcome: { type: "failed" as const, completed: 0, unexecuted: 0, reason: "cancelled" as const }, evidence: null };
     }
-    const watchCancellation = watchDeploymentCancellation(readStatus, cancellation);
+    const watchCancellation = watchDeploymentCancellation(readStatus.pipe(
+      Effect.map(([deployment]) => deployment?.status === "deploying" && !deployment.cancellationRequestedAt)), cancellation);
     return yield* Effect.gen(function* () {
     const progressContext = yield* Effect.context<Database | ReportingDatabase>();
     const runReport = Effect.runPromiseWith(progressContext);
@@ -256,12 +143,11 @@ export const executeEnvironmentDeployment = Effect.fn(
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
     }))).pipe(Effect.raceFirst(cancelled));
     const sdk = yield* connectedRuntime(context.organization.id);
-    const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
-    const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
-    const input = yield* compileRuntimeIntent(context, clusterDomain);
+    const input = yield* compileRuntimeIntent(context);
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
-    const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts(context);
+    // The attempt's Image Builds already built every image; prepare reuses them and only delivers.
+    const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts({ deploymentId: context.deployment.id });
     const native = Object.keys(sources).length === 0
       ? yield* Effect.try({
           try: () => lowerDeployment(input),
@@ -284,7 +170,6 @@ export const executeEnvironmentDeployment = Effect.fn(
                 : Effect.void),
             ));
           }));
-    if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
     const preview = yield* decodeSdkDeployPreview(preparedPreviewInput(native));
     yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview });
     const [beforeConfirm] = yield* readStatus;

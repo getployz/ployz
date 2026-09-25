@@ -132,17 +132,6 @@ pub(crate) struct MutationAdmission {
     _installation: crate::mutation::MutationGuard,
 }
 
-impl MutationAdmission {
-    pub(crate) fn into_installation_guard(self) -> crate::mutation::MutationGuard {
-        let Self {
-            _local,
-            _installation,
-        } = self;
-        drop(_local);
-        _installation
-    }
-}
-
 impl LocalMachine {
     /// A Local Machine over its record owner, with no Cluster or Docker collaborators.
     #[must_use]
@@ -211,6 +200,14 @@ impl LocalMachine {
             _local: local,
             _installation: installation,
         })
+    }
+
+    /// Admit a Build under installation exclusion only. A Build takes a build
+    /// slot, never the owner admission lock, so it never blocks deploys or other
+    /// Machine mutations on this Machine.
+    pub(crate) fn admit_build(&self) -> Result<crate::mutation::MutationGuard, Error> {
+        self.require_management_access()?;
+        Ok(self.owner.mutation_gate().try_mutation()?)
     }
 
     async fn finish_mutation<T, F>(&self, work: F) -> Result<T, Error>
@@ -615,15 +612,12 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         let visible = replicated.machines().await?.observations;
-        let publication = replicated.machine_publication().await;
         let update = request.update;
+        // The Machine publisher wakes on the changed record and publishes it.
         let machine = self
             .owner
             .mutate(move |store| store.update(update, &visible))
             .await??;
-        if let Err(error) = publication.publish(&machine).await {
-            eprintln!("failed to publish updated local Machine: {error}");
-        }
         Ok(MachineUpdated { machine })
     }
 
@@ -1022,6 +1016,7 @@ mod tests {
                 format!("203.0.113.{seed}:51820").parse().unwrap(),
             )],
             runtime: MachineRuntime::default(),
+            build_concurrency: None,
         }
     }
 }

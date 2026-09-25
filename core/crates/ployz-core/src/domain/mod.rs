@@ -1,3 +1,4 @@
+mod build_grant;
 mod certificate_policy;
 mod data_loss;
 mod deploy;
@@ -17,6 +18,7 @@ mod service_graph;
 mod spec;
 mod volume;
 
+pub use build_grant::*;
 pub use certificate_policy::*;
 pub use data_loss::*;
 pub use deploy::*;

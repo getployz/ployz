@@ -75,7 +75,13 @@ async fn running_build_finishes_after_build_acceptance_is_revoked() {
         fs::remove_file(fixture.root.join("hold-build")).unwrap();
     };
     let (outcome, ()) = tokio::join!(
-        capture.execute_remote_images(&client, fixture.machine.id, Default::default(), |_| {}),
+        capture.execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {}
+        ),
         revoke,
     );
     assert_eq!(outcome.unwrap().len(), 1);

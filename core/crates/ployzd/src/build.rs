@@ -8,7 +8,7 @@ use ployz_build::{
     Admission, BuildError, HostPolicy, Output, Progress, Stage,
     remote::{self, Definition, Event, Input, Outcome},
 };
-use ployz_core::{MachineId, OpaquePayload};
+use ployz_core::{BuildConcurrency, MachineId, OpaquePayload};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -32,7 +32,7 @@ struct RetainedBuild {
 
 struct ExecutionAdmission {
     build: Admission,
-    machine: crate::machine::MutationAdmission,
+    installation: crate::mutation::MutationGuard,
 }
 
 pub(crate) fn start(
@@ -64,8 +64,8 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
-        // Local mutation serialization is already released. Installation exclusion follows
-        // retained image cleanup because releasing temporary tags mutates Docker.
+        // Installation exclusion follows retained image cleanup because
+        // releasing temporary tags mutates Docker.
         if state
             .retained
             .lock()
@@ -92,7 +92,7 @@ enum BuildAdmissionError {
 
 fn require_build_acceptance(
     local: &crate::machine::LocalMachine,
-) -> Result<MachineId, BuildAdmissionError> {
+) -> Result<(MachineId, BuildConcurrency), BuildAdmissionError> {
     let record = local.record();
     let machine = record
         .machine()
@@ -100,7 +100,7 @@ fn require_build_acceptance(
     if !machine.accepts_builds {
         return Err(BuildAdmissionError::Disabled);
     }
-    Ok(machine.id)
+    Ok((machine.id, machine.effective_build_concurrency()))
 }
 
 async fn attempt(
@@ -150,7 +150,7 @@ async fn attempt(
     if let Err(reason) = require_build_acceptance(&local) {
         return failed(Stage::Admission, reason.to_string()).with_work(work);
     }
-    let permit = match runner.enter() {
+    let mut permit = match runner.enter() {
         Ok(queue::Entry::Active(permit)) => permit,
         Ok(queue::Entry::Waiting(waiting)) => {
             let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued)))
@@ -179,41 +179,26 @@ async fn attempt(
         Err(reason) => return failed(Stage::Queued, reason.to_string()).with_work(work),
     };
     let policy = runner.policy.clone();
-    let mutation = {
-        let admission = local.admit_mutation();
-        tokio::pin!(admission);
-        tokio::select! {
-            biased;
-            () = runner.shutdown.cancelled() => return failed(Stage::Admission, "Build daemon stopped before admission").with_work(work),
-            () = events.closed() => return failed(Stage::Admission, "Build client disconnected before admission").with_work(work),
-            frame = requests.next() => {
-                let reason = match frame {
-                    Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => "Build cancelled before admission",
-                    None | Some(Err(_)) => "Build client disconnected before admission",
-                    Some(Ok(_)) => "Build upload before admission is forbidden",
-                };
-                return failed(Stage::Admission, reason).with_work(work);
-            }
-            () = tokio::time::sleep(policy.active_timeout) => return failed(Stage::Admission, "Build admission timed out waiting for another Machine mutation").with_work(work),
-            result = &mut admission => match result {
-                Ok(admission) => admission,
-                Err(error) => return failed(Stage::Admission, error.to_string()).with_work(work),
-            },
-        }
+    // A Build takes only its build slot and installation exclusion. It never
+    // holds the Machine's mutation lock, so deploys on this Machine proceed.
+    let installation = match local.admit_build() {
+        Ok(installation) => installation,
+        Err(error) => return failed(Stage::Admission, error.to_string()).with_work(work),
+    };
+    // Acceptance may have been revoked while this Build waited in the queue.
+    let (machine_id, concurrency) = match require_build_acceptance(&local) {
+        Ok(accepted) => accepted,
+        Err(reason) => return failed(Stage::Admission, reason.to_string()).with_work(work),
     };
     let admission = match tokio::task::spawn_blocking({
         let policy = policy.clone();
-        move || Admission::try_acquire_with(&policy)
+        move || Admission::try_acquire_within(&policy, concurrency)
     })
     .await
     {
         Ok(Ok(admission)) => admission,
         Ok(Err(error)) => return failure(Stage::Admission, error).with_work(work),
         Err(_) => return failed(Stage::Admission, "Build admission task failed"),
-    };
-    let machine_id = match require_build_acceptance(&local) {
-        Ok(id) => id,
-        Err(reason) => return failed(Stage::Admission, reason.to_string()).with_work(work),
     };
     *state.evidence.lock().expect("Build evidence lock") = work;
     let observed = state.clone();
@@ -228,6 +213,9 @@ async fn attempt(
     if events.send(Ok(admitted)).await.is_err() {
         return failed(Stage::Admission, "Build client disconnected");
     }
+    if matches!(request, Input::Start(_)) {
+        permit.count_as_build(&runner);
+    }
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
     let mut execution = tokio::task::spawn_blocking(move || {
@@ -239,7 +227,7 @@ async fn attempt(
                 source,
                 ExecutionAdmission {
                     build: admission,
-                    machine: mutation,
+                    installation,
                 },
                 policy,
                 &output,
@@ -248,7 +236,7 @@ async fn attempt(
             Input::Check(targets) => {
                 // The input pump still handles cancellation; no upload is admitted.
                 drop(source);
-                let _mutation = mutation;
+                let _installation = installation;
                 match admission.check_capabilities(&policy.docker, &targets) {
                     Ok(()) => Outcome::CapabilitiesChecked { machine_id },
                     Err(error) => failure(Stage::Preparation, error),
@@ -336,7 +324,7 @@ fn receive_and_execute(
 ) -> Outcome {
     let ExecutionAdmission {
         build: admission,
-        machine: mutation,
+        installation,
     } = admission;
     let cancellation = admission.cancellation();
     let deadline = std::time::Instant::now() + admission.remaining();
@@ -409,7 +397,7 @@ fn receive_and_execute(
             if !definition.retained_tags.is_empty() {
                 *state.retained.lock().expect("Build retention lock") = Some(RetainedBuild {
                     _retention: completed.retention,
-                    _installation: mutation.into_installation_guard(),
+                    _installation: installation,
                 });
             }
             match definition.output {

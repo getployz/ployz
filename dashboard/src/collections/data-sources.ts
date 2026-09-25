@@ -25,7 +25,7 @@ export const dataSources = {
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },
   "modules/environment-design/workspace.queries.ts": { kind: "remote", freshness: "organization state: fresh on every mount; the change stream invalidates it when the organization changes" },
   "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; the subscription changes in Polar, not here" },
-  "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly" },
+  "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly; build workflow readiness cached 30s, refetched on focus and polled while a workflow commit is awaited" },
   "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens" },
   "modules/runtime/teardown.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
   "modules/runtime/volume-removal.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },

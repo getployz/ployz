@@ -18,12 +18,11 @@ import {
   organizationClusterDomain,
 } from "#/modules/cluster-domain/tables";
 import { createWildcardCsr } from "#/modules/cluster-domain/wildcard-csr.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
-const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 5_000;
 /** Caddy answers it on port 80 of every ingress Server with the Machine id (core `INGRESS_VERIFY_PATH`). */
 const INGRESS_VERIFY_PATH = "/.ployz-verify";

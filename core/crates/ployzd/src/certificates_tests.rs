@@ -7,9 +7,9 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HttpProtocol, IngressHost, IssuanceClock, IssuanceFailure, IssuanceGate,
-    MACHINE_API_PORT, Machine, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
-    ServiceId, ServiceName, resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, MACHINE_API_PORT, Machine, MachineId,
+    PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
+    resolve_certificate_policy,
 };
 use serde_json::json;
 

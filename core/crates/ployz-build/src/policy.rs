@@ -129,7 +129,11 @@ impl Resources {
         arguments
     }
 
-    pub(crate) fn collect_cache(&self, docker: &Docker<'_>) -> Result<(), BuildError> {
+    pub(crate) fn collect_cache(
+        &self,
+        docker: &Docker<'_>,
+        builder: &str,
+    ) -> Result<(), BuildError> {
         let min_free_bytes = match (self.cache_bytes, self.min_free_bytes) {
             // An unreadable Docker root (remote endpoint, non-root user) skips this
             // prune; the worker's percentage policy still applies on its own GC.
@@ -143,7 +147,7 @@ impl Resources {
             "buildx".into(),
             "prune".into(),
             "--builder".into(),
-            crate::builder_name(),
+            builder.into(),
             "--all".into(),
             "--force".into(),
             "--reserved-space".into(),
@@ -201,7 +205,13 @@ fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
 /// Refuses active or quarantined ownership, invalid host configuration, and
 /// reports upstream launch/prune errors or unconfirmed cleanup.
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
-    let admission = Admission::try_acquire_with(policy)?;
+    // Every build slot keeps its own cache; stop at the first refusal.
+    crate::builder::Lock::known_slots(&policy.state_directory)
+        .try_for_each(|slot| clear_slot_cache(policy, slot))
+}
+
+fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> {
+    let admission = Admission::try_acquire_slot(policy, slot)?;
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     // Private command output must not collide with a concurrent caller or a Build.
     let directory = policy
@@ -223,7 +233,7 @@ pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
         let result = docker
             .run(
                 "start the builder for cache clearing",
-                &["buildx", "inspect", &crate::builder_name(), "--bootstrap"],
+                &["buildx", "inspect", builder.name(), "--bootstrap"],
                 Streams::Captured,
             )
             .and_then(|_| {
@@ -234,7 +244,7 @@ pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
                             "buildx",
                             "prune",
                             "--builder",
-                            &crate::builder_name(),
+                            builder.name(),
                             "--all",
                             "--force",
                         ],

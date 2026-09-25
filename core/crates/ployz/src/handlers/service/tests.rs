@@ -592,6 +592,7 @@ fn machine(id: char, name: &str, membership: MembershipObservation) -> MachineOb
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            build_concurrency: None,
         },
         membership,
     )

@@ -22,7 +22,7 @@ hex = "0.4.3"
 http = "1.4.0"
 http-body = "1.1.0"
 http-body-util = "0.1.5"
-hyper = { version = "1.11.0", features = ["http2", "server"] }
+hyper = { version = "1.11.0", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio", "service"] }
 instant-acme = "0.8.5"
 listenfd = "1.0.2"

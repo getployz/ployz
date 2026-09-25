@@ -68,11 +68,21 @@ fn reusable(
     if !covers_platforms || !runs_everywhere {
         return None;
     }
-    let source = stores.successes.iter().find(|source| {
-        receipt.built.platforms.iter().all(|platform| {
-            crate::image::holds_platform(&source.value.images, &receipt.built.reference, platform)
+    // Keep the receipt's Machine while it still holds the image, so the next
+    // receipt keeps naming the Machine with the warm build cache.
+    let source = stores
+        .successes
+        .iter()
+        .filter(|source| {
+            receipt.built.platforms.iter().all(|platform| {
+                crate::image::holds_platform(
+                    &source.value.images,
+                    &receipt.built.reference,
+                    platform,
+                )
+            })
         })
-    })?;
+        .min_by_key(|source| source.machine_id != receipt.machine_id)?;
     let mut image = receipt.clone();
     image.machine_id = source.machine_id;
     Some(image)

@@ -34,6 +34,7 @@ async fn starting_machine() -> (
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        build_concurrency: None,
     };
     let initialized = Arc::new(AtomicUsize::new(0));
     let calls = initialized.clone();

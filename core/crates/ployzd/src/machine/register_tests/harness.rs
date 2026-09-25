@@ -80,6 +80,7 @@ pub(super) async fn publish_peers(replicated: &ReplicatedStore, count: usize) ->
                 format!("192.0.2.{seed}:51820").parse().unwrap(),
             )],
             runtime: MachineRuntime::default(),
+            build_concurrency: None,
         };
         replicated.publish_local_machine(&machine).await.unwrap();
         peers.push(machine);

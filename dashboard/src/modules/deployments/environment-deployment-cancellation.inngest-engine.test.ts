@@ -5,6 +5,7 @@ import { Inngest } from "inngest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { inngestFunctionCancelledEventType } from "#/modules/inngest/events";
 import * as runtimeCancellation from "#/modules/deployments/runtime-cancellation.repository.server";
+import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
 import { createMarkCancelledRowBackedWorkflow } from "./environment-deployment.inngest";
 
 const cancelDeployment = vi.fn();
@@ -17,6 +18,7 @@ vi.spyOn(
 ).mockImplementation((runId) =>
   Effect.promise(() => cancelDeployment(runId)),
 );
+const cancelGithubBuilds = vi.spyOn(githubImageBuilds, "cancelGithubImageBuilds").mockImplementation(() => Effect.succeed(0));
 
 describe("row-backed cancellation Inngest adapter", () => {
   beforeEach(() => {
@@ -55,6 +57,8 @@ describe("row-backed cancellation Inngest adapter", () => {
     });
     expect(cancelDeployment).toHaveBeenCalledTimes(1);
     expect(cancelDeployment).toHaveBeenCalledWith("deployment-run-1");
+    // The attempt's GitHub runs are cancelled and their grants ended too.
+    expect(cancelGithubBuilds).toHaveBeenCalledWith("deployment-run-1");
   });
 
   it("rejects an incomplete cancellation envelope before persistence", async () => {

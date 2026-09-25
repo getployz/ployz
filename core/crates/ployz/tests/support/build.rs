@@ -24,6 +24,8 @@ pub struct BuildFixture {
     pub opened: Mutex<Vec<MachineId>>,
     pub pulls: Mutex<Vec<(MachineId, PullImageFromMachineRequest)>>,
     pub pull_failures: Mutex<BTreeMap<MachineId, ployz_core::RpcError>>,
+    /// Keep every Build waiting in the daemon queue until its client leaves.
+    pub hold_in_queue: std::sync::atomic::AtomicBool,
 }
 
 impl BuildFixture {
@@ -149,6 +151,17 @@ impl BuildFixture {
             let Input::Start(definition) = frame else {
                 panic!("expected Build definition");
             };
+            if self.hold_in_queue.load(std::sync::atomic::Ordering::SeqCst) {
+                sender
+                    .send(Ok(remote::encode(&Event::Progress(
+                        ployz_build::Progress::Stage(ployz_build::Stage::Queued),
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                while let Ok(Some(_)) = request.message().await {}
+                return;
+            }
             let offset = {
                 let mut definitions = self.definitions.lock().unwrap();
                 let offset = definitions

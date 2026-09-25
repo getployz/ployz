@@ -21,7 +21,7 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz::{
-    connect::{ConnectError, Connector, ManagementRelay, SystemConnector},
+    connect::{ConnectError, Connector, ManagementRelay, SystemConnector, open_grant_registry},
     context::Connection,
 };
 use ployz_core::{
@@ -78,6 +78,7 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         endpoint,
         local.clone(),
         MachineApi::builder(owner).build(),
+        Arc::default(),
         shutdown.clone(),
     ));
     let connector = Arc::new(SystemConnector::default().with_management_relay(
@@ -152,6 +153,7 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
         endpoint,
         local.clone(),
         MachineApi::builder(owner).build(),
+        Arc::default(),
         shutdown.clone(),
     ));
     let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
@@ -243,6 +245,7 @@ async fn contract() {
         endpoint.clone(),
         local.clone(),
         api,
+        Arc::default(),
         shutdown.clone(),
     ));
     let connector = Arc::new(
@@ -461,6 +464,171 @@ async fn contract() {
         .expect("serve must finish once every client is gone")
         .unwrap();
     assert!(endpoint.is_closed());
+}
+
+/// A Build Grant reaches image ingest for one push into its one repository, never
+/// Machine RPC, and nothing once its Build ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_grant_pushes_one_image_into_ingest_and_nothing_else() {
+    tokio::time::timeout(Duration::from_secs(120), build_grant_contract())
+        .await
+        .expect("build grant test timed out");
+}
+
+async fn build_grant_contract() {
+    use ployz_core::BuildGrant;
+    use sha2::{Digest as _, Sha256};
+
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let (ingest, seen) = fake_ingest().await;
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let grants = Arc::new(management::BuildGrants::default());
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::clone(&grants),
+        shutdown.clone(),
+    ));
+    let minted = grants.mint(
+        local.record().management_secret().public_key(),
+        ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+        ingest,
+    );
+    let relay = ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify());
+
+    // The grant key is not a Management Capability: Machine RPC refuses it.
+    let connector = SystemConnector::default().with_management_relay(relay.clone());
+    let as_capability = ManagementCapability::new(*minted.grant.machine(), *minted.grant.secret());
+    assert_refused(connector.connect(&connection(&as_capability)).await);
+    // A Management Capability's key holds no grant, so it cannot push.
+    let stranger = open_grant_registry(
+        &BuildGrant::new(*capability.machine(), *capability.client_secret()),
+        &relay,
+    )
+    .await
+    .unwrap();
+    let http = reqwest::Client::new();
+    assert!(
+        http.get(format!("http://{}/v2/", stranger.address()))
+            .send()
+            .await
+            .is_err()
+    );
+
+    let registry = open_grant_registry(&minted.grant, &relay).await.unwrap();
+    let base = format!("http://{}/v2/ployz-build/web", registry.address());
+    let blob = format!("{base}/blobs/sha256:{}", "a".repeat(64));
+    assert_eq!(http.head(&blob).send().await.unwrap().status(), 200);
+    let upload = http
+        .post(format!("{base}/blobs/uploads/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), 202);
+    // Upload locations lead back through the grant, not to the ingest address.
+    assert_eq!(
+        upload.headers()["location"],
+        "/v2/ployz-build/web/blobs/uploads/u1?_state=s"
+    );
+    // Reading content back, or writing another repository, is not the grant's push.
+    assert_eq!(http.get(&blob).send().await.unwrap().status(), 403);
+    let other = format!(
+        "http://{}/v2/ployz-build/api/blobs/uploads/",
+        registry.address()
+    );
+    assert_eq!(http.post(other).send().await.unwrap().status(), 403);
+    let manifest = br#"{"schemaVersion":2}"#.to_vec();
+    let hex = hex::encode(Sha256::digest(&manifest));
+    let put = |tag: String| {
+        http.put(format!("{base}/manifests/{tag}"))
+            .body(manifest.clone())
+            .send()
+    };
+    // A tag must name the digest of the manifest it moves.
+    let wrong = put(format!("ployz-sha256-{}", "b".repeat(64)))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 400);
+    assert_eq!(
+        put(format!("ployz-sha256-{hex}")).await.unwrap().status(),
+        201
+    );
+    // One push per grant.
+    assert_eq!(
+        put(format!("ployz-sha256-{hex}")).await.unwrap().status(),
+        403
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|request| !request.starts_with("GET ")),
+        "{seen:?}"
+    );
+
+    // Ending the Build ends the grant: live streams stop and a redial is refused.
+    let ended = grants.end(&minted.id).unwrap();
+    assert_eq!(
+        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        Some(format!("sha256:{hex}").as_str())
+    );
+    assert!(http.head(&blob).send().await.is_err());
+    let again = open_grant_registry(&minted.grant, &relay).await.unwrap();
+    assert!(
+        http.get(format!("http://{}/v2/", again.address()))
+            .send()
+            .await
+            .is_err()
+    );
+    assert!(again.refusal().is_some());
+    assert_eq!(grants.end(&minted.id).unwrap(), ended);
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+/// An OCI registry stand-in that records each request line it answers.
+async fn fake_ingest() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let recorded = Arc::clone(&seen);
+    let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let recorded = Arc::clone(&recorded);
+        async move {
+            let line = format!("{} {}", request.method(), request.uri());
+            recorded.lock().unwrap().push(line);
+            let mut response = axum::response::Response::builder();
+            response = match *request.method() {
+                http::Method::POST => response.status(202).header(
+                    "location",
+                    format!("http://{address}/v2/ployz-build/web/blobs/uploads/u1?_state=s"),
+                ),
+                http::Method::PUT => response.status(201),
+                _ => response.status(200),
+            };
+            response.body(axum::body::Body::empty()).unwrap()
+        }
+    });
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (address, seen)
 }
 
 fn assert_refused(result: Result<Channel, ConnectError>) {

@@ -576,6 +576,7 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }
 
