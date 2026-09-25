@@ -3,7 +3,7 @@ import type { Client } from "@ployz/sdk";
 import { Duration, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { startGithubPostgresTestHarness } from "#/modules/github/github-ingestion.postgres-test-harness";
+import { startPostgresTestHarness } from "#/test/postgres";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import {
@@ -19,7 +19,7 @@ import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret
 const settle = () => sleep(2 * Duration.toMillis(PAIRING_CHANGE_POLL) + 250);
 
 it("closes every Cloud worker's session through the change log only after commit and preserves replacement pairings", async () => {
-  const harness = await startGithubPostgresTestHarness();
+  const harness = await startPostgresTestHarness();
   const organizationId = "00000000-0000-4000-8000-000000000881";
   const machineId = "00000000000000000000000000000001";
   const encryption = makeSecretEncryption("runtime-cancellation-test-encryption");

@@ -3,7 +3,7 @@ import {
   useMatch,
 } from "@tanstack/react-router";
 import { SearchXIcon } from "lucide-react";
-import { SiteAction } from "#/components/marketing/SiteAction";
+import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Empty,
   EmptyContent,
@@ -49,12 +49,8 @@ export function NotFoundPage() {
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="sm:flex-row sm:justify-center">
-          <SiteAction to={homeRoute}>Go home</SiteAction>
-          <Link
-            to="/docs"
-            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-          >
-            Open docs
+          <Link to={homeRoute} className={buttonVariants()}>
+            Go home
           </Link>
         </EmptyContent>
       </Empty>

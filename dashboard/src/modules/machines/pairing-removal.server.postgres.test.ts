@@ -3,7 +3,7 @@ import type { Client, ConnectOptions } from "@ployz/sdk";
 import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { startGithubPostgresTestHarness, type GithubPostgresTestHarness } from "#/modules/github/github-ingestion.postgres-test-harness";
+import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, loadTeardownConnections, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
@@ -19,8 +19,8 @@ const capability = "ployz1:fixture-removal";
 const encryption = makeSecretEncryption("fixture-removal-encryption-1234567890");
 
 describe("protected pairing removal", () => {
-  let harness: GithubPostgresTestHarness;
-  beforeAll(async () => { harness = await startGithubPostgresTestHarness(); }, 60_000);
+  let harness: PostgresTestHarness;
+  beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
   afterAll(async () => { await harness.stop(); });
   beforeEach(async () => {
     await harness.pool.query("truncate organization cascade");

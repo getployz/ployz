@@ -17,7 +17,6 @@ class CiTest(unittest.TestCase):
     def test_selects_checks_for_actual_consumers(self):
         cases = [
             (["core/DESIGN.md"], {"contracts"}),
-            (["evidence/product-paths.tsv"], {"contracts"}),
             (["core/relay/compose.yaml"], {"contracts"}),
             (["dashboard/src/app.tsx"], {"contracts", "cloud"}),
             (["core/crates/ployz/tests/management_connect.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),

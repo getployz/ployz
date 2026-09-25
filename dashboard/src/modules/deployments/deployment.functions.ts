@@ -13,7 +13,6 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import {
   listDeploymentBuildLog,
-  listDeploymentOperationEvidence,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
 } from "#/modules/deployments/deployment-operations.server";
@@ -84,15 +83,6 @@ export const dispatchQueuedEnvironmentDeploymentServerFn = createServerFn({
       context,
       dispatchExistingQueuedEnvironmentDeployment(context.actor, data),
     ),
-  );
-
-export const listDeploymentOperationEvidenceServerFn = createServerFn({
-  method: "GET",
-})
-  .middleware(deploymentMiddleware)
-  .validator(strictValidator(deploymentOperationEvidencePageQuerySchema))
-  .handler(({ context, data }) =>
-    runActor(context, listDeploymentOperationEvidence(context.actor, data)),
   );
 
 export const cancelEnvironmentDeploymentServerFn = createServerFn({ method: "POST" })

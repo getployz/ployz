@@ -5,7 +5,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 
@@ -29,21 +29,17 @@ const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// A release source that is fixed by the local installer invocation.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReleaseSource {
+/// Where releases come from. Production always uses [`ReleaseSource::Published`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ReleaseSource {
     /// Ployz's fixed, trusted published release and channel endpoints.
     Published,
-    /// An operator-provided local release directory used only by offline qualification.
-    Local(PathBuf),
+    /// A local release directory for in-process installer tests.
+    #[cfg(test)]
+    Local(std::path::PathBuf),
 }
 
 impl ReleaseSource {
-    fn is_local(&self) -> bool {
-        matches!(self, Self::Local(_))
-    }
-
     async fn channel(&self, name: &str) -> Result<String, Error> {
         let pointer = format!("{RELEASE_LINE}/{name}");
         let bytes = match self {
@@ -54,6 +50,7 @@ impl ReleaseSource {
                 )
                 .await?
             }
+            #[cfg(test)]
             Self::Local(directory) => {
                 fs::read(directory.join(pointer)).map_err(|source| Error::Io {
                     stage: "read local release channel",
@@ -74,6 +71,7 @@ impl ReleaseSource {
     ) -> Result<Vec<u8>, Error> {
         match self {
             Self::Published => fetch(&release_url(target, file), stage).await,
+            #[cfg(test)]
             Self::Local(directory) => fs::read(directory.join(file)).map_err(|source| Error::Io {
                 stage: "read local release artifact",
                 source,
@@ -165,8 +163,7 @@ pub(super) async fn install_binaries(
     target: &MachineVersion,
     progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
-    let replace = replacement_required(source, installed, target);
-    if !replace {
+    if installed == Some(target) {
         println!(
             "ployzd {} retained",
             installed.expect("a skipped replacement has an installed release")
@@ -194,14 +191,6 @@ pub(super) async fn install_binaries(
     progress(MachineUpgradeStage::Activating)?;
     activate(&daemon, &uninstall, paths)?;
     Ok(true)
-}
-
-fn replacement_required(
-    source: &ReleaseSource,
-    installed: Option<&MachineVersion>,
-    target: &MachineVersion,
-) -> bool {
-    source.is_local() || installed != Some(target)
 }
 
 pub(super) async fn installed_release(path: &Path) -> Result<Option<MachineVersion>, Error> {
@@ -511,31 +500,6 @@ mod tests {
             Some(checksum.into())
         );
         assert_eq!(checksum_for(b"bad  other.tar.gz\n", archive), None);
-    }
-
-    #[test]
-    fn resolved_channels_replace_the_exact_target_and_skip_only_the_same_target() {
-        let target = MachineVersion::parse("1.2.3").unwrap();
-        assert!(replacement_required(
-            &ReleaseSource::Published,
-            None,
-            &target
-        ));
-        assert!(!replacement_required(
-            &ReleaseSource::Published,
-            Some(&target),
-            &target
-        ));
-        assert!(replacement_required(
-            &ReleaseSource::Published,
-            Some(&MachineVersion::parse("1.2.4").unwrap()),
-            &target
-        ));
-        assert!(replacement_required(
-            &ReleaseSource::Local(PathBuf::from("qualification")),
-            Some(&target),
-            &target
-        ));
     }
 
     #[test]

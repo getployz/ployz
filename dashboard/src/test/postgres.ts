@@ -1,8 +1,18 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { Effect } from "effect";
-import { Client } from "pg";
+import { PgClient } from "@effect/sql-pg";
+import { makeWithDefaults } from "drizzle-orm/effect-postgres";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
+import * as Reactivity from "effect/unstable/reactivity/Reactivity";
+import { Client, Pool } from "pg";
+import {
+  Database,
+  ReportingDatabase,
+  makeDatabaseService,
+  makeReportingDatabase,
+} from "#/server/database.server";
 
 const execFile = promisify(execFileCallback);
 
@@ -111,3 +121,85 @@ export const migrateTestDatabase = (url: URL) =>
       maxBuffer: 20 * 1024 * 1024,
     }),
   );
+
+/**
+ * Shares one migrated {@link postgresTestContainer} across the promise-style tests of a file,
+ * with raw `pg`, Drizzle, and Effect `Database` access over one pool.
+ */
+export async function startPostgresTestHarness() {
+  const scope = Scope.makeUnsafe();
+  const closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void));
+  try {
+    const { url } = await Effect.runPromise(
+      postgresTestContainer.pipe(
+        Effect.tap(({ url }) => migrateTestDatabase(url)),
+        Scope.provide(scope),
+      ),
+    );
+    const databaseUrl = url.href;
+    const pool = new Pool({ connectionString: databaseUrl, max: 8 });
+    // Closed before the container is removed.
+    await Effect.runPromise(
+      Scope.addFinalizer(scope, Effect.promise(() => pool.end().catch(() => undefined))),
+    );
+    const databaseRuntime = ManagedRuntime.make(
+      Layer.effect(
+        Database,
+        Effect.gen(function* () {
+          const client = yield* PgClient.fromPool({
+            acquire: Effect.acquireRelease(
+              Effect.succeed(pool),
+              () => Effect.void,
+            ),
+            applicationName: "ployz-cloud-test",
+          });
+          const effectDatabase = yield* makeWithDefaults().pipe(
+            Effect.provideService(PgClient.PgClient, client),
+          );
+          return makeDatabaseService(effectDatabase);
+        }),
+      ).pipe(
+        Layer.merge(Layer.effect(ReportingDatabase, makeReportingDatabase(databaseUrl))),
+        Layer.provide(Reactivity.layer),
+      ),
+    );
+    // Finalizers run in reverse: the runtime closes before the pool.
+    await Effect.runPromise(
+      Scope.addFinalizer(scope, Effect.promise(() => databaseRuntime.dispose())),
+    );
+    const database = await databaseRuntime.runPromise(Database);
+    return {
+      databaseUrl,
+      reportingDatabase: await databaseRuntime.runPromise(ReportingDatabase),
+      db: drizzle({ client: pool }),
+      database,
+      pool,
+      runEffect<Success, Failure>(
+        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase>,
+      ) {
+        return databaseRuntime.runPromise(operation);
+      },
+      runTransaction<Success, Failure>(
+        operation: (
+          transaction: typeof database.drizzle,
+        ) => Effect.Effect<Success, Failure, Database>,
+      ) {
+        return databaseRuntime.runPromise(
+          database.transaction(
+            Effect.gen(function* () {
+              return yield* operation((yield* Database).drizzle);
+            }),
+          ),
+        );
+      },
+      stop: closeScope,
+    };
+  } catch (error) {
+    await closeScope();
+    throw error;
+  }
+}
+
+export type PostgresTestHarness = Awaited<
+  ReturnType<typeof startPostgresTestHarness>
+>;

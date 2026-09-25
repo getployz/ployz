@@ -29,9 +29,9 @@ import { collectionReadInput } from "#/collections/read.contract";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import {
   persistSdkDeployPreview,
   persistSdkDeployOutcome,
@@ -124,10 +124,10 @@ function node(input: {
 }
 
 describe("deployment runtime persistence", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

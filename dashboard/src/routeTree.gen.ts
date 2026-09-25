@@ -15,10 +15,6 @@ import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/clo
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
-import { Route as PublicDocsRouteImport } from './routes/_public/docs'
-import { Route as PublicHomeRouteImport } from './routes/_public/home'
-import { Route as PublicPricingRouteImport } from './routes/_public/pricing'
-import { Route as ApiWaitlistRouteImport } from './routes/api/waitlist'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -35,7 +31,6 @@ import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImpo
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/billing'
-import { Route as ProtectedCloudOrganizationSlugOrgChar126LogsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126SettingsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/settings'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/index'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/route'
@@ -75,26 +70,6 @@ const PublicAuthRoute = PublicAuthRouteImport.update({
   id: '/auth',
   path: '/auth',
   getParentRoute: () => PublicRouteRoute,
-} as any)
-const PublicDocsRoute = PublicDocsRouteImport.update({
-  id: '/docs',
-  path: '/docs',
-  getParentRoute: () => PublicRouteRoute,
-} as any)
-const PublicHomeRoute = PublicHomeRouteImport.update({
-  id: '/home',
-  path: '/home',
-  getParentRoute: () => PublicRouteRoute,
-} as any)
-const PublicPricingRoute = PublicPricingRouteImport.update({
-  id: '/pricing',
-  path: '/pricing',
-  getParentRoute: () => PublicRouteRoute,
-} as any)
-const ApiWaitlistRoute = ApiWaitlistRouteImport.update({
-  id: '/api/waitlist',
-  path: '/api/waitlist',
-  getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
   id: '/',
@@ -179,12 +154,6 @@ const ProtectedCloudOrganizationSlugOrgChar126BillingRoute =
   ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport.update({
     id: '/~/billing',
     path: '/~/billing',
-    getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
-  } as any)
-const ProtectedCloudOrganizationSlugOrgChar126LogsRoute =
-  ProtectedCloudOrganizationSlugOrgChar126LogsRouteImport.update({
-    id: '/~/logs',
-    path: '/~/logs',
     getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
   } as any)
 const ProtectedCloudOrganizationSlugOrgChar126SettingsRoute =
@@ -283,10 +252,6 @@ export interface FileRoutesByFullPath {
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
-  '/docs': typeof PublicDocsRoute
-  '/home': typeof PublicHomeRoute
-  '/pricing': typeof PublicPricingRoute
-  '/api/waitlist': typeof ApiWaitlistRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -301,7 +266,6 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  '/cloud/$organizationSlug/~/logs': typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
@@ -317,10 +281,6 @@ export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
-  '/docs': typeof PublicDocsRoute
-  '/home': typeof PublicHomeRoute
-  '/pricing': typeof PublicPricingRoute
-  '/api/waitlist': typeof ApiWaitlistRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -334,7 +294,6 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  '/cloud/$organizationSlug/~/logs': typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
@@ -352,10 +311,6 @@ export interface FileRoutesById {
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
-  '/_public/docs': typeof PublicDocsRoute
-  '/_public/home': typeof PublicHomeRoute
-  '/_public/pricing': typeof PublicPricingRoute
-  '/api/waitlist': typeof ApiWaitlistRoute
   '/_public/': typeof PublicIndexRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -373,7 +328,6 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_org/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  '/_protected/cloud/$organizationSlug/_org/~/logs': typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   '/_protected/cloud/$organizationSlug/_org/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/_protected/cloud/$organizationSlug/_org/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
@@ -393,10 +347,6 @@ export interface FileRouteTypes {
     | '/cloud'
     | '/dashboard'
     | '/auth'
-    | '/docs'
-    | '/home'
-    | '/pricing'
-    | '/api/waitlist'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -411,7 +361,6 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/billing'
-    | '/cloud/$organizationSlug/~/logs'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~/'
     | '/cloud/$organizationSlug/$projectSlug/'
@@ -427,10 +376,6 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/auth'
-    | '/docs'
-    | '/home'
-    | '/pricing'
-    | '/api/waitlist'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -444,7 +389,6 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/billing'
-    | '/cloud/$organizationSlug/~/logs'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~'
     | '/cloud/$organizationSlug/$projectSlug'
@@ -461,10 +405,6 @@ export interface FileRouteTypes {
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
-    | '/_public/docs'
-    | '/_public/home'
-    | '/_public/pricing'
-    | '/api/waitlist'
     | '/_public/'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
@@ -482,7 +422,6 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_project/new'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
     | '/_protected/cloud/$organizationSlug/_org/~/billing'
-    | '/_protected/cloud/$organizationSlug/_org/~/logs'
     | '/_protected/cloud/$organizationSlug/_org/~/settings'
     | '/_protected/cloud/$organizationSlug/_org/~/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/'
@@ -499,7 +438,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ProtectedRouteRoute: typeof ProtectedRouteRouteWithChildren
   PublicRouteRoute: typeof PublicRouteRouteWithChildren
-  ApiWaitlistRoute: typeof ApiWaitlistRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
@@ -552,34 +490,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/auth'
       preLoaderRoute: typeof PublicAuthRouteImport
       parentRoute: typeof PublicRouteRoute
-    }
-    '/_public/docs': {
-      id: '/_public/docs'
-      path: '/docs'
-      fullPath: '/docs'
-      preLoaderRoute: typeof PublicDocsRouteImport
-      parentRoute: typeof PublicRouteRoute
-    }
-    '/_public/home': {
-      id: '/_public/home'
-      path: '/home'
-      fullPath: '/home'
-      preLoaderRoute: typeof PublicHomeRouteImport
-      parentRoute: typeof PublicRouteRoute
-    }
-    '/_public/pricing': {
-      id: '/_public/pricing'
-      path: '/pricing'
-      fullPath: '/pricing'
-      preLoaderRoute: typeof PublicPricingRouteImport
-      parentRoute: typeof PublicRouteRoute
-    }
-    '/api/waitlist': {
-      id: '/api/waitlist'
-      path: '/api/waitlist'
-      fullPath: '/api/waitlist'
-      preLoaderRoute: typeof ApiWaitlistRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/': {
       id: '/_protected/cloud/'
@@ -693,13 +603,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
     }
-    '/_protected/cloud/$organizationSlug/_org/~/logs': {
-      id: '/_protected/cloud/$organizationSlug/_org/~/logs'
-      path: '/~/logs'
-      fullPath: '/cloud/$organizationSlug/~/logs'
-      preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126LogsRouteImport
-      parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
-    }
     '/_protected/cloud/$organizationSlug/_org/~/settings': {
       id: '/_protected/cloud/$organizationSlug/_org/~/settings'
       path: '/~/settings'
@@ -782,7 +685,6 @@ declare module '@tanstack/react-router' {
 
 interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgChar126BillingRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
-  ProtectedCloudOrganizationSlugOrgChar126LogsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126LogsRoute
   ProtectedCloudOrganizationSlugOrgChar126SettingsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   ProtectedCloudOrganizationSlugOrgChar126IndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute
@@ -792,8 +694,6 @@ const ProtectedCloudOrganizationSlugOrgRouteRouteChildren: ProtectedCloudOrganiz
   {
     ProtectedCloudOrganizationSlugOrgChar126BillingRoute:
       ProtectedCloudOrganizationSlugOrgChar126BillingRoute,
-    ProtectedCloudOrganizationSlugOrgChar126LogsRoute:
-      ProtectedCloudOrganizationSlugOrgChar126LogsRoute,
     ProtectedCloudOrganizationSlugOrgChar126SettingsRoute:
       ProtectedCloudOrganizationSlugOrgChar126SettingsRoute,
     ProtectedCloudOrganizationSlugOrgChar126IndexRoute:
@@ -936,17 +836,11 @@ const ProtectedRouteRouteWithChildren = ProtectedRouteRoute._addFileChildren(
 
 interface PublicRouteRouteChildren {
   PublicAuthRoute: typeof PublicAuthRoute
-  PublicDocsRoute: typeof PublicDocsRoute
-  PublicHomeRoute: typeof PublicHomeRoute
-  PublicPricingRoute: typeof PublicPricingRoute
   PublicIndexRoute: typeof PublicIndexRoute
 }
 
 const PublicRouteRouteChildren: PublicRouteRouteChildren = {
   PublicAuthRoute: PublicAuthRoute,
-  PublicDocsRoute: PublicDocsRoute,
-  PublicHomeRoute: PublicHomeRoute,
-  PublicPricingRoute: PublicPricingRoute,
   PublicIndexRoute: PublicIndexRoute,
 }
 
@@ -969,7 +863,6 @@ const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
   PublicRouteRoute: PublicRouteRouteWithChildren,
-  ApiWaitlistRoute: ApiWaitlistRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,

@@ -161,7 +161,6 @@ interface SectionByRouteId {
 
 const sectionByRouteId: SectionByRouteId = {
   "/_protected/cloud/$organizationSlug/_org/~/billing": "billing",
-  "/_protected/cloud/$organizationSlug/_org/~/logs": "logs",
   "/_protected/cloud/$organizationSlug/_org/~/settings": "server-settings",
   "/_protected/cloud/$organizationSlug/_org/~/servers/": "servers",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs":

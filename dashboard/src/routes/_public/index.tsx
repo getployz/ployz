@@ -1,7 +1,8 @@
 import { getAuthSession } from '#/auth/auth'
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { Link, createFileRoute, redirect } from '@tanstack/react-router'
 import { buildMarketingMeta } from '#/components/marketing/meta'
-import { HomePage } from '#/routes/_public/-components/home/HomePage'
+import { PloyzLogo } from '#/components/icons/ployz-logo'
+import { buttonVariants } from '#/components/ui/button-variants'
 
 export const Route = createFileRoute('/_public/')({
   beforeLoad: async () => {
@@ -13,10 +14,24 @@ export const Route = createFileRoute('/_public/')({
   },
   head: () => ({
     meta: buildMarketingMeta({
-      title: 'Ployz — Your ship. Your rules.',
-      description:
-        'Bring your stack and your sense of adventure. Open-source deployment on servers you control. Your ship. Your rules.',
+      title: 'Ployz',
+      description: 'Deploy and run applications on servers you control.',
     }),
   }),
-  component: HomePage,
+  component: StubLander,
 })
+
+// ponytail: stub until the separate marketing site ships.
+function StubLander() {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center gap-6 px-4 text-center">
+      <PloyzLogo />
+      <p className="text-muted-foreground">
+        Deploy and run applications on servers you control.
+      </p>
+      <Link to="/auth" className={buttonVariants()}>
+        Sign in
+      </Link>
+    </main>
+  )
+}

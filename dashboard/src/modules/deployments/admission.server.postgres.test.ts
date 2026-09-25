@@ -4,9 +4,9 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { InngestClient } from "#/modules/inngest/client";
 
 import {
@@ -60,10 +60,10 @@ function intent(volumes: "first" | "both") {
 }
 
 describe("Saved deployment admission", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

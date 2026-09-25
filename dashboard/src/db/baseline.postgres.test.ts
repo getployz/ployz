@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { collectionReadInput } from "#/collections/read.contract";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 
-let harness: GithubPostgresTestHarness;
+let harness: PostgresTestHarness;
 
 beforeAll(async () => {
-  harness = await startGithubPostgresTestHarness();
+  harness = await startPostgresTestHarness();
 }, 60_000);
 
 afterAll(async () => {

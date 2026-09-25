@@ -18,7 +18,7 @@ use ployz_core::{
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseSource},
+    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
     network::NetworkError,
@@ -82,9 +82,6 @@ enum Command {
         /// Add this existing operator to the Ployz service group during host preparation.
         #[arg(long, value_name = "USER")]
         group_user: Option<String>,
-        /// Read a verified release from this local directory. Used by offline qualification.
-        #[arg(long, hide = true, value_name = "DIR")]
-        release_dir: Option<PathBuf>,
     },
 }
 
@@ -147,18 +144,10 @@ async fn run(args: Args) -> Result<(), Error> {
         software_only,
         install_only,
         group_user,
-        release_dir,
     }) = args.command
     {
-        let request = install_request(
-            version,
-            storage,
-            software_only,
-            install_only,
-            group_user,
-            release_dir,
-        )
-        .map_err(Error::from)?;
+        let request = install_request(version, storage, software_only, install_only, group_user)
+            .map_err(Error::from)?;
         let outcome = ployzd::installer::install(request, &args.data_dir, &args.socket)
             .await
             .map_err(io::Error::other)?;
@@ -205,7 +194,6 @@ fn install_request(
     software_only: bool,
     install_only: bool,
     group_user: Option<String>,
-    release_dir: Option<PathBuf>,
 ) -> io::Result<InstallRequest> {
     if install_only && storage != StorageChoice::None {
         return Err(io::Error::new(
@@ -241,11 +229,7 @@ fn install_request(
             group_user,
         }
     };
-    Ok(InstallRequest {
-        release,
-        source: release_dir.map_or(ReleaseSource::Published, ReleaseSource::Local),
-        mode,
-    })
+    Ok(InstallRequest { release, mode })
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
@@ -291,15 +275,8 @@ mod tests {
 
     #[test]
     fn install_cli_rejects_host_options_for_software_only_replacement() {
-        let storage = install_request(
-            release("stable"),
-            StorageChoice::Zfs,
-            true,
-            false,
-            None,
-            None,
-        )
-        .unwrap_err();
+        let storage =
+            install_request(release("stable"), StorageChoice::Zfs, true, false, None).unwrap_err();
         assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(
             storage.to_string(),
@@ -312,7 +289,6 @@ mod tests {
             true,
             false,
             Some("operator".into()),
-            None,
         )
         .unwrap_err();
         assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
@@ -324,15 +300,8 @@ mod tests {
 
     #[test]
     fn install_cli_rejects_host_options_for_installation_only() {
-        let storage = install_request(
-            release("stable"),
-            StorageChoice::Zfs,
-            false,
-            true,
-            None,
-            None,
-        )
-        .unwrap_err();
+        let storage =
+            install_request(release("stable"), StorageChoice::Zfs, false, true, None).unwrap_err();
         assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(
             storage.to_string(),
@@ -345,7 +314,6 @@ mod tests {
             false,
             true,
             Some("operator".into()),
-            None,
         )
         .unwrap_err();
         assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
@@ -357,15 +325,8 @@ mod tests {
 
     #[test]
     fn install_cli_builds_one_explicit_mode() {
-        let replacement = install_request(
-            release("1.2.3"),
-            StorageChoice::None,
-            true,
-            true,
-            None,
-            None,
-        )
-        .unwrap();
+        let replacement =
+            install_request(release("1.2.3"), StorageChoice::None, true, true, None).unwrap();
         assert!(matches!(replacement.mode, InstallMode::InstallationOnly));
 
         let host = install_request(
@@ -374,7 +335,6 @@ mod tests {
             false,
             false,
             Some("operator".into()),
-            None,
         )
         .unwrap();
         assert!(matches!(

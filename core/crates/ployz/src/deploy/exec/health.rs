@@ -34,7 +34,7 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
     let started = Instant::now();
-    let monitor_deadline = started + default_health_monitor();
+    let monitor_deadline = started + DEFAULT_HEALTH_MONITOR;
     loop {
         if cancellation.is_cancelled() {
             return Err(dependency_health_error(
@@ -150,7 +150,7 @@ pub(super) async fn monitor_container<C: MachineOperations>(
     let monitor = spec
         .update
         .monitor_millis
-        .map_or_else(default_health_monitor, Duration::from_millis);
+        .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
     let started = Instant::now();
     let deadline_ms = match spec.container.healthcheck.as_ref() {
         Some(HealthcheckSpec::Http(check)) => u64::from(check.timeout_seconds) * 1_000,
@@ -369,21 +369,6 @@ fn health_deadline_for(
                 .then(|| started + healthcheck_timeout(None))
             }),
     }
-}
-
-fn default_health_monitor() -> Duration {
-    std::env::var(crate::cli::env::HEALTH_MONITOR_PERIOD)
-        .ok()
-        .and_then(|value| parse_monitor_period(&value))
-        .unwrap_or(DEFAULT_HEALTH_MONITOR)
-}
-
-pub(crate) fn parse_monitor_period(value: &str) -> Option<Duration> {
-    let value = value.trim();
-    if value == "0" {
-        return Some(Duration::ZERO);
-    }
-    crate::operator::go_duration(value)
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {

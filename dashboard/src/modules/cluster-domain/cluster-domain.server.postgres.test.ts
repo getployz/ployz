@@ -7,9 +7,9 @@ import { readCollection } from "#/collections/read.server";
 import { publishClusterDomainNow, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { AppConfig } from "#/server/config.server";
 import type { Database, ReportingDatabase } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -21,7 +21,7 @@ const inngest = new Inngest({ id: "cluster-domain-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 describe("Organization Cluster Domain", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   let hostedDns: FakeHostedDns;
 
   function run<A, E>(
@@ -47,7 +47,7 @@ describe("Organization Cluster Domain", () => {
     "select endpoint, name, encrypted_token from organization_cluster_domain");
 
   beforeAll(async () => {
-    [harness, hostedDns] = await Promise.all([startGithubPostgresTestHarness(), startFakeHostedDns()]);
+    [harness, hostedDns] = await Promise.all([startPostgresTestHarness(), startFakeHostedDns()]);
   }, 60_000);
 
   afterAll(async () => {

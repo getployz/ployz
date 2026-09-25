@@ -22,7 +22,7 @@ CONTRACT_SCRIPTS = {
 def select(paths):
     selected = {"contracts"}
     for path in paths:
-        if path.endswith(".md") or path == "evidence/product-paths.tsv" or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
+        if path.endswith(".md") or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
             continue
         if path.startswith(".github/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}:
             return JOBS.copy()

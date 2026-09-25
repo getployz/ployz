@@ -9,9 +9,9 @@ import {
 } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { InngestClient, InngestEventSendError } from "#/modules/inngest/client";
 import {
   cancelMachineRemoveAttemptActivity,
@@ -27,7 +27,7 @@ import type { Inngest } from "inngest";
 const organizationId = "00000000-0000-4000-8000-000000000501";
 const userId = "00000000-0000-4000-8000-000000000502";
 
-async function request(harness: GithubPostgresTestHarness, machineId: string) {
+async function request(harness: PostgresTestHarness, machineId: string) {
   return harness.runEffect(
     requestMachineRemoveAttempt({
       organizationId,
@@ -39,14 +39,14 @@ async function request(harness: GithubPostgresTestHarness, machineId: string) {
 }
 
 describe("machine removal durable ownership", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
 
   function runEffect<A, E>(operation: Effect.Effect<A, E, import("#/server/database.server").Database>) {
     return harness.runEffect(operation);
   }
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

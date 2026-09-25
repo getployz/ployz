@@ -10,9 +10,9 @@ import {
   it,
 } from "vitest";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { InngestClient } from "#/modules/inngest/client";
 import {
   cancelVolumeRemoveAttemptActivity,
@@ -46,7 +46,7 @@ const volume = {
 };
 
 async function insertAttempt(
-  harness: GithubPostgresTestHarness,
+  harness: PostgresTestHarness,
   retryOfAttemptId?: string,
 ) {
   return harness.runEffect(
@@ -62,7 +62,7 @@ async function insertAttempt(
 }
 
 describe("direct volume removal durable state", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
 
   function runPromiseDb<A, E>(
     operation: Effect.Effect<A, E, import("#/server/database.server").Database>,
@@ -71,7 +71,7 @@ describe("direct volume removal durable state", () => {
   }
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

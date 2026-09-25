@@ -46,8 +46,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/DeploymentNode.tsx": "build or deploy stage running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
-  "routes/_public/-components/AppHeaderActions.tsx": "sign-out in flight",
-  "routes/_public/-components/LoginDialog.tsx": "sign-in in flight",
+  "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
 };
 
 const READ_SERVER_FN = /\b(get|load|list|preview|search|resolve|read)[A-Z]\w*ServerFn\b/;

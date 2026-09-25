@@ -4,9 +4,9 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { Database } from "#/server/database.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -32,7 +32,7 @@ const emptySavedIntent = {
 };
 
 describe("durable deployment activities", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   const inngest = new Inngest({ id: "durable-activities-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -45,7 +45,7 @@ describe("durable deployment activities", () => {
   }
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

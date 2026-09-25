@@ -6,8 +6,6 @@ pub mod env {
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
     pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
-    pub const HEALTH_MONITOR_PERIOD: &str = "PLOYZ_HEALTH_MONITOR_PERIOD";
-    pub const SSH_CONTROL_PERSIST: &str = "PLOYZ_SSH_CONTROL_PERSIST";
 }
 
 #[must_use]

@@ -7,7 +7,9 @@ import {
   Layer,
   Option,
   type Redacted,
+  Result,
   Schema,
+  SchemaIssue,
 } from "effect";
 
 const Uuid = Schema.String.check(Schema.isUUID());
@@ -34,7 +36,7 @@ export class InvalidConfiguration extends Data.TaggedError(
 const optional = <A>(config: Config.Config<A>) =>
   Config.option(config).pipe(Config.map(Option.getOrUndefined));
 
-const rawConfig = Config.all({
+const rawFields = {
   nodeEnv: Config.literals(["development", "test", "production"], "NODE_ENV").pipe(
     Config.withDefault("production"),
   ),
@@ -73,11 +75,39 @@ const rawConfig = Config.all({
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
-});
+};
+/**
+ * Config.all stops at the first bad variable. Read every field once so one
+ * ConfigError names all missing or malformed variables.
+ */
+const loadRawConfig = Effect.all(rawFields, { mode: "result" }).pipe(
+  Effect.flatMap((results) => {
+    const issues: Array<SchemaIssue.Issue> = [];
+    for (const result of Object.values(results)) {
+      if (result._tag === "Success") continue;
+      const { cause } = result.failure;
+      issues.push(
+        Schema.isSchemaError(cause)
+          ? cause.issue
+          : new SchemaIssue.InvalidValue({ message: cause.message }),
+      );
+    }
+    const [head, ...tail] = issues;
+    return head === undefined
+      ? Effect.fromResult(Result.all(results))
+      : Effect.fail(
+          new Config.ConfigError(
+            new Schema.SchemaError(
+              new SchemaIssue.Composite(Schema.Unknown.ast, [head, ...tail]),
+            ),
+          ),
+        );
+  }),
+);
 
 /** No Polar variables means a Self-hosted Cloud; a partial set is a mistake. */
 const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
-  input: Config.Success<typeof rawConfig>,
+  input: Effect.Success<typeof loadRawConfig>,
 ) {
   const { polarAccessToken, polarWebhookSecret, polarProductId } = input;
   if (
@@ -107,7 +137,7 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
 });
 
 const makeAppConfig = Effect.gen(function* () {
-  const raw = yield* rawConfig;
+  const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
   const appUrl = raw.appUrl.href.replace(/\/$/, "");
 

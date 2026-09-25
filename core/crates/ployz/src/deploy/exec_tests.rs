@@ -8,7 +8,6 @@ use ployz_core::{
 
 use crate::deploy::{DeployOutcome, FailedOperation};
 
-use super::health::parse_monitor_period;
 use super::*;
 
 fn test_project() -> ProjectName {

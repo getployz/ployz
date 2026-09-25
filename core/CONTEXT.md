@@ -8,7 +8,7 @@ Architectural bets and their red flags live in [DESIGN.md](DESIGN.md).
 
 **Ployz**:
 The product, CLI, and daemon in this repository.
-_Avoid_: Uncloud, Ployz2
+_Avoid_: Ployz2
 
 **Cluster**:
 The product-level mesh as observed from one entry machine. A Cluster is not a globally authoritative entity or complete view.

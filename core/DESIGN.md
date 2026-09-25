@@ -26,20 +26,21 @@ design, not filling a gap.
 
 ## Stable promise
 
-From 0.2.0, the first stable release: a daemon keeps working, and can be
-upgraded, across every later 0.x release without re-enrolling or reinstalling.
-Versions follow semver; 1.0 may break the promise, and says so if it does.
-The promise covers what a daemon carries or speaks — the replicated store, the
-local Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment
-protocol, and the release source. The CLI surface is a client courtesy with
-ordinary deprecation, not a guarantee.
+From 0.2.0: a daemon keeps working, and can be upgraded, across every later
+0.x release without re-enrolling or reinstalling. Versions follow semver; only a
+new major line (1.0 first) may break the promise, and it says so. The promise covers what a
+daemon carries or speaks — the replicated store and its bodies, the local
+Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment protocol,
+and the release source. The CLI surface is a client courtesy with ordinary
+deprecation, not a guarantee.
 
 Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
 repurposed; readers ignore unknown fields. Replicated bodies never use
 `deny_unknown_fields` — a newer Machine's row must remain readable by an older
-one in the same Cluster. Explicit security refusals are the only exception,
-and never on replicated bodies: a section holding secret or key material, or
+one in the same Cluster. Authored config and unrelated trust boundaries stay
+strict. Within frozen formats, explicit security refusals are the only
+exception, and never on replicated bodies: a section holding secret or key material, or
 a request mode that selects verification, may refuse fields it does not
 recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
@@ -163,7 +164,7 @@ unreachable.
 controller and holds no runtime truth. SSH and the Management Capability use the
 same Machine RPC connection seam. The daemon serves Machine RPC in-process on its
 Management Identity, an iroh key that is not a mesh peer; clients reach it through
-the self-hosted Ployz Relay, which sees ciphertext only, or a direct path.
+the Ployz-hosted Ployz Relay, which sees ciphertext only, or a direct path.
 
 **Why.** Reusing transport primitives removes a hosted protocol to maintain.
 Cloud stores encrypted, Organization-scoped connection candidates associated with

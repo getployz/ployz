@@ -14,9 +14,9 @@ import {
   it,
 } from "vitest";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { InngestClient } from "#/modules/inngest/client";
 import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import {
@@ -42,7 +42,7 @@ const userId = "00000000-0000-4000-8000-000000000702";
 const projectId = "00000000-0000-4000-8000-000000000703";
 const environmentId = "00000000-0000-4000-8000-000000000704";
 
-async function insertAttempt(harness: GithubPostgresTestHarness) {
+async function insertAttempt(harness: PostgresTestHarness) {
   return harness.runEffect(
     insertTeardownAttempt({
       organizationId,
@@ -84,7 +84,7 @@ function completeFromRuntimeInput(input: RuntimeCompletionInput) {
 }
 
 describe("teardown durable state", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   let hostedDns: FakeHostedDns;
 
   async function insertClusterDomain() {
@@ -115,7 +115,7 @@ describe("teardown durable state", () => {
   }
 
   beforeAll(async () => {
-    [harness, hostedDns] = await Promise.all([startGithubPostgresTestHarness(), startFakeHostedDns()]);
+    [harness, hostedDns] = await Promise.all([startPostgresTestHarness(), startFakeHostedDns()]);
   }, 60_000);
 
   afterAll(async () => {

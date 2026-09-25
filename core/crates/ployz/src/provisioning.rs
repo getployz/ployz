@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::OsString,
     io::{self, IsTerminal, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -14,6 +14,8 @@ use uuid::Uuid;
 use crate::context::{Connection, ConnectionError, SshDestination, Transport};
 
 mod bootstrap;
+#[cfg(test)]
+mod setup_tests;
 
 use bootstrap::Bootstrap;
 
@@ -174,11 +176,7 @@ enum Preparation<'user> {
     SoftwareOnly,
 }
 
-fn install_arguments(
-    version: &str,
-    preparation: Preparation<'_>,
-    release_dir: Option<&Path>,
-) -> Vec<OsString> {
+fn install_arguments(version: &str, preparation: Preparation<'_>) -> Vec<OsString> {
     let mut arguments = vec!["install".into(), "--version".into(), version.into()];
     match preparation {
         Preparation::Host {
@@ -192,9 +190,6 @@ fn install_arguments(
         }
         Preparation::SoftwareOnly => arguments.push("--software-only".into()),
     }
-    if let Some(directory) = release_dir {
-        arguments.extend(["--release-dir".into(), directory.as_os_str().to_owned()]);
-    }
     arguments
 }
 
@@ -203,6 +198,14 @@ struct Remote {
     key: PathBuf,
     timeout: std::time::Duration,
     control_path: Option<PathBuf>,
+    ssh: PathBuf,
+    scp: PathBuf,
+}
+
+/// What the remote preflight learned before any bootstrap is acquired.
+struct RemoteHost {
+    user: String,
+    architecture: String,
 }
 
 impl Remote {
@@ -219,11 +222,13 @@ impl Remote {
             key: ssh_key(matches),
             timeout: crate::cli::ssh_timeout(matches),
             control_path: crate::connect::control_path(),
+            ssh: "ssh".into(),
+            scp: "scp".into(),
         })
     }
 
     fn ssh(&self) -> Command {
-        let mut command = Command::new("ssh");
+        let mut command = Command::new(&self.ssh);
         command.args(self.common_arguments());
         if let Some(port) = self.destination.port() {
             command.args([OsString::from("-p"), port.to_string().into()]);
@@ -235,7 +240,7 @@ impl Remote {
     }
 
     fn scp(&self) -> Command {
-        let mut command = Command::new("scp");
+        let mut command = Command::new(&self.scp);
         command.args(self.common_arguments());
         if let Some(port) = self.destination.port() {
             command.args([OsString::from("-P"), port.to_string().into()]);
@@ -286,21 +291,13 @@ impl Remote {
             .ok_or_else(|| ProvisionError::PlatformFailed("uname returned no architecture".into()))
     }
 
-    async fn stage(
-        &self,
-        bootstrap: &Bootstrap,
-        version: &str,
-        directory: &str,
-    ) -> Result<(), ProvisionError> {
+    async fn stage(&self, bootstrap: &Bootstrap, directory: &str) -> Result<(), ProvisionError> {
         let mut create = self.ssh();
         create.arg(format!("mkdir -m 700 -- {}", shell_quote(directory)));
         transfer_status(tokio::process::Command::from(create).status().await)?;
 
         let mut transfer = self.scp();
         transfer.arg(bootstrap.daemon());
-        if let Some(files) = bootstrap.release_files(version) {
-            transfer.args(files);
-        }
         transfer.arg(format!("{}:{}/", self.destination.copy_target(), directory));
         transfer_status(tokio::process::Command::from(transfer).status().await)
     }
@@ -343,7 +340,7 @@ impl Remote {
         let Some(control_path) = self.control_path.as_deref() else {
             return;
         };
-        let mut command = Command::new("ssh");
+        let mut command = Command::new(&self.ssh);
         command.args(crate::connect::ssh_control_args(Some(control_path)));
         if let Some(port) = self.destination.port() {
             command.arg("-p").arg(port.to_string());
@@ -354,6 +351,78 @@ impl Remote {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let _ = tokio::process::Command::from(command).status().await;
+    }
+
+    /// Confirm the remote user can install and report its architecture.
+    async fn preflight(&self) -> Result<RemoteHost, ProvisionError> {
+        let mut whoami = self.ssh();
+        whoami.arg("whoami");
+        let output = tokio::process::Command::from(whoami)
+            .output()
+            .await
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    ProvisionError::SshClientMissing(error)
+                } else {
+                    ProvisionError::Whoami(error)
+                }
+            })?;
+        if !output.status.success() {
+            return Err(ProvisionError::WhoamiFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let user = String::from_utf8(output.stdout).map_err(|_| ProvisionError::WhoamiUtf8)?;
+        let user = user.trim().to_owned();
+        if user.is_empty() {
+            return Err(ProvisionError::EmptyUser);
+        }
+
+        if user != "root" {
+            let mut sudo = self.ssh();
+            sudo.arg("sudo true");
+            let status = tokio::process::Command::from(sudo)
+                .status()
+                .await
+                .map_err(ProvisionError::Sudo)?;
+            if !status.success() {
+                return Err(ProvisionError::SudoRequired { user });
+            }
+        }
+
+        let architecture = self.platform().await?;
+        Ok(RemoteHost { user, architecture })
+    }
+
+    /// Stage, verify, and run `bootstrap` on the host, then remove the stage.
+    async fn install_bootstrap(
+        &self,
+        host: &RemoteHost,
+        bootstrap: &Bootstrap,
+        version: &str,
+        storage: StorageChoice,
+    ) -> Result<(), ProvisionError> {
+        let via_sudo = host.user != "root";
+        let remote_directory = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
+        let remote_daemon = format!("{remote_directory}/ployzd");
+        let arguments = install_arguments(
+            version,
+            Preparation::Host {
+                storage,
+                group_user: via_sudo.then_some(host.user.as_str()),
+            },
+        );
+        let primary = async {
+            self.stage(bootstrap, &remote_directory).await?;
+            self.verify(&remote_daemon).await?;
+            self.install(&remote_daemon, &arguments, via_sudo).await
+        }
+        .await;
+        let cleanup = self.cleanup(&remote_directory).await;
+        // Host preparation may add the SSH user to the ployz group. A multiplexed
+        // session authenticated before installation retains its old group list.
+        self.close_control_master().await;
+        finish_remote(primary, cleanup)
     }
 }
 
@@ -432,74 +501,15 @@ fn finish_remote(
 /// bootstrap cannot be removed.
 pub async fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), ProvisionError> {
     let remote = Remote::from_matches(matches)?;
-    let mut whoami = remote.ssh();
-    whoami.arg("whoami");
-    let output = tokio::process::Command::from(whoami)
-        .output()
-        .await
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                ProvisionError::SshClientMissing(error)
-            } else {
-                ProvisionError::Whoami(error)
-            }
-        })?;
-    if !output.status.success() {
-        return Err(ProvisionError::WhoamiFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    let user = String::from_utf8(output.stdout).map_err(|_| ProvisionError::WhoamiUtf8)?;
-    let user = user.trim();
-    if user.is_empty() {
-        return Err(ProvisionError::EmptyUser);
-    }
-
-    let via_sudo = user != "root";
-    if via_sudo {
-        let mut sudo = remote.ssh();
-        sudo.arg("sudo true");
-        let status = tokio::process::Command::from(sudo)
-            .status()
-            .await
-            .map_err(ProvisionError::Sudo)?;
-        if !status.success() {
-            return Err(ProvisionError::SudoRequired {
-                user: user.to_owned(),
-            });
-        }
-    }
-
-    let architecture = remote.platform().await?;
-    let bootstrap = Bootstrap::acquire(&architecture).await?;
-    let version = &matches
+    let host = remote.preflight().await?;
+    let bootstrap = Bootstrap::acquire(&host.architecture).await?;
+    let version = matches
         .get_one::<MachineRelease>("version")
         .expect("version has a default")
         .to_string();
-    let remote_directory = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
-    let remote_daemon = format!("{remote_directory}/ployzd");
-    let release_dir = bootstrap
-        .release_dir(version)
-        .map(|_| Path::new(&remote_directory));
-    let arguments = install_arguments(
-        version,
-        Preparation::Host {
-            storage,
-            group_user: via_sudo.then_some(user),
-        },
-        release_dir,
-    );
-    let primary = async {
-        remote.stage(&bootstrap, version, &remote_directory).await?;
-        remote.verify(&remote_daemon).await?;
-        remote.install(&remote_daemon, &arguments, via_sudo).await
-    }
-    .await;
-    let cleanup = remote.cleanup(&remote_directory).await;
-    // Host preparation may add the SSH user to the ployz group. A multiplexed
-    // session authenticated before installation retains its old group list.
-    remote.close_control_master().await;
-    finish_remote(primary, cleanup)
+    remote
+        .install_bootstrap(&host, &bootstrap, &version, storage)
+        .await
 }
 
 /// Install and start local `ployzd` through a verified temporary daemon.
@@ -543,11 +553,18 @@ async fn provision_local_with(
         return Err(ProvisionError::UnsupportedOs);
     }
     let bootstrap = Bootstrap::acquire(env::consts::ARCH).await?;
+    install_local(&bootstrap, version, preparation).await
+}
+
+async fn install_local(
+    bootstrap: &Bootstrap,
+    version: &str,
+    preparation: Preparation<'_>,
+) -> Result<(), ProvisionError> {
     bootstrap.verify_local_version().await?;
-    let arguments = install_arguments(version, preparation, bootstrap.release_dir(version));
     installer_status(
         tokio::process::Command::new(bootstrap.daemon())
-            .args(arguments)
+            .args(install_arguments(version, preparation))
             .status()
             .await,
     )
@@ -607,7 +624,6 @@ mod tests {
                     storage: StorageChoice::Zfs,
                     group_user: Some("deploy"),
                 },
-                None,
             ),
             [
                 "install",
@@ -622,7 +638,7 @@ mod tests {
             .to_vec()
         );
         assert_eq!(
-            install_arguments("1.2.3", Preparation::SoftwareOnly, None),
+            install_arguments("1.2.3", Preparation::SoftwareOnly),
             ["install", "--version", "1.2.3", "--software-only"]
                 .map(OsString::from)
                 .to_vec()

@@ -10,9 +10,9 @@ import {
 } from "./saved-state-operations.server";
 import type { EnvironmentSavedStateBasis } from "./saved-state";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import {
   makeSecretEncryption,
   SecretEncryption,
@@ -89,10 +89,10 @@ function publishEnvironmentSavedState(input: Omit<ReturnType<typeof publication>
 }
 
 describe("Environment Saved State aggregate", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

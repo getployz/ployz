@@ -4,7 +4,7 @@ import { readCollection } from "#/collections/read.server";
 import {
   createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createImageServiceSource, projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
-import { type GithubPostgresTestHarness, startGithubPostgresTestHarness } from "#/modules/github/github-ingestion.postgres-test-harness";
+import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import type { DeploymentProgress, DeploymentProgressRow } from "./deployment-progress";
 import { attemptTarget, deploymentView } from "./deployment-view";
 
@@ -29,8 +29,8 @@ const progress: DeploymentProgress = { completed: 2, total: 3, outcome: "failed"
   row(0, null, "old", "remove_container", "completed"), row(1, api, "api", "replace_container", "completed"), row(2, web, "web", "run_container", "failed"),
 ] };
 
-let harness: GithubPostgresTestHarness;
-beforeAll(async () => { harness = await startGithubPostgresTestHarness(); }, 60_000);
+let harness: PostgresTestHarness;
+beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
 afterAll(async () => { await harness?.stop(); });
 
 it("builds an attempt's full node set from real deployment snapshots", async () => {

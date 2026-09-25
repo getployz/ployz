@@ -7,6 +7,17 @@ CREATE TABLE "organization" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "organization_change" (
+	"seq" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "organization_change_seq_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"xid" xid8 DEFAULT pg_current_xact_id() NOT NULL,
+	"organization_id" uuid NOT NULL,
+	"source_table" text NOT NULL,
+	"changed_ids" text[] NOT NULL,
+	"deleted_ids" text[] NOT NULL,
+	"all_rows" boolean NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "account" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -52,6 +63,7 @@ CREATE TABLE "session" (
 	"token" text NOT NULL UNIQUE,
 	"active_organization_id" uuid,
 	"active_organization_slug" text,
+	"sidebar_open" boolean DEFAULT true NOT NULL,
 	"ip_address" text,
 	"user_agent" text
 );
@@ -63,7 +75,8 @@ CREATE TABLE "user" (
 	"email" text NOT NULL UNIQUE,
 	"email_verified" boolean DEFAULT false NOT NULL,
 	"name" text NOT NULL,
-	"image" text
+	"image" text,
+	"open_started_deployments" boolean DEFAULT true NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "verification" (
@@ -131,28 +144,12 @@ CREATE TABLE "environment_resource" (
 	"environment_id" uuid NOT NULL,
 	"lineage_id" uuid NOT NULL,
 	"implementation_type" text NOT NULL,
-	"variable_group_id" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_resource_project_id_id_unique" UNIQUE("project_id","id"),
 	CONSTRAINT "environment_resource_environment_id_id_unique" UNIQUE("environment_id","id"),
 	CONSTRAINT "environment_resource_environment_id_lineage_id_unique" UNIQUE("environment_id","lineage_id"),
-	CONSTRAINT "environment_resource_implementation_type_check" CHECK ("implementation_type" in ('variable_group', 'volume')),
-	CONSTRAINT "environment_resource_variable_group_reference_check" CHECK (("implementation_type" != 'variable_group' or "variable_group_id" is not null)),
-	CONSTRAINT "environment_resource_volume_no_variable_group_check" CHECK (("implementation_type" != 'volume' or "variable_group_id" is null))
-);
---> statement-breakpoint
-CREATE TABLE "environment_variable_group" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"organization_id" uuid NOT NULL,
-	"project_id" uuid NOT NULL,
-	"environment_id" uuid NOT NULL,
-	"lineage_id" uuid NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "environment_variable_group_project_id_id_unique" UNIQUE("project_id","id"),
-	CONSTRAINT "environment_variable_group_environment_id_id_unique" UNIQUE("environment_id","id"),
-	CONSTRAINT "environment_variable_group_environment_id_lineage_id_unique" UNIQUE("environment_id","lineage_id")
+	CONSTRAINT "environment_resource_implementation_type_check" CHECK ("implementation_type" in ('volume'))
 );
 --> statement-breakpoint
 CREATE TABLE "resource_lineage" (
@@ -173,6 +170,8 @@ CREATE TABLE "service" (
 	"project_id" uuid NOT NULL,
 	"environment_id" uuid NOT NULL,
 	"lineage_id" uuid NOT NULL,
+	"name" text NOT NULL,
+	"policy" jsonb DEFAULT '{"autoDeploy":true,"waitForCi":false,"watchPaths":[],"imageUpdate":{"type":"off"}}' NOT NULL,
 	"has_registry_credential" boolean DEFAULT false NOT NULL,
 	"first_deployed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -184,6 +183,7 @@ CREATE TABLE "service" (
 --> statement-breakpoint
 CREATE TABLE "service_lineage" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"organization_id" uuid NOT NULL,
 	"project_id" uuid NOT NULL,
 	"canonical_name" text NOT NULL,
 	"canonical_slug" text NOT NULL,
@@ -194,6 +194,8 @@ CREATE TABLE "service_lineage" (
 );
 --> statement-breakpoint
 CREATE TABLE "service_registry_credential" (
+	"organization_id" uuid NOT NULL,
+	"revision" uuid DEFAULT gen_random_uuid() NOT NULL,
 	"service_id" uuid PRIMARY KEY,
 	"encrypted_registry_username" jsonb,
 	"encrypted_registry_secret" jsonb,
@@ -202,27 +204,16 @@ CREATE TABLE "service_registry_credential" (
 --> statement-breakpoint
 CREATE TABLE "variable" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"organization_id" uuid NOT NULL,
 	"environment_id" uuid NOT NULL,
-	"service_id" uuid,
-	"variable_group_id" uuid,
+	"service_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "variable_environment_id_id_unique" UNIQUE("environment_id","id"),
-	CONSTRAINT "variable_owner_check" CHECK (num_nonnulls("service_id", "variable_group_id") = 1)
-);
---> statement-breakpoint
-CREATE TABLE "variable_group_lineage" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"project_id" uuid NOT NULL,
-	"canonical_name" text NOT NULL,
-	"canonical_slug" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "variable_group_lineage_project_id_canonical_slug_unique" UNIQUE("project_id","canonical_slug"),
-	CONSTRAINT "variable_group_lineage_project_id_id_unique" UNIQUE("project_id","id")
+	CONSTRAINT "variable_environment_id_id_unique" UNIQUE("environment_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "variable_secret" (
 	"variable_id" uuid PRIMARY KEY,
+	"organization_id" uuid NOT NULL,
 	"environment_id" uuid NOT NULL,
 	"encrypted_value" jsonb NOT NULL
 );
@@ -238,6 +229,7 @@ CREATE TABLE "environment_deployment" (
 	"inngest_run_id" text,
 	"core_deploy_id" text,
 	"retry_of_deployment_id" uuid,
+	"source_pins" jsonb DEFAULT '{}' NOT NULL,
 	"variable_producers" jsonb,
 	"deploy_manifest" jsonb,
 	"deploy_preview" jsonb,
@@ -257,15 +249,44 @@ CREATE TABLE "environment_deployment" (
       ))
 );
 --> statement-breakpoint
+CREATE TABLE "environment_deployment_build_output" (
+	"id" bigserial PRIMARY KEY,
+	"organization_id" uuid NOT NULL,
+	"deployment_id" uuid NOT NULL,
+	"step_id" bigint NOT NULL,
+	"stderr" boolean DEFAULT false NOT NULL,
+	"text" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "environment_deployment_build_step" (
+	"id" bigserial PRIMARY KEY,
+	"organization_id" uuid NOT NULL,
+	"deployment_id" uuid NOT NULL,
+	"build" integer DEFAULT 0 NOT NULL,
+	"key" text NOT NULL,
+	"name" text NOT NULL,
+	"started_at" timestamp with time zone,
+	"completed_at" timestamp with time zone,
+	"cached" boolean DEFAULT false NOT NULL,
+	"error" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "environment_deployment_build_step_key_unique" UNIQUE("deployment_id","build","key")
+);
+--> statement-breakpoint
 CREATE TABLE "environment_deployment_event" (
 	"id" bigserial PRIMARY KEY,
+	"organization_id" uuid NOT NULL,
 	"deployment_id" uuid NOT NULL,
 	"progress" jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "environment_deployment_secret" (
+	"organization_id" uuid NOT NULL,
 	"environment_deployment_id" uuid PRIMARY KEY,
+	"encrypted_build_receipts" jsonb,
 	"encrypted_runtime_outcome" jsonb
 );
 --> statement-breakpoint
@@ -283,6 +304,7 @@ CREATE TABLE "environment_saved_state_snapshot" (
 --> statement-breakpoint
 CREATE TABLE "core_operation_event" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"organization_id" uuid NOT NULL,
 	"watch_id" uuid NOT NULL,
 	"sequence" text NOT NULL,
 	"event_type" text NOT NULL,
@@ -326,10 +348,12 @@ CREATE TABLE "environment_node_config_snapshot" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_node_config_snapshot_environment_deployment_id_node_type_node_id_unique" UNIQUE("environment_deployment_id","node_type","node_id"),
-	CONSTRAINT "environment_node_config_snapshot_node_type_check" CHECK ("node_type" in ('service', 'variable_group', 'volume'))
+	CONSTRAINT "environment_node_config_snapshot_node_type_check" CHECK ("node_type" in ('service', 'volume'))
 );
 --> statement-breakpoint
 CREATE TABLE "environment_node_config_snapshot_secret" (
+	"organization_id" uuid NOT NULL,
+	"credential_revision" uuid,
 	"snapshot_id" uuid PRIMARY KEY,
 	"encrypted_registry_username" jsonb,
 	"encrypted_registry_secret" jsonb,
@@ -347,10 +371,11 @@ CREATE TABLE "environment_node_introduction" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_node_introduction_pkey" PRIMARY KEY("environment_id","node_type","node_id"),
-	CONSTRAINT "environment_node_introduction_node_type_check" CHECK ("node_type" in ('service', 'variable_group', 'volume'))
+	CONSTRAINT "environment_node_introduction_node_type_check" CHECK ("node_type" in ('service', 'volume'))
 );
 --> statement-breakpoint
 CREATE TABLE "environment_node_introduction_secret" (
+	"organization_id" uuid NOT NULL,
 	"environment_id" uuid,
 	"node_type" text,
 	"node_id" uuid,
@@ -617,11 +642,14 @@ CREATE TABLE "github_check_suite_projection" (
 --> statement-breakpoint
 CREATE TABLE "github_environment_trigger" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"organization_id" uuid NOT NULL,
 	"installation_id" integer NOT NULL,
 	"repository_id" bigint NOT NULL,
 	"ref" text NOT NULL,
 	"head_sha" text NOT NULL,
 	"environment_id" uuid NOT NULL,
+	"admission_state" text DEFAULT 'waiting' NOT NULL,
+	"changed_paths" jsonb DEFAULT '[]' NOT NULL,
 	"service_ids" text[] NOT NULL,
 	"selection_mode" text NOT NULL,
 	"reason" text NOT NULL,
@@ -768,11 +796,6 @@ CREATE TABLE "github_webhook_delivery" (
 CREATE TABLE "organization_billing_state" (
 	"organization_id" uuid PRIMARY KEY,
 	"active_subscription_id" text,
-	"current_plan" text,
-	"product_id" uuid,
-	"amount" integer,
-	"currency" text,
-	"current_period_start" timestamp with time zone,
 	"current_period_end" timestamp with time zone,
 	"has_active_subscription" boolean DEFAULT false NOT NULL,
 	"synced_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -781,23 +804,13 @@ CREATE TABLE "organization_billing_state" (
         "has_active_subscription" = false
         OR (
           "active_subscription_id" IS NOT NULL
-          AND "current_plan" IS NOT NULL
-          AND "product_id" IS NOT NULL
-          AND "amount" IS NOT NULL
-          AND "currency" IS NOT NULL
-          AND "current_period_start" IS NOT NULL
           AND "current_period_end" IS NOT NULL
         )
-      )),
-	CONSTRAINT "organization_billing_state_current_plan_check" CHECK ("current_plan" IS NULL OR "current_plan" IN ('free', 'solo', 'teams', 'hobby', 'pro'))
+      ))
 );
 --> statement-breakpoint
-CREATE TABLE "waitlist" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"email" text NOT NULL UNIQUE,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
+CREATE INDEX "organization_change_organization_id_xid_idx" ON "organization_change" ("organization_id","xid");--> statement-breakpoint
+CREATE INDEX "organization_change_xid_idx" ON "organization_change" ("xid");--> statement-breakpoint
 CREATE INDEX "account_user_id_idx" ON "account" ("user_id");--> statement-breakpoint
 CREATE INDEX "account_provider_account_idx" ON "account" ("provider_id","account_id");--> statement-breakpoint
 CREATE INDEX "invitation_organization_id_idx" ON "invitation" ("organization_id");--> statement-breakpoint
@@ -810,16 +823,10 @@ CREATE INDEX "user_project_preference_project_idx" ON "user_project_preference" 
 CREATE INDEX "environment_canvas_node_position_environment_id_idx" ON "environment_canvas_node_position" ("environment_id");--> statement-breakpoint
 CREATE INDEX "environment_canvas_node_position_organization_id_idx" ON "environment_canvas_node_position" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_canvas_node_position_resource_lookup_idx" ON "environment_canvas_node_position" ("resource_type","resource_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "environment_resource_variable_group_variable_group_unique" ON "environment_resource" ("variable_group_id") WHERE "implementation_type" = 'variable_group';--> statement-breakpoint
 CREATE INDEX "environment_resource_project_id_idx" ON "environment_resource" ("project_id");--> statement-breakpoint
 CREATE INDEX "environment_resource_organization_id_idx" ON "environment_resource" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_resource_environment_id_idx" ON "environment_resource" ("environment_id");--> statement-breakpoint
 CREATE INDEX "environment_resource_lineage_id_idx" ON "environment_resource" ("lineage_id");--> statement-breakpoint
-CREATE INDEX "environment_resource_variable_group_id_idx" ON "environment_resource" ("variable_group_id");--> statement-breakpoint
-CREATE INDEX "environment_variable_group_project_id_idx" ON "environment_variable_group" ("project_id");--> statement-breakpoint
-CREATE INDEX "environment_variable_group_organization_id_idx" ON "environment_variable_group" ("organization_id");--> statement-breakpoint
-CREATE INDEX "environment_variable_group_environment_id_idx" ON "environment_variable_group" ("environment_id");--> statement-breakpoint
-CREATE INDEX "environment_variable_group_lineage_id_idx" ON "environment_variable_group" ("lineage_id");--> statement-breakpoint
 CREATE INDEX "resource_lineage_project_id_idx" ON "resource_lineage" ("project_id");--> statement-breakpoint
 CREATE INDEX "resource_lineage_organization_id_idx" ON "resource_lineage" ("organization_id");--> statement-breakpoint
 CREATE INDEX "service_project_id_idx" ON "service" ("project_id");--> statement-breakpoint
@@ -827,7 +834,6 @@ CREATE INDEX "service_organization_id_idx" ON "service" ("organization_id");--> 
 CREATE INDEX "service_environment_id_idx" ON "service" ("environment_id");--> statement-breakpoint
 CREATE INDEX "service_lineage_id_idx" ON "service" ("lineage_id");--> statement-breakpoint
 CREATE INDEX "service_lineage_project_id_idx" ON "service_lineage" ("project_id");--> statement-breakpoint
-CREATE INDEX "variable_group_lineage_project_id_idx" ON "variable_group_lineage" ("project_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_organization_id_idx" ON "environment_deployment" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_environment_id_idx" ON "environment_deployment" ("environment_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_saved_state_snapshot_id_idx" ON "environment_deployment" ("saved_state_snapshot_id");--> statement-breakpoint
@@ -835,6 +841,7 @@ CREATE UNIQUE INDEX "environment_deployment_one_queued_target_idx" ON "environme
 CREATE UNIQUE INDEX "environment_deployment_one_started_attempt_idx" ON "environment_deployment" ("environment_id") WHERE "status" in ('planning','deploying');--> statement-breakpoint
 CREATE INDEX "environment_deployment_inngest_run_id_idx" ON "environment_deployment" ("inngest_run_id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_retry_of_idx" ON "environment_deployment" ("retry_of_deployment_id");--> statement-breakpoint
+CREATE INDEX "environment_deployment_build_output_cursor_idx" ON "environment_deployment_build_output" ("deployment_id","id");--> statement-breakpoint
 CREATE INDEX "environment_deployment_event_cursor_idx" ON "environment_deployment_event" ("deployment_id","id");--> statement-breakpoint
 CREATE INDEX "environment_saved_state_snapshot_organization_id_idx" ON "environment_saved_state_snapshot" ("organization_id");--> statement-breakpoint
 CREATE INDEX "environment_saved_state_snapshot_environment_created_at_idx" ON "environment_saved_state_snapshot" ("environment_id","created_at");--> statement-breakpoint
@@ -903,16 +910,8 @@ ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_organiza
 ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_lineage_id_resource_lineage_id_fkey" FOREIGN KEY ("lineage_id") REFERENCES "resource_lineage"("id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_nABwUGd5rp5C_fkey" FOREIGN KEY ("variable_group_id") REFERENCES "environment_variable_group"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_krkfQwOLhWDI_fkey" FOREIGN KEY ("project_id","environment_id") REFERENCES "environment"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_zQ2aoOGRLIOR_fkey" FOREIGN KEY ("project_id","lineage_id") REFERENCES "resource_lineage"("project_id","id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "environment_resource" ADD CONSTRAINT "environment_resource_s2Nqmux9EkpK_fkey" FOREIGN KEY ("project_id","variable_group_id") REFERENCES "environment_variable_group"("project_id","id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "environment_variable_group" ADD CONSTRAINT "environment_variable_group_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "environment_variable_group" ADD CONSTRAINT "environment_variable_group_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "environment_variable_group" ADD CONSTRAINT "environment_variable_group_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "environment_variable_group" ADD CONSTRAINT "environment_variable_group_hiba8dNGKiwl_fkey" FOREIGN KEY ("lineage_id") REFERENCES "variable_group_lineage"("id") ON DELETE RESTRICT;--> statement-breakpoint
-ALTER TABLE "environment_variable_group" ADD CONSTRAINT "environment_variable_group_oOF37dttct8c_fkey" FOREIGN KEY ("project_id","environment_id") REFERENCES "environment"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "environment_variable_group" ADD CONSTRAINT "environment_variable_group_pbUjmr26aBQN_fkey" FOREIGN KEY ("project_id","lineage_id") REFERENCES "variable_group_lineage"("project_id","id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "resource_lineage" ADD CONSTRAINT "resource_lineage_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "resource_lineage" ADD CONSTRAINT "resource_lineage_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "service" ADD CONSTRAINT "service_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
@@ -921,33 +920,44 @@ ALTER TABLE "service" ADD CONSTRAINT "service_environment_id_environment_id_fkey
 ALTER TABLE "service" ADD CONSTRAINT "service_lineage_id_service_lineage_id_fkey" FOREIGN KEY ("lineage_id") REFERENCES "service_lineage"("id") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "service" ADD CONSTRAINT "service_bvUAv6STak07_fkey" FOREIGN KEY ("project_id","environment_id") REFERENCES "environment"("project_id","id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "service" ADD CONSTRAINT "service_1xRYD1MXFhcT_fkey" FOREIGN KEY ("project_id","lineage_id") REFERENCES "service_lineage"("project_id","id") ON DELETE RESTRICT;--> statement-breakpoint
+ALTER TABLE "service_lineage" ADD CONSTRAINT "service_lineage_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "service_lineage" ADD CONSTRAINT "service_lineage_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "service_registry_credential" ADD CONSTRAINT "service_registry_credential_fC7nGiZZPNsV_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "service_registry_credential" ADD CONSTRAINT "service_registry_credential_service_id_service_id_fkey" FOREIGN KEY ("service_id") REFERENCES "service"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable" ADD CONSTRAINT "variable_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_service_id_service_id_fkey" FOREIGN KEY ("service_id") REFERENCES "service"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_variable_group_id_environment_variable_group_id_fkey" FOREIGN KEY ("variable_group_id") REFERENCES "environment_variable_group"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_dFGv8UXjv6eg_fkey" FOREIGN KEY ("environment_id","service_id") REFERENCES "service"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable" ADD CONSTRAINT "variable_AmBxCm84j9h8_fkey" FOREIGN KEY ("environment_id","variable_group_id") REFERENCES "environment_variable_group"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "variable_group_lineage" ADD CONSTRAINT "variable_group_lineage_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "variable_secret" ADD CONSTRAINT "variable_secret_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable_secret" ADD CONSTRAINT "variable_secret_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "variable_secret" ADD CONSTRAINT "variable_secret_fgbg4UfEzo6H_fkey" FOREIGN KEY ("environment_id","variable_id") REFERENCES "variable"("environment_id","id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_Lofdv4M9OTIQ_fkey" FOREIGN KEY ("retry_of_deployment_id") REFERENCES "environment_deployment"("id");--> statement-breakpoint
 ALTER TABLE "environment_deployment" ADD CONSTRAINT "environment_deployment_92k6WdAbc3AZ_fkey" FOREIGN KEY ("environment_id","saved_state_snapshot_id") REFERENCES "environment_saved_state_snapshot"("environment_id","id") ON DELETE RESTRICT;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_output" ADD CONSTRAINT "environment_deployment_build_output_es7jBaLp3vH8_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_output" ADD CONSTRAINT "environment_deployment_build_output_Xp68IrJouNSa_fkey" FOREIGN KEY ("deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_output" ADD CONSTRAINT "environment_deployment_build_output_XF27nu5BhEx1_fkey" FOREIGN KEY ("step_id") REFERENCES "environment_deployment_build_step"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_step" ADD CONSTRAINT "environment_deployment_build_step_28D6Rkzs1URj_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_step" ADD CONSTRAINT "environment_deployment_build_step_mAOz3YRgkCxT_fkey" FOREIGN KEY ("deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_deployment_event" ADD CONSTRAINT "environment_deployment_event_eW8RHtn0mFyI_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment_event" ADD CONSTRAINT "environment_deployment_event_nkhfxU66kCFO_fkey" FOREIGN KEY ("deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_deployment_secret" ADD CONSTRAINT "environment_deployment_secret_IuNsdKp3NB8E_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment_secret" ADD CONSTRAINT "environment_deployment_secret_IIXCU5ibjYPq_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved_state_snapshot_QseWcaivJkoo_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved_state_snapshot_pYS3zmT4RKuQ_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_saved_state_snapshot" ADD CONSTRAINT "environment_saved_state_snapshot_actor_id_user_id_fkey" FOREIGN KEY ("actor_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
+ALTER TABLE "core_operation_event" ADD CONSTRAINT "core_operation_event_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "core_operation_event" ADD CONSTRAINT "core_operation_event_watch_id_core_operation_watch_id_fkey" FOREIGN KEY ("watch_id") REFERENCES "core_operation_watch"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "core_operation_watch" ADD CONSTRAINT "core_operation_watch_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot" ADD CONSTRAINT "environment_node_config_snapshot_3y0HYOFWmCwQ_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot" ADD CONSTRAINT "environment_node_config_snapshot_CUaPaujMBOIs_fkey" FOREIGN KEY ("environment_deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot" ADD CONSTRAINT "environment_node_config_snapshot_D4DPm1gvv2Di_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_node_config_snapshot_secret" ADD CONSTRAINT "environment_node_config_snapshot_secret_jZo1GvXOHIs5_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_config_snapshot_secret" ADD CONSTRAINT "environment_node_config_snapshot_secret_j5H7VPFuELrf_fkey" FOREIGN KEY ("snapshot_id") REFERENCES "environment_node_config_snapshot"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_introduction" ADD CONSTRAINT "environment_node_introduction_aSA9HOqVYGRT_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_introduction" ADD CONSTRAINT "environment_node_introduction_YPW21fX4uIUZ_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
+ALTER TABLE "environment_node_introduction_secret" ADD CONSTRAINT "environment_node_introduction_secret_HaNAhrDo0dtU_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_node_introduction_secret" ADD CONSTRAINT "environment_node_introduction_secret_sC7ALWFOnE38_fkey" FOREIGN KEY ("environment_id","node_type","node_id") REFERENCES "environment_node_introduction"("environment_id","node_type","node_id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "organization_pairing" ADD CONSTRAINT "organization_pairing_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "teardown_attempt" ADD CONSTRAINT "teardown_attempt_requested_by_user_id_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "user"("id") ON DELETE RESTRICT;--> statement-breakpoint
@@ -964,8 +974,147 @@ ALTER TABLE "machine_remove_attempt" ADD CONSTRAINT "machine_remove_attempt_requ
 ALTER TABLE "organization_machine" ADD CONSTRAINT "organization_machine_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "github_branch_projection" ADD CONSTRAINT "github_branch_projection_Udo5xaDQmVxR_fkey" FOREIGN KEY ("last_delivery_id","last_receipt_sequence") REFERENCES "github_webhook_delivery"("delivery_id","receipt_sequence") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "github_check_suite_projection" ADD CONSTRAINT "github_check_suite_projection_9FLSHaRf6WgI_fkey" FOREIGN KEY ("last_delivery_id","last_receipt_sequence") REFERENCES "github_webhook_delivery"("delivery_id","receipt_sequence") ON DELETE RESTRICT;--> statement-breakpoint
+ALTER TABLE "github_environment_trigger" ADD CONSTRAINT "github_environment_trigger_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "github_environment_trigger" ADD CONSTRAINT "github_environment_trigger_environment_id_environment_id_fkey" FOREIGN KEY ("environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "github_environment_trigger" ADD CONSTRAINT "github_environment_trigger_dspFptTlur3h_fkey" FOREIGN KEY ("source_delivery_id","source_receipt_sequence") REFERENCES "github_webhook_delivery"("delivery_id","receipt_sequence") ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE "github_installation" ADD CONSTRAINT "github_installation_user_id_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "github_repository_cache" ADD CONSTRAINT "github_repository_cache_user_id_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "organization_billing_state" ADD CONSTRAINT "organization_billing_state_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;
+ALTER TABLE "organization_billing_state" ADD CONSTRAINT "organization_billing_state_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
+-- One log row per statement per Organization. Arguments: the Organization column, then the key columns
+-- (joined with ':' into the collection key). Over 100 keys set all_rows and drop the ids.
+CREATE FUNCTION organization_change_log() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  key_expression text;
+  old_keys text := 'SELECT NULL::uuid AS organization_id, NULL::text AS key WHERE false';
+  new_keys text := old_keys;
+BEGIN
+  SELECT string_agg(format('%I::text', key_column), ' || '':'' || ')
+    INTO key_expression FROM unnest(TG_ARGV[1:TG_NARGS - 1]) AS key_column;
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    new_keys := format('SELECT %I AS organization_id, %s AS key FROM new_rows', TG_ARGV[0], key_expression);
+  END IF;
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    old_keys := format('SELECT %I AS organization_id, %s AS key FROM old_rows', TG_ARGV[0], key_expression);
+  END IF;
+  EXECUTE format($sql$
+    INSERT INTO organization_change (organization_id, source_table, changed_ids, deleted_ids, all_rows)
+    SELECT organization_id, %L,
+      CASE WHEN count(*) > 100 THEN '{}' ELSE coalesce(array_agg(key) FILTER (WHERE NOT deleted), '{}') END,
+      CASE WHEN count(*) > 100 THEN '{}' ELSE coalesce(array_agg(key) FILTER (WHERE deleted), '{}') END,
+      count(*) > 100
+    FROM (
+      SELECT DISTINCT organization_id, key, false AS deleted FROM (%s) changed
+      UNION ALL
+      (SELECT organization_id, key, true FROM (%s) gone EXCEPT SELECT organization_id, key, true FROM (%s) changed)
+    ) keys
+    GROUP BY organization_id
+  $sql$, TG_TABLE_NAME, new_keys, old_keys, new_keys);
+  RETURN NULL;
+END
+$$;--> statement-breakpoint
+-- Transition tables allow one event per trigger, so each table gets three.
+CREATE FUNCTION organization_change_attach(target regclass, organization_column text, VARIADIC key_columns text[])
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  arguments text := (SELECT string_agg(quote_literal(argument), ', ') FROM unnest(organization_column || key_columns) AS argument);
+BEGIN
+  EXECUTE format('CREATE TRIGGER organization_change_insert AFTER INSERT ON %s REFERENCING NEW TABLE AS new_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION organization_change_log(%s)', target, arguments);
+  EXECUTE format('CREATE TRIGGER organization_change_update AFTER UPDATE ON %s REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION organization_change_log(%s)', target, arguments);
+  EXECUTE format('CREATE TRIGGER organization_change_delete AFTER DELETE ON %s REFERENCING OLD TABLE AS old_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION organization_change_log(%s)', target, arguments);
+END
+$$;--> statement-breakpoint
+-- Every organization-owned table logs its changes; `organization` is keyed by its own id.
+-- Organization and key columns match changeSources in src/modules/organization/change-log.sources.ts.
+SELECT organization_change_attach('organization', 'id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('project', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('user_project_preference', 'organization_id', 'project_id');
+--> statement-breakpoint
+SELECT organization_change_attach('service', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('resource_lineage', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_resource', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_canvas_node_position', 'organization_id', 'resource_type', 'resource_id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_deployment', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_deployment_event', 'organization_id', 'deployment_id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_saved_state_snapshot', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_node_config_snapshot', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_node_introduction', 'organization_id', 'node_type', 'node_id');
+--> statement-breakpoint
+SELECT organization_change_attach('volume_remove_attempt', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('organization_pairing', 'organization_id', 'organization_id');
+--> statement-breakpoint
+SELECT organization_change_attach('core_operation_event', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('core_operation_watch', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('enrollment_allocation', 'organization_id', 'cluster_key');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_deployment_build_output', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_deployment_build_step', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_deployment_secret', 'organization_id', 'environment_deployment_id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_node_config_snapshot_secret', 'organization_id', 'snapshot_id');
+--> statement-breakpoint
+SELECT organization_change_attach('environment_node_introduction_secret', 'organization_id', 'environment_id', 'node_type', 'node_id');
+--> statement-breakpoint
+SELECT organization_change_attach('github_environment_trigger', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('invitation', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('machine_enrollment_token', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('machine_remove_attempt', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('member', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('organization_billing_state', 'organization_id', 'organization_id');
+--> statement-breakpoint
+SELECT organization_change_attach('organization_machine', 'organization_id', 'machine_id');
+--> statement-breakpoint
+SELECT organization_change_attach('service_lineage', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('service_registry_credential', 'organization_id', 'service_id');
+--> statement-breakpoint
+SELECT organization_change_attach('teardown_attempt', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('variable', 'organization_id', 'id');
+--> statement-breakpoint
+SELECT organization_change_attach('variable_secret', 'organization_id', 'variable_id');--> statement-breakpoint
+CREATE TABLE "organization_cluster_domain" (
+	"organization_id" uuid PRIMARY KEY,
+	"endpoint" text NOT NULL,
+	"name" text NOT NULL,
+	"encrypted_token" jsonb NOT NULL,
+	"reserved_at" timestamp with time zone NOT NULL,
+	"lease_renewed_at" timestamp with time zone NOT NULL,
+	"records_synced_at" timestamp with time zone,
+	"record_addresses" jsonb DEFAULT '[]' NOT NULL,
+	"unreachable" jsonb DEFAULT '[]' NOT NULL,
+	"encrypted_certificate_private_key" jsonb,
+	"certificate_chain" text,
+	"certificate_not_after" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "organization_cluster_domain_record_addresses_check" CHECK (jsonb_typeof("record_addresses") = 'array'),
+	CONSTRAINT "organization_cluster_domain_certificate_check" CHECK (num_nulls("encrypted_certificate_private_key", "certificate_chain", "certificate_not_after") in (0, 3))
+);
+--> statement-breakpoint
+ALTER TABLE "organization_cluster_domain" ADD CONSTRAINT "organization_cluster_domain_eJqKfNjJBhUj_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
+SELECT organization_change_attach('organization_cluster_domain', 'organization_id', 'organization_id');

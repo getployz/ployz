@@ -8,15 +8,15 @@ import type { CollectionName, CollectionRead } from "./read.contract";
 import { orgStoreTableNames } from "#/test/org-store-tables";
 import { orgStoreTables } from "./collections";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 
 type ServiceRow = { id: string; name: string; organizationId: string };
 type Organization = { id: string; slug: string; userId: string; projectId: string; environmentId: string };
 
 describe("incremental Service reads from the Organization change log", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   let alpha: Organization;
   let beta: Organization;
 
@@ -59,7 +59,7 @@ describe("incremental Service reads from the Organization change log", () => {
   }
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
     alpha = await createOrganization(`alpha-${randomUUID().slice(0, 8)}`);
     beta = await createOrganization(`beta-${randomUUID().slice(0, 8)}`);
   }, 60_000);
@@ -216,7 +216,7 @@ describe("incremental Service reads from the Organization change log", () => {
 });
 
 describe("every Org Store collection reads its changes from the Organization change log", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   const organizationId = randomUUID();
   const userId = randomUUID();
   const otherUserId = randomUUID();
@@ -233,7 +233,7 @@ describe("every Org Store collection reads its changes from the Organization cha
   const serialized = (rows: object[]) => rows.map((row) => JSON.stringify(row)).sort();
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
     const lineageId = randomUUID();
     const snapshotId = randomUUID();
     await sql("insert into organization (id, name, slug) values ($1, $2, $2)", [organizationId, slug]);

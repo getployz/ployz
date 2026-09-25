@@ -335,7 +335,6 @@ fn run_cli(direct: &str, args: &[&str]) -> process::Output {
             "/missing-ployz-test-config",
         ])
         .args(args)
-        .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
         .output()
         .unwrap();
     assert!(

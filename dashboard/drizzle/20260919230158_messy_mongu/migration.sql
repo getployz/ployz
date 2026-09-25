@@ -1,1 +1,0 @@
-ALTER TABLE "session" ADD COLUMN "sidebar_open" boolean DEFAULT true NOT NULL;

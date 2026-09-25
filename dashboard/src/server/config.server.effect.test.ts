@@ -57,6 +57,16 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect("names every missing required variable at once", () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(load({}));
+      assert.instanceOf(failure, Config.ConfigError);
+      for (const name of Object.keys(requiredEnvironment)) {
+        assert.include(failure.message, name);
+      }
+    }),
+  );
+
   it.effect("loads hosted Polar with one product", () =>
     Effect.gen(function* () {
       const config = yield* load({ ...requiredEnvironment, ...hostedPolar });

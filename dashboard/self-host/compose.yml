@@ -1,0 +1,95 @@
+# Self-hosted Ployz Cloud. Setup and upgrades: dashboard/README.md → Self-host.
+# Release assets pin the image tag; from a checkout, set PLOYZ_CLOUD_VERSION.
+name: ployz-cloud-self-host
+
+x-app: &app
+  image: ghcr.io/getployz/ployz-cloud:${PLOYZ_CLOUD_VERSION:?set PLOYZ_CLOUD_VERSION to a release tag}
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgres://ployz:${POSTGRES_PASSWORD:?}@postgres:5432/ployz_cloud
+    INNGEST_BASE_URL: http://inngest:8288
+    INNGEST_CONNECT_GATEWAY_URL: ws://inngest:8289/v0/connect
+    NPM_CONFIG_UPDATE_NOTIFIER: 'false'
+  depends_on:
+    postgres:
+      condition: service_healthy
+    inngest:
+      condition: service_started
+
+services:
+  # One-shot: `docker compose run --rm web npm run db:migrate` before every start or upgrade.
+  web:
+    <<: *app
+    command: [npm, start]
+    ports:
+      - '${WEB_PORT:-3000}:3000'
+
+  worker:
+    <<: *app
+    command: [npm, run, start:worker]
+    healthcheck:
+      # 200 only while the Inngest Connect connection is active.
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/ready').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Connect drains active steps on SIGTERM before the worker exits.
+    stop_grace_period: 30m
+
+  inngest:
+    image: inngest/inngest:v1.45.1
+    restart: unless-stopped
+    command: [inngest, start]
+    environment:
+      INNGEST_EVENT_KEY: ${INNGEST_EVENT_KEY:?}
+      INNGEST_SIGNING_KEY: ${INNGEST_SIGNING_KEY:?}
+      INNGEST_POSTGRES_URI: postgres://ployz:${POSTGRES_PASSWORD:?}@postgres:5432/inngest
+      INNGEST_REDIS_URI: redis://redis:6379
+    ports:
+      # Inngest UI and API for the operator only; the worker uses the internal network.
+      - '127.0.0.1:8288:8288'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ployz_cloud
+      POSTGRES_USER: ployz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    configs:
+      - source: inngest-database
+        target: /docker-entrypoint-initdb.d/inngest.sql
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U ployz -d ployz_cloud]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+configs:
+  inngest-database:
+    content: CREATE DATABASE inngest;
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -201,10 +201,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.release-tag || github.sha }}
-      - if: github.event_name != 'pull_request'
-        run: bash scripts/test-cli-installer.sh
-      - if: github.event_name != 'pull_request'
-        run: bash scripts/test-daemon-lifecycle.sh
       - uses: actions/download-artifact@v4
         with:
           pattern: release-linux-*

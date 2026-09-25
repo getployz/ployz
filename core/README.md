@@ -1,7 +1,7 @@
 # Ployz Core
 
-Deployment engine, CLI, daemon, and SDK for a cluster of Docker machines.
-The hosted application lives in [dashboard/](../dashboard/README.md).
+Deployment engine, `ployz` CLI, `ployzd` daemon, and internal SDK for a Cluster
+of Docker Machines. Ployz Cloud lives in [dashboard/](../dashboard/README.md).
 
 ## Install
 
@@ -10,7 +10,31 @@ curl -fsSL https://ployz.sh | sh
 brew install getployz/ployz/ployz
 ```
 
-Release process: [docs/RELEASE.md](docs/RELEASE.md).
+Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a 0.x daemon
+keeps working across: [DESIGN.md](DESIGN.md#stable-promise).
+
+## CLI
+
+The CLI operates a Cluster over SSH contexts. Cloud authors and deploys
+Services; the CLI has no deploy, build, or image command.
+
+```text
+ployz
+├── cloud      enroll
+├── machine    init · add · ls · inspect · logs · rename · rm · rtt · update
+│              upgrade [inspect] · build-cache-clear
+├── service    ls · inspect · logs · exec · scale · start · stop · rm
+├── volume     create · ls · inspect · rm
+├── ingress    config · deploy · logs
+├── project    ls · rm
+├── ctx        ls · show · use · rm · connection
+├── proxy
+├── ps
+├── version
+└── completion
+```
+
+`crates/ployz/tests/cli_shape.rs` pins this tree; there are no aliases.
 
 `ployz machine add` saves subnet assignments beside its configuration file in
 `<config-stem>.enrollment/` before publishing or joining. Commands using that
@@ -21,17 +45,28 @@ cannot establish a shared scope. Different computers, configuration stores, and
 Cloud remain independent operators and can still choose overlapping subnets;
 there is no automatic reclamation, cross-store synchronization, or subnet repair.
 
+`ployzd` issues https Ingress certificates from the ACME directory named by
+`PLOYZ_ACME_DIRECTORY` in the daemon environment:
+
+| `PLOYZ_ACME_DIRECTORY` | Certificate issuance |
+| --- | --- |
+| unset | Let's Encrypt production |
+| a URL | that ACME directory |
+| empty | off |
+
 ## Workspace
 
 Run Cargo and engine script commands from `core/`.
 
 - `crates/ployz-core`: domain and wire contracts shared by both binaries
 - `crates/ployz`: CLI for Linux, macOS, and Windows through WSL
+- `crates/ployz-build`: BuildKit execution for one captured Build
+- `crates/ployz-config-wasm`: the SDK's config ABI, compiled to WASM
 - `crates/ployz-sdk`: internal workspace package `@ployz/sdk`, never published. napi serves Machine RPC; config runs on the `ployz-config-wasm` build in Node and the browser. Its TypeScript declarations are derived from the Rust wire types by `cargo test -p ployz --test sdk_payloads`
 - `crates/ployzd`: Linux-only daemon
 - `crates/ployz-testkit`: unpublished support crate used only by tests
 
-Each release archive ships one binary. The remote management transport (iroh, via the self-hosted Ployz Relay) is in-process in `ployz`, `ployzd`, and the SDK; there is no helper process.
+Each release archive ships one binary. The remote management transport (iroh, via the Ployz-hosted Ployz Relay) is in-process in `ployz`, `ployzd`, and the SDK; there is no helper process.
 
 Cloud builds each Git Service on one Build Machine. The Service's build settings
 select a Dockerfile or Railpack; a failed recipe never falls back to another.
@@ -53,10 +88,6 @@ destination's platform. A Machine serves an image only when Docker reports that
 variant's manifest, configuration and layers present in its containerd store: a
 tag, an image index, or a listed-but-absent platform is not content, so a peer
 that pulled one platform is never the source for another.
-
-The [prototype findings](https://github.com/getployz/ployz2/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md)
-preserve the evidence for this assembly approach. They used shipped beta binaries
-and emulated ARM64; they do not qualify this implementation or native ARM64.
 
 Service variables become build variables without changing runtime values; a
 Railpack build command is passed as `RAILPACK_BUILD_CMD`. Values travel as

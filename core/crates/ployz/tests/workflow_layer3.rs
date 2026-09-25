@@ -314,7 +314,6 @@ fn ployz<const N: usize>(address: std::net::SocketAddr, args: [&str; N]) -> std:
     Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["--connect", &format!("tcp://{address}")])
         .args(args)
-        .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
         .output()
         .unwrap()
 }

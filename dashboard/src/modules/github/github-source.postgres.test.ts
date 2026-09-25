@@ -7,10 +7,10 @@ import { materializeGithubSource } from "./github-source.server";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
-import { startGithubPostgresTestHarness } from "./github-ingestion.postgres-test-harness";
+import { startPostgresTestHarness } from "#/test/postgres";
 
 it.each([17, null])("materializes pinned source with installation %s and cleans it up after failure", async (sourceInstallationId) => {
-  const harness = await startGithubPostgresTestHarness();
+  const harness = await startPostgresTestHarness();
   try {
     const user = randomUUID(); const organization = randomUUID();
     await harness.pool.query('insert into "user"(id,email,name) values($1,$2,$3)', [user, "source@example.test", "Source"]);

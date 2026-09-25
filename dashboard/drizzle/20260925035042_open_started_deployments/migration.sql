@@ -1,1 +1,0 @@
-ALTER TABLE "user" ADD COLUMN "open_started_deployments" boolean DEFAULT true NOT NULL;

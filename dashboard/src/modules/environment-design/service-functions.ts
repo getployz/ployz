@@ -8,7 +8,6 @@ import {
 import {
   clearServiceRegistryCredential,
   createService,
-  deleteServices,
   restoreServiceRegistryCredential,
   setServiceRegistryCredential,
   updateService,
@@ -17,7 +16,6 @@ import {
 import {
   clearServiceRegistryCredentialSchema,
   createServiceSchema,
-  deleteServicesSchema,
   restoreServiceRegistryCredentialSchema,
   setServiceRegistryCredentialSchema,
   updateServiceCanvasPositionSchema,
@@ -38,13 +36,6 @@ export const updateServiceServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(updateServiceSchema))
   .handler(({ context, data }) =>
     runActor(context, updateService(context.actor, data)),
-  );
-
-export const deleteServicesServerFn = createServerFn({ method: "POST" })
-  .middleware(middleware)
-  .validator(strictValidator(deleteServicesSchema))
-  .handler(({ context, data }) =>
-    runActor(context, deleteServices(context.actor, data)),
   );
 
 export const updateServiceCanvasPositionServerFn = createServerFn({

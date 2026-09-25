@@ -8,9 +8,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { createScheduleClusterDomainSync, createSyncClusterDomain } from "#/modules/cluster-domain/sync.inngest";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import { asTestDouble } from "#/lib/test-double";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -32,7 +32,7 @@ const machine = (id: string, public_ip: string | null, accepts_ingress = true) =
 const idOf = (id: string) => id.repeat(32).slice(0, 32) as MachineId;
 
 describe("sync-cluster-domain", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   let hostedDns: FakeHostedDns;
   /** The runtime frame the stubbed session returns; null means the Cluster is not connected. */
   let frame: RuntimeWatchView | null;
@@ -95,7 +95,7 @@ describe("sync-cluster-domain", () => {
   const calls = () => hostedDns.requests.map(({ method, path }) => `${method} ${path}`);
 
   beforeAll(async () => {
-    [harness, hostedDns] = await Promise.all([startGithubPostgresTestHarness(), startFakeHostedDns()]);
+    [harness, hostedDns] = await Promise.all([startPostgresTestHarness(), startFakeHostedDns()]);
     const realFetch = globalThis.fetch;
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = new URL(input instanceof Request ? input.url : input);

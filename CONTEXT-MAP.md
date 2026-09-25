@@ -20,4 +20,4 @@ At the boundary:
 - Shared runtime bootstrap terms follow the Engine glossary; the Cloud glossary
   supplies their product language.
 
-Architectural decisions live in [docs/adr/](docs/adr/).
+Design decisions live in each project's `DESIGN.md`; there is no separate ADR log.

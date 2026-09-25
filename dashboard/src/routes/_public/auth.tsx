@@ -1,7 +1,7 @@
 import { getAuthSession } from '#/auth/auth'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { buildMarketingMeta } from '#/components/marketing/meta'
-import { LoginPanel } from '#/routes/_public/-components/LoginDialog'
+import { LoginPanel } from '#/routes/_public/-components/LoginPanel'
 
 export const Route = createFileRoute('/_public/auth')({
   beforeLoad: async () => {
@@ -26,7 +26,7 @@ export const Route = createFileRoute('/_public/auth')({
 
 function RouteComponent() {
   return (
-    <div className="flex flex-1 items-center justify-center px-4 py-12">
+    <div className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
         <LoginPanel />
       </div>

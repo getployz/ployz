@@ -12,10 +12,9 @@ import { Effect, Result as EffectResult } from "effect";
 import { planGithubBranchEvaluation } from "#/modules/github/github-branch-evaluation";
 import type { GithubBranchCursor } from "#/modules/github/github-ingestion.repository";
 import {
-  runGithubRepositoryResult as runGithubRepositoryResultWithHarness,
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import * as repository from "#/modules/github/github-ingestion.repository";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -116,7 +115,7 @@ function savedIntent(
 }
 
 describe("GitHub branch deployment admission", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   const inngest = new Inngest({ id: "github-branch-admission-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
   const runGithubRepositoryResult = <Success, Failure>(
@@ -126,13 +125,10 @@ describe("GitHub branch deployment admission", () => {
       import("#/server/database.server").Database | InngestClient
     >,
   ) =>
-    runGithubRepositoryResultWithHarness(
-      harness,
-      operation.pipe(Effect.provideService(InngestClient, inngest)),
-    );
+    harness.runEffect(Effect.result(operation.pipe(Effect.provideService(InngestClient, inngest))));
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

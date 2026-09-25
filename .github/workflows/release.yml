@@ -53,8 +53,21 @@ jobs:
       goreleaser-args: release --clean --skip=publish
       release-tag: ${{ inputs.tag || github.ref_name }}
 
+  cloud:
+    needs: [tag]
+    uses: ./.github/workflows/cloud.yml
+    secrets:
+      KACHE_S3_READ_ACCESS_KEY_ID: ${{ secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
+      KACHE_S3_READ_SECRET_ACCESS_KEY: ${{ secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
+    permissions:
+      contents: read
+      actions: write
+      packages: write
+    with:
+      release-tag: ${{ inputs.tag || github.ref_name }}
+
   publish:
-    needs: [tag, artifacts]
+    needs: [tag, artifacts, cloud]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -67,5 +80,14 @@ jobs:
           name: release-contracts
           path: core
       - run: bash scripts/publish-github-release.sh "$RELEASE_TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attach self-host Compose pinned to this release
+        working-directory: dashboard/self-host
+        run: |
+          sed "s|\${PLOYZ_CLOUD_VERSION:?[^}]*}|$RELEASE_TAG|" compose.yml > ployz-cloud-compose.yml
+          grep -Fq "ghcr.io/getployz/ployz-cloud:$RELEASE_TAG" ployz-cloud-compose.yml
+          cp .env.example ployz-cloud.env.example
+          gh release upload "$RELEASE_TAG" ployz-cloud-compose.yml ployz-cloud.env.example
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

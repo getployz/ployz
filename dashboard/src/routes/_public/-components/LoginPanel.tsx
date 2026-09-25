@@ -3,31 +3,16 @@ import {
   useState,
   useTransition,
   type FormEvent,
-  type MouseEvent,
-  type ReactNode,
 } from "react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Button } from "#/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "#/components/ui/dialog";
-import {
-  Link,
   useHydrated,
   useRouter,
   useRouterState,
 } from "@tanstack/react-router";
 import { Spinner } from "#/components/ui/spinner";
 import { authClient } from "#/auth/auth-client";
-import {
-  buttonVariants,
-  type ButtonVariants,
-} from "#/components/ui/button-variants";
-import { cn } from "#/lib/utils";
 
 export function LoginPanel() {
   const isHydrated = useHydrated();
@@ -165,53 +150,5 @@ export function LoginPanel() {
         ) : null}
       </div>
     </div>
-  );
-}
-
-type LoginDialogProps = Pick<ButtonVariants, "size" | "variant"> & {
-  children?: ReactNode;
-  className?: string;
-};
-
-export default function LoginDialog({
-  children = "Sign in",
-  className,
-  size = "sm",
-  variant = "default",
-}: LoginDialogProps) {
-  const isHydrated = useHydrated();
-  const [open, setOpen] = useState(false);
-
-  function handleTriggerClick(event: MouseEvent<HTMLAnchorElement>) {
-    if (!isHydrated) {
-      return;
-    }
-
-    event.preventDefault();
-    setOpen(true);
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Link
-        to="/auth"
-        preload="intent"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className={cn(buttonVariants({ size, variant }), className)}
-        onClick={handleTriggerClick}
-      >
-        {children}
-      </Link>
-      <DialogContent className="max-w-md">
-        <DialogHeader className="sr-only">
-          <DialogTitle>Sign in</DialogTitle>
-          <DialogDescription>
-            Sign in with GitHub to continue.
-          </DialogDescription>
-        </DialogHeader>
-        <LoginPanel />
-      </DialogContent>
-    </Dialog>
   );
 }

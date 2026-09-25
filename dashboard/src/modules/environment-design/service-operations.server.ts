@@ -220,18 +220,6 @@ export const updateService = Effect.fn("EnvironmentDesign.updateService")(
   },
 );
 
-export const deleteServices = Effect.fn("EnvironmentDesign.deleteServices")(
-  function* (actor: Actor, input: { readonly organizationSlug: string; readonly environmentId: string; readonly revision: string; readonly serviceIds: readonly string[] }) {
-    yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationResult(Effect.gen(function* () {
-      const document = yield* loadEnvironmentDocument(input.environmentId, true);
-      yield* requireDocumentRevision(document, input.revision);
-      document.intent.services = document.intent.services.filter((node) => !input.serviceIds.includes(node.id));
-      return yield* writeEnvironmentDocument(document, document.intent);
-    }));
-  },
-);
-
 export const updateServiceCanvasPosition = Effect.fn(
   "EnvironmentDesign.updateServiceCanvasPosition",
 )(function* (

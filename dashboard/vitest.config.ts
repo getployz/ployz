@@ -34,6 +34,8 @@ export default defineConfig({
           name: "postgres",
           include: ["src/**/*.postgres.test.ts"],
           maxWorkers: 2,
+          // Removing a test container under load can outlast the default 10s hook timeout.
+          hookTimeout: 60_000,
           sequence: { groupOrder: 1 },
         },
       },

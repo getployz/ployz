@@ -303,11 +303,7 @@ pub(crate) fn ssh_control_args(control_path: Option<&Path>) -> Vec<String> {
             "-o".into(),
             format!("ControlPath={}", path.display()),
             "-o".into(),
-            format!(
-                "ControlPersist={}",
-                std::env::var(crate::cli::env::SSH_CONTROL_PERSIST)
-                    .unwrap_or_else(|_| "10m".into())
-            ),
+            "ControlPersist=10m".into(),
         ]);
     }
     args

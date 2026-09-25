@@ -1,8 +1,8 @@
 # Workspace
 
 - `core/` owns the engine, CLI, daemon, SDK, native helpers, and releases. Run Cargo there; apply relevant `core/CODING_STANDARDS.md` rules when changing core code.
-- `dashboard/` owns the hosted application, backend, workflows, and marketing. Run pnpm there.
-- Before designing a feature, read the affected project's `DESIGN.md`. A change that fights one of its bets needs an ADR justifying the exception — or a redesign.
+- `dashboard/` owns Ployz Cloud: web, worker, durable workflows, and self-host packaging. Run pnpm there.
+- Before designing a feature, read the affected project's `DESIGN.md`. A change that fights one of its bets needs a `DESIGN.md` amendment justifying the exception — or a redesign.
 - When changing domain behavior, terminology, or ownership boundaries, follow [docs/agents/domain.md](docs/agents/domain.md).
 
 # Change workflow

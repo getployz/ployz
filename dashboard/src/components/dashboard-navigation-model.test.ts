@@ -3,17 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   createDashboardNavItems,
   getDashboardDestination,
-  getDashboardSectionLabel,
   getDashboardSectionFromRouteId,
 } from "#/components/dashboard-navigation-model";
 
 describe("dashboard navigation model", () => {
-  it("names the legacy organization logs route without adding it to navigation", () => {
-    const scope = { kind: "all", organizationSlug: "acme" } as const;
-    expect(getDashboardSectionLabel(scope, "logs")).toBe("Logs");
-    expect(createDashboardNavItems(scope).some((item) => item.section === "logs")).toBe(false);
-  });
-
   it("shows only organization destinations at organization scope", () => {
     const items = createDashboardNavItems({
       kind: "all",

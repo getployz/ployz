@@ -194,13 +194,6 @@ const serviceRegistryCredentialScopeFields = {
   revision: Uuid,
 };
 
-export const deleteServicesSchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  revision: Uuid,
-  serviceIds: Schema.Array(Uuid).check(Schema.isMinLength(1)),
-});
-
 export const updateServiceCanvasPositionSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,

@@ -1,5 +1,4 @@
 use std::{
-    env,
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
     os::unix::fs::PermissionsExt,
@@ -19,17 +18,66 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A verified copy of this CLI release's daemon, owned by a private directory.
 pub(super) struct Bootstrap {
-    directory: TempDir,
+    /// Removes the extracted daemon on drop.
+    _directory: TempDir,
     daemon: PathBuf,
-    archive: PathBuf,
-    checksums: PathBuf,
-    local_source: bool,
 }
 
 impl Bootstrap {
-    /// Acquire, checksum, and extract the bootstrap for a Linux architecture.
+    /// Download, checksum, and extract this release's bootstrap for a Linux architecture.
     pub(super) async fn acquire(architecture: &str) -> Result<Self, ProvisionError> {
         let archive_name = daemon_archive(architecture)?;
+        let base = format!(
+            "{RELEASE_REPOSITORY}/releases/download/v{}",
+            env!("CARGO_PKG_VERSION")
+        );
+        let client = reqwest::Client::builder()
+            .https_only(true)
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(30))
+            .user_agent("ployz-bootstrap")
+            .build()
+            .map_err(|source| ProvisionError::BootstrapDownload {
+                stage: "build bootstrap download client",
+                source,
+            })?;
+        let archive = download(
+            &client,
+            &format!("{base}/{archive_name}"),
+            "download bootstrap daemon archive",
+        )
+        .await?;
+        let checksums = download(
+            &client,
+            &format!("{base}/checksums.txt"),
+            "download bootstrap release checksums",
+        )
+        .await?;
+        Self::extract(archive_name, &archive, &checksums).await
+    }
+
+    /// Build a bootstrap from a local release directory, verified like a download.
+    #[cfg(test)]
+    pub(super) async fn from_release_dir(
+        release: &Path,
+        architecture: &str,
+    ) -> Result<Self, ProvisionError> {
+        let archive_name = daemon_archive(architecture)?;
+        let read = |name: &str| {
+            fs::read(release.join(name)).map_err(|source| ProvisionError::BootstrapIo {
+                stage: "read local bootstrap release",
+                source,
+            })
+        };
+        Self::extract(archive_name, &read(archive_name)?, &read("checksums.txt")?).await
+    }
+
+    async fn extract(
+        archive_name: &str,
+        archive: &[u8],
+        checksums: &[u8],
+    ) -> Result<Self, ProvisionError> {
+        verify_checksum(archive, checksums, archive_name)?;
         let directory = tempfile::Builder::new()
             .prefix("ployz-bootstrap-")
             .tempdir()
@@ -37,60 +85,16 @@ impl Bootstrap {
                 stage: "create bootstrap directory",
                 source,
             })?;
-        let archive = directory.path().join(archive_name);
-        let checksums = directory.path().join("checksums.txt");
-        let (archive_bytes, checksum_bytes, local_source) =
-            if let Some(source) = env::var_os("PLOYZ_RELEASE_DIR") {
-                let source = PathBuf::from(source);
-                let archive_bytes =
-                    read_file(&source.join(archive_name), "copy bootstrap daemon archive")?;
-                let checksum_bytes = read_file(
-                    &source.join("checksums.txt"),
-                    "copy bootstrap release checksums",
-                )?;
-                (archive_bytes, checksum_bytes, true)
-            } else {
-                let base = format!(
-                    "{RELEASE_REPOSITORY}/releases/download/v{}",
-                    env!("CARGO_PKG_VERSION")
-                );
-                let client = reqwest::Client::builder()
-                    .https_only(true)
-                    .connect_timeout(Duration::from_secs(10))
-                    .read_timeout(Duration::from_secs(30))
-                    .user_agent("ployz-bootstrap")
-                    .build()
-                    .map_err(|source| ProvisionError::BootstrapDownload {
-                        stage: "build bootstrap download client",
-                        source,
-                    })?;
-                let archive_bytes = download(
-                    &client,
-                    &format!("{base}/{archive_name}"),
-                    "download bootstrap daemon archive",
-                )
-                .await?;
-                let checksum_bytes = download(
-                    &client,
-                    &format!("{base}/checksums.txt"),
-                    "download bootstrap release checksums",
-                )
-                .await?;
-                (archive_bytes, checksum_bytes, false)
-            };
-
-        verify_checksum(&archive_bytes, &checksum_bytes, archive_name)?;
-        write_file(&archive, &archive_bytes, "stage bootstrap daemon archive")?;
-        write_file(
-            &checksums,
-            &checksum_bytes,
-            "stage bootstrap release checksums",
-        )?;
+        let archive_path = directory.path().join(archive_name);
+        fs::write(&archive_path, archive).map_err(|source| ProvisionError::BootstrapIo {
+            stage: "stage bootstrap daemon archive",
+            source,
+        })?;
         let daemon = directory.path().join("ployzd");
         let mut extract = Command::new("tar");
         extract
             .arg("-xzf")
-            .arg(&archive)
+            .arg(&archive_path)
             .arg("-C")
             .arg(directory.path())
             .arg("ployzd");
@@ -103,26 +107,13 @@ impl Bootstrap {
         })?;
 
         Ok(Self {
-            directory,
+            _directory: directory,
             daemon,
-            archive,
-            checksums,
-            local_source,
         })
     }
 
     pub(super) fn daemon(&self) -> &Path {
         &self.daemon
-    }
-
-    /// Return the local release directory only when it describes the selected target.
-    pub(super) fn release_dir(&self, version: &str) -> Option<&Path> {
-        (self.local_source && version == env!("CARGO_PKG_VERSION")).then(|| self.directory.path())
-    }
-
-    pub(super) fn release_files(&self, version: &str) -> Option<[&Path; 2]> {
-        self.release_dir(version)
-            .map(|_| [self.archive.as_path(), self.checksums.as_path()])
     }
 
     pub(super) async fn verify_local_version(&self) -> Result<(), ProvisionError> {
@@ -174,10 +165,6 @@ async fn download(
         .map_err(|source| ProvisionError::BootstrapDownload { stage, source })
 }
 
-fn read_file(path: &Path, stage: &'static str) -> Result<Vec<u8>, ProvisionError> {
-    fs::read(path).map_err(|source| ProvisionError::BootstrapIo { stage, source })
-}
-
 fn verify_checksum(
     archive: &[u8],
     checksums: &[u8],
@@ -210,10 +197,6 @@ fn verify_checksum(
             "{archive_name} checksum was {actual}, expected {expected}"
         )))
     }
-}
-
-fn write_file(path: &Path, bytes: &[u8], stage: &'static str) -> Result<(), ProvisionError> {
-    fs::write(path, bytes).map_err(|source| ProvisionError::BootstrapIo { stage, source })
 }
 
 async fn command_status(stage: &'static str, command: Command) -> Result<(), ProvisionError> {
@@ -263,7 +246,7 @@ fn read_from_start(file: &mut File) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn daemon_archive(architecture: &str) -> Result<&'static str, ProvisionError> {
+pub(super) fn daemon_archive(architecture: &str) -> Result<&'static str, ProvisionError> {
     match architecture {
         "x86_64" => Ok("ployzd_linux_amd64.tar.gz"),
         "aarch64" => Ok("ployzd_linux_arm64.tar.gz"),

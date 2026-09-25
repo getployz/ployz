@@ -1,13 +1,5 @@
 use super::*;
 
-#[test]
-fn parse_monitor_period_accepts_zero_and_seconds() {
-    assert_eq!(parse_monitor_period("0"), Some(Duration::ZERO));
-    assert_eq!(parse_monitor_period("0s"), Some(Duration::ZERO));
-    assert_eq!(parse_monitor_period("10s"), Some(Duration::from_secs(10)));
-    assert_eq!(parse_monitor_period("bogus"), None);
-}
-
 #[tokio::test(start_paused = true)]
 async fn dependency_gate_waits_for_all_service_containers_before_the_dependent() {
     let dependency = QualifiedService::parse("app/api").unwrap();

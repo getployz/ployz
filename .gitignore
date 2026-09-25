@@ -1,12 +1,8 @@
 *.node
 node_modules/
 /docs/*
-!/docs/adr/
-!/docs/adr/**
 !/docs/agents/
 !/docs/agents/**
-!/docs/audits/
-!/docs/audits/**
 /.claude/*
 !/.claude/skills/
 /.scratch/

@@ -2,6 +2,11 @@ name: Cloud
 
 on:
   workflow_call:
+    inputs:
+      release-tag:
+        description: Build this release tag and publish ghcr.io/getployz/ployz-cloud:<tag>
+        type: string
+        default: ''
     secrets:
       RAILWAY_TOKEN:
         required: false
@@ -49,6 +54,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
       - name: Verify image publication ordering
         run: python3 scripts/test-publish-cloud-image.py
@@ -64,6 +71,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -109,11 +118,13 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: sdk
+    needs: [sdk, static, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
       - uses: actions/download-artifact@v4
         with:
@@ -139,6 +150,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: bash scripts/publish-cloud-image.sh
+      - name: Publish release image
+        if: inputs.release-tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/getployz/ployz-cloud:${{ inputs.release-tag }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag ployz-cloud:ci "$IMAGE"
+          docker push "$IMAGE"
 
 
   test:
@@ -147,6 +167,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
       - uses: actions/download-artifact@v4
         with:

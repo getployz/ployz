@@ -6,7 +6,6 @@ import { Effect, Schema } from "effect";
 
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
-import { loadAuthorizedDeploymentEvidence } from "#/modules/deployments/retry-repository.server";
 
 import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 
@@ -128,18 +127,6 @@ export const listLatestOrganizationEnvironmentChangeStates = Effect.fn(
       organizationId: organization.id,
     });
   return yield* projectEnvironmentChangeStateRecords(projection);
-});
-
-export const listDeploymentOperationEvidence = Effect.fn(
-  "Deployments.listDeploymentOperationEvidence",
-)(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
-  const organization = yield* requireOrganization(actor, input.organizationSlug);
-  return yield* loadAuthorizedDeploymentEvidence({
-      organizationId: organization.id,
-      deploymentId: input.deploymentId,
-      afterSequence: input.afterSequence,
-      limit: input.limit ?? 50,
-    });
 });
 
 const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {

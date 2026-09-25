@@ -1,14 +1,11 @@
 import { testConfigEnvironment } from "#/test/config-environment";
-import { getStoredServiceCredential } from "./service-repository.server";
-import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
-import { restoreWorkingDocument } from "./working-document-restore.server";
 import { discardEnvironmentChanges } from "./saved-state-operations.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { loadLatestEnvironmentSavedState } from "./saved-state-repository.server";
 import { createVolumeResource, deleteVolumeResource } from "./resource-operations.server";
 import { attachServiceVolume } from "./mount-operations.server";
-import { createServiceVariable, updateServiceVariable } from "./variable-operations.server";
+import { createServiceVariable } from "./variable-operations.server";
 import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introduction.repository.server";
 import { environmentNodeIntroductionSchema } from "./environment-node-introductions";
 import { environmentNodeConfigSnapshot, environmentNodeIntroduction } from "#/modules/runtime/tables";
@@ -16,7 +13,6 @@ import { decodeStrict } from "./schema";
 import { loadCurrentEnvironmentState, writeEnvironmentDocument } from "./working-state-repository.server";
 import { environmentDeployment, environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent } from "./saved-intent";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
@@ -46,7 +42,7 @@ import {
 import { createImageServiceSource } from "./services";
 
 it.live(
-  "restores one authorized document revision with captured secrets and retained identities",
+  "discards one authorized field, node, or environment back to its reviewed baseline",
   () =>
     Effect.gen(function* () {
       const container = yield* postgresTestContainer;
@@ -155,17 +151,10 @@ it.live(
         assert.strictEqual(yield* loadLatestEnvironmentSavedState(scope.environmentId), null);
         yield* attachServiceVolume(actor, { ...scope, revision: yield* revision(), serviceId,
           volumeResourceId: volume.data.resource.id, mountPath: "/data" });
-        const sealed = yield* createServiceVariable(actor, { ...scope, revision: yield* revision(), serviceId,
+        yield* createServiceVariable(actor, { ...scope, revision: yield* revision(), serviceId,
           key: "TOKEN", description: "secret", exported: true, value: { type: "sealed", value: "original-secret" } });
-        const variableId = sealed.data.intent.services[0]?.variables[0]?.id;
-        if (!variableId) return yield* Effect.die("Variable missing.");
         yield* setServiceRegistryCredential(actor, { ...scope, revision: yield* revision(), serviceId, username: "owner", secret: "original-registry-secret" });
         const baseline = (yield* loadCurrentEnvironmentState(environmentRecord.id)).intent;
-        const [saved] = yield* database.drizzle.insert(environmentSavedStateSnapshot).values({
-          organizationId: organizationRecord.id, environmentId: environmentRecord.id, actorId: actor.userId,
-          intent: baseline, volumeDeletionAuthorizations: [],
-        }).returning({ id: environmentSavedStateSnapshot.id });
-        if (!saved) return yield* Effect.die("Saved intent missing.");
         const savedOnlyIntent = structuredClone(baseline);
         const savedOnlyService = savedOnlyIntent.services[0];
         if (!savedOnlyService) return yield* Effect.die("Saved Service missing.");
@@ -183,62 +172,17 @@ it.live(
         }));
         assert.strictEqual(invalidIntroductionReset._tag, "Conflict");
         assert.strictEqual(invalidIntroductionReset.message, "This field has no discard baseline.");
-        const invalidLegacyReset = yield* Effect.flip(restoreWorkingDocument(actor, {
-          ...scope, revision: yield* revision(), snapshotSource: { kind: "introduction" },
-          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "replicas" },
-        }));
-        assert.strictEqual(invalidLegacyReset._tag, "Conflict");
-        assert.strictEqual(invalidLegacyReset.message, "Only unsaved, unapplied nodes can reset to their Introduction.");
         assert.strictEqual((yield* loadEnvironmentDocument(scope.environmentId)).intent.services[0]?.config.replicas, 7);
         assert.strictEqual((yield* loadLatestEnvironmentSavedState(scope.environmentId))?.intent.services[0]?.config.replicas, 5);
-        const snapshotSource = { kind: "saved" as const, environmentSavedStateSnapshotId: saved.id };
-        const oldRevision = yield* revision();
-        yield* updateService(actor, { ...scope, revision: oldRevision, serviceId, startCommand: "changed-command", replicas: 3 });
-        yield* updateServiceVariable(actor, { ...scope, revision: yield* revision(), serviceId, variableId,
-          key: "TOKEN", description: null, exported: false, value: { type: "sealed", value: "new-secret" } });
-        yield* setServiceRegistryCredential(actor, { ...scope, revision: yield* revision(), serviceId, username: "new-owner", secret: "new-registry-secret" });
-        const rotatedCredential = yield* getStoredServiceCredential(environmentRecord.id, serviceId);
-        const credentialEncryption = yield* SecretEncryption;
-        if (!rotatedCredential?.encryptedRegistrySecret) return yield* Effect.die("Rotated credential missing.");
-        assert.strictEqual(credentialEncryption.decrypt(rotatedCredential.encryptedRegistrySecret), "new-registry-secret");
-        assert.deepStrictEqual((yield* loadEnvironmentDocument(environmentRecord.id)).intent.services[0]?.config.source, baseline.services[0]?.config.source);
-        yield* deleteVolumeResource(actor, { ...scope, revision: yield* revision(), resourceId: volume.data.resource.id });
+        // Identity validation is inside the single write boundary.
         const current = yield* loadEnvironmentDocument(environmentRecord.id);
-        const command = { kind: "all" as const };
-        const stale = yield* Effect.flip(restoreWorkingDocument(actor, { ...scope, revision: oldRevision, snapshotSource, command }));
-        assert.strictEqual(stale._tag, "Conflict");
-        const unauthorized = yield* Effect.flip(restoreWorkingDocument({ userId: outsider.id }, { ...scope, revision: current.revision, snapshotSource, command }));
-        assert.strictEqual(unauthorized._tag, "NotFound");
-        assert.strictEqual((yield* revision()), current.revision);
-        const restored = yield* restoreWorkingDocument(actor, { ...scope, revision: current.revision, snapshotSource, command });
-        assert.notStrictEqual(restored.data.revision, current.revision);
-        assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent, canonicalizeSavedEnvironmentIntent(baseline));
-        assert.ok(!JSON.stringify(restored.data.intent).includes("ciphertext"));
-        const renderedReview = projectReviewedEnvironmentWorkingState({ ...restored.data,
-          compiled: compileSavedEnvironmentIntent({ environmentId: environmentRecord.id, intent: restored.data.intent }) });
-        const captured = yield* loadCurrentEnvironmentState(environmentRecord.id);
-        assert.strictEqual(yield* Effect.promise(() => fingerprintReviewedEnvironmentWorkingState(renderedReview)),
-          yield* Effect.promise(() => fingerprintReviewedEnvironmentWorkingState(captured.projection)));
-
-        const encryption = yield* SecretEncryption;
-        const afterDiscardCredential = yield* getStoredServiceCredential(environmentRecord.id, serviceId);
-        assert.deepStrictEqual(afterDiscardCredential, rotatedCredential);
-        const restoredSecret = (yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.variables[0]?.value;
-        if (restoredSecret?.kind !== "secret" || !restoredSecret.encryptedValue) return yield* Effect.die("Captured secret missing.");
-        assert.strictEqual(encryption.decrypt(restoredSecret.encryptedValue), "original-secret");
-        const written = yield* database.drizzle.execute<{ txid: string }>(sql`
-          select xmin::text as txid from environment where id = ${environmentRecord.id}
-          union all select xmin::text as txid from variable_secret where variable_id = ${variableId}`, "objects");
-        assert.strictEqual(written.length, 2);
-        assert.strictEqual(new Set(written.map((row) => row.txid)).size, 1);
-        // Identity validation is inside the single write boundary, including restores.
-        const candidate = structuredClone(restored.data.intent);
+        const candidate = structuredClone(current.intent);
         const first = candidate.services[0];
         if (!first) return yield* Effect.die("Service missing.");
         first.lineageId = volume.data.resource.lineageId;
-        const identityError = yield* Effect.flip(withMutationResult(writeEnvironmentDocument(restored.data, candidate)));
+        const identityError = yield* Effect.flip(withMutationResult(writeEnvironmentDocument(current, candidate)));
         assert.strictEqual(identityError._tag, "Conflict");
-        assert.strictEqual((yield* revision()), restored.data.revision);
+        assert.strictEqual((yield* revision()), current.revision);
 
         const recordAttempt = (replicas: number, status: "applied" | "queued") => Effect.gen(function* () {
           const intent = structuredClone(baseline);

@@ -5,10 +5,6 @@ import {
   coreOperationEvent as schemaCoreOperationEvent,
 } from "#/modules/operations/tables";
 import type { JsonObject } from "#/db/tables";
-import type {
-  CoreOperationObservationState,
-  CoreOperationWatchCursorState,
-} from "#/modules/operations/tables";
 import {
   CoreOperationEvidencePersistenceFailure,
   CoreOperationWatchConflict,
@@ -35,22 +31,6 @@ export type CoreOperationWatchClose =
       observationState: "cloud_timeout" | "cloud_cancelled";
       observationDetail: JsonObject | null;
     };
-
-export type CoreOperationEvidencePage = {
-  events: Array<{
-    sequence: string;
-    eventType: string;
-    schemaVersion: number;
-    payload: JsonObject;
-    createdAt: Date;
-  }>;
-  hasMore: boolean;
-  nextSequence: string | null;
-  cursorState: CoreOperationWatchCursorState;
-  observationState: CoreOperationObservationState;
-  observationDetail: JsonObject | null;
-  deadlineAt: Date;
-};
 
 export const closeCoreOperationWatch = Effect.fn("Operations.closeWatch")(
 function* (input: {
@@ -180,70 +160,3 @@ function* (input: {
     observationDetail: watch.observationDetail,
   };
 });
-
-export function listCoreOperationEvidencePageEffect(
-  input: {
-    organizationId: string;
-    coreOperationId: string;
-    afterSequence?: string;
-    limit: number;
-  },
-  database: DatabaseService["drizzle"],
-) {
-  return Effect.gen(function* () {
-    const [watch] = yield* database
-      .select({
-        id: schemaCoreOperationWatch.id,
-        cursorState: schemaCoreOperationWatch.cursorState,
-        observationState: schemaCoreOperationWatch.observationState,
-        observationDetail: schemaCoreOperationWatch.observationDetail,
-        deadlineAt: schemaCoreOperationWatch.deadlineAt,
-      })
-      .from(schemaCoreOperationWatch)
-      .where(
-        and(
-          eq(schemaCoreOperationWatch.organizationId, input.organizationId),
-          eq(schemaCoreOperationWatch.operationId, input.coreOperationId),
-        ),
-      )
-      .limit(1);
-    if (!watch) return null;
-
-    const rows = yield* database
-      .select({
-        sequence: schemaCoreOperationEvent.sequence,
-        eventType: schemaCoreOperationEvent.eventType,
-        schemaVersion: schemaCoreOperationEvent.schemaVersion,
-        payload: schemaCoreOperationEvent.payload,
-        createdAt: schemaCoreOperationEvent.createdAt,
-      })
-      .from(schemaCoreOperationEvent)
-      .where(
-        and(
-          eq(schemaCoreOperationEvent.watchId, watch.id),
-          ...(input.afterSequence
-            ? [
-                sql`${schemaCoreOperationEvent.sequence}::numeric > ${input.afterSequence}::numeric`,
-              ]
-            : []),
-        ),
-      )
-      .orderBy(sql`${schemaCoreOperationEvent.sequence}::numeric asc`)
-      .limit(input.limit + 1);
-    const hasMore = rows.length > input.limit;
-    return {
-      events: rows.slice(0, input.limit),
-      hasMore,
-      nextSequence: hasMore ? (rows[input.limit - 1]?.sequence ?? null) : null,
-      cursorState: watch.cursorState,
-      observationState: watch.observationState,
-      observationDetail: watch.observationDetail,
-      deadlineAt: watch.deadlineAt,
-    } satisfies CoreOperationEvidencePage;
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new CoreOperationEvidencePersistenceFailure({ cause }),
-    ),
-  );
-}

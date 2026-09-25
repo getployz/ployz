@@ -2,9 +2,9 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { changeNameSources } from "#/collections/change-sources";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 
 /**
  * Every row of an organization-owned table belongs to exactly one Organization,
@@ -24,14 +24,13 @@ const notOrganizationOwned = {
   github_branch_projection: "Belongs to a GitHub installation, which several Organizations can share.",
   github_check_suite_projection: "Belongs to a GitHub installation, which several Organizations can share.",
   github_webhook_delivery: "Belongs to a GitHub installation, which several Organizations can share.",
-  waitlist: "Belongs to no one.",
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
 } satisfies Record<string, string>;
 
-let harness: GithubPostgresTestHarness;
+let harness: PostgresTestHarness;
 
 beforeAll(async () => {
-  harness = await startGithubPostgresTestHarness();
+  harness = await startPostgresTestHarness();
 }, 60_000);
 
 afterAll(async () => {

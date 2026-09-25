@@ -817,7 +817,6 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         | Error::Decode(_)
         | Error::Write(_)
         | Error::Encode(_)
-        | Error::QualificationSource(_)
         | Error::Launch(_)
         | Error::InspectWorker(_)
         | Error::WorkerEvidence(_)

@@ -4,21 +4,54 @@ import { Inngest } from "inngest";
 import type { GithubBranchCursor } from "#/modules/github/github-ingestion.repository";
 import { planGithubBranchEvaluation } from "#/modules/github/github-branch-evaluation";
 import {
-  runGithubRepositoryResult as runGithubRepositoryResultWithHarness,
-  savedGithubServiceNode,
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import * as repository from "#/modules/github/github-ingestion.repository";
 import * as deliveryRepository from "#/modules/github/github-ingestion.delivery.repository";
 import { InngestClient } from "#/modules/inngest/client";
+import {
+  createDefaultServiceHealthcheck,
+  createDefaultServiceRestartPolicy,
+  createGitServiceSource,
+  projectServiceDeploymentConfig,
+} from "#/modules/environment-design/services";
 
 const environmentId = "00000000-0000-4000-8000-000000000001";
 const serviceId = "00000000-0000-4000-8000-000000000011";
 const serviceLineageId = "00000000-0000-4000-8000-000000000012";
 
+function savedGithubServiceNode(input: {
+  serviceId: string;
+  lineageId: string;
+  installationId?: number;
+  repositoryId?: number;
+}) {
+  return {
+    nodeType: "service" as const,
+    nodeId: input.serviceId,
+    nodeLineageId: input.lineageId,
+    configVersion: 1,
+    config: projectServiceDeploymentConfig({
+      source: createGitServiceSource({
+        repository: "acme/api",
+        access: { type: "github-installation", installationId: input.installationId ?? 17 },
+        repositoryId: input.repositoryId ?? 42,
+      }),
+      preDeployCommand: null,
+      startCommand: null,
+      healthcheck: createDefaultServiceHealthcheck(),
+      restartPolicy: createDefaultServiceRestartPolicy(),
+      privateDns: "api",
+      build: { buildMethod: "railpack", dockerfilePath: null, command: null, },
+    }),
+    encryptedRegistryUsername: null,
+    encryptedRegistrySecret: null,
+  };
+}
+
 describe("GitHub ingestion PostgreSQL persistence", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   const inngest = new Inngest({ id: "github-ingestion-repository-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
   const runGithubRepositoryResult = <Success, Failure>(
@@ -28,13 +61,10 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       import("#/server/database.server").Database | InngestClient
     >,
   ) =>
-    runGithubRepositoryResultWithHarness(
-      harness,
-      operation.pipe(Effect.provideService(InngestClient, inngest)),
-    );
+    harness.runEffect(Effect.result(operation.pipe(Effect.provideService(InngestClient, inngest))));
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {

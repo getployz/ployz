@@ -18,7 +18,6 @@ use super::{Error as InstallError, InstallMode, InstallPaths, InstallRequest, Re
 use crate::mutation;
 
 const RECEIPT_FILE: &str = "upgrade-attempt.json";
-const QUALIFICATION_RELEASE_DIR: &str = "PLOYZ_UPGRADE_RELEASE_DIR";
 const WORKER_RUNTIME: &str = "15min";
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -45,9 +44,6 @@ pub enum Error {
     /// The current receipt could not be encoded.
     #[error("encode Machine upgrade receipt: {0}")]
     Encode(#[source] serde_json::Error),
-    /// The process-local qualification source was not a trusted absolute directory.
-    #[error("invalid qualification release directory: {0}")]
-    QualificationSource(String),
     /// Global activation was requested from a daemon using unsupported Machine paths.
     #[error("{0}")]
     NonstandardPaths(String),
@@ -77,21 +73,7 @@ pub enum Error {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct StoredAttempt {
     requested: MachineRelease,
-    source: ReleaseSource,
     attempt: MachineUpgradeAttempt,
-}
-
-fn current_source() -> Result<ReleaseSource, Error> {
-    let Some(directory) = env::var_os(QUALIFICATION_RELEASE_DIR) else {
-        return Ok(ReleaseSource::Published);
-    };
-    let directory = PathBuf::from(directory);
-    if !directory.is_absolute() {
-        return Err(Error::QualificationSource(format!(
-            "{QUALIFICATION_RELEASE_DIR} must be an absolute path"
-        )));
-    }
-    Ok(ReleaseSource::Local(directory))
 }
 
 /// Return the durable result of retrying the same request without requiring installation
@@ -153,17 +135,19 @@ async fn request_locked(
     if admission.active()? {
         return Err(Error::Busy);
     }
-    let source = current_source()?;
     let installed =
         super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
             .await
             .map_err(Error::Resolve)?;
-    let target = super::release::resolve_release(&request.release, &source, installed.as_ref())
-        .await
-        .map_err(Error::Resolve)?;
+    let target = super::release::resolve_release(
+        &request.release,
+        &ReleaseSource::Published,
+        installed.as_ref(),
+    )
+    .await
+    .map_err(Error::Resolve)?;
     let mut stored = StoredAttempt {
         requested: request.release,
-        source,
         attempt: MachineUpgradeAttempt {
             attempt_id: request.attempt_id,
             target,
@@ -243,9 +227,9 @@ pub async fn run_worker(
     write(data_dir, &stored)?;
 
     let result = super::install_locked(
+        &ReleaseSource::Published,
         InstallRequest {
             release: MachineRelease::Exact(target.clone()),
-            source: stored.source.clone(),
             mode: InstallMode::SoftwareOnly,
         },
         InstallPaths::system(data_dir, run_dir),
@@ -483,7 +467,6 @@ fn write(data_dir: &Path, stored: &StoredAttempt) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::MachineVersion;
 
     const CONTRACT_CASE: &str = "PLOYZ_UPGRADE_CONTRACT_CASE";
     const CONTRACT_ROOT: &str = "PLOYZ_UPGRADE_CONTRACT_ROOT";
@@ -504,31 +487,6 @@ mod tests {
         assert!(matches!(error, Error::NonstandardPaths(_)));
         assert!(!data_dir.exists());
         assert!(!run_dir.exists());
-    }
-
-    #[test]
-    fn stored_attempt_round_trips_without_exposing_local_source_in_response() {
-        let attempt_id = MachineUpgradeAttemptId::random();
-        let stored = StoredAttempt {
-            requested: MachineRelease::parse("beta").unwrap(),
-            source: ReleaseSource::Local("/root/qualification".into()),
-            attempt: MachineUpgradeAttempt {
-                attempt_id,
-                target: MachineVersion::parse("1.2.3-beta.4").unwrap(),
-                outcome: MachineUpgradeOutcome::Accepted,
-            },
-        };
-        let encoded = serde_json::to_string(&stored).unwrap();
-        assert!(encoded.contains("/root/qualification"));
-        assert!(
-            !serde_json::to_string(&stored.attempt)
-                .unwrap()
-                .contains("qualification")
-        );
-        assert_eq!(
-            serde_json::from_str::<StoredAttempt>(&encoded).unwrap(),
-            stored
-        );
     }
 
     #[test]
@@ -576,7 +534,6 @@ mod tests {
                     _ => "printf 'LoadState=loaded\\nActiveState=active\\n'",
                 },
             );
-            fs::create_dir(root.path().join("release")).unwrap();
             let output = std::process::Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -585,7 +542,6 @@ mod tests {
                 ])
                 .env(CONTRACT_CASE, case)
                 .env(CONTRACT_ROOT, root.path())
-                .env(QUALIFICATION_RELEASE_DIR, root.path().join("release"))
                 .env(
                     "PLOYZ_UPGRADE_COMMAND_LOG",
                     root.path().join("commands.log"),

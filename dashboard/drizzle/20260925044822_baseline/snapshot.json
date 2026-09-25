@@ -1,14 +1,20 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "0634ed4c-6dd7-4da2-9214-33b7fc9868e0",
+  "id": "ef32bd1c-f331-44a7-a522-5191ceca212f",
   "prevIds": [
-    "2be1642d-f113-4b12-ae2a-b4d0f71f1000"
+    "00000000-0000-0000-0000-000000000000"
   ],
   "ddl": [
     {
       "isRlsEnabled": false,
       "name": "organization",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "organization_change",
       "entityType": "tables",
       "schema": "public"
     },
@@ -271,12 +277,6 @@
       "schema": "public"
     },
     {
-      "isRlsEnabled": false,
-      "name": "waitlist",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -353,6 +353,119 @@
       "entityType": "columns",
       "schema": "public",
       "table": "organization"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": {
+        "type": "always",
+        "name": "organization_change_seq_seq",
+        "increment": "1",
+        "startWith": "1",
+        "minValue": "1",
+        "maxValue": "9223372036854775807",
+        "cache": 1,
+        "cycle": false
+      },
+      "name": "seq",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "xid8",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "pg_current_xact_id()",
+      "generated": null,
+      "identity": null,
+      "name": "xid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source_table",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_ids",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deleted_ids",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "all_rows",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_change"
     },
     {
       "type": "uuid",
@@ -922,6 +1035,19 @@
       "generated": null,
       "identity": null,
       "name": "image",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "open_started_deployments",
       "entityType": "columns",
       "schema": "public",
       "table": "user"
@@ -5516,71 +5642,6 @@
       "table": "organization_billing_state"
     },
     {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "current_plan",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "product_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "amount",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "currency",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "current_period_start",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": false,
@@ -5633,43 +5694,53 @@
       "table": "organization_billing_state"
     },
     {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "xid",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "organization_change_organization_id_xid_idx",
+      "entityType": "indexes",
       "schema": "public",
-      "table": "waitlist"
+      "table": "organization_change"
     },
     {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "email",
-      "entityType": "columns",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "xid",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "organization_change_xid_idx",
+      "entityType": "indexes",
       "schema": "public",
-      "table": "waitlist"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "waitlist"
+      "table": "organization_change"
     },
     {
       "nameExplicit": true,
@@ -8973,6 +9044,16 @@
     },
     {
       "columns": [
+        "seq"
+      ],
+      "nameExplicit": false,
+      "name": "organization_change_pkey",
+      "schema": "public",
+      "table": "organization_change",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -9329,16 +9410,6 @@
       "name": "organization_billing_state_pkey",
       "schema": "public",
       "table": "organization_billing_state",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "waitlist_pkey",
-      "schema": "public",
-      "table": "waitlist",
       "entityType": "pks"
     },
     {
@@ -9713,17 +9784,6 @@
       "name": "github_webhook_delivery_receipt_sequence_key",
       "schema": "public",
       "table": "github_webhook_delivery",
-      "entityType": "uniques"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "email"
-      ],
-      "nullsNotDistinct": false,
-      "name": "waitlist_email_key",
-      "schema": "public",
-      "table": "waitlist",
       "entityType": "uniques"
     },
     {
@@ -10168,18 +10228,240 @@
       "table": "github_webhook_delivery"
     },
     {
-      "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_plan\" IS NOT NULL\n          AND \"product_id\" IS NOT NULL\n          AND \"amount\" IS NOT NULL\n          AND \"currency\" IS NOT NULL\n          AND \"current_period_start\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",
+      "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",
       "name": "organization_billing_state_active_fields_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_billing_state"
     },
     {
-      "value": "\"current_plan\" IS NULL OR \"current_plan\" IN ('free', 'solo', 'teams', 'hobby', 'pro')",
-      "name": "organization_billing_state_current_plan_check",
+      "isRlsEnabled": false,
+      "name": "organization_cluster_domain",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "endpoint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "encrypted_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reserved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "lease_renewed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "records_synced_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "record_addresses",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "unreachable",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "encrypted_certificate_private_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "certificate_chain",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "certificate_not_after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "organization_cluster_domain_eJqKfNjJBhUj_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "columns": [
+        "organization_id"
+      ],
+      "nameExplicit": false,
+      "name": "organization_cluster_domain_pkey",
+      "schema": "public",
+      "table": "organization_cluster_domain",
+      "entityType": "pks"
+    },
+    {
+      "value": "jsonb_typeof(\"record_addresses\") = 'array'",
+      "name": "organization_cluster_domain_record_addresses_check",
       "entityType": "checks",
       "schema": "public",
-      "table": "organization_billing_state"
+      "table": "organization_cluster_domain"
+    },
+    {
+      "value": "num_nulls(\"encrypted_certificate_private_key\", \"certificate_chain\", \"certificate_not_after\") in (0, 3)",
+      "name": "organization_cluster_domain_certificate_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_cluster_domain"
     }
   ],
   "renames": []

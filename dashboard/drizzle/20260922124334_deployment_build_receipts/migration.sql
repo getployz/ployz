@@ -1,1 +1,0 @@
-ALTER TABLE "environment_deployment_secret" ADD COLUMN "encrypted_build_receipts" jsonb;

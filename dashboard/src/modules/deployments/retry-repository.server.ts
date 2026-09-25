@@ -5,16 +5,9 @@ import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/
 import {
   volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
-import {
-  environment as schemaEnvironment,
-  project as schemaProject,
-} from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
-import {
-  listCoreOperationEvidencePageEffect,
-} from "#/modules/operations/core-operation-evidence.server";
 import {
   admitActiveDeploymentAttempt,
   isActiveDeploymentUniqueViolation,
@@ -27,49 +20,6 @@ const activeAttemptConflict = () =>
     field: "environmentId",
     message: "An environment deployment attempt is already active.",
   });
-
-export const loadAuthorizedDeploymentEvidence = Effect.fn(
-  "Deployments.loadAuthorizedDeploymentEvidence",
-)(function* (input: {
-  readonly organizationId: string;
-  readonly deploymentId: string;
-  readonly afterSequence?: string;
-  readonly limit: number;
-}) {
-  const { drizzle: database } = yield* Database;
-  const selected = yield* database
-    .select({ coreDeployId: schemaEnvironmentDeployment.coreDeployId })
-    .from(schemaEnvironmentDeployment)
-    .innerJoin(
-      schemaEnvironment,
-      eq(schemaEnvironment.id, schemaEnvironmentDeployment.environmentId),
-    )
-    .innerJoin(
-      schemaProject,
-      eq(schemaProject.id, schemaEnvironment.projectId),
-    )
-    .where(
-      and(
-        eq(schemaEnvironmentDeployment.id, input.deploymentId),
-        eq(schemaProject.organizationId, input.organizationId),
-      ),
-    )
-    .limit(1);
-  const [deployment] = selected;
-  if (!deployment) {
-    return yield* new NotFound({
-      message: "The environment deployment was not found.",
-    });
-  }
-  if (!deployment.coreDeployId) return null;
-  const coreOperationId = deployment.coreDeployId;
-  return yield* listCoreOperationEvidencePageEffect({
-    organizationId: input.organizationId,
-    coreOperationId,
-    afterSequence: input.afterSequence,
-    limit: input.limit,
-  }, database);
-});
 
 export const createRetryAttempt = Effect.fn("Deployments.createRetryAttempt")(
   function* (input: {
