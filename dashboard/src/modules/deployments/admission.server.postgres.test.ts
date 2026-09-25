@@ -16,7 +16,7 @@ import {
 import {
   dispatchEnvironmentDeployment,
   ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
-} from "./dispatch.server";
+} from "./runtime-lifecycle.repository.server";
 import { commitFirstConnectAdmission } from "./first-connect.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000401";
@@ -134,24 +134,23 @@ describe("Saved deployment admission", () => {
     );
   }
 
-  it("accepts exactly one concurrent manual admission", async () => {
+  it("serializes concurrent manual admissions into one pending attempt", async () => {
     const saved = await publish("first", null);
 
-    const attempts = await Promise.allSettled(
+    const attempts = await Promise.all(
       Array.from({ length: 8 }, () => admit(saved.savedStateSnapshotId)),
     );
-    expect(attempts.filter(attempt => attempt.status === "fulfilled")).toHaveLength(1);
-    expect(attempts.filter(attempt => attempt.status === "rejected")).toHaveLength(7);
+    expect(new Set(attempts.map(({ id }) => id)).size).toBe(1);
     expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(
       1,
     );
   });
 
-  it("pins queued manual targets and allows a new attempt once started", async () => {
+  it("replaces the pending target and allows a new attempt once started", async () => {
     const first = await publish("first", null);
     const queued = await admit(first.savedStateSnapshotId);
     const second = await publish("both", first.savedStateSnapshotId);
-    await expect(admit(second.savedStateSnapshotId)).rejects.toMatchObject({ _tag: "Conflict" });
+    expect((await admit(second.savedStateSnapshotId)).id).toBe(queued.id);
     expect(
       await harness.db
         .select({ nodeId: schema.environmentNodeConfigSnapshot.nodeId })
@@ -162,7 +161,7 @@ describe("Saved deployment admission", () => {
             queued.id,
           ),
         ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
 
     await harness.db
       .update(schema.environmentDeployment)
@@ -188,7 +187,7 @@ describe("Saved deployment admission", () => {
       {
         id: queued.id,
         status: "planning",
-        savedStateSnapshotId: first.savedStateSnapshotId,
+        savedStateSnapshotId: second.savedStateSnapshotId,
       },
       {
         id: next.id,
@@ -196,6 +195,33 @@ describe("Saved deployment admission", () => {
         savedStateSnapshotId: third.savedStateSnapshotId,
       },
     ]);
+  });
+
+  it("lets a push replace a pending retry, dropping the retry's pinned source", async () => {
+    const saved = await publish("first", null);
+    const failed = await admit(saved.savedStateSnapshotId);
+    await harness.db.update(schema.environmentDeployment).set({ status: "failed", finishedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, failed.id));
+    const building = await admit(saved.savedStateSnapshotId);
+    await harness.db.update(schema.environmentDeployment).set({ inngestRunId: "building-run", dispatchRequestedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, building.id));
+    const retry = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: saved.savedStateSnapshotId, retryOfDeploymentId: failed.id,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    const push = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: saved.savedStateSnapshotId, message: null,
+      triggerOrigin: { origin: "github", deliveryId: "push", branchEvaluationRevision: 1, installationId: 17, repositoryId: 42 },
+    }));
+
+    expect(push.id).toBe(retry.id);
+    const rows = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.status, "queued"));
+    expect(rows.map(({ id, inngestRunId, retryOfDeploymentId, triggerOrigin }) => ({ id, inngestRunId, retryOfDeploymentId, origin: triggerOrigin.origin })))
+      .toEqual(expect.arrayContaining([
+        { id: building.id, inngestRunId: "building-run", retryOfDeploymentId: null, origin: "manual" },
+        { id: retry.id, inngestRunId: null, retryOfDeploymentId: null, origin: "github" },
+      ]));
+    expect(rows).toHaveLength(2);
   });
 
   it("resolves automated admission to the exact latest Saved revision", async () => {
@@ -294,14 +320,15 @@ describe("Saved deployment admission", () => {
       .set({ inngestRunId: "run-owned" })
       .where(eq(schema.environmentDeployment.id, second.id));
     const owned = new Inngest({ id: "admission-dispatch-owned-test" });
-    owned.send = async () => ({ ids: [] });
-    await expect(
-      harness.runEffect(
-        dispatchEnvironmentDeployment(
-          { environmentDeploymentId: second.id, environmentId },
-        ).pipe(Effect.provideService(InngestClient, owned)),
-      ),
-    ).rejects.toMatchObject({ _tag: "Conflict" });
+    const sent: unknown[] = [];
+    owned.send = async (event) => { sent.push(event); return { ids: [] }; };
+    // A run-owned row is the building attempt: dispatch leaves it alone.
+    await harness.runEffect(
+      dispatchEnvironmentDeployment(
+        { environmentDeploymentId: second.id, environmentId },
+      ).pipe(Effect.provideService(InngestClient, owned)),
+    );
+    expect(sent).toEqual([]);
   });
 
   it("records a no-Saved first connection so a later callback cannot deploy", async () => {

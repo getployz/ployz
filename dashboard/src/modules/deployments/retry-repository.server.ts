@@ -13,7 +13,7 @@ import {
   isActiveDeploymentUniqueViolation,
 } from "#/modules/deployments/queue-lock.server";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
-import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
+import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 
 const activeAttemptConflict = () =>
   new Validation({

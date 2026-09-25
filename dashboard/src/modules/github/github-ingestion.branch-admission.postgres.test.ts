@@ -559,8 +559,10 @@ describe("GitHub branch deployment admission", () => {
     expect(node?.config).toMatchObject({ startCommand: "Concurrent Saved API" });
   });
 
-  it("keeps a previously Saved pending removal eligible for a later Git target", async () => {
-    const appliedDeploymentId = "00000000-0000-4000-8000-000000000115";
+  const appliedDeploymentId = "00000000-0000-4000-8000-000000000115";
+  const removalSavedStateSnapshotId = "00000000-0000-4000-8000-000000000116";
+  /** An applied volume, since tombstoned, whose reviewed removal the latest Saved revision carries. */
+  async function savedVolumeRemoval() {
     await harness.db.insert(schema.resourceLineage).values({
       id: volumeLineageId,
       organizationId,
@@ -598,7 +600,6 @@ describe("GitHub branch deployment admission", () => {
         name: "Applied volume",
       },
     });
-    const removalSavedStateSnapshotId = "00000000-0000-4000-8000-000000000116";
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({
       id: removalSavedStateSnapshotId,
       organizationId,
@@ -639,6 +640,10 @@ describe("GitHub branch deployment admission", () => {
       ]),
     });
 
+  }
+
+  it("keeps a previously Saved pending removal eligible for a later Git target", async () => {
+    await savedVolumeRemoval();
     const admitted = await admitPush({
       deliveryId: "pending-removal",
       headSha: "d".repeat(40),
@@ -676,6 +681,37 @@ describe("GitHub branch deployment admission", () => {
       environmentResourceId: volumeId,
       status: "awaiting_deployment",
       requestedByUserId: userId,
+      volumes: [{ machine_id: "a".repeat(32), name: `vol-${volumeId}` }],
+    });
+  });
+
+  it("lets a push replace a pending volume removal, and the removal still happens", async () => {
+    await savedVolumeRemoval();
+    const buildingId = "00000000-0000-4000-8000-000000000119";
+    await harness.db.insert(schema.environmentDeployment).values({
+      id: buildingId, organizationId, environmentId, savedStateSnapshotId,
+      triggerOrigin: { origin: "manual", actorId: userId }, inngestRunId: "building-run", dispatchRequestedAt: new Date(),
+    });
+    const first = await admitPush({ deliveryId: "removal-1", headSha: "d".repeat(40), cursor: null });
+    if (EffectResult.isFailure(first) || !first.success.cursor) throw new Error("Expected the first push to admit.");
+    const [pending] = await harness.db.select().from(schema.volumeRemoveAttempt);
+    expect(pending?.environmentDeploymentId).not.toBe(buildingId);
+
+    const second = await admitPush({ deliveryId: "removal-2", headSha: "e".repeat(40), cursor: first.success.cursor, forced: true });
+
+    expect(EffectResult.isSuccess(second)).toBe(true);
+    const queued = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.status, "queued"));
+    const replaced = queued.find(({ id }) => id !== buildingId);
+    expect(queued).toHaveLength(2);
+    expect(replaced).toMatchObject({
+      id: pending?.environmentDeploymentId, inngestRunId: null, dispatchRequestedAt: null,
+      savedStateSnapshotId: removalSavedStateSnapshotId, triggerOrigin: { deliveryId: "removal-2" },
+      sourcePins: { [serviceId]: { commitSha: "e".repeat(40) } },
+    });
+    const attempts = await harness.db.select().from(schema.volumeRemoveAttempt);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      environmentDeploymentId: replaced?.id, environmentResourceId: volumeId, status: "awaiting_deployment",
       volumes: [{ machine_id: "a".repeat(32), name: `vol-${volumeId}` }],
     });
   });

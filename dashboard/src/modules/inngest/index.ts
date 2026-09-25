@@ -11,6 +11,7 @@ import {
   createProcessGithubInstallationRepositoriesReceived,
 } from "#/modules/github/inngest-sync/webhook";
 import {
+  createDispatchStrandedPendingDeployments,
   createMarkCancelledRowBackedWorkflow,
   createProcessEnvironmentDeployment,
 } from "#/modules/deployments/environment-deployment.inngest";
@@ -43,6 +44,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createSyncGithubRepositories(inngest),
     createMarkCancelledRowBackedWorkflow(inngest),
     createProcessEnvironmentDeployment(inngest),
+    createDispatchStrandedPendingDeployments(inngest),
     createScheduleGithubRepositorySync(inngest),
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),

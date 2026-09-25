@@ -8,7 +8,7 @@ import { dispatchQueuedEnvironmentDeploymentServerFn, retryEnvironmentDeployment
 
 /** Runs one deployment command against the attempt's environment, then reconciles the deployment rows it changed. */
 function useDeploymentCommand(deployment: EnvironmentDeploymentSummary, messages: { success: string; failure: string },
-  run: (target: { organizationSlug: string; projectSlug: string; environmentSlug: string }) => Promise<void>) {
+  run: (target: { organizationSlug: string; projectSlug: string; environmentSlug: string }) => Promise<string | void>) {
   const [isRunning, setIsRunning] = useState(false);
   const { organizationSlug } = useParams({ strict: false });
   const collectionScope = useCollectionScope();
@@ -16,9 +16,9 @@ function useDeploymentCommand(deployment: EnvironmentDeploymentSummary, messages
     if (!organizationSlug) return;
     setIsRunning(true);
     try {
-      await run({ organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug });
+      const success = await run({ organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug });
       await reconcileDeploymentCollections(organizationSlug, collectionScope);
-      toast.success(messages.success);
+      toast.success(success ?? messages.success);
     } catch {
       toast.error(messages.failure);
     } finally {
@@ -34,8 +34,11 @@ export function useRetryDeployment(deployment: EnvironmentDeploymentSummary) {
     async (target) => { await retryEnvironmentDeploymentServerFn({ data: { ...target, failedDeploymentId: deployment.id } }); });
 }
 
-/** Deploy now dispatches an attempt queued for its environment's next trigger. */
+/** Deploy now dispatches an attempt queued for its environment's next trigger; behind a building attempt it waits. */
 export function useDeployQueuedNow(deployment: EnvironmentDeploymentSummary) {
   return useDeploymentCommand(deployment, { success: "Deployment requested.", failure: "Could not request this deployment." },
-    async (target) => { await dispatchQueuedEnvironmentDeploymentServerFn({ data: target }); });
+    async (target) => {
+      const dispatched = await dispatchQueuedEnvironmentDeploymentServerFn({ data: target });
+      if (dispatched.state === "pending") return "Waiting for the current build.";
+    });
 }

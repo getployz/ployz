@@ -1,0 +1,3 @@
+DROP INDEX "environment_deployment_one_queued_target_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "environment_deployment_one_building_attempt_idx" ON "environment_deployment" ("environment_id") WHERE "status" = 'queued' and "inngest_run_id" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "environment_deployment_one_pending_attempt_idx" ON "environment_deployment" ("environment_id") WHERE "status" = 'queued' and "inngest_run_id" is null;

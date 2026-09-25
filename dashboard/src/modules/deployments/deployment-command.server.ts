@@ -26,7 +26,7 @@ import { getDestructiveEnvironmentSaveReviewMismatch, projectDestructiveEnvironm
 import { admitEnvironmentDeployment } from "./admission.server";
 import { lockEnvironmentDeploymentQueue } from "./queue-lock.server";
 import type { ReviewedEnvironmentPublication } from "#/modules/environment-design/working-state-review";
-import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
+import { dispatchEnvironmentDeployment, dispatchPendingDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import type { ReviewedPublicationInput, DispatchQueuedEnvironmentDeploymentInput, RetryEnvironmentDeploymentInput } from "#/modules/deployments/deployment-contract";
 
 type EnvironmentContextInput = {
@@ -162,28 +162,15 @@ export const submitReviewedPublication = Effect.fn(
 export const dispatchExistingQueuedEnvironmentDeployment = Effect.fn(
   "Deployments.dispatchExistingQueuedEnvironmentDeployment",
 )(function* (actor: Actor, input: DispatchQueuedEnvironmentDeploymentInput) {
-  const { drizzle: database } = yield* Database;
   const context = yield* requireEnvironment(actor, input);
-  const rows = yield* database
-        .select({ id: schemaEnvironmentDeployment.id })
-        .from(schemaEnvironmentDeployment)
-        .where(
-          and(
-            eq(schemaEnvironmentDeployment.environmentId, context.environment.id),
-            eq(schemaEnvironmentDeployment.status, "queued"),
-          ),
-        )
-        .limit(1);
-  const queued = rows[0];
-  if (queued === undefined) {
+  // `pending`: a building attempt holds the queue; this one is dispatched when that attempt leaves queued.
+  const dispatched = yield* dispatchPendingDeployment(context.environment.id);
+  if (dispatched.state === "none") {
     return yield* new NotFound({
       message: "A queued environment deployment was not found.",
     });
   }
-  return yield* dispatchEnvironmentDeployment({
-    environmentDeploymentId: queued.id,
-    environmentId: context.environment.id,
-  });
+  return dispatched;
 });
 
 export const retryEnvironmentDeployment = Effect.fn(

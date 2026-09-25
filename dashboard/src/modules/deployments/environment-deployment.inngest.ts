@@ -50,6 +50,7 @@ import {
   beginEnvironmentDeploymentPlanning,
   markDeploymentFailedIfOwned,
   ownsDeploymentRun,
+  dispatchStrandedPendingDeployments,
   recordInngestRun,
 } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import type { DeploymentContext } from "#/modules/deployments/runtime-repository.server";
@@ -507,4 +508,19 @@ export const createMarkCancelledRowBackedWorkflow = (
       runEffect,
     );
   },
+  );
+
+/** Every 5 minutes, recover a pending attempt whose dispatch was lost; the deterministic event ID makes a resend harmless. */
+export const createDispatchStrandedPendingDeployments = (
+  inngest: PloyzInngest,
+  runEffect: DeploymentInngestEffectRunner = runInngestEffect,
+) =>
+  inngest.createFunction(
+  {
+    id: "dispatch-stranded-pending-deployments",
+    retries: 3,
+    triggers: [{ cron: "*/5 * * * *" }],
+    concurrency: [{ limit: 1 }],
+  },
+  async ({ step }) => step.run("dispatch-stranded-pending-deployments", () => runEffect(dispatchStrandedPendingDeployments())),
   );

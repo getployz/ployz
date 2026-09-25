@@ -199,8 +199,12 @@ One command restoring a field, node, or the whole Environment to the Environment
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Cloud Deployment Stage**:
-The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start at admission and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
+The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start when the attempt is dispatched and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
+
+**Pending Attempt**:
+A queued Cloud Deployment Attempt admitted while another queued attempt is already building (it has a run). An Environment has at most one building and one pending attempt, besides the attempt holding the execution slot. The newest admission, manual or automatic, always replaces the pending attempt, including a Retry or one carrying a reviewed volume removal; the replacement's Saved revision still carries that review, so the removal still happens. The building attempt is never replaced. The pending attempt is dispatched, and its Image Builds start, only when the building attempt leaves queued: it takes the slot, fails, or is cancelled.
+_Avoid_: Waiting attempt, second queue, backlog
 
 **Deploy Preview**:
 The read-only Core projection Cloud persists after preparation and image delivery, before confirming application execution. It is product history rather than runtime authority; the live prepared handle owns confirmation and retained image resources.

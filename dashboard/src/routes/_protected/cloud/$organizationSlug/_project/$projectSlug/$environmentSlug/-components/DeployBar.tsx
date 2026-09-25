@@ -122,14 +122,18 @@ export function DeployBar({ children }: { children?: ReactNode }) {
           </Popover>
         )}
       </div>
-      {viewed ? <DeploymentActions deployment={viewed.deployment} /> : null}
+      {viewed ? <DeploymentActions deployment={viewed.deployment}
+        building={attempts.some(({ deployment }) => deployment.status === "queued" && deployment.inngestRunId !== null && deployment.id !== viewed.deployment.id)} /> : null}
       {children}
     </div>
   );
 }
 
-/** Retry on a failed attempt, Deploy now on one queued for the next trigger, Cancel on a queued or running one; all keep their existing semantics. */
-function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
+/**
+ * Retry on a failed attempt, Deploy now on one queued for the next trigger, Cancel on a queued or running one; all keep their existing semantics.
+ * `building`: another queued attempt is building, so this one is the pending attempt and waits for it rather than offering Deploy now.
+ */
+function DeploymentActions({ deployment, building }: { deployment: EnvironmentDeploymentSummary; building: boolean }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const [retry, isRetrying] = useRetryDeployment(deployment);
   const [deployNow, isDispatching] = useDeployQueuedNow(deployment);
@@ -138,7 +142,9 @@ function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSu
   return <>
     {deployment.canRetry ? <Button size="sm" variant="outline" disabled={isRetrying} onClick={() => void retry()}>Retry</Button> : null}
     {/* Queued with no dispatch requested: it waits for the environment's next trigger. */}
-    {deployment.status === "queued" && !deployment.dispatchRequestedAt ? <Button size="sm" variant="outline" disabled={isDispatching} onClick={() => void deployNow()}>Deploy now</Button> : null}
+    {deployment.status === "queued" && !deployment.dispatchRequestedAt ? (building
+      ? <span className="text-sm text-muted-foreground">Waiting for the current build</span>
+      : <Button size="sm" variant="outline" disabled={isDispatching} onClick={() => void deployNow()}>Deploy now</Button>) : null}
     {cancellable ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}
     <CancelDeploymentDialog open={cancelOpen} onOpenChange={setCancelOpen} organizationSlug={organizationSlug} deployment={deployment} />
   </>;

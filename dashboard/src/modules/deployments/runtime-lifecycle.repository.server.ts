@@ -13,7 +13,7 @@ import {
 } from "#/modules/runtime/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import { DeploymentExecutionError } from "#/modules/deployments/execution-error";
-import { isActiveDeploymentUniqueViolation, lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { buildingAttemptOf, isActiveDeploymentUniqueViolation, lockEnvironmentDeploymentQueue, pendingAttemptOf } from "#/modules/deployments/queue-lock.server";
 import {
   ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
   TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES,
@@ -31,6 +31,9 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { DeploymentProgress } from "./deployment-progress";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
+import { Conflict } from "#/server/public-error";
+import { type InngestClient, sendInngestEvent } from "#/modules/inngest/client";
+import { createEnvironmentDeployRequestedEvent } from "#/modules/inngest/events";
 
 function dispatchReleasedVolumeRemoveAttempts(
   attempts: readonly { id: string }[],
@@ -67,6 +70,7 @@ function lockDeploymentEnvironment(environmentDeploymentId: string) {
     const [deployment] = yield* drizzle.select({ environmentId: schemaEnvironmentDeployment.environmentId })
       .from(schemaEnvironmentDeployment).where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
     if (deployment) yield* lockEnvironmentDeploymentQueue(deployment.environmentId);
+    return deployment?.environmentId;
   });
 }
 
@@ -109,7 +113,7 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
     const updatedAt = new Date();
     return yield* database.transaction(
       Effect.gen(function* () {
-        yield* lockDeploymentEnvironment(input.environmentDeploymentId);
+        const environmentId = yield* lockDeploymentEnvironment(input.environmentDeploymentId);
         const tx = (yield* Database).drizzle;
         const patch: EnvironmentDeploymentStatusPatch = {
           status: input.status,
@@ -134,6 +138,8 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
           )
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
+        // An attempt leaving queued (building → planning, failed, cancelled) frees the queue for the pending attempt.
+        if (environmentId) yield* dispatchPendingAfterCommit(environmentId);
         // An ended attempt stops its Image Builds; a running build step observes this and aborts.
         if (TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES.has(input.status)) {
           yield* tx.update(environmentDeploymentImageBuild).set({ status: "cancelled", finishedAt: updatedAt, updatedAt })
@@ -387,4 +393,113 @@ export const beginEnvironmentDeploymentPlanning = Effect.fn(
   );
   if (changed === "blocked") return { state: "blocked" as const };
   return { state: changed ? ("started" as const) : ("unavailable" as const) };
+});
+
+export const ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE =
+  "inngest_dispatch_failed";
+export const ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE =
+  "Cloud could not dispatch the deployment workflow.";
+
+export type EnvironmentDeploymentDispatchInput = {
+  readonly environmentDeploymentId: string;
+  readonly environmentId: string;
+};
+
+const hasBuildingAttempt = Effect.fn("Deployments.hasBuildingAttempt")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [building] = yield* drizzle.select({ id: schemaEnvironmentDeployment.id }).from(schemaEnvironmentDeployment)
+    .where(buildingAttemptOf(environmentId)).limit(1);
+  return building !== undefined;
+});
+
+/**
+ * Dispatches a committed queued row that is still unowned. Replays enqueue deliberately: the event has a
+ * deterministic deployment ID, so Inngest owns deduplication across a crash after admission commit or
+ * after event send. While a building attempt exists, the row is the pending attempt and stays undispatched.
+ */
+const sendEnvironmentDeployment = Effect.fn(
+  "Deployments.sendEnvironmentDeployment",
+)(function* (input: EnvironmentDeploymentDispatchInput) {
+  const { drizzle } = yield* Database;
+  // Read after the admission committed and outside the Environment lock, which is safe: the building
+  // attempt leaves queued in its own committed transition, which then dispatches the pending attempt.
+  // Either this read sees the building attempt gone and sends, or that transition's post-commit dispatch
+  // sees our committed row. At worst both send, and the event ID deduplicates.
+  if (yield* hasBuildingAttempt(input.environmentId)) return;
+  const requestedAt = new Date();
+  const requested = yield* drizzle
+    .update(schemaEnvironmentDeployment)
+    .set({ dispatchRequestedAt: requestedAt, updatedAt: requestedAt })
+    .where(and(eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId), pendingAttemptOf(input.environmentId)))
+    .returning({ id: schemaEnvironmentDeployment.id });
+  if (requested.length === 0) {
+    return yield* new Conflict({
+      message: "The queued deployment is no longer available to dispatch.",
+    });
+  }
+
+  yield* sendInngestEvent(createEnvironmentDeployRequestedEvent(input)).pipe(
+    Effect.catchTag("InngestEventSendError", (failure) =>
+      Effect.gen(function* () {
+        const failed = yield* failUndispatchedDeployment({
+          environmentDeploymentId: input.environmentDeploymentId,
+          failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
+          message: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
+        });
+        if (failed) return yield* failure;
+      }),
+    ),
+  );
+});
+
+/**
+ * Dispatches after the outermost commit. `pending`: a building attempt holds the queue, so the attempt
+ * waits until that one leaves queued; read now, and the send itself checks again after commit.
+ */
+export const dispatchEnvironmentDeployment = Effect.fn("Deployments.dispatchAfterCommit")(
+  function* (input: EnvironmentDeploymentDispatchInput) {
+    const pending = yield* hasBuildingAttempt(input.environmentId);
+    yield* afterDatabaseCommit(sendEnvironmentDeployment(input));
+    return { state: pending ? "pending" as const : "dispatched" as const };
+  },
+);
+
+/**
+ * An attempt leaving queued frees the queue for the pending attempt. Annotated: a failed dispatch
+ * settles through markEnvironmentDeploymentStatus, which calls back here.
+ */
+function dispatchPendingAfterCommit(environmentId: string): Effect.Effect<void, never, Database | InngestClient> {
+  return afterDatabaseCommit(dispatchPendingDeployment(environmentId).pipe(
+    Effect.catch((error) => Effect.logError("Failed to dispatch the pending deployment", error)
+      .pipe(Effect.annotateLogs({ environmentId }))),
+  ));
+}
+
+/** Dispatches the Environment's pending attempt, unless a building attempt still holds the queue. */
+export const dispatchPendingDeployment = Effect.fn("Deployments.dispatchPendingDeployment")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [pending] = yield* drizzle.select({ id: schemaEnvironmentDeployment.id }).from(schemaEnvironmentDeployment)
+    .where(pendingAttemptOf(environmentId)).limit(1);
+  if (!pending) return { state: "none" as const };
+  return yield* dispatchEnvironmentDeployment({ environmentDeploymentId: pending.id, environmentId });
+});
+
+/**
+ * Recovers a lost dispatch: sends every pending attempt whose Environment has no building attempt.
+ * A pending attempt is normally dispatched when the building attempt leaves queued; a crash between
+ * that commit and the send would otherwise strand it.
+ */
+export const dispatchStrandedPendingDeployments = Effect.fn("Deployments.dispatchStrandedPendingDeployments")(function* () {
+  const { drizzle } = yield* Database;
+  const stranded = yield* drizzle.select({ environmentId: schemaEnvironmentDeployment.environmentId })
+    .from(schemaEnvironmentDeployment)
+    .where(and(eq(schemaEnvironmentDeployment.status, "queued"), isNull(schemaEnvironmentDeployment.inngestRunId), sql`not exists (
+      select 1 from ${schemaEnvironmentDeployment} building
+      where building.environment_id = ${schemaEnvironmentDeployment.environmentId}
+        and building.status = 'queued' and building.inngest_run_id is not null
+    )`));
+  yield* Effect.forEach(stranded, ({ environmentId }) => dispatchPendingDeployment(environmentId).pipe(
+    Effect.catch((error) => Effect.logError("Failed to dispatch a stranded pending deployment", error)
+      .pipe(Effect.annotateLogs({ environmentId })))), { discard: true });
+  return stranded.length;
 });

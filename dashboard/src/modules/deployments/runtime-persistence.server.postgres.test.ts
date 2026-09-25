@@ -648,7 +648,8 @@ describe("deployment runtime persistence", () => {
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
     const admitted = await admit();
-    await expect(admit()).rejects.toMatchObject({ _tag: "Conflict" });
+    // A second admission replaces the pending attempt in place.
+    expect((await admit()).id).toBe(admitted.id);
     await harness.db.update(schema.environmentDeployment).set({ deployPreview: preview() }).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
       { organizationId, environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null },

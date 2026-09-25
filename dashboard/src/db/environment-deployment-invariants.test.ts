@@ -19,20 +19,20 @@ describe("environment deployment database invariants", () => {
     );
   });
 
-  it("admits one queued target and one started attempt per environment", () => {
+  it("admits one building, one pending, and one started attempt per environment", () => {
     const table = getTableConfig(environmentDeployment);
-    const queuedIndex = table.indexes.find(
+    const [buildingIndex, pendingIndex] = ["building", "pending"].map((kind) => table.indexes.find(
       (candidate) =>
         candidate.config.name ===
-        "environment_deployment_one_queued_target_idx",
-    );
+        `environment_deployment_one_${kind}_attempt_idx`,
+    ));
     const startedIndex = table.indexes.find(
       (candidate) =>
         candidate.config.name ===
         "environment_deployment_one_started_attempt_idx",
     );
 
-    for (const index of [queuedIndex, startedIndex]) {
+    for (const index of [buildingIndex, pendingIndex, startedIndex]) {
     expect(index?.config.unique).toBe(true);
     expect(index?.config.columns).toHaveLength(1);
     const column = index?.config.columns[0];

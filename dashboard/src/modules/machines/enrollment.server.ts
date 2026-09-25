@@ -33,7 +33,7 @@ import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events"
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { commitFirstConnectAdmission } from "#/modules/deployments/first-connect.server";
-import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
+import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import { Conflict, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";

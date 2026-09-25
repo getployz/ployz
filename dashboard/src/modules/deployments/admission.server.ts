@@ -33,7 +33,7 @@ import {
   organizationIdForEnvironment,
 } from "#/db/scope-values.server";
 import { projectJsonObject } from "#/lib/json";
-import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { lockEnvironmentDeploymentQueue, pendingAttemptOf } from "#/modules/deployments/queue-lock.server";
 import { getVolumePhysicalName } from "#/modules/environment-design/volume-config";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { stageVolumeRemoveAttempt } from "#/modules/runtime/volume-removal.repository";
@@ -352,24 +352,13 @@ function writeQueuedSavedTarget(
       .select({
         id: schemaEnvironmentDeployment.id,
         createdAt: schemaEnvironmentDeployment.createdAt,
-        triggerOrigin: schemaEnvironmentDeployment.triggerOrigin,
-        inngestRunId: schemaEnvironmentDeployment.inngestRunId,
       })
       .from(schemaEnvironmentDeployment)
-      .where(
-        and(
-          eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
-          eq(schemaEnvironmentDeployment.status, "queued"),
-        ),
-      )
+      // The building attempt is never replaced; the newest admission always replaces the pending one.
+      .where(pendingAttemptOf(input.environmentId))
       .for("update")
       .limit(1);
     const queued = queuedRows[0];
-    if (queued && (input.triggerOrigin.origin === "manual" || queued.triggerOrigin.origin === "manual" || queued.inngestRunId !== null)) {
-      return yield* new Conflict({
-        message: "An environment deployment is already queued. Wait for it to start or cancel it before deploying again.",
-      });
-    }
     const now = new Date();
     const deploymentRows = queued
       ? yield* drizzle

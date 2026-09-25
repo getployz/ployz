@@ -36,10 +36,10 @@ describe("active deployment unique violation", () => {
     ).toBe(true);
   });
 
-  it("treats a typed UniqueViolation on the queued-target index as queue contention", () => {
+  it("treats a typed UniqueViolation on the pending-attempt index as queue contention", () => {
     expect(
       isActiveDeploymentUniqueViolation(
-        uniqueViolation("environment_deployment_one_queued_target_idx"),
+        uniqueViolation("environment_deployment_one_pending_attempt_idx"),
       ),
     ).toBe(true);
   });

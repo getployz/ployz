@@ -16,6 +16,8 @@ import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-fram
 import { noPairingChanges } from "#/test/organization-runtime";
 import { loadDeploymentBuildLog } from "./deployment-events.server";
 import { requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
+import { admitEnvironmentDeployment } from "./admission.server";
+import { dispatchEnvironmentDeployment, dispatchPendingDeployment, dispatchStrandedPendingDeployments } from "./runtime-lifecycle.repository.server";
 import * as schema from "#/db/schema";
 import {
   type PostgresTestHarness,
@@ -200,6 +202,15 @@ describe("deployment Inngest durable smoke", () => {
     header.encode();
     const archive = gzipSync(Buffer.concat([Buffer.from(header.block ?? Buffer.alloc(512)), Buffer.alloc(1024)]));
 
+    /** Cloud's Inngest client: records which attempts were dispatched. */
+    const client = new Inngest({ id: "image-build-smoke" });
+    let dispatched: string[] = [];
+    vi.spyOn(client, "send").mockImplementation(async (payload) => {
+      for (const event of [payload].flat()) {
+        if (event.name === "environment/deploy.requested") dispatched.push(String(event.data?.["environmentDeploymentId"]));
+      }
+      return { ids: [] };
+    });
     /** The Ployz SDK faked at its Context boundary: what each Image Build and the deploy step asked of it. */
     type Fake = {
       builds: { image: string; snapshots: number; hint: boolean; index: number | undefined }[];
@@ -255,7 +266,7 @@ describe("deployment Inngest durable smoke", () => {
           json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo", private: false }).pipe(Effect.orDie),
           archive: () => Effect.succeed(new Response(archive)),
         }),
-        Effect.provideService(InngestClient, new Inngest({ id: "image-build-smoke" })),
+        Effect.provideService(InngestClient, client),
         Effect.provideService(SecretEncryption, encryption),
       ))) as typeof runInngestEffect;
     }
@@ -281,6 +292,7 @@ describe("deployment Inngest durable smoke", () => {
     }
 
     beforeEach(async () => {
+      dispatched = [];
       for (const [id, name] of [[apiId, "api"], [webId, "web"]] as const) {
         await harness.db.insert(schema.serviceLineage).values({ id, organizationId, projectId, canonicalName: name, canonicalSlug: name });
         await harness.db.insert(schema.service).values({ id, organizationId, projectId, environmentId, lineageId: id, name });
@@ -348,11 +360,109 @@ describe("deployment Inngest durable smoke", () => {
       const fake: Fake = { builds: [], failImage: null, hold: true, prepared: [] };
       const running = engine(fake, targetDeploymentId, targetRunId).execute();
       await vi.waitFor(() => expect(new Set(fake.builds.map(({ image }) => image)).size).toBe(2), { timeout: 10_000 });
-      expect(await harness.runEffect(requestDeploymentCancellation(targetDeploymentId))).toBe(true);
+      expect(await harness.runEffect(requestDeploymentCancellation(targetDeploymentId).pipe(Effect.provideService(InngestClient, client)))).toBe(true);
       const output = await running;
       expect(output.result).toEqual({ environmentDeploymentId: targetDeploymentId, status: "cancelled", skipped: true });
       expect((await imageBuildRows(targetDeploymentId)).map(({ status }) => status)).toEqual(["cancelled", "cancelled"]);
       expect(fake.prepared).toEqual([]);
     }, 20_000);
+
+    describe("one building attempt, one pending attempt", () => {
+      const push = (deliveryId: string) => ({ origin: "github" as const, deliveryId, branchEvaluationRevision: 1, installationId: 17, repositoryId: 42 });
+      /** Admits through the real admission path, then dispatches after commit as every caller does. */
+      async function admit(triggerOrigin: Parameters<typeof admitEnvironmentDeployment>[0]["triggerOrigin"]) {
+        const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({ environmentId, savedStateSnapshotId: savedId, triggerOrigin, message: null }));
+        await harness.runEffect(dispatchEnvironmentDeployment({ environmentDeploymentId: admitted.id, environmentId })
+          .pipe(Effect.provideService(InngestClient, client)));
+        return admitted.id;
+      }
+      /** The deploying attempt holds the slot while the target's run starts: the target is the building attempt. */
+      async function building(fake: Fake) {
+        await harness.db.update(schema.environmentDeployment).set({ status: "deploying" })
+          .where(eq(schema.environmentDeployment.id, activeDeploymentId));
+        await engine(fake, targetDeploymentId, targetRunId).executeStep("record-inngest-run");
+        expect(await attempt(targetDeploymentId)).toMatchObject({ status: "queued", inngestRunId: targetRunId });
+      }
+      async function expectPendingDispatched(pendingId: string) {
+        await vi.waitFor(() => expect(dispatched).toEqual([pendingId]));
+        expect(await attempt(pendingId)).toMatchObject({ status: "queued", inngestRunId: null, dispatchRequestedAt: expect.any(Date) });
+        // The deploying attempt keeps the slot throughout.
+        expect(await attempt(activeDeploymentId)).toMatchObject({ status: "deploying", inngestRunId: "active-deployment-run" });
+      }
+
+      it("keeps admissions pending behind the building attempt, the newest replacing it, until the building attempt takes the slot", async () => {
+        const fake: Fake = { builds: [], failImage: null, hold: false, prepared: [] };
+        await building(fake);
+        // Its builds finish, but it stays queued waiting for the slot.
+        expect((await engine(fake, targetDeploymentId, targetRunId).executeStep("mark-deployment-planning")).result).toEqual({ state: "blocked" });
+
+        // A push is admitted as the pending attempt and not dispatched, even though the building attempt's builds are done.
+        const pendingId = await admit(push("second"));
+        expect(pendingId).not.toBe(targetDeploymentId);
+        expect(await attempt(pendingId)).toMatchObject({ status: "queued", inngestRunId: null, dispatchRequestedAt: null });
+        // A third push, then a manual deploy, replace the pending attempt; the building one is untouched.
+        expect(await admit(push("third"))).toBe(pendingId);
+        expect((await attempt(pendingId))?.triggerOrigin).toMatchObject({ deliveryId: "third" });
+        expect(await admit({ origin: "manual", actorId: userId })).toBe(pendingId);
+        expect((await attempt(pendingId))?.triggerOrigin).toEqual({ origin: "manual", actorId: userId });
+        expect(await attempt(targetDeploymentId)).toMatchObject({ status: "queued", inngestRunId: targetRunId, triggerOrigin: { origin: "manual" } });
+        expect(await attempt(activeDeploymentId)).toMatchObject({ status: "deploying" });
+        expect(dispatched).toEqual([]);
+
+        // The slot frees; the building attempt takes it, and only then is the pending attempt dispatched.
+        await harness.db.update(schema.environmentDeployment).set({ status: "applied", finishedAt: new Date() })
+          .where(eq(schema.environmentDeployment.id, activeDeploymentId));
+        // The earlier run may still be polling for the slot and take it first; either way the building attempt starts planning.
+        await engine(fake, targetDeploymentId, targetRunId).executeStep("mark-deployment-planning");
+        await vi.waitFor(() => expect(dispatched).toEqual([pendingId]));
+        expect(await attempt(targetDeploymentId)).toMatchObject({ status: "planning", inngestRunId: targetRunId });
+        expect(await attempt(pendingId)).toMatchObject({ status: "queued", inngestRunId: null, dispatchRequestedAt: expect.any(Date) });
+      }, 20_000);
+
+      it("dispatches the pending attempt when the building attempt fails", async () => {
+        const fake: Fake = { builds: [], failImage: "web", hold: false, prepared: [] };
+        await building(fake);
+        const pendingId = await admit(push("second"));
+        expect(dispatched).toEqual([]);
+        const failed = await engine(fake, targetDeploymentId, targetRunId).execute();
+        expect(failed.error).toEqual(expect.objectContaining({ message: "Image Build failed: web." }));
+        expect(await attempt(targetDeploymentId)).toMatchObject({ status: "failed" });
+        await expectPendingDispatched(pendingId);
+      }, 20_000);
+
+      it("reports Deploy now on the pending attempt as waiting while an attempt builds", async () => {
+        await building({ builds: [], failImage: null, hold: false, prepared: [] });
+        const pendingId = await admit(push("second"));
+        const deployNow = await harness.runEffect(dispatchPendingDeployment(environmentId).pipe(Effect.provideService(InngestClient, client)));
+        expect(deployNow).toEqual({ state: "pending" });
+        expect(await attempt(pendingId)).toMatchObject({ dispatchRequestedAt: null });
+        expect(dispatched).toEqual([]);
+      }, 20_000);
+
+      it("sweeps a pending attempt whose dispatch was lost, and leaves one behind a building attempt", async () => {
+        await building({ builds: [], failImage: null, hold: false, prepared: [] });
+        const pendingId = await admit(push("second"));
+        const sweep = () => harness.runEffect(dispatchStrandedPendingDeployments().pipe(Effect.provideService(InngestClient, client)));
+        expect(await sweep()).toBe(0);
+        expect(dispatched).toEqual([]);
+        // The building attempt left queued, but its post-commit dispatch never ran (a crash).
+        await harness.db.update(schema.environmentDeployment).set({ status: "failed", finishedAt: new Date() })
+          .where(eq(schema.environmentDeployment.id, targetDeploymentId));
+        expect(await sweep()).toBe(1);
+        await expectPendingDispatched(pendingId);
+        // A resend is harmless: the event ID is deterministic per attempt.
+        await sweep();
+        expect(new Set(dispatched)).toEqual(new Set([pendingId]));
+      }, 20_000);
+
+      it("dispatches the pending attempt when the building attempt is cancelled", async () => {
+        await building({ builds: [], failImage: null, hold: false, prepared: [] });
+        const pendingId = await admit(push("second"));
+        expect(dispatched).toEqual([]);
+        expect(await harness.runEffect(requestDeploymentCancellation(targetDeploymentId).pipe(Effect.provideService(InngestClient, client)))).toBe(true);
+        expect(await attempt(targetDeploymentId)).toMatchObject({ status: "cancelled" });
+        await expectPendingDispatched(pendingId);
+      }, 20_000);
+    });
   });
 });

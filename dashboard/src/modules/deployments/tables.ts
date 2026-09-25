@@ -137,9 +137,13 @@ export const environmentDeployment = pgTable(
         environmentSavedStateSnapshot.id,
       ],
     }).onDelete("restrict"),
-    uniqueIndex("environment_deployment_one_queued_target_idx")
+    // At most one building attempt (queued with a run) and one pending attempt (queued, no run yet).
+    uniqueIndex("environment_deployment_one_building_attempt_idx")
       .on(table.environmentId)
-      .where(sql`${table.status} = 'queued'`),
+      .where(sql`${table.status} = 'queued' and ${table.inngestRunId} is not null`),
+    uniqueIndex("environment_deployment_one_pending_attempt_idx")
+      .on(table.environmentId)
+      .where(sql`${table.status} = 'queued' and ${table.inngestRunId} is null`),
     uniqueIndex("environment_deployment_one_started_attempt_idx")
       .on(table.environmentId)
       .where(sql`${table.status} in ('planning','deploying')`),

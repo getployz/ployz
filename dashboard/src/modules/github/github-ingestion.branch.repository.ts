@@ -40,7 +40,7 @@ import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
 } from "#/modules/deployments/admission.server";
-import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
+import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import {
   listLatestEnvironmentSavedStatesForGithubBranch,
 } from "#/modules/environment-design/saved-state-repository.server";
@@ -404,14 +404,18 @@ export const resumeGithubWaitingTriggers = Effect.fn("Github.resumeWaitingTrigge
   const waiting = yield* drizzle.select({ id: schemaGithubEnvironmentTrigger.id }).from(schemaGithubEnvironmentTrigger)
     .where(eq(schemaGithubEnvironmentTrigger.admissionState, "waiting"));
   for (const { id } of waiting) {
-    const deployment = yield* withGithubTransaction(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const [trigger] = yield* drizzle.select().from(schemaGithubEnvironmentTrigger)
-        .where(and(eq(schemaGithubEnvironmentTrigger.id, id), eq(schemaGithubEnvironmentTrigger.admissionState, "waiting")))
-        .for("update");
-      return trigger ? yield* admitGithubTrigger(trigger) : null;
-    }), "read committed");
-    if (deployment) yield* dispatchEnvironmentDeployment(deployment);
+    // One trigger's failure must not starve the others; the next sweep retries it.
+    yield* Effect.gen(function* () {
+      const deployment = yield* withGithubTransaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [trigger] = yield* drizzle.select().from(schemaGithubEnvironmentTrigger)
+          .where(and(eq(schemaGithubEnvironmentTrigger.id, id), eq(schemaGithubEnvironmentTrigger.admissionState, "waiting")))
+          .for("update");
+        return trigger ? yield* admitGithubTrigger(trigger) : null;
+      }), "read committed");
+      if (deployment) yield* dispatchEnvironmentDeployment(deployment);
+    }).pipe(Effect.catch((error) =>
+      Effect.logError("Failed to resume a waiting GitHub trigger.", error).pipe(Effect.annotateLogs({ triggerId: id }))));
   }
 });
 

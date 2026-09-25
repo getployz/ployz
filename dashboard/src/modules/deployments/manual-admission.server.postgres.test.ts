@@ -2,7 +2,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { runtimeWatchFrameFixture, runtimeWatchVolumeFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { OrganizationRuntime, type OrganizationRuntimeService, type ConnectedRuntimeClient } from "#/modules/runtime/organization-runtime.server";
 import { submitReviewedPublication, prepareEnvironmentDestructiveVolumes } from "./deployment-command.server";
-import { dispatchEnvironmentDeployment } from "./dispatch.server";
+import { dispatchEnvironmentDeployment } from "./runtime-lifecycle.repository.server";
 import { recordInngestRun } from "./runtime-lifecycle.repository.server";
 import { createRetryAttempt } from "./retry-repository.server";
 import { destructiveVolumeReviewsSchema } from "#/modules/environment-design/destructive-volume-review";
@@ -278,18 +278,18 @@ describe("manual environment saved-state persistence", () => {
     expect(inngest.send).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses automated replacement of an accepted manual target", async () => {
+  it("lets an automated admission replace a pending manual target", async () => {
     const manual = await deploy("Reviewed manual target");
     await save("Newer Saved revision");
     const basis = await currentSavedStateBasis();
     if (basis.kind !== "saved_revision") throw new Error("missing Saved revision");
-    await expect(harness.runTransaction(() => admitEnvironmentDeployment({
+    await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: basis.savedStateSnapshotId,
       triggerOrigin: { origin: "first_connect", machineId: "a".repeat(32) }, message: null,
-    }))).rejects.toMatchObject({ _tag: "Conflict" });
-    const [row] = await harness.db.select().from(schema.environmentDeployment);
-    expect(row).toMatchObject({ id: manual.environmentDeploymentId, triggerOrigin: { origin: "manual", actorId: userId } });
-    expect(row?.savedStateSnapshotId).not.toBe(basis.savedStateSnapshotId);
+    }));
+    const [row, ...rest] = await harness.db.select().from(schema.environmentDeployment);
+    expect(rest).toEqual([]);
+    expect(row).toMatchObject({ id: manual.environmentDeploymentId, triggerOrigin: { origin: "first_connect" }, savedStateSnapshotId: basis.savedStateSnapshotId });
   });
 
   it("freezes registry contents and revision across rotation and retry", async () => {
@@ -677,7 +677,7 @@ describe("manual environment saved-state persistence", () => {
     ).toEqual([]);
   });
 
-  it("refuses a second queued manual command without publishing or changing its target", async () => {
+  it("replaces a pending manual target with the next manual command", async () => {
     const first = await deploy("First target");
     const [firstNode] = await harness.db
       .select({ config: schema.environmentNodeConfigSnapshot.config })
@@ -693,7 +693,7 @@ describe("manual environment saved-state persistence", () => {
       .update(schema.environment)
       .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,startCommand}', to_jsonb(${"Changed target"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
-    await expect(deploy("Second target")).rejects.toMatchObject({ _tag: "Conflict" });
+    expect((await deploy("Second target")).environmentDeploymentId).toBe(first.environmentDeploymentId);
 
     const savedRows = await harness.db
       .select({
@@ -714,17 +714,10 @@ describe("manual environment saved-state persistence", () => {
       );
 
     expect(firstNode?.config).toEqual(expect.objectContaining({ privateDns: "api" }));
-    expect(savedRows).toHaveLength(1);
-    expect(
-      savedRows.map(
-        (row) =>
-          decodeStrict(savedEnvironmentIntentSchema, row.intent).services[0]?.config
-            .privateDns,
-      ),
-    ).toEqual(["api"]);
+    expect(savedRows).toHaveLength(2);
     expect(queuedNodes).toEqual([
       expect.objectContaining({
-        config: expect.objectContaining({ privateDns: "api" }),
+        config: expect.objectContaining({ startCommand: "Changed target" }),
       }),
     ]);
   });
