@@ -5,11 +5,12 @@ import { BuildLogs, clock, formatDuration, splitStepName, stripAnsi } from "./de
 import type { BuildOutputRow, BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 
 const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
+const organizationId = "6c0b2f4e-7a1d-4f3e-9b8a-2d5c1e0f9a7b";
 const at = (seconds: number) => new Date(Date.UTC(2026, 8, 22, 21, 9, seconds));
 const step = (id: number, name: string, extra: Partial<BuildStepRow> = {}): BuildStepRow => ({
-  id, deploymentId, build: 1, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
+  id, organizationId, deploymentId, build: 1, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
 });
-const line = (id: number, stepId: number, text: string, stderr = false): BuildOutputRow => ({ id, deploymentId, stepId, stderr, text, createdAt: at(id) });
+const line = (id: number, stepId: number, text: string, stderr = false): BuildOutputRow => ({ id, organizationId, deploymentId, stepId, stderr, text, createdAt: at(id) });
 
 it("renders started steps as rows, tails the running step, and opens only the failed one", () => {
   const steps = [

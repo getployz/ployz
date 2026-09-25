@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider, useSuspenseQuery, dehydrate, hydrate 
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { orgStoreOptions } from "#/collections/org-store";
-import { orgStoreTableNames } from "#/test/org-store-tables";
+import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
 import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
 import { preloadCollection } from "#/collections/query-collection";
@@ -18,9 +18,9 @@ it("keeps the SSR canvas visible while hydrated live queries take over", async (
   const client = new QueryClient();
   const scope = { queryClient: server, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) {
-    server.setQueryData(["collections", "session", "user", "acme", table], []);
+    server.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
   }
-  server.setQueryData(["collections", "session", "user", "acme", "environment_saved_state_snapshot"], [{ id: "saved", environmentId: "env", organizationId: "org" }]);
+  server.setQueryData(["collections", "session", "user", "acme", "environment_saved_state_snapshot"], orgStoreSeed([{ id: "saved", environmentId: "env", organizationId: "org" }]));
   await preloadCollection(getEnvironmentSavedStateRevisionsCollection("acme", scope));
   server.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, { version: "", states: [] });
   await server.ensureQueryData(orgStoreOptions("acme", scope));

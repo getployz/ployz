@@ -26,6 +26,7 @@ import {
   createCancelTeardown,
   createProcessTeardown,
 } from "#/modules/runtime/teardown.inngest";
+import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
@@ -50,5 +51,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createCancelVolumeRemove(inngest),
     createProcessTeardown(inngest),
     createCancelTeardown(inngest),
+    createPruneOrganizationChangeLog(inngest),
   ];
 }

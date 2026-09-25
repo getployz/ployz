@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { setResponseHeader } from "@tanstack/react-start/server";
 import { Schema } from "effect";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import {
@@ -9,6 +10,7 @@ import {
   requestGithubRepoSync,
   searchGithubFiles,
 } from "#/modules/github/github.server";
+import { listCachedGithubRepositoriesForUser } from "#/modules/github/github.repository";
 import {
   actorMiddleware,
   publicErrorMiddleware,
@@ -58,3 +60,10 @@ export const resolvePublicGithubRepositoryServerFn = createServerFn({ method: "G
   .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ repository: Schema.String.check(Schema.isMaxLength(500)) })))
   .handler(({ context, data }) => runActor(context, resolvePublicGithubRepository(data.repository)));
+
+export const listGithubRepositoriesServerFn = createServerFn({ method: "GET" })
+  .middleware(authenticated)
+  .handler(({ context }) => {
+    setResponseHeader("cache-control", "private, no-store");
+    return runActor(context, listCachedGithubRepositoriesForUser(context.actor.userId));
+  });

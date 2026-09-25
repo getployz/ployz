@@ -151,10 +151,10 @@ describe("GitHub branch deployment admission", () => {
       insert into project (id, organization_id, name, slug) values ('${projectId}', '${organizationId}', 'GitHub', 'github');
       insert into environment (id, project_id, organization_id, name, namespace, intent)
         values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'production', '${JSON.stringify(working)}');
-      insert into service_lineage (id, project_id, canonical_name, canonical_slug) values ('${lineageId}', '${projectId}', 'API', 'api');
+      insert into service_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values ('${lineageId}', '${organizationId}', '${projectId}', 'API', 'api');
       insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
         values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}', 'API');
-      insert into variable (id, environment_id, service_id) values ('${variableId}', '${environmentId}', '${serviceId}');
+      insert into variable (id, organization_id, environment_id, service_id) values ('${variableId}', '${organizationId}', '${environmentId}', '${serviceId}');
     `);
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({
       id: savedStateSnapshotId,
@@ -403,7 +403,7 @@ describe("GitHub branch deployment admission", () => {
       headSha: "e".repeat(40),
       cursor: null,
       beforeApply: async () => {
-        await harness.db.insert(schema.serviceLineage).values({ id: replacementLineageId, projectId, canonicalName: "Replacement API", canonicalSlug: "replacement-api" });
+        await harness.db.insert(schema.serviceLineage).values({ id: replacementLineageId, organizationId, projectId, canonicalName: "Replacement API", canonicalSlug: "replacement-api" });
         await harness.db.insert(schema.service).values({ id: replacementServiceId, projectId, organizationId, environmentId, lineageId: replacementLineageId, name: "Replacement API" });
         await harness.db.insert(schema.environmentSavedStateSnapshot).values({
           id: latestSavedStateSnapshotId,
@@ -468,7 +468,7 @@ describe("GitHub branch deployment admission", () => {
           namespace: "staging",
           intent: emptyEnvironmentIntent("staging"),
         });
-        await harness.db.insert(schema.serviceLineage).values({ id: laterLineageId, projectId, canonicalName: "Staging API", canonicalSlug: "staging-api" });
+        await harness.db.insert(schema.serviceLineage).values({ id: laterLineageId, organizationId, projectId, canonicalName: "Staging API", canonicalSlug: "staging-api" });
         await harness.db.insert(schema.service).values({ id: laterServiceId, projectId, organizationId, environmentId: laterEnvironmentId, lineageId: laterLineageId, name: "Staging API" });
         await harness.db.insert(schema.environmentSavedStateSnapshot).values({
           organizationId,

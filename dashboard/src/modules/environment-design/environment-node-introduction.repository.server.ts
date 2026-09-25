@@ -26,7 +26,7 @@ export const captureEnvironmentNodeIntroduction = Effect.fn("EnvironmentDesign.c
     if (!introduction) return yield* Effect.die("PostgreSQL did not return the node introduction.");
     // ponytail: a full canonical document per introduction; narrow the immutable
     // snapshot only if measured history size warrants a separate node contract.
-    yield* drizzle.insert(environmentNodeIntroductionSecret).values({ ...identity, authoredIntent: intent });
+    yield* drizzle.insert(environmentNodeIntroductionSecret).values({ ...identity, organizationId: document.organizationId, authoredIntent: intent });
     return introduction;
   },
 );

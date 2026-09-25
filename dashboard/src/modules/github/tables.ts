@@ -4,6 +4,8 @@ import { GITHUB_CHECK_SUITE_ACTIONS, GITHUB_CHECK_SUITE_CONCLUSIONS, GITHUB_CHEC
 
 import { user } from "#/modules/identity/tables";
 
+import { organization } from "#/modules/organization/tables";
+
 import { environment } from "#/modules/project/tables";
 
 import { sql } from "drizzle-orm";
@@ -397,6 +399,9 @@ export const githubEnvironmentTrigger = pgTable(
   "github_environment_trigger",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     installationId: integer("installation_id").notNull(),
     repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
     ref: text("ref").notNull(),

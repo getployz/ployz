@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { orgStoreSeed } from "#/test/org-store-tables";
 import { Suspense } from "react";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
@@ -22,10 +23,10 @@ it("hydrates the server projection without an empty-version query or a loading f
     deployments: getEnvironmentDeploymentsCollection("org", serverScope),
     savedStateRevisions: getEnvironmentSavedStateRevisionsCollection("org", serverScope),
   };
-  serverClient.setQueryData(["collections", "session", "user", "org", "environment_deployment"], []);
-  serverClient.setQueryData(["collections", "session", "user", "org", "environment_saved_state_snapshot"], [
+  serverClient.setQueryData(["collections", "session", "user", "org", "environment_deployment"], orgStoreSeed([]));
+  serverClient.setQueryData(["collections", "session", "user", "org", "environment_saved_state_snapshot"], orgStoreSeed([
     { id: "saved-1", environmentId: "env", organizationId: "org" },
-  ]);
+  ]));
   await Promise.all(Object.values(serverMetadata).map(preloadCollection));
   const serverOptions = environmentChangeStateOptions("org", serverScope);
   serverClient.setQueryData(serverOptions.queryKey, { version: "saved:saved-1", states: [] });
@@ -86,8 +87,8 @@ async function editorFixture() {
   const deploymentKey = ["collections", "session", "user", "org", "environment_deployment"];
   const savedKey = ["collections", "session", "user", "org", "environment_saved_state_snapshot"];
   const deployment = { id: "deploy", status: "deploying", savedStateSnapshotId: "saved", updatedAt: new Date(0) };
-  queryClient.setQueryData(deploymentKey, [deployment]);
-  queryClient.setQueryData(savedKey, []);
+  queryClient.setQueryData(deploymentKey, orgStoreSeed([deployment]));
+  queryClient.setQueryData(savedKey, orgStoreSeed([]));
   const metadata = {
     deployments: getEnvironmentDeploymentsCollection("org", scope),
     savedStateRevisions: getEnvironmentSavedStateRevisionsCollection("org", scope),
@@ -118,17 +119,17 @@ it("keeps a focused editor stable through progress and refreshes lifecycle and s
     input.focus();
     fireEvent.change(input, { target: { value: "npm run custom" } });
     for (let n = 1; n <= 3; n++) {
-      await act(async () => { test.queryClient.setQueryData(test.deploymentKey, [{ ...test.deployment, updatedAt: new Date(n) }]); });
+      await act(async () => { test.queryClient.setQueryData(test.deploymentKey, orgStoreSeed([{ ...test.deployment, updatedAt: new Date(n) }])); });
     }
     expect(test.read).toHaveBeenCalledTimes(1);
     expect(environmentChangeStateOptions("org", test.scope).queryKey).toEqual(test.options.queryKey);
     const applied = deferred<EnvironmentChangeStateProjection[]>();
     const saved = deferred<EnvironmentChangeStateProjection[]>();
     test.read.mockImplementationOnce(() => applied.promise).mockImplementationOnce(() => saved.promise);
-    await act(async () => { test.queryClient.setQueryData(test.deploymentKey, [{ ...test.deployment, status: "applied" }]); });
+    await act(async () => { test.queryClient.setQueryData(test.deploymentKey, orgStoreSeed([{ ...test.deployment, status: "applied" }])); });
     await waitFor(() => expect(test.read).toHaveBeenCalledTimes(2));
     // A second metadata change during a request must be fetched after that request settles.
-    await act(async () => { test.queryClient.setQueryData(test.savedKey, [{ id: "saved-next" }]); });
+    await act(async () => { test.queryClient.setQueryData(test.savedKey, orgStoreSeed([{ id: "saved-next" }])); });
     expect(test.read).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByText("initial")).toBeTruthy();
@@ -149,7 +150,7 @@ it("refreshes cached comparisons after metadata changes while the editor is clos
   const test = await editorFixture();
   try {
     test.view.unmount();
-    await act(async () => { test.queryClient.setQueryData(test.savedKey, [{ id: "saved-while-closed" }]); });
+    await act(async () => { test.queryClient.setQueryData(test.savedKey, orgStoreSeed([{ id: "saved-while-closed" }])); });
     const refreshed = deferred<EnvironmentChangeStateProjection[]>();
     test.read.mockImplementationOnce(() => refreshed.promise);
     function Reopened() {
@@ -173,7 +174,7 @@ it("retains the draft and comparison after a background failure without retrying
     const input = screen.getByRole("textbox", { name: "Start command" });
     input.focus();
     test.read.mockRejectedValueOnce(new Error("temporarily unavailable"));
-    await act(async () => { test.queryClient.setQueryData(test.deploymentKey, [{ ...test.deployment, status: "failed" }]); });
+    await act(async () => { test.queryClient.setQueryData(test.deploymentKey, orgStoreSeed([{ ...test.deployment, status: "failed" }])); });
     await waitFor(() => expect(test.queryClient.getQueryState(test.options.queryKey)?.status).toBe("error"));
     fireEvent.change(input, { target: { value: "keep typing" } });
     expect(input).toHaveProperty("value", "keep typing");
@@ -210,7 +211,7 @@ it("catches metadata changes during a manual refresh even when its response matc
     test.read.mockImplementationOnce(() => manual.promise).mockResolvedValueOnce(comparison("latest"));
     await act(async () => { void test.queryClient.invalidateQueries({ queryKey: test.options.queryKey }); });
     await waitFor(() => expect(test.read).toHaveBeenCalledTimes(2));
-    await act(async () => { test.queryClient.setQueryData(test.savedKey, [{ id: "saved-during-refresh" }]); });
+    await act(async () => { test.queryClient.setQueryData(test.savedKey, orgStoreSeed([{ id: "saved-during-refresh" }])); });
     await act(async () => { manual.resolve(comparison("initial")); });
     await screen.findByText("latest");
     expect(test.read).toHaveBeenCalledTimes(3);

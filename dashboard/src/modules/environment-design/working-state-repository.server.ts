@@ -66,7 +66,7 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
     if (intent.volumes.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "volume"))) {
       return yield* new Conflict({ message: "A resource does not belong to this Environment." });
     }
-    const variableOwners = intent.services.flatMap((node) => node.variables.map((value) => ({ id: value.id, environmentId: document.id, serviceId: node.id })));
+    const variableOwners = intent.services.flatMap((node) => node.variables.map((value) => ({ id: value.id, organizationId: document.organizationId, environmentId: document.id, serviceId: node.id })));
     if (variableOwners.length) {
       yield* drizzle.insert(variable).values(variableOwners).onConflictDoNothing();
       const storedOwners = yield* drizzle.select().from(variable).where(and(eq(variable.environmentId, document.id), inArray(variable.id, variableOwners.map((owner) => owner.id))));
@@ -76,7 +76,7 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
     }
     const secrets = intent.services.flatMap((node) => node.variables)
       .flatMap((variable) => variable.value.kind === "secret" && variable.value.encryptedValue
-        ? [{ environmentId: document.id, variableId: variable.id, encryptedValue: variable.value.encryptedValue }]
+        ? [{ organizationId: document.organizationId, environmentId: document.id, variableId: variable.id, encryptedValue: variable.value.encryptedValue }]
         : []);
     if (secrets.length) yield* drizzle.insert(variableSecret).values(secrets).onConflictDoUpdate({
       target: variableSecret.variableId,

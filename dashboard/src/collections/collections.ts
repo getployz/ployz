@@ -1,6 +1,6 @@
-import type { CollectionReadInput } from "./read.contract";
+import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
-import { createApiCollection } from "#/collections/query-collection";
+import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import {
@@ -40,105 +40,35 @@ type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
 type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
-function collectionReadOptions<Row>(table: CollectionReadInput["table"], organizationSlug: string, scope: CollectionScope) {
-  return {
+/** Every Org Store collection is fed by the Organization change log: a refetch reads only rows changed `since` its cursor. */
+function changeCollection<Row extends object>(table: CollectionName, getKey: (row: Row) => string) {
+  return cachedByCollectionScope((organizationSlug, scope) => createChangeCollection<Row>({
     queryClient: scope.queryClient,
     queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
-    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+    getKey,
+    read: async ({ signal, since }) => {
       // SAFETY: each owner below pairs its literal allowlisted table with that table's database row type.
-      return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId }, signal }) as Row[];
+      return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId, since }, signal }) as CollectionRead<Row>;
     },
-  };
+  }));
 }
 
-export const getProjectsCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<ProjectRow>({
-    ...collectionReadOptions<ProjectRow>("project", organizationSlug, scope),
-    getKey: (row) => row.id,
-  }),
-);
-
-export const getEnvironmentsCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<EnvironmentRow>({
-    ...collectionReadOptions<EnvironmentRow>("environment", organizationSlug, scope),
-    getKey: (row) => row.id,
-  }),
-);
-
-export const getRawServicesCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<ServiceRow>({
-    ...collectionReadOptions<ServiceRow>("service", organizationSlug, scope),
-    getKey: (row) => row.id,
-  }),
-);
-
-export const getCanvasPositionsCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<CanvasPositionRow>({
-    ...collectionReadOptions<CanvasPositionRow>("environment_canvas_node_position", organizationSlug, scope),
-    getKey: (row) => `${row.resourceType}:${row.resourceId}`,
-  }),
-);
-
-export const getResourceLineagesCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<ResourceLineageRow>({
-    ...collectionReadOptions<ResourceLineageRow>("resource_lineage", organizationSlug, scope),
-    getKey: (row) => row.id,
-  }),
-);
-
-export const getRawEnvironmentResourcesCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<EnvironmentResourceRow>({
-    ...collectionReadOptions<EnvironmentResourceRow>("environment_resource", organizationSlug, scope),
-    getKey: (row) => row.id,
-  }),
-);
-
-export const getEnvironmentDeploymentsCollection = cachedByCollectionScope(
-  (organizationSlug, scope) =>
-    createApiCollection<EnvironmentDeploymentRow>({
-    ...collectionReadOptions<EnvironmentDeploymentRow>("environment_deployment", organizationSlug, scope),
-    refetchInterval: 2_000,
-    getKey: (row) => row.id,
-    }),
-);
-
-export const getEnvironmentSavedStateRevisionsCollection =
-  cachedByCollectionScope((organizationSlug, scope) =>
-    createApiCollection<EnvironmentSavedStateRevisionRow>({
-    ...collectionReadOptions<EnvironmentSavedStateRevisionRow>("environment_saved_state_snapshot", organizationSlug, scope),
-    getKey: (row) => row.id,
-    }),
-  );
-
-export const getEnvironmentNodeConfigSnapshotsCollection =
-  cachedByCollectionScope((organizationSlug, scope) =>
-    createApiCollection<EnvironmentNodeConfigSnapshotRow>({
-    ...collectionReadOptions<EnvironmentNodeConfigSnapshotRow>("environment_node_config_snapshot", organizationSlug, scope),
-    getKey: (row) => row.id,
-    }),
-  );
-
-export const getEnvironmentNodeIntroductionsCollection =
-  cachedByCollectionScope((organizationSlug, scope) =>
-    createApiCollection<EnvironmentNodeIntroductionRow>({
-    ...collectionReadOptions<EnvironmentNodeIntroductionRow>("environment_node_introduction", organizationSlug, scope),
-    getKey: (row) => `${row.nodeType}:${row.nodeId}`,
-    }),
-  );
-
-export const getVolumeRemoveAttemptsCollection = cachedByCollectionScope(
-  (organizationSlug, scope) =>
-    createApiCollection<VolumeRemoveAttemptRow>({
-    ...collectionReadOptions<VolumeRemoveAttemptRow>("volume_remove_attempt", organizationSlug, scope),
-    getKey: (row) => row.id,
-    }),
-);
-
-export const getOrganizationEnrollmentCollection = cachedByCollectionScope((organizationSlug, scope) =>
-  createApiCollection<OrganizationEnrollmentRow>({
-    ...collectionReadOptions<OrganizationEnrollmentRow>("organization_enrollment", organizationSlug, scope),
-    getKey: (row) => row.id,
-  }));
+export const getProjectsCollection = changeCollection<ProjectRow>("project", (row) => row.id);
+export const getEnvironmentsCollection = changeCollection<EnvironmentRow>("environment", (row) => row.id);
+export const getRawServicesCollection = changeCollection<ServiceRow>("service", (row) => row.id);
+export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
+  "environment_canvas_node_position", (row) => `${row.resourceType}:${row.resourceId}`);
+export const getResourceLineagesCollection = changeCollection<ResourceLineageRow>("resource_lineage", (row) => row.id);
+export const getRawEnvironmentResourcesCollection = changeCollection<EnvironmentResourceRow>("environment_resource", (row) => row.id);
+export const getEnvironmentDeploymentsCollection = changeCollection<EnvironmentDeploymentRow>("environment_deployment", (row) => row.id);
+export const getEnvironmentSavedStateRevisionsCollection = changeCollection<EnvironmentSavedStateRevisionRow>(
+  "environment_saved_state_snapshot", (row) => row.id);
+export const getEnvironmentNodeConfigSnapshotsCollection = changeCollection<EnvironmentNodeConfigSnapshotRow>(
+  "environment_node_config_snapshot", (row) => row.id);
+export const getEnvironmentNodeIntroductionsCollection = changeCollection<EnvironmentNodeIntroductionRow>(
+  "environment_node_introduction", (row) => `${row.nodeType}:${row.nodeId}`);
+export const getVolumeRemoveAttemptsCollection = changeCollection<VolumeRemoveAttemptRow>("volume_remove_attempt", (row) => row.id);
+export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
 
 export type EnvironmentSummary = Pick<EnvironmentRow, "id" | "projectId" | "organizationId" | "name" | "namespace" | "createdAt">;
 export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary {
@@ -147,14 +77,26 @@ export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary 
 }
 export type ProjectPreference = { id: string; environmentId: string };
 
-export const getEnvironmentSummariesCollection = cachedByCollectionScope((organizationSlug, scope) =>
-  createApiCollection<EnvironmentSummary>({
-    ...collectionReadOptions<EnvironmentSummary>("environment_summary", organizationSlug, scope),
-    getKey: row => row.id,
-  }));
+export const getEnvironmentSummariesCollection = changeCollection<EnvironmentSummary>("environment_summary", (row) => row.id);
+export const getProjectPreferencesCollection = changeCollection<ProjectPreference>("project_preference", (row) => row.id);
 
-export const getProjectPreferencesCollection = cachedByCollectionScope((organizationSlug, scope) =>
-  createApiCollection<ProjectPreference>({
-    ...collectionReadOptions<ProjectPreference>("project_preference", organizationSlug, scope),
-    getKey: row => row.id,
-  }));
+/**
+ * Every Org Store table by the name the Organization change stream sends.
+ * Not a `get*Collection` export, so the Org Store gate doesn't count it twice.
+ */
+export const orgStoreTables = {
+  project: getProjectsCollection,
+  environment: getEnvironmentsCollection,
+  environment_summary: getEnvironmentSummariesCollection,
+  project_preference: getProjectPreferencesCollection,
+  service: getRawServicesCollection,
+  resource_lineage: getResourceLineagesCollection,
+  environment_resource: getRawEnvironmentResourcesCollection,
+  environment_canvas_node_position: getCanvasPositionsCollection,
+  environment_deployment: getEnvironmentDeploymentsCollection,
+  environment_saved_state_snapshot: getEnvironmentSavedStateRevisionsCollection,
+  environment_node_config_snapshot: getEnvironmentNodeConfigSnapshotsCollection,
+  environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
+  volume_remove_attempt: getVolumeRemoveAttemptsCollection,
+  organization_enrollment: getOrganizationEnrollmentCollection,
+} satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

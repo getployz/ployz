@@ -178,6 +178,15 @@ export const pruneCachedGithubRepositories = Effect.fn(
   return deleted.length;
 });
 
+/** The user's repository cache, which a repository picker reads. */
+export const listCachedGithubRepositoriesForUser = Effect.fn(
+  "Github.listCachedRepositoriesForUser",
+)(function* (userId: string) {
+  const database = yield* Database;
+  return yield* database.drizzle.select().from(schemaGithubRepositoryCache)
+    .where(eq(schemaGithubRepositoryCache.userId, userId));
+});
+
 export const getCachedGithubRepositoryForUser = Effect.fn(
   "Github.getCachedRepositoryForUser",
 )(function* (input: {

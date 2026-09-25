@@ -12,6 +12,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import { cleanUpDeploymentImages, executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
 import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
 import { loadDeploymentBuildLog, loadDeploymentEvents, persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
@@ -222,7 +223,7 @@ describe("deployment runtime persistence", () => {
       },
       close: async () => undefined,
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     for (const image of ["redis:7", "redis:8", "redis:9"]) {
       const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
@@ -317,7 +318,7 @@ describe("deployment runtime persistence", () => {
       preview: async () => { confirmed += 1; throw new Error("Preparation failure must never preview/confirm"); },
       close: async () => undefined,
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const config = projectServiceDeploymentConfig({ source: createGitServiceSource({ repository: "owner/repo", repositoryId: 42, access: { type: "github-installation", installationId: 17  }}),
       privateDns: "api", managedHostnames: [{ prefix: "api", targetPort: null }], preDeployCommand: null, startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
@@ -376,7 +377,7 @@ describe("deployment runtime persistence", () => {
     const client = asTestDouble<Client>()({ preview: async () => prepared, close: async () => { closed = true; } });
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }],
-    })).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
       Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
     ));
@@ -423,7 +424,7 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, admitted.id));
     const confirm = vi.fn(() => { throw new Error("Cancelled work must not execute"); });
     const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [], confirm }), close: async () => {} });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
       Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
@@ -453,7 +454,7 @@ describe("deployment runtime persistence", () => {
       },
       close: async () => { closing(); await cleanup; },
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const running = harness.runEffect(executeLatestEnvironmentDeployment(admitted.id).pipe(Effect.scoped, Effect.provide(runtime),
       Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
@@ -488,7 +489,7 @@ describe("deployment runtime persistence", () => {
       preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [target], confirm }),
       pruneImages, close: async () => {},
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.scoped, Effect.provide(runtime),
       Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
@@ -550,7 +551,7 @@ describe("deployment runtime persistence", () => {
     const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(row?.runtimeProgress).toBeNull();
     await harness.pool.query('insert into member(user_id,organization_id) values($1,$2)', [userId, organizationId]);
-    const read = () => harness.runEffect(readCollection({ userId }, { table: "environment_deployment", userId, organizationSlug: "runtime" }));
+    const read = () => harness.runEffect(readCollection({ userId }, { table: "environment_deployment", userId, organizationSlug: "runtime" })).then((snapshot) => snapshot.rows);
     expect(await read()).toEqual(expect.arrayContaining([expect.objectContaining({ id: admitted.id, runtimeProgress: progress })]));
     const terminal = { ...progress, outcome: "success" as const, logsIncomplete: true };
     await harness.db.update(schema.environmentDeployment).set({ runtimeProgress: terminal }).where(eq(schema.environmentDeployment.id, admitted.id));
@@ -616,7 +617,7 @@ describe("deployment runtime persistence", () => {
     await expect(admit()).rejects.toMatchObject({ _tag: "Conflict" });
     await harness.db.update(schema.environmentDeployment).set({ deployPreview: preview() }).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
-      { environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null, encryptedBuildReceipts: null },
+      { organizationId, environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null, encryptedBuildReceipts: null },
     ]);
     const outcome = { version: 1, outcome: { type: "success" as const, completed: [] } };
     await harness.runEffect(persistSdkDeployOutcome({
@@ -638,7 +639,7 @@ describe("deployment runtime persistence", () => {
       status: "failed", createdAt: new Date("2026-09-04T03:00:00.000Z"),
     }));
     await harness.db.insert(schema.environmentDeploymentSecret).values({
-      environmentDeploymentId: targetDeploymentId,
+      organizationId, environmentDeploymentId: targetDeploymentId,
     });
     const spec = resolvedServiceSpecFixture();
     spec.container.environment = { PASSWORD: "never-publish-outcome" };
@@ -707,7 +708,7 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     expect(previewRow?.deployPreview).toEqual(targetPreview);
 
-    await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
+    await harness.db.insert(schema.environmentDeploymentSecret).values({ organizationId, environmentDeploymentId: targetDeploymentId });
     await harness.runEffect(persistSdkDeployOutcome({ environmentDeploymentId: targetDeploymentId,
       outcome: Redacted.make({ version: 1, outcome: { type: "success", completed: [] } }),
     }).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" }))));
@@ -811,9 +812,9 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     const outcome: DeployOutcome<ExecutionError> = { type: "failed", completed: [api, removal],
       failed: { type: "operation", operation: worker, error: { type: "cancelled" } }, unexecuted: [] };
-    await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
+    await harness.db.insert(schema.environmentDeploymentSecret).values({ organizationId, environmentDeploymentId: targetDeploymentId });
     for (const [id, lineageId, name] of [[apiNodeId, apiLineageId, "api"], [workerNodeId, workerLineageId, "worker"]] as const) {
-      await harness.db.insert(schema.serviceLineage).values({ id: lineageId, projectId, canonicalName: name, canonicalSlug: name });
+      await harness.db.insert(schema.serviceLineage).values({ id: lineageId, organizationId, projectId, canonicalName: name, canonicalSlug: name });
       await harness.db.insert(schema.service).values({ id, organizationId, projectId, environmentId, lineageId, name });
       await harness.db.insert(schema.environmentNodeIntroduction).values({ organizationId, environmentId, nodeType: "service", nodeId: id, nodeLineageId: lineageId, config: {} });
     }

@@ -22,7 +22,7 @@ import { dataSources } from "./data-sources";
 const root = process.cwd();
 const SRC = join(root, "src");
 const DATA_FILE = /^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
-const CREATES_SOURCE = /\b(createApiCollection|queryCollectionOptions|localOnlyCollectionOptions|liveQueryCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
+const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryCollectionOptions|localOnlyCollectionOptions|liveQueryCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
@@ -180,7 +180,7 @@ describe("data boundaries", () => {
           const source = project.program.getSourceFile(file);
           if (!source) continue;
           const isRoute = file.startsWith(`${SRC}/routes/`);
-          // Only Org Store tables in collections/ inherit the createApiCollection default.
+          // Only Org Store tables in collections/ inherit the createApiCollection staleTime default.
           const isCollectionsFile = file.startsWith(`${SRC}/collections/`);
           const isUi = isRoute || file.startsWith(`${SRC}/components/`);
           const serverCalls = new Set<string>();

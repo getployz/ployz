@@ -144,6 +144,7 @@ export const createServiceLineage = Effect.fn(
     .insert(serviceLineage)
     .values({
       id,
+      organizationId: organizationIdForProject(input.projectId),
       projectId: input.projectId,
       canonicalName: input.name,
       canonicalSlug: lineageCanonicalSlug({ baseSlug: input.slug, lineageId: id }),

@@ -29,6 +29,7 @@ import {
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { EnvironmentDeploymentServiceActionPolicy } from "#/modules/deployments/tables";
 import {
+  organizationIdForDeployment,
   organizationIdForEnvironment,
 } from "#/db/scope-values.server";
 import { projectJsonObject } from "#/lib/json";
@@ -195,6 +196,7 @@ function insertNodeSnapshots(input: {
       snapshot.encryptedRegistryUsername || snapshot.encryptedRegistrySecret
         ? [
             {
+              organizationId: snapshot.configSnapshot.organizationId,
               snapshotId: snapshot.configSnapshot.id,
               credentialRevision: snapshot.credentialRevision,
               encryptedRegistryUsername: snapshot.encryptedRegistryUsername,
@@ -413,7 +415,7 @@ function writeQueuedSavedTarget(
     }
     yield* drizzle
       .insert(environmentDeploymentSecret)
-      .values({ environmentDeploymentId: deployment.id })
+      .values({ organizationId: organizationIdForDeployment(deployment.id), environmentDeploymentId: deployment.id })
       .onConflictDoNothing();
     if (queued !== undefined) {
       yield* drizzle

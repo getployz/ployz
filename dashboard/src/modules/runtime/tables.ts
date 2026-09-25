@@ -141,6 +141,8 @@ export const teardownAttempt = pgTable(
   "teardown_attempt",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    // No foreign key: Organization teardown deletes the Organization, then
+    // records its outcome on this row, so the attempt must outlive it.
     organizationId: uuid("organization_id").notNull(),
     requestedByUserId: uuid("requested_by_user_id")
       .notNull()
@@ -296,6 +298,9 @@ export const environmentNodeConfigSnapshot = pgTable(
 export const environmentNodeConfigSnapshotSecret = pgTable(
   "environment_node_config_snapshot_secret",
   {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     credentialRevision: uuid("credential_revision"),
     snapshotId: uuid("snapshot_id")
       .primaryKey()
@@ -355,6 +360,9 @@ export const environmentNodeIntroduction = pgTable(
 export const environmentNodeIntroductionSecret = pgTable(
   "environment_node_introduction_secret",
   {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     environmentId: uuid("environment_id").notNull(),
     nodeType: text("node_type").notNull().$type<CanvasNodeType>(),
     nodeId: uuid("node_id").notNull(),

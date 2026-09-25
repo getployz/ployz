@@ -94,6 +94,9 @@ export const coreOperationEvent = pgTable(
   "core_operation_event",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     watchId: uuid("watch_id")
       .notNull()
       .references(() => coreOperationWatch.id, { onDelete: "cascade" }),

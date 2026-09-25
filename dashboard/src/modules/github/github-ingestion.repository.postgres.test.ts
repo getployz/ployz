@@ -93,8 +93,8 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
         'Production',
         'production', '{"version":1,"environmentSlug":"production","services":[],"volumes":[]}'
       );
-      insert into service_lineage (id, project_id, canonical_name, canonical_slug)
-      values ('${node.nodeLineageId}', '00000000-0000-4000-8000-000000000102', 'API', 'api');
+      insert into service_lineage (id, organization_id, project_id, canonical_name, canonical_slug)
+      values ('${node.nodeLineageId}', '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000102', 'API', 'api');
       insert into service (id, project_id, organization_id, environment_id, lineage_id, name)
       values ('${node.nodeId}', '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000101', '${environmentId}', '${node.nodeLineageId}', 'API');
       insert into environment_saved_state_snapshot (

@@ -116,6 +116,10 @@ _Avoid_: Entitlement, feature flag, paid feature check
 Cloud's role after bootstrap is to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
 _Avoid_: Cloud control plane, cloud authority, hosted source of truth
 
+**Organization change log**:
+Cloud's record of which rows of an Organization's organization-owned tables changed, written by database triggers and read by transaction horizon (xid) cursor. Open tabs follow it through one change stream per Organization and re-read only the changed rows; runtime sessions follow it to notice a removed pairing. It keeps 24 hours; a cursor older than the oldest retained change reads in full. It names changes, not their content, and is never a source of truth.
+_Avoid_: Event log, audit log, outbox, notification channel
+
 **Cloud Deployment Attempt**:
 The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into runtime state through queueing, planning, building, and authoritative deploy. It remains one Environment-level attempt even when successful Environment Nodes apply and failed nodes remain pending independently.
 _Avoid_: Prepared snapshot, build workflow, Core Deploy

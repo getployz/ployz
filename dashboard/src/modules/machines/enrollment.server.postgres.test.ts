@@ -230,7 +230,7 @@ describe("organization enrollment coordinator", () => {
         Effect.gen(function* () {
           const enrollment = { table: "organization_enrollment", organizationSlug: "enroll", userId } as const;
           // No pairing row: the Org Store holds no enrollment row, which reads as unclaimed.
-          expect(yield* readCollection({ userId }, enrollment)).toEqual([]);
+          expect((yield* readCollection({ userId }, enrollment)).rows).toEqual([]);
 
           const minted = yield* mintMachineEnrollment(
             { userId },
@@ -246,7 +246,7 @@ describe("organization enrollment coordinator", () => {
             (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id)
             values ($1, '{"secret":"never-leaves-the-server"}'::jsonb, 'founder', $2)`, [organizationId, identity(0).machineId]));
           // Only the derived status leaves the server; the encrypted pairing secret never does.
-          expect(yield* readCollection({ userId }, enrollment)).toEqual([{ id: organizationId, status: "pending" }]);
+          expect((yield* readCollection({ userId }, enrollment)).rows).toEqual([{ id: organizationId, status: "pending" }]);
         }).pipe(Effect.provide(layer)),
       ),
     );

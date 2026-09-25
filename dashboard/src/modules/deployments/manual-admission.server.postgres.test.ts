@@ -103,16 +103,16 @@ describe("manual environment saved-state persistence", () => {
       insert into project (id, organization_id, name, slug) values ('${projectId}', '${organizationId}', 'Cloud', 'cloud');
       insert into environment (id, project_id, organization_id, name, namespace, intent)
         values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'production', '${JSON.stringify(intent)}');
-      insert into service_lineage (id, project_id, canonical_name, canonical_slug)
-        values ('${lineageId}', '${projectId}', 'API', 'api');
+      insert into service_lineage (id, organization_id, project_id, canonical_name, canonical_slug)
+        values ('${lineageId}', '${organizationId}', '${projectId}', 'API', 'api');
       insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
         values ('${serviceId}', '${projectId}', '${environmentId}', '${organizationId}', '${lineageId}', 'API');
-      insert into service_registry_credential (service_id, encrypted_registry_secret)
-        values ('${serviceId}', '${JSON.stringify(encrypted)}');
-      insert into variable (id, environment_id, service_id)
-        values ('${variableId}', '${environmentId}', '${serviceId}');
-      insert into variable_secret (environment_id, variable_id, encrypted_value)
-        values ('${environmentId}', '${variableId}', '${JSON.stringify(encrypted)}');
+      insert into service_registry_credential (organization_id, service_id, encrypted_registry_secret)
+        values ('${organizationId}', '${serviceId}', '${JSON.stringify(encrypted)}');
+      insert into variable (id, organization_id, environment_id, service_id)
+        values ('${variableId}', '${organizationId}', '${environmentId}', '${serviceId}');
+      insert into variable_secret (organization_id, environment_id, variable_id, encrypted_value)
+        values ('${organizationId}', '${environmentId}', '${variableId}', '${JSON.stringify(encrypted)}');
     `);
     await harness.db.insert(schema.member).values({ id: randomUUID(), userId, organizationId, role: "owner" });
   });
@@ -292,7 +292,7 @@ describe("manual environment saved-state persistence", () => {
     const revision = randomUUID();
     const source = { version: 1, type: "image", image: "ghcr.io/acme/api:latest", credentials: { type: "configured", credentialId: serviceId } };
     await harness.db.update(schema.environment).set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,source}', ${JSON.stringify(source)}::jsonb)` }).where(eq(schema.environment.id, environmentId));
-    await harness.db.insert(schema.serviceRegistryCredential).values({ serviceId, revision, encryptedRegistrySecret: encrypted }).onConflictDoUpdate({ target: schema.serviceRegistryCredential.serviceId, set: { revision, encryptedRegistrySecret: encrypted } });
+    await harness.db.insert(schema.serviceRegistryCredential).values({ organizationId, serviceId, revision, encryptedRegistrySecret: encrypted }).onConflictDoUpdate({ target: schema.serviceRegistryCredential.serviceId, set: { revision, encryptedRegistrySecret: encrypted } });
     const admitted = await deploy("Credential target");
     await harness.db.update(schema.serviceRegistryCredential).set({ revision: randomUUID(), encryptedRegistrySecret: encryption.encrypt("rotated") }).where(eq(schema.serviceRegistryCredential.serviceId, serviceId));
     await harness.db.update(schema.environmentDeployment).set({ status: "failed" }).where(eq(schema.environmentDeployment.id, admitted.environmentDeploymentId));
@@ -612,7 +612,6 @@ describe("manual environment saved-state persistence", () => {
     let attempt = 0;
     const retryingDb: DatabaseService = {
       drizzle: harness.database.drizzle,
-      subscribe: harness.database.subscribe,
       afterCommit: harness.database.afterCommit,
       transaction: ((program, config) =>
         Effect.suspend(() => {

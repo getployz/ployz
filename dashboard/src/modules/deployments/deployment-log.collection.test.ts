@@ -12,7 +12,7 @@ it("loads the first log page through the API contract and follows its cursor", a
   const client = new QueryClient();
   const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
   const message = "Railpack could not determine how to build the app.";
-  const row = (id: number) => ({ id, deploymentId, createdAt: new Date(), progress: {
+  const row = (id: number) => ({ id, organizationId: "6c0b2f4e-7a1d-4f3e-9b8a-2d5c1e0f9a7b", deploymentId, createdAt: new Date(), progress: {
     completed: 0, total: 0, outcome: null, rows: [], compensation: [],
     preparation: { phase: "build" as const, serviceId: null, machineId: null,
       machineName: null, message },

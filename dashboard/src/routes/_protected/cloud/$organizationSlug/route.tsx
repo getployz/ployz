@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { createFileRoute, Outlet, useMatch, useParams } from "@tanstack/react-router";
+import { useOrganizationChanges } from "#/collections/org-changes.stream";
 import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
 import { DashboardShell } from "#/components/dashboard-shell";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
@@ -17,6 +18,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
 function RouteComponent() {
   const params = Route.useParams();
   const { queryClient, session } = Route.useRouteContext();
+  useOrganizationChanges(params.organizationSlug);
   useEffect(() => {
     void rememberSelectedOrganization(queryClient, params.organizationSlug, session.session.activeOrganizationSlug);
   }, [queryClient, params.organizationSlug, session.session.activeOrganizationSlug]);

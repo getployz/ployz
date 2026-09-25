@@ -2,19 +2,13 @@ import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { preloadCollection } from "./query-collection";
 import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
-import * as collections from "./collections";
+import { orgStoreTables } from "./collections";
 import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/environment-change-state.queries";
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import {
   getServicesCollection, getVolumeResourcesCollection,
 } from "#/modules/services/services.collection";
-
-/** Every table getter `collections.ts` exports is an Org Store table. */
-// SAFETY: the name filter keeps only cachedByCollectionScope table getters, which all take (organizationSlug, scope) and return an API collection.
-const orgStoreTables = Object.entries(collections)
-  .filter(([name]) => /^get\w+Collection$/.test(name))
-  .map(([, get]) => get as typeof collections.getProjectsCollection);
 
 /** Every derived view in an org-store data file. Adding a view means adding it here. */
 export const orgStoreViews = [
@@ -34,7 +28,7 @@ export function orgStoreOptions(organizationSlug: string, scope: CollectionScope
     // Readiness happens once; each table keeps itself fresh after that.
     staleTime: Infinity,
     queryFn: async () => {
-      await Promise.all(orgStoreTables.map((get) => preloadCollection(get(organizationSlug, scope))));
+      await Promise.all(Object.values(orgStoreTables).map((get) => preloadCollection(get(organizationSlug, scope))));
       await Promise.all([
         ...orgStoreViews.map((get) => get(organizationSlug, scope).preload()),
         // ponytail: change state waits on deployment metadata to stamp its version; parallel once the server returns the version.

@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { createHash } from "node:crypto";
 import type { Connection, MachineId } from "@ployz/sdk";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
@@ -10,7 +10,7 @@ import {
   machineEnrollmentToken,
   organizationMachine,
 } from "#/modules/machines/tables";
-import { OrganizationRuntime, PAIRING_REMOVAL_CHANNEL } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -85,7 +85,6 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
-      yield* drizzle.execute(sql`select pg_notify(${PAIRING_REMOVAL_CHANNEL}, ${JSON.stringify({ organizationId, generation })})`);
       return { attempt, generation };
     }));
     if (disabled !== null) {

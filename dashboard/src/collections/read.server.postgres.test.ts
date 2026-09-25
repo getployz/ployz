@@ -3,7 +3,8 @@ import { collectionReadInput } from "./read.contract";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
-import { readCollection, CollectionReadInvalid } from "./read.server";
+import { readCollection } from "./read.server";
+import { listCachedGithubRepositoriesForUser } from "#/modules/github/github.repository";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { project, environment } from "#/modules/project/tables";
 import { member } from "#/modules/identity/tables";
@@ -13,7 +14,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { publicErrorResponse } from "#/server/public-error";
+import { publicErrorResponse, Validation } from "#/server/public-error";
 import {
   migrateTestDatabase,
   postgresTestContainer,
@@ -26,9 +27,9 @@ function execute(request: Request, input: { table: string; userId: string; organ
     const auth = yield* Auth;
     const actor = yield* auth.resolveActor(request.headers);
     const data = yield* Schema.decodeUnknownEffect(collectionReadInput)(input, { onExcessProperty: "error" })
-      .pipe(Effect.mapError(() => new CollectionReadInvalid({ message: "Invalid collection read." })));
-    const rows = yield* readCollection(actor, data);
-    return Response.json(rows, { headers: privateHeaders });
+      .pipe(Effect.mapError(() => new Validation({ message: "Invalid collection read." })));
+    const read = yield* readCollection(actor, data);
+    return Response.json(read.rows, { headers: privateHeaders });
   }).pipe(Effect.catch((cause) => Effect.succeed(publicErrorResponse(cause, {
     headers: privateHeaders,
   }))));
@@ -69,7 +70,7 @@ it.live(
       );
       yield* Effect.gen(function* () {
         const anonymous = yield* execute(new Request("http://app.test"), {
-          table: "github_repository_cache", userId: "nobody",
+          table: "project", userId: "nobody", organizationSlug: "acme-table-sync",
         });
         assert.strictEqual(anonymous.status, 401);
         const auth = yield* Auth;
@@ -107,11 +108,12 @@ it.live(
         const headers = { cookie };
         const request = new Request("http://app.test", { headers });
         const userId = session.user.id;
-        const base = { table: "github_repository_cache", userId };
+        const base = { table: "project", userId, organizationSlug: "acme-table-sync" };
         for (const input of [
           { ...base, table: "session" },
           { ...base, table: "organization_machine" },
           { ...base, table: "organization_pairing" },
+          { ...base, table: "github_repository_cache" },
           { ...base, table: "toString" },
           { ...base, sql: "select * from session" },
         ]) {
@@ -137,16 +139,9 @@ it.live(
         yield* database.drizzle.insert(githubRepositoryCache).values([
           { ...row, userId }, { ...row, userId: otherSession.user.id, name: "private-other" },
         ]);
-        const response = yield* execute(request, base);
-        assert.strictEqual(response.status, 200);
-        assert.strictEqual(response.headers.get("cache-control"), "private, no-store");
-        assert.deepStrictEqual(yield* Effect.promise(() => response.json()), [{
-          ...row, userId, repoUpdatedAt: "2026-01-01T00:00:00.000Z", syncedAt: "2026-01-02T00:00:00.000Z",
-        }]);
-        const otherResponse = yield* execute(new Request("http://app.test", { headers: { cookie: otherCookie ?? "" } }), {
-          ...base, userId: otherSession.user.id,
-        });
-        assert.deepStrictEqual((yield* Effect.promise(() => otherResponse.json())).map((row: { name: string }) => row.name), ["private-other"]);
+        // The repository cache is read per user, outside the Org Store.
+        assert.deepStrictEqual(yield* listCachedGithubRepositoriesForUser(userId), [{ ...row, userId }]);
+        assert.deepStrictEqual((yield* listCachedGithubRepositoriesForUser(otherSession.user.id)).map((row) => row.name), ["private-other"]);
         const otherOrganizationId = crypto.randomUUID();
         yield* database.drizzle.insert(organization).values({ id: otherOrganizationId, name: "Other", slug: "other-org" });
         const projects = yield* database.drizzle.insert(project).values([

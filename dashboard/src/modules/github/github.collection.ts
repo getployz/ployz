@@ -5,8 +5,8 @@ import {
 } from "@tanstack/react-db";
 import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
-import { readCollectionServerFn } from "#/collections/read.functions";
 import type { GithubRepositorySelection } from "#/modules/github/github";
+import { listGithubRepositoriesServerFn } from "#/modules/github/github.functions";
 import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
 
 type GithubRepositoryRow = typeof schemaGithubRepositoryCache.$inferSelect;
@@ -34,14 +34,7 @@ function createRawGithubReposCollection(scope: GithubCollectionScope) {
   return createApiCollection<GithubRepositoryRow>({
     queryClient: scope.queryClient,
     queryKey: githubReposQueryKey(scope),
-    queryFn: async ({ signal }) => {
-      const rows = await readCollectionServerFn({
-        data: { table: "github_repository_cache", userId: scope.userId },
-        signal,
-      });
-      // SAFETY: the literal table selects githubRepositoryCache in the allowlisted read.
-      return rows as GithubRepositoryRow[];
-    },
+    queryFn: ({ signal }) => listGithubRepositoriesServerFn({ signal }),
     getKey: (row) => `${row.installationId}:${row.repositoryId}`,
     // Reopening a picker within a minute reuses the cache.
     staleTime: 60_000,

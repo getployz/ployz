@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { orgStoreOptions } from "#/collections/org-store";
-import { orgStoreTableNames } from "#/test/org-store-tables";
+import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
 import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderOptions } from "@testing-library/react";
 import { Schema } from "effect";
@@ -85,11 +85,11 @@ async function show(ssr = false, orgStore: "ready" | "pending" | "failed" = "rea
   clients.push(client);
   const environmentData = { intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" };
   client.setQueryData(organizationKeys.state("acme"), { activeOrganization: { id: "org", slug: "acme", name: "Acme" }, organizations: [{ id: "org", slug: "acme", name: "Acme" }] });
-  client.setQueryData(["collections", "test-session", "test-user", "acme", "project"], [{ id: "project", slug: "store", name: "Store", resolvedEnvironment: environmentData }]);
-  client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], [environmentData]);
-  client.setQueryData(["collections", "test-session", "test-user", "acme", "project_preference"], []);
+  client.setQueryData(["collections", "test-session", "test-user", "acme", "project"], orgStoreSeed([{ id: "project", slug: "store", name: "Store", resolvedEnvironment: environmentData }]));
+  client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], orgStoreSeed([environmentData]));
+  client.setQueryData(["collections", "test-session", "test-user", "acme", "project_preference"], orgStoreSeed([]));
   for (const table of orgStoreTableNames.filter((name) => !["project", "environment_summary", "project_preference"].includes(name))) {
-    client.setQueryData(["collections", "test-session", "test-user", "acme", table], table === "environment" ? [environmentData] : []);
+    client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed(table === "environment" ? [environmentData] : []));
   }
   const storeScope = { queryClient: client, sessionId: "test-session", userId: "test-user" };
   client.setQueryData(environmentChangeStateOptions("acme", storeScope).queryKey, { version: "", states: [] });

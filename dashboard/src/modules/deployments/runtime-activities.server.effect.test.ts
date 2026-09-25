@@ -12,6 +12,7 @@ import {
   projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import {
   makePloyzLayer,
   Ployz,
@@ -69,6 +70,7 @@ function context(deployPreview: typeof preview | null = null) {
 function runtimeLayer(client: Client, finalized: () => void) {
   return makeOrganizationRuntimeLayer(() =>
     Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
+    noPairingChanges,
   ).pipe(
     Layer.provide(
       makePloyzLayer({

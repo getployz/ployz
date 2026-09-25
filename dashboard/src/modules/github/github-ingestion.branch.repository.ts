@@ -30,6 +30,7 @@ import type {
   ApplyGithubBranchEvaluationInput,
   GithubBranchIdentity,
 } from "#/modules/github/github-ingestion.repository.types";
+import { organizationIdForEnvironment } from "#/db/scope-values.server";
 import { Database, sqlErrorFrom } from "#/server/database.server";
 import {
   GithubIngestionRepositoryError,
@@ -329,6 +330,7 @@ const admitActiveGithubDeployments = Effect.fn(
             repositoryId: input.repositoryId,
             ref: input.ref,
             headSha,
+            organizationId: organizationIdForEnvironment(trigger.environmentId),
             environmentId: trigger.environmentId,
             serviceIds: [...trigger.serviceIds],
             selectionMode: trigger.selection.mode,

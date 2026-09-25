@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { orgStoreSeed } from "#/test/org-store-tables";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -19,21 +20,21 @@ it.each(["desktop", "mobile", "rail"] as const)("offers the same scoped org and 
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const organization of ["acme", "other"]) {
     queryClient.setQueryData(["collections", "session", "user", organization, "project_preference"],
-      organization === "acme" ? [{ id: "other-project", environmentId: "other-production" }] : []);
+      orgStoreSeed(organization === "acme" ? [{ id: "other-project", environmentId: "other-production" }] : []));
     queryClient.setQueryData(organizationKeys.state(organization), {
       activeOrganization: { name: organization === "acme" ? "Acme" : "Other org" },
       organizations: [{ id: "acme", slug: "acme", name: "Acme" }, { id: "other", slug: "other", name: "Other org" }],
     });
-    queryClient.setQueryData(["collections", "session", "user", organization, "project"], organization === "acme" ? [
+    queryClient.setQueryData(["collections", "session", "user", organization, "project"], orgStoreSeed(organization === "acme" ? [
       { id: "project", slug: "store", name: "Store", resolvedEnvironment: { namespace: "production", name: "Production" } },
       { id: "other-project", slug: "docs", name: "Docs", resolvedEnvironment: { namespace: "production", name: "Other production" } },
-    ] : []);
-    queryClient.setQueryData(["collections", "session", "user", organization, "environment_summary"], organization === "acme" ? [
+    ] : []));
+    queryClient.setQueryData(["collections", "session", "user", organization, "environment_summary"], orgStoreSeed(organization === "acme" ? [
       { createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" },
       { createdAt: new Date(1), id: "staging", projectId: "project", namespace: "staging", name: "Staging" },
       { createdAt: new Date(0), id: "other-development", projectId: "other-project", namespace: "development", name: "Other development" },
       { createdAt: new Date(1), id: "other-production", projectId: "other-project", namespace: "production", name: "Other production" },
-    ] : []);
+    ] : []));
   }
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }), component: Outlet });

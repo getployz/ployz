@@ -16,6 +16,7 @@ import {
 import {
   makeOrganizationRuntimeLayer,
 } from "#/modules/runtime/organization-runtime.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import {
   makePloyzLayer,
 } from "#/modules/runtime/ployz.server";
@@ -67,6 +68,7 @@ describe("teardown provider outcomes", () => {
       });
       const runtime = makeOrganizationRuntimeLayer(() =>
         Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
+        noPairingChanges,
       ).pipe(Layer.provide(ployz));
 
       const result = yield* Effect.scoped(

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { orgStoreSeed } from "#/test/org-store-tables";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
@@ -44,7 +45,7 @@ async function showNavigation() {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
   for (const table of ["project", "environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt"]) {
-    client.setQueryData(["collections", "test-session", "test-user", "acme", table], []);
+    client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed([]));
   }
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "test-session" }, user: { id: "test-user" } } }) });

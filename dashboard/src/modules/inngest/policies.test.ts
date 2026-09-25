@@ -27,6 +27,7 @@ import {
   createCancelTeardown,
   createProcessTeardown,
 } from "#/modules/runtime/teardown.inngest";
+import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
@@ -53,6 +54,7 @@ describe("Inngest function policies", () => {
       createCancelTeardown(inngest),
       createProcessVolumeRemove(inngest),
       createCancelVolumeRemove(inngest),
+      createPruneOrganizationChangeLog(inngest),
     ];
 
     expect(
@@ -79,6 +81,7 @@ describe("Inngest function policies", () => {
       { id: "cancel-teardown", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "process-volume-remove", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
+      { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 });

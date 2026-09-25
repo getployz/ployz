@@ -1,3 +1,4 @@
+import { orgStoreSeed } from "#/test/org-store-tables";
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
@@ -14,7 +15,7 @@ it("serializes selections, commits only successful saves, and retries failures",
   const otherStaging = { ...staging, id: "other-stage", projectId: "other-project" };
   const projects = [{ id: "other-project", organizationId: "org", name: "Web", slug: "web" }, { id: "project", organizationId: "org", name: "API", slug: "api" }];
   for (const [table, data] of Object.entries({ project: projects, environment_summary: [otherStaging, production, staging], project_preference: [{ id: "project", environmentId: "prod" }] })) {
-    queryClient.setQueryData(["collections", "session", "user", "acme", table], data);
+    queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed<object>(data));
   }
   const collections = await preloadWorkspace("acme", scope);
   try {

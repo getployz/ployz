@@ -2,7 +2,7 @@
  * Every file that creates a dashboard data source. `data-boundaries.static.test.ts`
  * fails when a file creates a collection or Query read without an entry here.
  * The test guarantees the list is complete. `kind` and `freshness` are reviewed documentation:
- * they explain the policy and why, while the intervals in code are authoritative.
+ * they explain the policy and why, while the code is authoritative.
  *
  * - `org-store`: Cloud-owned rows for one organization, loaded eagerly and org-wide,
  *   ready behind the shell's single content gate, read with live queries.
@@ -12,10 +12,10 @@
 export type DataSourceKind = "org-store" | "runtime" | "remote";
 
 export const dataSources = {
-  "collections/query-collection.ts": { kind: "org-store", freshness: "table default: poll so other users' edits appear, refetch on focus and reconnect, and land this user's writes via writeCommitted" },
+  "collections/query-collection.ts": { kind: "org-store", freshness: "table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via writeCommitted" },
   // ponytail: deployments and saved-state and node-config snapshots are unbounded history; move them to paged remote reads when orgs outgrow eager loading.
-  "collections/collections.ts": { kind: "org-store", freshness: "table default, except deployments poll faster so a running deployment's status moves without a reload" },
-  "collections/org-store.ts": { kind: "org-store", freshness: "readiness only, once per organization; tables stay fresh on their own" },
+  "collections/collections.ts": { kind: "org-store", freshness: "table default for every table, deployments included: deployment events push progress" },
+  "collections/org-store.ts": { kind: "org-store", freshness: "readiness only, once per organization; the change stream keeps tables fresh" },
   "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },
   "modules/environment-design/resource.collection.ts": { kind: "org-store", freshness: "derived from resources, lineages, positions, and documents" },
   "modules/services/services.collection.ts": { kind: "org-store", freshness: "derived from services and documents" },
@@ -23,7 +23,7 @@ export const dataSources = {
   "modules/deployments/environment-change-state.queries.ts": { kind: "org-store", freshness: "server projection, refetched when deployment or saved-state metadata changes" },
   "modules/runtime/runtime.collection.ts": { kind: "runtime", freshness: "SSE runtime watch" },
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },
-  "modules/environment-design/workspace.queries.ts": { kind: "remote", freshness: "organization state: fresh on every mount" },
+  "modules/environment-design/workspace.queries.ts": { kind: "remote", freshness: "organization state: fresh on every mount; the change stream invalidates it when the organization changes" },
   "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; plan changes invalidate it" },
   "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly" },
   "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens" },

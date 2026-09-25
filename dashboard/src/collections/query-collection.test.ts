@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
-import { createApiCollection, preloadCollection, reconcileCollection } from "./query-collection";
+import { createApiCollection, createChangeCollection, preloadCollection, reconcileCollection } from "./query-collection";
+import type { CollectionRead } from "./read.contract";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -17,7 +18,7 @@ it("refreshes active snapshots, retains failed reads, and stops unused scopes", 
   let rows = [{ id: "a", name: "before" }];
   const read = vi.fn(async () => rows);
   const collection = createApiCollection({
-    queryClient: client, queryKey: ["test", "session"], queryFn: read,
+    queryClient: client, queryKey: ["test", "session"], queryFn: read, refetchInterval: 15_000,
     getKey: (row: { id: string; name: string }) => row.id,
   });
   const subscription = collection.subscribeChanges(() => {});
@@ -81,7 +82,7 @@ it("releases preload-only and reconciliation observers while keeping mounted con
   const client = new QueryClient();
   client.mount();
   const read = vi.fn(async () => [{ id: "loaded" }]);
-  const collection = createApiCollection({ queryClient: client, queryKey: ["preload-only"], queryFn: read,
+  const collection = createApiCollection({ queryClient: client, queryKey: ["preload-only"], queryFn: read, refetchInterval: 15_000,
     getKey: (row: { id: string }) => row.id });
   await preloadCollection(collection);
   expect(collection.subscriberCount).toBe(0);
@@ -133,6 +134,36 @@ it.each([false, true])("applies committed rows without an observer and cancels o
   expect(collection.get("row")).toMatchObject(committed);
   expect(collection.utils.isError).toBe(true);
   expect(collection.subscriberCount).toBe(0);
+  await collection.cleanup();
+  client.clear();
+});
+
+it("merges incremental reads, drops deleted ids, and advances the cursor when nothing changed", async () => {
+  const client = new QueryClient();
+  type Row = { id: string; name: string };
+  const read = vi.fn<(context: { since: string | undefined }) => Promise<CollectionRead<Row>>>()
+    .mockResolvedValueOnce({ full: true, rows: [{ id: "a", name: "a" }, { id: "b", name: "b" }], cursor: "10" })
+    .mockResolvedValueOnce({ full: false, rows: [{ id: "a", name: "renamed" }, { id: "c", name: "c" }], deleted: ["b"], cursor: "11" })
+    .mockResolvedValueOnce({ full: false, rows: [], deleted: [], cursor: "12" })
+    .mockResolvedValueOnce({ full: false, rows: [], deleted: [], cursor: "13" })
+    .mockResolvedValueOnce({ full: true, rows: [{ id: "z", name: "z" }], cursor: "20" });
+  const collection = createChangeCollection({ queryClient: client, queryKey: ["changes"], read, getKey: (row: Row) => row.id });
+  const names = () => [...collection.values()].map((row) => row.name).sort();
+  const active = collection.subscribeChanges(() => {});
+  await preloadCollection(collection);
+  expect(names()).toEqual(["a", "b"]);
+  await collection.utils.refetch();
+  expect(names()).toEqual(["c", "renamed"]);
+  await collection.utils.refetch();
+  expect(names()).toEqual(["c", "renamed"]);
+  // An own write keeps the cursor; the next read starts after the quiet one.
+  await collection.writeCommitted({ id: "d", name: "d" });
+  await collection.utils.refetch();
+  expect(names()).toEqual(["c", "d", "renamed"]);
+  await collection.utils.refetch();
+  expect(read.mock.calls.map(([context]) => context.since)).toEqual([undefined, "10", "11", "12", "13"]);
+  expect(names()).toEqual(["z"]);
+  active.unsubscribe();
   await collection.cleanup();
   client.clear();
 });

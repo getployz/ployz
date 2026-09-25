@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { orgStoreSeed } from "#/test/org-store-tables";
 import { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
@@ -37,7 +38,7 @@ async function setup() {
   const row = { id: "env", projectId: "project", organizationId: "org", name: "Production", namespace: "production",
     revision: "r1", intent: { ...emptyEnvironmentIntent("production"), volumes: [{ resourceId: "vol", resourceLineageId: "lin", name: "data" }] },
     createdAt: new Date(0), updatedAt: new Date(0) };
-  queryClient.setQueryData(["collections", "session", "user", "acme", "environment"], [row]);
+  queryClient.setQueryData(["collections", "session", "user", "acme", "environment"], orgStoreSeed([row]));
   const environments = getEnvironmentsCollection("acme", scope);
   await preloadCollection(environments);
   const rename = (name: string) => (intent: { volumes: Array<{ name: string }> }) => { const volume = intent.volumes[0]; if (volume) volume.name = name; };

@@ -154,6 +154,9 @@ export const environmentDeployment = pgTable(
 export const environmentDeploymentSecret = pgTable(
   "environment_deployment_secret",
   {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     environmentDeploymentId: uuid("environment_deployment_id")
       .primaryKey()
       .references(() => environmentDeployment.id, { onDelete: "cascade" }),
@@ -201,6 +204,7 @@ export const environmentSavedStateSnapshot = pgTable(
 /** Safe SDK progress history, retained independently of the browser connection. */
 export const environmentDeploymentEvent = pgTable("environment_deployment_event", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
   progress: jsonb("progress").notNull().$type<import("./deployment-progress").DeploymentProgress>(),
   createdAt,
@@ -213,6 +217,7 @@ export const environmentDeploymentEvent = pgTable("environment_deployment_event"
  */
 export const environmentDeploymentBuildStep = pgTable("environment_deployment_build_step", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
   /** Which BuildKit run of the attempt the step belongs to; 0 before the first. One attempt may run several. */
   build: integer("build").notNull().default(0),
@@ -230,6 +235,7 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
 /** Append-only output attributed to one build step. */
 export const environmentDeploymentBuildOutput = pgTable("environment_deployment_build_output", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
   stepId: bigint("step_id", { mode: "number" }).notNull().references(() => environmentDeploymentBuildStep.id, { onDelete: "cascade" }),
   stderr: boolean("stderr").notNull().default(false),

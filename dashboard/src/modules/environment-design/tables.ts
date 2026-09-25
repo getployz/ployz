@@ -104,6 +104,9 @@ export const serviceLineage = pgTable(
   "service_lineage",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     projectId: uuid("project_id")
       .notNull()
       .references(() => project.id, { onDelete: "cascade" }),
@@ -190,6 +193,9 @@ export const service = pgTable(
 export const serviceRegistryCredential = pgTable(
   "service_registry_credential",
   {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
     revision: uuid("revision").defaultRandom().notNull(),
     serviceId: uuid("service_id")
       .primaryKey()
@@ -289,6 +295,7 @@ export const environmentResource = pgTable(
 /** Opaque variable identity and tenant ownership; authored values live in environment.intent. */
 export const variable = pgTable("variable", {
   id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   environmentId: uuid("environment_id").notNull().references(() => environment.id, { onDelete: "cascade" }),
   serviceId: uuid("service_id").notNull().references(() => service.id, { onDelete: "cascade" }),
   createdAt,
@@ -299,6 +306,7 @@ export const variable = pgTable("variable", {
 
 export const variableSecret = pgTable("variable_secret", {
   variableId: uuid("variable_id").primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   environmentId: uuid("environment_id").notNull().references(() => environment.id, { onDelete: "cascade" }),
   encryptedValue: jsonb("encrypted_value")
     .notNull()

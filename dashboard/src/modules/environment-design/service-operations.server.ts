@@ -138,7 +138,7 @@ export const setServiceRegistryCredential = Effect.fn("EnvironmentDesign.setServ
         username: input.username ?? (stored ? exposedRegistryCredentialUsername(stored, encryption) : null),
       });
       const { drizzle } = yield* Database;
-      const credential = { serviceId: node.id, revision: randomUUID(),
+      const credential = { organizationId: document.organizationId, serviceId: node.id, revision: randomUUID(),
         encryptedRegistryUsername: username === null ? null : encryption.encrypt(username),
         encryptedRegistrySecret: encryption.encrypt(input.secret.trim()),
       };
