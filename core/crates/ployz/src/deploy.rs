@@ -29,7 +29,6 @@ pub use planning::{
     DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
     preview_deploy,
 };
-pub use ployz_core::compare_specs;
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,

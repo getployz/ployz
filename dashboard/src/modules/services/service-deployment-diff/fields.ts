@@ -89,17 +89,13 @@ export function getServiceDeploymentDiffRows(input: {
   baseline: ServiceDeploymentConfig | null;
 }): ServiceDeploymentDiffRow[] {
   return compareServiceSettings(input.current, input.baseline)
-    .map((change) => toDiffRow("service", input.serviceId, change));
-}
-
-export function toDiffRow(nodeType: "service" | "volume", nodeId: string, change: ServiceSettingChange) {
-  return {
-    changeKey: `${nodeId}:${change.path}`,
-    path: change.path,
-    ...presentSettingChange(nodeType, change.path, change.before, change.after),
-    kind: change.kind,
-    canDiscard: change.canRestore,
-  };
+    .map((change) => ({
+      changeKey: `${input.serviceId}:${change.path}`,
+      path: change.path,
+      ...presentSettingChange("service", change.path, change.before, change.after),
+      kind: change.kind,
+      canDiscard: change.canRestore,
+    }));
 }
 
 export function presentSettingChange(nodeType: "service" | "volume", path: string,

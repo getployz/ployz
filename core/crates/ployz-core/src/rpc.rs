@@ -78,19 +78,6 @@ macro_rules! define_capabilities {
         pub const MACHINE_STORAGE_OBSERVATION_CAPABILITY: &str =
             "ployz.machine.storage-observation.v1";
 
-        /// Const ident and wire spelling for every advertised capability.
-        pub const CATALOGUED_CAPABILITY_BINDINGS: &[(&str, &str)] = &[
-            $((stringify!($unary_capability), $unary_capability_name),)+
-            $((stringify!($stream_capability), $stream_capability_name),)+
-            ("EXEC_CONTAINER_CAPABILITY", EXEC_CONTAINER_CAPABILITY),
-            ("BUILD_CAPABILITY", BUILD_CAPABILITY),
-            ("CERTIFICATE_POLICY_CAPABILITY", CERTIFICATE_POLICY_CAPABILITY),
-            (
-                "MACHINE_STORAGE_OBSERVATION_CAPABILITY",
-                MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-            ),
-        ];
-
         const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+

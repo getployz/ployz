@@ -3,7 +3,6 @@ import {
   OrganizationSlug,
   Uuid,
 } from "#/modules/environment-design/workspace-schemas";
-import type { ServiceDeployMount } from "#/modules/environment-design/services";
 
 const MOUNT_PATH_MAX_LENGTH = 4096;
 
@@ -69,37 +68,6 @@ export function getMountConflict(input: {
   }
 
   return null;
-}
-
-export function getServiceMountsByServiceId(input: {
-  attachments: {
-    serviceId: string;
-    volumeResourceId: string;
-    mountPath: string;
-  }[];
-  volumeNameById: Map<string, string>;
-}): Map<string, ServiceDeployMount[]> {
-  const byServiceId = new Map<string, ServiceDeployMount[]>();
-  for (const attachment of input.attachments) {
-    const volumeName = input.volumeNameById.get(attachment.volumeResourceId);
-    if (!volumeName) continue;
-    const list = byServiceId.get(attachment.serviceId) ?? [];
-    list.push({
-      volumeResourceId: attachment.volumeResourceId,
-      volumeName,
-      mountPath: attachment.mountPath,
-    });
-    byServiceId.set(attachment.serviceId, list);
-  }
-  for (const [serviceId, mounts] of byServiceId) {
-    byServiceId.set(
-      serviceId,
-      [...mounts].sort((left, right) =>
-        left.mountPath.localeCompare(right.mountPath),
-      ),
-    );
-  }
-  return byServiceId;
 }
 
 export const attachServiceVolumeSchema = Schema.Struct({

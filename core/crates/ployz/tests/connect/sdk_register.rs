@@ -15,7 +15,7 @@ use super::unix_session::{self, UnixSession};
 
 fn enrollment_service(description: ployz_core::ContractDescription) -> DiscoveryService {
     let mut service = DiscoveryService::new(description);
-    service.enrollment = Some(Default::default());
+    service.advertises_enrollment = true;
     service
 }
 

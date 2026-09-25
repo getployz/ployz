@@ -1,8 +1,5 @@
 import { servicePolicySchema } from "./service-policy";
-import {
-  createInsertSchema,
-  createSelectSchema,
-} from "drizzle-orm/effect-schema";
+import { createSelectSchema } from "drizzle-orm/effect-schema";
 import { Effect, Schema } from "effect";
 import { serviceFieldSchema, sharedServiceConfigSchema, savedServiceConfigSchema } from "./service-config";
 import type { ServiceConfig, ServiceGitBranch as SharedServiceGitBranch, ServiceImageCredentials as SharedServiceImageCredentials } from "@ployz/sdk/config";
@@ -139,7 +136,6 @@ export type ServiceDeployMount = DeepMutable<
 >;
 
 const serviceDbSelectSchema = createSelectSchema(service);
-export const serviceInsertSchema = createInsertSchema(service);
 
 /** Read-only presentation of a service in the authored Environment document. */
 export const serviceSelectSchema = Schema.Struct({

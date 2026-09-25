@@ -1,19 +1,12 @@
 import { Effect, Schema } from "effect";
-import {
-  isEnvironmentResourceType,
-  type EnvironmentResourceType,
-} from "#/modules/environment-design/environment-resource-types";
+import type { EnvironmentResourceType } from "#/modules/environment-design/environment-resource-types";
 import { strictParseOptions } from "#/modules/environment-design/schema";
 import {
-  getVolumeConfigDiffRows,
-  parseVolumeConfig,
   persistedVolumeConfigSchema,
   type VolumeConfig,
 } from "#/modules/environment-design/volume-config";
-import type { DiffRow } from "#/modules/services/service-deployment-diff/fields";
 
 export type EnvironmentResourceNodeType = EnvironmentResourceType;
-export const isEnvironmentResourceNodeType = isEnvironmentResourceType;
 
 export type EnvironmentResourceNodeConfigByType = {
   volume: VolumeConfig;
@@ -42,40 +35,6 @@ export function decodeEnvironmentResourceNodeConfig<Input>(
         input,
         strictParseOptions,
       ).pipe(Effect.map((config) => ({ nodeType, config })));
-    default: {
-      const _exhaustive: never = nodeType;
-      return _exhaustive;
-    }
-  }
-}
-
-export function getEnvironmentResourceNodeConfigDiffRows(input: {
-  nodeType: EnvironmentResourceNodeType;
-  nodeId: string;
-  current: VolumeConfig;
-  baseline: VolumeConfig | null;
-}): DiffRow[] {
-  switch (input.nodeType) {
-    case "volume":
-      return getVolumeConfigDiffRows({
-        nodeId: input.nodeId,
-        current: parseVolumeConfig(input.current),
-        baseline:
-          input.baseline === null ? null : parseVolumeConfig(input.baseline),
-      });
-    default: {
-      const _exhaustive: never = input.nodeType;
-      return _exhaustive;
-    }
-  }
-}
-
-export function getEnvironmentResourceNodeSnapshotResourceName(
-  nodeType: EnvironmentResourceNodeType,
-) {
-  switch (nodeType) {
-    case "volume":
-      return "VolumeSnapshot";
     default: {
       const _exhaustive: never = nodeType;
       return _exhaustive;

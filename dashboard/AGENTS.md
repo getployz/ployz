@@ -27,7 +27,7 @@ When framework guidance is needed:
 - **When I ask to update intents, use `npx @tanstack/intent@latest list` to inspect the current skills, then update the `intent-skills` block in `AGENTS.md` unless I ask for a different target file.** `npx @tanstack/intent@latest install` is guidance output here, not an automatic updater.
 - **Use `npx @tanstack/intent@latest list` to inspect available skills when needed.** Use `--json` only if machine-readable output helps.
 - **Use `npx @tanstack/intent@latest stale` only when I ask to check for outdated skill docs.**
-Adding an Environment Resource type starts in `environment-resource-types.ts`, then adds its strict snapshot/config parser, projection, and diff behavior to `environment-resource-node.ts`. Database constraints, collection projection, and canvas rendering still add their natural integration, but adapters must use the spine's type guard and config parser rather than re-enumerating resource types. Resource lifecycle diffs are resource-owned; anything that changes a service's container template (e.g. mounts) is a service-owned diff row so it is not double-counted.
+Adding an Environment Resource type starts in `environment-resource-types.ts`, then adds its strict config parser to `environment-resource-node.ts` and its lifecycle diff to `environment-change-set.ts`. Database constraints, collection projection, and canvas rendering still add their natural integration, but adapters must use the spine's config parser rather than re-enumerating resource types. Resource lifecycle diffs are resource-owned; anything that changes a service's container template (e.g. mounts) is a service-owned diff row so it is not double-counted.
 
 We use react compiler - no need for memo/callback etc.
 

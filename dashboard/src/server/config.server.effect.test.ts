@@ -34,16 +34,27 @@ describe("AppConfig", () => {
     }),
   );
 
-  it.effect("requires the complete hosted Polar configuration", () =>
+  const hostedPolar = {
+    POLAR_ACCESS_TOKEN: "polar-token",
+    POLAR_WEBHOOK_SECRET: "polar-webhook-secret",
+    POLAR_PRODUCT_FREE_ID: "11111111-1111-4111-8111-111111111111",
+    POLAR_PRODUCT_SOLO_ID: "22222222-2222-4222-8222-222222222222",
+    POLAR_PRODUCT_TEAMS_ID: "33333333-3333-4333-8333-333333333333",
+  };
+
+  const { POLAR_WEBHOOK_SECRET: _webhookSecret, ...withoutWebhookSecret } = hostedPolar;
+  const invalidPolar: ReadonlyArray<readonly [string, Record<string, string>, string]> = [
+    ["only an access token", { POLAR_ACCESS_TOKEN: "polar-token" }, "must be entirely absent"],
+    ["everything but the webhook secret", withoutWebhookSecret, "must be entirely absent"],
+    ["Solo and Teams sharing a product", { ...hostedPolar, POLAR_PRODUCT_TEAMS_ID: hostedPolar.POLAR_PRODUCT_SOLO_ID }, "distinct Polar product IDs"],
+  ];
+
+  it.effect.each(invalidPolar)("rejects hosted Polar configuration with %s", ([, polar, reason]) =>
     Effect.gen(function* () {
-      const failure = yield* Effect.flip(
-        load({
-          ...requiredEnvironment,
-          POLAR_ACCESS_TOKEN: "polar-token",
-        }),
-      );
+      const failure = yield* Effect.flip(load({ ...requiredEnvironment, ...polar }));
 
       assert.instanceOf(failure, InvalidConfiguration);
+      assert.include(failure.message, reason);
     }),
   );
 

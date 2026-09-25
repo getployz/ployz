@@ -3,8 +3,8 @@ pub mod local;
 
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, JoinAccepted, JoinRequest, ListMachinesRequest,
-    Registered, RpcError, RpcErrorCode, op,
+    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, Registered, RpcError,
+    RpcErrorCode, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -60,46 +60,4 @@ pub async fn publish_enrollment(
                 error
             }
         })
-}
-
-/// Re-publish a saved allocation, then durably accept Join. A lost response can
-/// be retried with the same allocation; saving it alone never skips either RPC.
-///
-/// # Errors
-/// Returns publication errors before attempting Join, or Join validation/transport errors.
-pub async fn join_enrollment(
-    entry: &mut Client,
-    joining: &mut Client,
-    assignment: &EnrollmentAssignment,
-    wireguard_mtu: Option<u32>,
-) -> Result<JoinAccepted, RpcError> {
-    let local = joining
-        .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
-        .await?;
-    if local.id != assignment.machine.id
-        || local.public_key != assignment.machine.public_key
-        || !matches!(
-            local.phase,
-            ployz_core::LocalMachinePhase::Uninitialized
-                | ployz_core::LocalMachinePhase::Joining
-                | ployz_core::LocalMachinePhase::Participating
-        )
-    {
-        return Err(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "saved enrollment does not match the joining Machine identity".into(),
-            details: serde_json::Value::Null,
-        });
-    }
-    let registration = publish_enrollment(entry, assignment).await?;
-    joining
-        .call::<op::Join>(
-            JoinRequest {
-                registration,
-                wireguard_mtu,
-            },
-            None,
-        )
-        .await
-        .map_err(Into::into)
 }

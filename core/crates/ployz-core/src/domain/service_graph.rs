@@ -2,8 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
-
 use super::{ConfigMount, ConfigSpec, ServiceMount, ServiceVolume, VolumeSource};
 use crate::{DockerVolumeName, ServiceVolumeReference};
 
@@ -12,7 +10,7 @@ use crate::{DockerVolumeName, ServiceVolumeReference};
 /// Duplicate references and dangling mounts are rejected. Unused definitions,
 /// repeated mounts, and compatible aliases for one Docker Volume stay legal.
 /// [`ServiceMountGraph`] additionally admits destinations across Volumes and Configs.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServiceVolumeGraph {
     volumes: Vec<ServiceVolume>,
     mounts: Vec<ServiceMount>,
@@ -139,29 +137,11 @@ impl ServiceVolumeGraph {
     }
 }
 
-impl<'de> Deserialize<'de> for ServiceVolumeGraph {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Data {
-            #[serde(default)]
-            volumes: Vec<ServiceVolume>,
-            #[serde(default)]
-            mounts: Vec<ServiceMount>,
-        }
-
-        let data = Data::deserialize(deserializer)?;
-        Self::parse(data.volumes, data.mounts).map_err(D::Error::custom)
-    }
-}
-
 /// Config definitions together with the mounts that refer to them.
 ///
 /// Duplicate names and dangling mounts are rejected. Unused definitions and
 /// repeated mounts stay legal. Destination admission belongs to [`ServiceMountGraph`].
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServiceConfigGraph {
     configs: Vec<ConfigSpec>,
     mounts: Vec<ConfigMount>,
@@ -230,24 +210,6 @@ impl ServiceConfigGraph {
 
     pub(crate) fn into_parts(self) -> (Vec<ConfigSpec>, Vec<ConfigMount>) {
         (self.configs, self.mounts)
-    }
-}
-
-impl<'de> Deserialize<'de> for ServiceConfigGraph {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Data {
-            #[serde(default)]
-            configs: Vec<ConfigSpec>,
-            #[serde(default)]
-            mounts: Vec<ConfigMount>,
-        }
-
-        let data = Data::deserialize(deserializer)?;
-        Self::parse(data.configs, data.mounts).map_err(D::Error::custom)
     }
 }
 

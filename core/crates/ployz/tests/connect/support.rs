@@ -22,9 +22,9 @@ use ployz_core::{
     MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
     MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
     PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure,
-    VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
+    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -138,16 +138,9 @@ fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event:
     let _ = sender.try_send(item);
 }
 
-#[derive(Default)]
-pub(super) struct EnrollmentTrace {
-    pub events: Vec<&'static str>,
-    pub published: Option<Registered>,
-    pub joined: Option<ployz_core::JoinRequest>,
-}
-
 #[derive(Clone)]
 pub(super) struct DiscoveryService {
-    pub(super) enrollment: Option<Arc<Mutex<EnrollmentTrace>>>,
+    pub(super) advertises_enrollment: bool,
     pub(super) builds: Option<Arc<BuildRecorder>>,
     description: ContractDescription,
     /// Contracts answered per routed Machine. Absent Machines answer `description`.
@@ -193,7 +186,7 @@ pub(super) struct DiscoveryService {
 impl DiscoveryService {
     pub(super) fn new(description: ContractDescription) -> Self {
         Self {
-            enrollment: None,
+            advertises_enrollment: false,
             builds: None,
             description,
             descriptions: BTreeMap::new(),
@@ -592,11 +585,6 @@ impl MachineRpc for DiscoveryService {
             visible_peers,
             target_versions: BTreeMap::new(),
         };
-        if let Some(trace) = &self.enrollment {
-            let mut trace = trace.lock().unwrap();
-            trace.events.push("publish");
-            trace.published = Some(registered.clone());
-        }
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
         ))
@@ -604,34 +592,9 @@ impl MachineRpc for DiscoveryService {
 
     async fn join(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let trace = self
-            .enrollment
-            .as_ref()
-            .ok_or_else(|| Status::unimplemented("unused"))?;
-        let request =
-            op::Join::from_request_body(request.into_inner().decode_request().unwrap().body)
-                .unwrap();
-        let mut trace = trace.lock().unwrap();
-        assert_eq!(
-            trace.published.as_ref(),
-            Some(&request.registration),
-            "publication must precede Join"
-        );
-        trace.events.push("join");
-        let already_accepted = trace.joined.is_some();
-        trace.joined = Some(request);
-        if !already_accepted {
-            return Err(Status::internal(
-                "lost Join response after durable acceptance",
-            ));
-        }
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::JoinAccepted { already_accepted })
-                .encode()
-                .unwrap(),
-        ))
+        Err(Status::unimplemented("unused"))
     }
 
     async fn set_management_client(
@@ -660,9 +623,8 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(
             RpcResponse::from(MachineList {
                 enrollment: self
-                    .enrollment
-                    .as_ref()
-                    .map(|_| ployz_core::EnrollmentSnapshot {
+                    .advertises_enrollment
+                    .then(|| ployz_core::EnrollmentSnapshot {
                         network: "10.210.0.0/16".parse().unwrap(),
                         machines: machines
                             .iter()

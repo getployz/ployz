@@ -14,6 +14,11 @@ const options = {
   connections: [{ management: "ployz1:candidate" }] satisfies Connection[],
 };
 
+const emptyPreview = {
+  noop: false, project_name: "test", storage: [], prune_refusal: null, operations: [],
+  warnings: [], would_remove: [], volumes_to_create: [], preserved_volumes: [],
+};
+
 it.effect("scopes each connected Ployz session", () =>
   Effect.gen(function* () {
     let opened = 0;
@@ -202,7 +207,7 @@ it.effect("forwards progress and the finished outcome, aborting if the evidence 
       const outcome = { type: "success" as const, completed: [] };
       const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
         preview: async () => ({
-          noop: false, project_name: "test", storage: [], prune_refusal: null, operations: [], warnings: [], would_remove: [], volumes_to_create: [], preserved_volumes: [],
+          ...emptyPreview,
           confirm: () => ({ abort: () => { aborted = true; }, finished: Promise.resolve(outcome), async *[Symbol.asyncIterator]() { yield { type: "progress" as const, completed: 0, total: 0, rows: [] }; } }),
         }),
         close: async () => undefined,
@@ -219,6 +224,58 @@ it.effect("forwards progress and the finished outcome, aborting if the evidence 
       assert.strictEqual(aborted, failConsumer);
       assert.strictEqual(result._tag, failConsumer ? "Failure" : "Success");
     }
+  }),
+);
+
+it.effect("types a preview failure as a provider error and still closes the session", () =>
+  Effect.gen(function* () {
+    let closed = 0;
+    const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
+      preview: async () => { throw new Error("runtime unavailable"); },
+      close: async () => { closed += 1; },
+    }) });
+    const error = yield* Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* Ployz).connect(options);
+      return yield* session.preview(asTestDouble<Parameters<Client["preview"]>[0]>()({}));
+    })).pipe(Effect.provide(layer), Effect.flip);
+    assert.instanceOf(error, PloyzProviderError);
+    assert.strictEqual(closed, 1);
+  }),
+);
+
+it.effect("aborts an interrupted confirmation before closing the session", () =>
+  Effect.gen(function* () {
+    let closed = 0;
+    let aborted = 0;
+    let began: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => { began = resolve; });
+    let finish: () => void = () => undefined;
+    const finished = new Promise<never>((_resolve, reject) => { finish = () => reject(new Error("Confirmed runner termination")); });
+    void finished.catch(() => undefined);
+    const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
+      preview: async () => ({
+        ...emptyPreview,
+        confirm: () => ({
+          abort: () => { aborted += 1; finish(); },
+          finished,
+          async *[Symbol.asyncIterator]() {
+            began();
+            yield* [];
+            await new Promise<never>(() => undefined);
+          },
+        }),
+      }),
+      close: async () => { closed += 1; },
+    }) });
+    const fiber = yield* Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* Ployz).connect(options);
+      const prepared = yield* session.preview(asTestDouble<Parameters<Client["preview"]>[0]>()({}));
+      return yield* prepared.confirm();
+    })).pipe(Effect.provide(layer), Effect.forkChild);
+    yield* Effect.promise(() => started);
+    yield* Fiber.interrupt(fiber);
+    assert.strictEqual(aborted, 1);
+    assert.strictEqual(closed, 1);
   }),
 );
 

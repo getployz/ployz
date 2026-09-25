@@ -5,7 +5,6 @@ import {
 } from "#/modules/environment-design/schema";
 import {
   getMountConflict,
-  getServiceMountsByServiceId,
   mountPathSchema,
   type ServiceMount,
 } from "#/modules/environment-design/service-volume-attachments";
@@ -89,55 +88,5 @@ describe("getMountConflict", () => {
         mode: "edit",
       }),
     ).toEqual({ type: "duplicate_mount_path", mountPath: "/cache" });
-  });
-});
-
-
-describe("getServiceMountsByServiceId", () => {
-  const volumeA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  const volumeB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-
-  it("groups mounts per service and resolves volume display names", () => {
-    const byService = getServiceMountsByServiceId({
-      attachments: [
-        { serviceId: "web", volumeResourceId: volumeA, mountPath: "/data" },
-        { serviceId: "worker", volumeResourceId: volumeA, mountPath: "/cache" },
-      ],
-      volumeNameById: new Map([[volumeA, "shared-data"]]),
-    });
-
-    expect(byService.get("web")).toEqual([
-      { volumeResourceId: volumeA, volumeName: "shared-data", mountPath: "/data" },
-    ]);
-    expect(byService.get("worker")?.[0]?.mountPath).toBe("/cache");
-  });
-
-  it("sorts a service's mounts by path", () => {
-    const byService = getServiceMountsByServiceId({
-      attachments: [
-        { serviceId: "web", volumeResourceId: volumeB, mountPath: "/z" },
-        { serviceId: "web", volumeResourceId: volumeA, mountPath: "/a" },
-      ],
-      volumeNameById: new Map([
-        [volumeA, "a-vol"],
-        [volumeB, "z-vol"],
-      ]),
-    });
-
-    expect(byService.get("web")?.map((mount) => mount.mountPath)).toEqual([
-      "/a",
-      "/z",
-    ]);
-  });
-
-  it("drops mounts whose volume is absent (tombstoned) so the service sheds them", () => {
-    const byService = getServiceMountsByServiceId({
-      attachments: [
-        { serviceId: "web", volumeResourceId: volumeA, mountPath: "/data" },
-      ],
-      volumeNameById: new Map(),
-    });
-
-    expect(byService.get("web")).toBeUndefined();
   });
 });

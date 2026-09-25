@@ -1,4 +1,4 @@
-import type { ValuePart, ValuePartRefOwner } from "#/modules/environment-design/tables";
+import type { ValuePart } from "#/modules/environment-design/tables";
 
 /**
  * Pure, isomorphic helpers for the variable-templating grammar. Shared by the
@@ -31,8 +31,6 @@ const TOKEN_GLOBAL = new RegExp(
   "g",
 );
 
-export type ParsedRef = { owner: ValuePartRefOwner; key: string };
-
 export type LookupSlug = (lineageId: string) => string | null;
 export type LookupLineage = (
   slug: string,
@@ -54,11 +52,6 @@ export type CaretToken = {
   /** The owner slug typed before the `.`, or null when none yet. */
   ownerSlug: string | null;
 };
-
-/** A pure-literal value: a single text part. */
-export function literalParts(value: string): ValuePart[] {
-  return [{ kind: "text", value }];
-}
 
 export function isPureLiteral(parts: ValuePart[]): boolean {
   return parts.every((part) => part.kind === "text");
@@ -84,13 +77,6 @@ export function extractDisplayRefs(
   return refs;
 }
 
-/** All `ref` parts in order. */
-export function extractRefs(parts: ValuePart[]): ParsedRef[] {
-  return parts.flatMap((part) =>
-    part.kind === "ref" ? [{ owner: part.owner, key: part.key }] : [],
-  );
-}
-
 /**
  * The plain literal string for a value, or `null` if it contains any ref (a
  * templated value cannot be copied/exported as a literal).
@@ -101,7 +87,7 @@ export function partsToLiteralString(parts: ValuePart[]): string | null {
 }
 
 /** Slug rendered for a ref whose owning producer no longer exists in the env. */
-export const DELETED_OWNER_SENTINEL = "<deleted>";
+const DELETED_OWNER_SENTINEL = "<deleted>";
 
 /** Whether a rendered display value references a producer that was deleted. */
 export function referencesDeletedOwner(displayValue: string): boolean {

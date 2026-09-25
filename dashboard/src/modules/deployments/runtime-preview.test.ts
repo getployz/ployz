@@ -5,8 +5,9 @@ import type {
   MachineId,
   OperationRow,
 } from "@ployz/sdk";
+import { lowerDeployment } from "@ployz/sdk/config";
 import {
-  compileSdkDeployIntent,
+  compileSdkPreparationInput,
   parseSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
 
@@ -18,6 +19,9 @@ import {
   createImageServiceSource,
   projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
+
+const compileIntent = (input: Parameters<typeof compileSdkPreparationInput>[0]) =>
+  lowerDeployment(compileSdkPreparationInput(input));
 
 const volumeResourceId = "00000000-0000-4000-8000-000000000201";
 const tombstonedVolumeResourceId = "00000000-0000-4000-8000-000000000202";
@@ -77,9 +81,9 @@ function imageSnapshot(input?: {
   };
 }
 
-describe("compileSdkDeployIntent", () => {
+describe("deploy intent lowering", () => {
   it("compiles an image service with decrypted env into rust DeployIntent wire JSON", () => {
-    const intent = compileSdkDeployIntent({
+    const intent = compileIntent({
       projectName: "production",
       snapshots: [
         imageSnapshot({
@@ -149,7 +153,7 @@ describe("compileSdkDeployIntent", () => {
   });
 
   it("omits empty services and unmounted volumes from the intent", () => {
-    const intent = compileSdkDeployIntent({
+    const intent = compileIntent({
       projectName: "production",
       snapshots: [
         imageSnapshot(),
@@ -182,7 +186,7 @@ describe("compileSdkDeployIntent", () => {
 
   it("refuses to compile git-as-source instead of inventing an image", () => {
     expect(() =>
-      compileSdkDeployIntent({
+      compileIntent({
         projectName: "production",
         snapshots: [
           {
@@ -247,18 +251,18 @@ it("lowers frozen references to runtime dependencies using identity, not display
   const [app, postgres] = input.snapshots;
   if (!app || !postgres) throw new Error("Missing test services");
   app.config.env["LITERAL"] = { kind: "literal", value: "${{unknown.PORT}}" };
-  expect(compileSdkDeployIntent(input).dependencies).toEqual({
+  expect(compileIntent(input).dependencies).toEqual({
     app: [{ service: "postgres", condition: "service_started" }],
   });
   postgres.config.healthcheck = { type: "http", path: "/health", timeoutSeconds: 10 };
-  expect(compileSdkDeployIntent(input).dependencies["app"]).toEqual([{ service: "postgres", condition: "service_healthy" }]);
+  expect(compileIntent(input).dependencies["app"]).toEqual([{ service: "postgres", condition: "service_healthy" }]);
   postgres.config.source = createEmptyServiceSource();
-  expect(compileSdkDeployIntent(input).dependencies).toEqual({});
+  expect(compileIntent(input).dependencies).toEqual({});
 });
 
 it("ignores all intra-cycle edges while preserving incoming and outgoing dependencies", () => {
   const input = referencedSnapshots({ app: ["a"], a: ["b", "db"], b: ["c"], c: ["a"], db: [] });
-  expect(compileSdkDeployIntent(input).dependencies).toEqual({
+  expect(compileIntent(input).dependencies).toEqual({
     app: [{ service: "a", condition: "service_started" }],
     a: [{ service: "db", condition: "service_started" }],
   });

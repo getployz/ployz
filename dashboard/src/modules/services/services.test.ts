@@ -9,45 +9,19 @@ import {
   createDefaultServiceRestartPolicy,
   createEmptyServiceSource,
   createGitServiceSource,
-  createImageServiceSource,
   createServiceSchema,
   detectRegistryCredentialProvider,
   getDefaultRegistryCredentialUsername,
   getRegistryHostFromImageReference,
-  getServiceSourceName,
   normalizeRegistryCredentialUsername,
   projectServiceDeploymentConfig,
   servicePrivateDnsSchema,
-  serviceInsertSchema,
   serviceRootDirSchema,
   serviceSourceSchema,
   updateServiceSchema,
 } from "#/modules/environment-design/services";
 
 describe("service schemas", () => {
-  it("derives service names from repositories and images", () => {
-    expect(
-      getServiceSourceName(
-        createGitServiceSource({
-          repository: "acme/api",
-          repositoryId: 42,
-          access: { type: "github-installation", installationId: 7 },
-        })
-      )
-    ).toBe("api");
-    expect(
-      getServiceSourceName(
-        createImageServiceSource({ image: "ghcr.io/acme/worker:latest" })
-      )
-    ).toBe("worker");
-    expect(
-      getServiceSourceName(
-        createImageServiceSource({ image: "ghcr.io/acme/worker@sha256:abc" })
-      )
-    ).toBe("worker");
-    expect(getServiceSourceName(createEmptyServiceSource())).toBeNull();
-  });
-
   it("requires a runtime-safe private DNS service ID", () => {
     expect(decodeStrict(servicePrivateDnsSchema, "api-internal-1")).toBe(
       "api-internal-1",
@@ -135,19 +109,6 @@ describe("service schemas", () => {
     expect(
       isValid(environmentDesignFields.service.restartPolicy, "sometimes")
     ).toBe(false);
-  });
-
-  it("service insert schema accepts the intended db payload", () => {
-    const result = isValid(serviceInsertSchema, {
-      name: "API",
-      organizationId: crypto.randomUUID(),
-      projectId: crypto.randomUUID(),
-      environmentId: crypto.randomUUID(),
-      lineageId: crypto.randomUUID(),
-
-    });
-
-    expect(result).toBe(true);
   });
 
   it("create schema parses the current request shape", () => {

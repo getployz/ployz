@@ -120,19 +120,6 @@ export function createImageServiceSource(input: {
   });
 }
 
-export function getServiceSourceName(source: ServiceSource) {
-  if (source.type === "git") {
-    return source.repository.split("/").at(-1) || null;
-  }
-
-  if (source.type === "image") {
-    const image = source.image.split("/").at(-1) ?? source.image;
-    return image.split(/[:@]/)[0] || null;
-  }
-
-  return null;
-}
-
 export function getRegistryHostFromImageReference(image: string) {
   const trimmed = image.trim();
   const firstSegment = trimmed.split("/")[0]?.toLowerCase() ?? "";

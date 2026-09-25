@@ -6,7 +6,7 @@ pub(super) use std::{
 pub(super) use ployz::deploy::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
     EliminatingConstraints, IngressContext, PlanError, PlanOptions, ReplacementOperation,
-    ServiceAttempt, VolumeSnapshot, compare_specs, preview_deploy,
+    ServiceAttempt, VolumeSnapshot, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -64,7 +64,7 @@ pub(super) use ployz_core::{
     ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
     ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
     ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, WireGuardPublicKey,
+    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, WireGuardPublicKey, compare_specs,
 };
 pub(super) fn spec(name: &str) -> RequestedServiceSpec {
     let mut requested = requested(ServiceMode::Replicated {

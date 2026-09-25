@@ -1,33 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
-import {
-  decodeEnvironmentResourceNodeConfig,
-  getEnvironmentResourceNodeConfigDiffRows,
-  getEnvironmentResourceNodeSnapshotResourceName,
-  isEnvironmentResourceNodeType,
-} from "#/modules/environment-design/environment-resource-node";
-import { namedVolumeConfig } from "#/modules/environment-design/volume-config";
-
-const nodeId = "11111111-1111-4111-8111-111111111111";
+import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
 
 describe("Environment Resource node spine", () => {
-  it("owns Environment Resource type recognition and snapshot names", () => {
-    expect(isEnvironmentResourceNodeType("volume")).toBe(true);
-    expect(isEnvironmentResourceNodeType("service")).toBe(false);
-    expect(getEnvironmentResourceNodeSnapshotResourceName("volume")).toBe(
-      "VolumeSnapshot",
-    );
-  });
-
-  it("normalizes historical Volume configs", () => {
-    expect(
-      Effect.runSync(
-        decodeEnvironmentResourceNodeConfig("volume", {
-          version: 1,
-          name: "shared-data",
-        }),
-      ),
-    ).toEqual({
+  it.each([
+    ["v1", { version: 1, name: "shared-data" }],
+    ["v2 with historical provisioned storage", {
+      version: 2,
+      name: "shared-data",
+      storage: { kind: "provisioned", maxSizeBytes: 10_737_418_240 },
+    }],
+  ])("normalizes historical %s Volume configs", (_label, input) => {
+    expect(Effect.runSync(decodeEnvironmentResourceNodeConfig("volume", input))).toEqual({
       nodeType: "volume",
       config: { version: 2, name: "shared-data" },
     });
@@ -44,22 +28,5 @@ describe("Environment Resource node spine", () => {
       ),
     );
     expect(Schema.isSchemaError(failure)).toBe(true);
-  });
-
-  it("diffs explicit resource projections without selecting a baseline", () => {
-    expect(
-      getEnvironmentResourceNodeConfigDiffRows({
-        nodeType: "volume",
-        nodeId,
-        baseline: namedVolumeConfig("data"),
-        current: namedVolumeConfig("data-next"),
-      }),
-    ).toEqual([
-      expect.objectContaining({
-        path: "name",
-        currentValue: "data",
-        newValue: "data-next",
-      }),
-    ]);
   });
 });

@@ -2,8 +2,6 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { Cache, Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
 import {
-  GITHUB_CHECK_SUITE_CONCLUSIONS,
-  GITHUB_CHECK_SUITE_STATUSES,
   GITHUB_COMPARE_STATUSES,
   githubChangedPathsSchema,
   githubCheckSuiteConclusionSchema,
@@ -30,8 +28,6 @@ import { AppConfig } from "#/server/config.server";
 
 const GITHUB_API_VERSION = "2022-11-28";
 type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
-export { GITHUB_CHECK_SUITE_CONCLUSIONS as GITHUB_API_CHECK_SUITE_CONCLUSIONS };
-export { GITHUB_CHECK_SUITE_STATUSES as GITHUB_API_CHECK_SUITE_STATUSES };
 export { GITHUB_COMPARE_STATUSES };
 export type {
   GithubBranchHeadObservation,

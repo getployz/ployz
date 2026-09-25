@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
-import type { DeployEvent, DeployIntent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
+import type { DeployEvent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
 import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
 import { environmentDeployment } from "./tables";
@@ -23,7 +23,7 @@ import { Database, ReportingDatabase } from "#/server/database.server";
 import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
 import { deploymentProgressForEvent, type DeploymentProgress } from "./deployment-progress";
-import { PloyzPreparationError } from "#/modules/runtime/ployz.server";
+import { PloyzPreparationError, type PloyzPreparedDeploy } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
 import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
@@ -32,7 +32,7 @@ import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 
-export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof executeRuntimeIntent>>["outcome"];
+export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof confirmRuntimeIntent>>["outcome"];
 
 type SdkPreparedPreviewInput = {
   readonly project_name: PreparedDeploy["project_name"];
@@ -153,18 +153,8 @@ function preparedPreviewInput(prepared: SdkPreparedPreviewInput): SdkPreparedPre
     return previewInput;
 }
 
-export const previewRuntimeIntent = Effect.fn(
-  "Deployments.previewRuntimeIntent",
-)(function* (organizationId: string, intent: DeployIntent) {
-    const sdk = yield* connectedRuntime(organizationId);
-    const prepared = yield* sdk.preview(intent);
-    const previewInput = preparedPreviewInput(prepared);
-    const preview = yield* decodeSdkDeployPreview(previewInput);
-    return { prepared, preview };
-});
-
 const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
-  function* ({ prepared, preview }: Effect.Success<ReturnType<typeof previewRuntimeIntent>>, onEvent?: (event: DeployEvent) => Promise<void>, cancellation?: AbortSignal, deploymentId?: string) {
+  function* (prepared: PloyzPreparedDeploy, preview: Effect.Success<ReturnType<typeof decodeSdkDeployPreview>>, onEvent: (event: DeployEvent) => Promise<void>, cancellation: AbortSignal, deploymentId: string) {
   const outcome = yield* prepared.confirm(onEvent, cancellation, deploymentId);
   const evidence = yield* Schema.decodeUnknownEffect(Schema.Json)({ version: 1, outcome });
   const projected = yield* Effect.try({
@@ -173,14 +163,8 @@ const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
       failureCode: "sdk_outcome_invalid", message: "Runtime returned an invalid outcome; effects are unknown.", cause,
     }),
   });
-  return { preview, outcome: projected.summary, evidence: Redacted.make(evidence) };
+  return { outcome: projected.summary, evidence: Redacted.make(evidence) };
 });
-
-export const executeRuntimeIntent = Effect.fn("Deployments.executeRuntimeIntent")(
-  function* (organizationId: string, intent: DeployIntent) {
-    return yield* confirmRuntimeIntent(yield* previewRuntimeIntent(organizationId, intent));
-  },
-);
 
 /** Poll failure is fatal: a quiet operation must never outlive its cancellation observer. */
 export function watchDeploymentCancellation<E, R>(
@@ -284,8 +268,8 @@ export const executeEnvironmentDeployment = Effect.fn(
             ));
           }));
     if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
-    const prepared = { prepared: native, preview: yield* decodeSdkDeployPreview(preparedPreviewInput(native)) };
-    yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview: prepared.preview });
+    const preview = yield* decodeSdkDeployPreview(preparedPreviewInput(native));
+    yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview });
     const [beforeConfirm] = yield* readStatus;
     if (!beforeConfirm || beforeConfirm.status !== "deploying" || beforeConfirm.cancellationRequestedAt || cancellation.signal.aborted) {
       return { outcome: { type: "failed" as const, completed: 0, unexecuted: native.operations.length, reason: "cancelled" as const }, evidence: null };
@@ -294,9 +278,9 @@ export const executeEnvironmentDeployment = Effect.fn(
     // this fiber's services (database, tracer, span, log annotations) instead of
     // a fresh default runtime.
     pruneTargets = native.pruneTargets;
-    const { outcome, evidence } = yield* confirmRuntimeIntent(prepared, async (event) => {
+    const { outcome, evidence } = yield* confirmRuntimeIntent(native, preview, async (event) => {
       if (event.type === "images_pruned") return;
-      const raw = deploymentProgressForEvent(event, prepared.prepared.operations);
+      const raw = deploymentProgressForEvent(event, native.operations);
       const progress: DeploymentProgress = { ...raw, preparation: Object.keys(sources).length ? { ...collector.current(), phase: "ready" } : undefined, rows: raw.rows.map((row) => {
         const prior = latestProgress.rows.find((candidate) => candidate.index === row.index);
         const projected = {

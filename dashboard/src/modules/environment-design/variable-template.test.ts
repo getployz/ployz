@@ -3,9 +3,7 @@ import type { ValuePart } from "#/db/schema";
 import {
   buildRefToken,
   caretToken,
-  extractRefs,
   isPureLiteral,
-  literalParts,
   parseDisplayToParts,
   partsToDisplay,
   partsToLiteralString,
@@ -28,24 +26,7 @@ const lookupLineage: LookupLineage = (slug) => {
   return null;
 };
 
-describe("isPureLiteral / literalParts", () => {
-  it("treats text-only parts as literal", () => {
-    expect(isPureLiteral(literalParts("hello"))).toBe(true);
-    expect(
-      isPureLiteral([
-        { kind: "text", value: "a" },
-        { kind: "ref", owner: { scope: "self" }, key: "B" },
-      ]),
-    ).toBe(false);
-  });
-});
-
 describe("partsToLiteralString", () => {
-  it("returns the concatenated literal", () => {
-    expect(partsToLiteralString(literalParts("postgres://host"))).toBe(
-      "postgres://host",
-    );
-  });
   it("returns null when any ref is present", () => {
     expect(
       partsToLiteralString([
@@ -57,20 +38,6 @@ describe("partsToLiteralString", () => {
 });
 
 describe("partsToDisplay", () => {
-  it("renders self and service refs", () => {
-    const parts: ValuePart[] = [
-      { kind: "text", value: "postgres://u:" },
-      { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PASSWORD" },
-      { kind: "text", value: "@" },
-      { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PLOYZ_PRIVATE_DOMAIN" },
-      { kind: "text", value: "/app?key=" },
-      { kind: "ref", owner: { scope: "self" }, key: "REGION" },
-    ];
-    expect(partsToDisplay(parts, lookupSlug)).toBe(
-      "postgres://u:${{ db.PASSWORD }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}/app?key=${{ REGION }}",
-    );
-  });
-
   it("renders a deleted producer with a sentinel", () => {
     const parts: ValuePart[] = [
       { kind: "ref", owner: { scope: "service", lineageId: "deadbeef" }, key: "X" },
@@ -79,7 +46,7 @@ describe("partsToDisplay", () => {
   });
 
   it("escapes a literal ${{ in text", () => {
-    expect(partsToDisplay(literalParts("echo ${{not a ref}}"), lookupSlug)).toBe(
+    expect(partsToDisplay([{ kind: "text", value: "echo ${{not a ref}}" }], lookupSlug)).toBe(
       "echo $${{not a ref}}",
     );
   });
@@ -92,11 +59,15 @@ describe("parseDisplayToParts", () => {
     const { parts, unresolved } = parseDisplayToParts(display, lookupLineage);
     expect(unresolved).toEqual([]);
     expect(partsToDisplay(parts, lookupSlug)).toBe(display);
-    expect(extractRefs(parts)).toEqual([
-      { owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PASSWORD" },
-      { owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PLOYZ_PRIVATE_DOMAIN" },
-      { owner: { scope: "self" }, key: "REGION" },
-      { owner: { scope: "service", lineageId: SET_LINEAGE }, key: "STRIPE" },
+    expect(parts).toEqual([
+      { kind: "text", value: "postgres://u:" },
+      { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PASSWORD" },
+      { kind: "text", value: "@" },
+      { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PLOYZ_PRIVATE_DOMAIN" },
+      { kind: "text", value: "/app?r=" },
+      { kind: "ref", owner: { scope: "self" }, key: "REGION" },
+      { kind: "text", value: "&s=" },
+      { kind: "ref", owner: { scope: "service", lineageId: SET_LINEAGE }, key: "STRIPE" },
     ]);
   });
 

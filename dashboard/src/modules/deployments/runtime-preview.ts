@@ -1,7 +1,6 @@
 import { deploymentDependencies } from "./deployment-dependencies";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
-import type { DeployIntent } from "@ployz/sdk";
-import { lowerDeployment, parseRuntimePreview } from "@ployz/sdk/config";
+import { parseRuntimePreview } from "@ployz/sdk/config";
 import { Schema } from "effect";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
 import {
@@ -40,6 +39,3 @@ export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {
   return parseRuntimePreview(value);
 }
 
-export function compileSdkDeployIntent(input: Parameters<typeof compileSdkPreparationInput>[0]): DeployIntent {
-  return lowerDeployment(compileSdkPreparationInput(input));
-}

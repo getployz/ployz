@@ -1,8 +1,7 @@
-import { compareResourceSettings, parseResourceConfig } from "@ployz/sdk/config";
+import { parseResourceConfig } from "@ployz/sdk/config";
 import { sharedSchema } from "#/modules/environment-design/service-config";
 import { Schema, SchemaGetter } from "effect";
 import { decodeStrict } from "#/modules/environment-design/schema";
-import { toDiffRow, type DiffRow } from "#/modules/services/service-deployment-diff/fields";
 
 export const volumeConfigSchema = sharedSchema((value) => parseResourceConfig("volume", value));
 
@@ -37,29 +36,6 @@ export const persistedVolumeConfigSchema = historicalVolumeConfigSchema.pipe(
   }),
 );
 
-export function parseVolumeConfig<Input>(input: Input): VolumeConfig {
-  return decodeStrict(persistedVolumeConfigSchema, input);
-}
-
 export function getVolumePhysicalName(volumeResourceId: string): string {
   return `vol-${volumeResourceId}`;
-}
-
-export function getDeletedDeployedVolumeResourceIds(input: {
-  desiredVolumeResourceIds: Iterable<string>;
-  appliedVolumeResourceIds: Iterable<string>;
-}): string[] {
-  const desired = new Set(input.desiredVolumeResourceIds);
-  return [...new Set(input.appliedVolumeResourceIds)].filter(
-    (id) => !desired.has(id),
-  );
-}
-
-export function getVolumeConfigDiffRows(input: {
-  nodeId: string;
-  current: VolumeConfig;
-  baseline: VolumeConfig | null;
-}): DiffRow[] {
-  return compareResourceSettings("volume", input.current, input.baseline)
-    .map((change) => toDiffRow("volume", input.nodeId, change));
 }

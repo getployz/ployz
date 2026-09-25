@@ -14,12 +14,6 @@ import { bigint, bigserial, boolean, check, foreignKey, index, integer, jsonb, p
 
 
 
-export {
-  GITHUB_CHECK_SUITE_ACTIONS,
-  GITHUB_CHECK_SUITE_CONCLUSIONS,
-  GITHUB_CHECK_SUITE_STATUSES,
-};
-
 export type {
   GithubCheckSuiteAction,
   GithubCheckSuiteConclusion,

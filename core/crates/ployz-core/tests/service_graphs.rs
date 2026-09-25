@@ -113,79 +113,6 @@ fn legal_unused_definitions_repeated_mounts_and_volume_aliases_remain_representa
 }
 
 #[test]
-fn graph_deserialization_runs_the_same_validation() {
-    let valid_volumes = ServiceVolumeGraph::parse(
-        vec![named_volume("data", "data")],
-        vec![mount("data", "/var/data")],
-    )
-    .unwrap();
-    let volumes_json = serde_json::to_value(&valid_volumes).unwrap();
-    assert_eq!(
-        serde_json::from_value::<ServiceVolumeGraph>(volumes_json.clone()).unwrap(),
-        valid_volumes
-    );
-
-    let mut duplicate_volumes = volumes_json.clone();
-    duplicate_first_item(&mut duplicate_volumes, "volumes");
-    assert_eq!(
-        serde_json::from_value::<ServiceVolumeGraph>(duplicate_volumes)
-            .unwrap_err()
-            .to_string(),
-        ServiceVolumeGraphError::DuplicateVolumeReference {
-            reference: reference("data"),
-        }
-        .to_string()
-    );
-
-    let mut dangling_volume = volumes_json;
-    clear_array(&mut dangling_volume, "volumes");
-    assert_eq!(
-        serde_json::from_value::<ServiceVolumeGraph>(dangling_volume)
-            .unwrap_err()
-            .to_string(),
-        ServiceVolumeGraphError::UnknownVolumeReference {
-            reference: reference("data"),
-        }
-        .to_string()
-    );
-
-    let valid_configs = ServiceConfigGraph::parse(
-        vec![config("settings", b"x")],
-        vec![config_mount("settings")],
-    )
-    .unwrap();
-    let configs_json = serde_json::to_value(&valid_configs).unwrap();
-    assert_eq!(
-        serde_json::from_value::<ServiceConfigGraph>(configs_json.clone()).unwrap(),
-        valid_configs
-    );
-
-    let mut duplicate_configs = configs_json.clone();
-    duplicate_first_item(&mut duplicate_configs, "configs");
-    assert_eq!(
-        serde_json::from_value::<ServiceConfigGraph>(duplicate_configs)
-            .unwrap_err()
-            .to_string(),
-        ServiceConfigGraphError::DuplicateConfigName {
-            name: "settings".into(),
-        }
-        .to_string()
-    );
-
-    let mut dangling_config = configs_json;
-    clear_array(&mut dangling_config, "configs");
-    assert_eq!(
-        serde_json::from_value::<ServiceConfigGraph>(dangling_config)
-            .unwrap_err()
-            .to_string(),
-        ServiceConfigGraphError::UnknownConfigName {
-            name: "settings".into(),
-        }
-        .to_string()
-    );
-}
-
-#[test]
 fn requested_and_resolved_conversions_preserve_graph_invariants() {
     let mut requested = requested_with_graphs(
         vec![
@@ -313,24 +240,6 @@ fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
         })
         .to_string()
     );
-}
-
-fn duplicate_first_item(value: &mut serde_json::Value, key: &str) {
-    let first = value
-        .get(key)
-        .and_then(serde_json::Value::as_array)
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("serialized graph has an item");
-    value
-        .get_mut(key)
-        .and_then(serde_json::Value::as_array_mut)
-        .expect("serialized graph has an array")
-        .push(first);
-}
-
-fn clear_array(value: &mut serde_json::Value, key: &str) {
-    set_field(value, key, serde_json::json!([]));
 }
 
 fn set_field(value: &mut serde_json::Value, key: &str, replacement: serde_json::Value) {
