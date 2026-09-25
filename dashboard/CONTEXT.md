@@ -228,8 +228,12 @@ A place that runs Image Builds: the Organization Cluster, which chooses one of i
 _Avoid_: Build host, build runner, builder Server; Builder for Dockerfile or Railpack
 
 **Build Order**:
-The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service may replace it with one Builder. A build that has started never moves.
+The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service's Preferred Builder is tried before it. A build that has started never moves.
 _Avoid_: Build pool, build preference, fallback builder
+
+**Preferred Builder**:
+One Builder a Service tries first, before the Organization's Build Order: GitHub Actions or one specific Server. When it does not start the build in time, the Image Build continues with the Build Order; it never forbids the others.
+_Avoid_: Builder override, pinned builder, build target
 
 **Build Method**:
 How a Service's image is described for building: a Dockerfile or Railpack.
