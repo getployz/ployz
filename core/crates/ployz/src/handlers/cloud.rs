@@ -281,7 +281,7 @@ where
     let ingress = if !accepts_ingress {
         None
     } else {
-        Some(crate::ingress::service_spec(ingress_image, Default::default(), None).await?)
+        Some(crate::ingress::service_spec(ingress_image, Default::default()).await?)
     };
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => (*machine, client),

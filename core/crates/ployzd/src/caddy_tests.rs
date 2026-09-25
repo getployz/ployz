@@ -1,7 +1,4 @@
-use super::{
-    CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile as render_automatic_caddyfile,
-    generate_caddyfile as render_caddyfile,
-};
+use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
     corrosion::{CertificateChallenge, CertificateRow},
     ingress::{
@@ -12,10 +9,9 @@ use crate::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
-    IngressHost, IngressHostname, IngressProxyFragment, MACHINE_API_PORT, Machine, MachineId,
-    MachineName, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
-    ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
-    service_containers,
+    IngressHost, IngressHostname, MACHINE_API_PORT, Machine, MachineId, MachineName,
+    PortPublication, ProjectName, ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceName,
+    TransportProtocol, WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -56,35 +52,17 @@ fn projection(
     )
 }
 
-fn automatic_caddyfile(
-    local_machine: &MachineId,
-    machine_name: &str,
-    containers: &[ServiceContainer],
-    timestamp: &str,
-    global_config: Option<&str>,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
-) -> String {
-    render_automatic_caddyfile(
-        &projection(local_machine, machine_name, containers, certificates),
-        timestamp,
-        global_config,
-    )
-}
-
-async fn generate_caddyfile<A: CaddyAdmin>(
+fn caddyfile_for(
     local_machine: &MachineId,
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
-    admin: Option<&A>,
 ) -> String {
     render_caddyfile(
         &projection(local_machine, machine_name, containers, certificates),
         timestamp,
-        admin,
     )
-    .await
 }
 
 async fn reconcile<A: CaddyAdmin>(
@@ -118,12 +96,11 @@ fn automatic_sites_render_routes_and_health_endpoint() {
             vec![ingress("example.com", 80, HttpProtocol::Http)],
         ),
     ];
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains("auto_https off"));
@@ -138,7 +115,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
 }
 #[test]
 fn shared_renderer_projection_drives_caddy() {
-    let caddyfile = render_automatic_caddyfile(&renderer_projection(), "TIMESTAMP", None);
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
 
     assert!(caddyfile.contains("http://empty.example.com"));
     assert!(caddyfile.contains("respond \"Bad Gateway\" 502"));
@@ -151,7 +128,7 @@ fn shared_renderer_projection_drives_caddy() {
 }
 
 #[test]
-fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
+fn projection_resolves_route_endpoints_and_certificate() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let remote = MachineId::parse("b".repeat(32)).unwrap();
     let mut local_container = observation(
@@ -164,10 +141,6 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
     local_container
         .try_update(|parts| parts.created_at_unix_nanos = 1)
         .unwrap();
-    let fragment = IngressProxyFragment::parse("# selected").unwrap();
-    local_container
-        .try_update(|parts| parts.resolved_spec.ingress_proxy_fragment = Some(fragment.clone()))
-        .unwrap();
     let mut remote_container = observation(
         2,
         &remote,
@@ -176,10 +149,7 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         vec![ingress("example.com", 8080, HttpProtocol::Http)],
     );
     remote_container
-        .try_update(|parts| {
-            parts.created_at_unix_nanos = 2;
-            parts.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
-        })
+        .try_update(|parts| parts.created_at_unix_nanos = 2)
         .unwrap();
     let material = test_material();
     let challenge = CertificateChallenge::parse(
@@ -217,19 +187,13 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
             ("10.210.2.2".parse().unwrap(), 8080)
         ]
     );
-    assert_eq!(
-        projection
-            .service_fragments
-            .get(&QualifiedService::parse("app/api").unwrap()),
-        Some(&fragment)
-    );
     let certificate = site.certificate.as_ref().unwrap();
     assert_eq!(certificate.challenge.as_ref(), Some(&challenge));
     assert_eq!(certificate.material.as_ref(), Some(&material));
 }
 
 #[test]
-fn unrelated_unfragmented_service_does_not_change_the_ingress_projection() {
+fn unpublished_service_does_not_change_the_ingress_projection() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let empty = projection(&local, "node-a", &[], &BTreeMap::new());
     let unrelated = service_containers([observation(
@@ -288,12 +252,11 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
     })
     .unwrap();
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(vec![blog, shop_rollout, shop_old]),
         "TIMESTAMP",
-        None,
         &BTreeMap::new(),
     );
 
@@ -341,12 +304,11 @@ fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_matc
     .unwrap();
 
     let file = |observations: Vec<ContainerObservation>| {
-        automatic_caddyfile(
+        caddyfile_for(
             &local,
             "node-a",
             &service_containers(observations),
             "TIMESTAMP",
-            None,
             &BTreeMap::new(),
         )
     };
@@ -383,12 +345,11 @@ fn https_site_with_material_pins_tls_paths() {
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &certificates,
     );
 
@@ -419,23 +380,21 @@ fn changing_material_changes_the_pin_paths() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let containers = service_containers(observations);
-    let first = automatic_caddyfile(
+    let first = caddyfile_for(
         &local,
         "node-a",
         &containers,
         "TIMESTAMP",
-        None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
             CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
-    let second = automatic_caddyfile(
+    let second = caddyfile_for(
         &local,
         "node-a",
         &containers,
         "TIMESTAMP",
-        None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
             CertificateRow::from_parts(Some(test_material()), None),
@@ -459,32 +418,18 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let containers = service_containers(observations);
-    let without = automatic_caddyfile(
-        &local,
-        "node-a",
-        &containers,
-        "TIMESTAMP",
-        None,
-        &BTreeMap::new(),
-    );
+    let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
     let unused = BTreeMap::from([(
         IngressHost::parse("other.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
     assert_eq!(
-        automatic_caddyfile(
-            &local,
-            "node-a",
-            &containers,
-            "TIMESTAMP",
-            None,
-            &BTreeMap::new(),
-        ),
+        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new(),),
         without
     );
     assert_eq!(
-        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", None, &unused,),
+        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &unused,),
         without
     );
     assert!(!without.contains("tls "));
@@ -513,12 +458,11 @@ fn pending_challenge_is_answered_on_the_http_site() {
         ),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &certificates,
     );
 
@@ -550,12 +494,11 @@ fn last_error_is_a_skipped_certificate_comment() {
         ),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &certificates,
     );
 
@@ -589,12 +532,11 @@ fn last_error_is_omitted_once_material_exists() {
         CertificateRow::from_parts(Some(test_material()), None).with_error("stale"),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &certificates,
     );
 
@@ -627,12 +569,11 @@ fn automatic_sites_exclude_hook_containers() {
         },
     ];
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80"));
@@ -685,12 +626,11 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
         ),
     ];
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        None,
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains(INGRESS_VERIFY_PATH));
@@ -755,12 +695,11 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         })
         .unwrap();
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers([healthy, stopped, unhealthy]),
         "TIMESTAMP",
-        None,
         &BTreeMap::new(),
     );
 
@@ -773,331 +712,6 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         assert!(!site.contains("reverse_proxy"), "{site}");
     }
     assert!(!caddyfile.contains("unknown Host"));
-}
-
-#[tokio::test]
-async fn custom_configs_exclude_hook_containers() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let mut hook = custom_observation(
-        2,
-        9,
-        &local,
-        "api",
-        "hook.example { reverse_proxy {{upstreams}} }",
-        [10, 210, 1, 4],
-    );
-    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
-        .unwrap();
-    let observations = vec![
-        custom_observation(
-            1,
-            1,
-            &local,
-            "api",
-            "api.example { reverse_proxy {{upstreams}} }",
-            [10, 210, 1, 2],
-        ),
-        hook,
-    ];
-
-    let caddyfile = generate_caddyfile(
-        &local,
-        "node-a",
-        &service_containers(observations),
-        "TIMESTAMP",
-        &BTreeMap::new(),
-        Some(&FakeAdmin::default()),
-    )
-    .await;
-
-    assert!(caddyfile.contains("api.example { reverse_proxy 10.210.1.2 }"));
-    assert!(!caddyfile.contains("hook.example"));
-    assert!(!caddyfile.contains("10.210.1.4"));
-}
-
-#[tokio::test]
-async fn user_project_caddy_does_not_supply_global_config() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let mut user = custom_observation(2, 9, &local, "caddy", "{\n\tadmin off\n}", [10, 210, 1, 9]);
-    user.try_update(|parts| parts.project_name = ployz_core::ProjectName::parse("shop").unwrap())
-        .unwrap();
-    let observations = vec![
-        reserved(observation(
-            1,
-            &local,
-            "ingress",
-            Some([10, 210, 1, 1]),
-            Vec::new(),
-        )),
-        user,
-    ];
-    assert!(
-        projection(
-            &local,
-            "node-a",
-            &service_containers(observations.clone()),
-            &BTreeMap::new()
-        )
-        .global_fragment
-        .is_none()
-    );
-
-    let caddyfile = generate_caddyfile(
-        &local,
-        "node-a",
-        &service_containers(observations),
-        "TIMESTAMP",
-        &BTreeMap::new(),
-        Some(&FakeAdmin::default()),
-    )
-    .await;
-
-    assert!(caddyfile.contains("auto_https off"));
-}
-
-#[tokio::test]
-async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let remote = MachineId::parse("b".repeat(32)).unwrap();
-    let mut external = custom_observation(
-        7,
-        1,
-        &local,
-        "external",
-        "external.example { respond external }",
-        [10, 210, 1, 7],
-    );
-    external.try_update(|parts| parts.address = None).unwrap();
-    let observations = vec![
-        reserved(custom_observation(
-            1,
-            1,
-            &local,
-            "ingress",
-            "{\n\tadmin unix/{{upstreams \"app/api\"}}\n}",
-            [10, 210, 1, 1],
-        )),
-        custom_observation(
-            2,
-            1,
-            &local,
-            "api",
-            "old.example { respond old }",
-            [10, 210, 1, 2],
-        ),
-        custom_observation(
-            3,
-            2,
-            &remote,
-            "api",
-            "api.example { reverse_proxy {{upstreams}} }",
-            [10, 210, 2, 2],
-        ),
-        custom_observation(
-            4,
-            1,
-            &local,
-            "gateway",
-            "gateway.example { reverse_proxy {{upstreams \"api\" 9000}} }",
-            [10, 210, 1, 4],
-        ),
-        custom_observation(
-            5,
-            1,
-            &local,
-            "invalid",
-            "# invalid\ninvalid.example { respond bad }",
-            [10, 210, 1, 5],
-        ),
-        custom_observation(
-            6,
-            1,
-            &local,
-            "web",
-            "web.example { reverse_proxy {{upstreams 8080}} }",
-            [10, 210, 1, 6],
-        ),
-        external,
-    ];
-    let admin = FakeAdmin::default();
-
-    let caddyfile = generate_caddyfile(
-        &local,
-        "node-a",
-        &service_containers(observations),
-        "TIMESTAMP",
-        &BTreeMap::new(),
-        Some(&admin),
-    )
-    .await;
-    assert!(caddyfile.contains("auto_https off"));
-    assert!(caddyfile.contains("admin unix/10.210.2.2"));
-    assert!(caddyfile.contains("api.example { reverse_proxy 10.210.2.2 }"));
-    assert!(!caddyfile.contains("old.example"));
-    assert!(caddyfile.contains("gateway.example { reverse_proxy 10.210.2.2:9000 }"));
-    for diagnostic in [
-        "Service 'app/invalid': validation failed",
-        "injected.example { respond owned }",
-        "second.example { respond also-owned }",
-    ] {
-        assert!(caddyfile.contains(diagnostic));
-        assert!(
-            caddyfile
-                .lines()
-                .filter(|line| line.contains(diagnostic))
-                .all(|line| line.trim_start().starts_with('#'))
-        );
-    }
-    assert!(caddyfile.contains("web.example { reverse_proxy 10.210.1.6:8080 }"));
-    assert!(caddyfile.contains("external.example { respond external }"));
-}
-
-#[tokio::test]
-async fn custom_upstream_short_names_do_not_cross_projects() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let mut staging_web = custom_observation(
-        2,
-        1,
-        &local,
-        "web",
-        "staging.example { reverse_proxy {{upstreams \"api\"}} }",
-        [10, 210, 1, 2],
-    );
-    staging_web
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
-        .unwrap();
-    let mut prod_api = custom_observation(
-        3,
-        1,
-        &local,
-        "api",
-        "api.example { respond api }",
-        [10, 210, 1, 11],
-    );
-    prod_api
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
-        .unwrap();
-    let mut prod_web = custom_observation(
-        4,
-        1,
-        &local,
-        "web",
-        "prod.example { reverse_proxy {{upstreams \"api\"}} }",
-        [10, 210, 1, 3],
-    );
-    prod_web
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
-        .unwrap();
-    let mut staging_other = custom_observation(
-        5,
-        1,
-        &local,
-        "other",
-        "cross.example { reverse_proxy {{upstreams \"shop-prod/api\"}} }",
-        [10, 210, 1, 4],
-    );
-    staging_other
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
-        .unwrap();
-    let observations = vec![
-        reserved(custom_observation(
-            1,
-            1,
-            &local,
-            "ingress",
-            "{\n\tadmin unix/{{upstreams \"api\"}}\n}",
-            [10, 210, 1, 1],
-        )),
-        staging_web,
-        prod_api,
-        prod_web,
-        staging_other,
-    ];
-    let admin = FakeAdmin::default();
-
-    let caddyfile = generate_caddyfile(
-        &local,
-        "node-a",
-        &service_containers(observations),
-        "TIMESTAMP",
-        &BTreeMap::new(),
-        Some(&admin),
-    )
-    .await;
-
-    assert!(caddyfile.contains("Service 'ployz-system/ingress': rendering failed:"));
-    assert!(caddyfile.contains("Service 'shop-staging/web': rendering failed:"));
-    assert!(caddyfile.contains("prod.example { reverse_proxy 10.210.1.11 }"));
-    assert!(caddyfile.contains("cross.example { reverse_proxy 10.210.1.11 }"));
-    assert!(!caddyfile.contains("staging.example"));
-}
-
-#[tokio::test]
-async fn unavailable_caddy_omits_every_custom_config() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let observations = [custom_observation(
-        1,
-        1,
-        &local,
-        "api",
-        "custom.example { respond custom }",
-        [10, 210, 1, 1],
-    )];
-
-    let caddyfile = generate_caddyfile(
-        &local,
-        "node-a",
-        &service_containers(observations),
-        "TIME",
-        &BTreeMap::new(),
-        None::<&FakeAdmin>,
-    )
-    .await;
-    assert!(!caddyfile.contains("custom.example"));
-    assert!(caddyfile.contains("admin API is not reachable"));
-}
-
-#[tokio::test]
-async fn broken_global_template_does_not_hide_valid_service_configs() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let observations = [
-        reserved(custom_observation(
-            1,
-            1,
-            &local,
-            "ingress",
-            "{{unknown\ninjected.example { respond owned }\n}}",
-            [10, 210, 1, 1],
-        )),
-        custom_observation(
-            2,
-            1,
-            &local,
-            "api",
-            "api.example { respond ok }",
-            [10, 210, 1, 2],
-        ),
-    ];
-
-    let caddyfile = generate_caddyfile(
-        &local,
-        "node-a",
-        &service_containers(observations),
-        "TIME",
-        &BTreeMap::new(),
-        Some(&FakeAdmin::default()),
-    )
-    .await;
-    assert!(caddyfile.contains("Service 'ployz-system/ingress': rendering failed"));
-    assert!(caddyfile.lines().any(|line| {
-        line.trim_start().starts_with('#') && line.contains("injected.example { respond owned }")
-    }));
-    assert!(
-        !caddyfile
-            .lines()
-            .any(|line| line.trim_start().starts_with("injected.example"))
-    );
-    assert!(caddyfile.contains("api.example { respond ok }"));
 }
 
 #[tokio::test]
@@ -1272,11 +886,7 @@ struct FakeAdmin {
 impl CaddyAdmin for FakeAdmin {
     async fn adapt(&self, caddyfile: &str) -> Result<String, Error> {
         self.adapted.lock().unwrap().push(caddyfile.into());
-        if caddyfile.contains("# invalid") {
-            Err(Error::Admin("invalid config detected\ninjected.example { respond owned }\nsecond.example { respond also-owned }".into()))
-        } else {
-            Ok("{}".into())
-        }
+        Ok("{}".into())
     }
 
     async fn load(&self, _json: &str) -> Result<(), Error> {
@@ -1337,25 +947,4 @@ fn observation(
         labels: BTreeMap::new(),
     })
     .unwrap()
-}
-
-fn custom_observation(
-    suffix: u8,
-    created_at_unix_nanos: i64,
-    machine_id: &MachineId,
-    service_name: &str,
-    caddy_config: &str,
-    address: [u8; 4],
-) -> ContainerObservation {
-    let mut observation = observation(suffix, machine_id, service_name, Some(address), Vec::new());
-    observation
-        .try_update(|parts| parts.created_at_unix_nanos = created_at_unix_nanos)
-        .unwrap();
-    observation
-        .try_update(|parts| {
-            parts.resolved_spec.ingress_proxy_fragment =
-                Some(IngressProxyFragment::parse(caddy_config).expect("fixture is non-empty"))
-        })
-        .unwrap();
-    observation
 }

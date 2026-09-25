@@ -28,12 +28,14 @@ pub mod installer;
 pub mod logs;
 pub mod machine;
 pub mod machine_api;
+pub(crate) mod machine_api_socket;
 #[doc(hidden)]
 pub mod machine_pool;
 pub mod management;
 pub mod mutation;
 pub mod network;
 pub(crate) mod runtime_watch;
+pub mod socket_activation;
 mod storage;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]

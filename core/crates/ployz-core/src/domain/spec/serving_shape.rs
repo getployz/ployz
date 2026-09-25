@@ -3,8 +3,8 @@
 use serde::Serialize;
 
 use super::{
-    ConfigMount, ConfigSpec, IngressProxyFragment, Placement, PortPublication,
-    RequestedServiceSpec, ResolvedServiceSpec, ServiceContainerSpec, ServiceMode,
+    ConfigMount, ConfigSpec, Placement, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceContainerSpec, ServiceMode,
 };
 use crate::{ServiceMount, ServiceName, ServiceVolume};
 
@@ -34,7 +34,6 @@ impl ServingShape {
             ports,
             mount_graph,
             pre_deploy: _,
-            ingress_proxy_fragment,
             update: _,
         } = spec;
         Self::recreate_fields(
@@ -47,7 +46,6 @@ impl ServingShape {
             mount_graph.volume_graph().mounts(),
             mount_graph.config_graph().configs(),
             mount_graph.config_graph().mounts(),
-            ingress_proxy_fragment.as_ref(),
         )
     }
 
@@ -67,7 +65,6 @@ impl ServingShape {
             ports,
             mount_graph,
             pre_deploy: _,
-            ingress_proxy_fragment,
             update: _,
         } = spec;
         Self::recreate_fields(
@@ -80,7 +77,6 @@ impl ServingShape {
             mount_graph.volume_graph().mounts(),
             mount_graph.config_graph().configs(),
             mount_graph.config_graph().mounts(),
-            ingress_proxy_fragment.as_ref(),
         )
     }
 
@@ -104,7 +100,6 @@ impl ServingShape {
         mounts: &[ServiceMount],
         configs: &[ConfigSpec],
         config_mounts: &[ConfigMount],
-        ingress_proxy_fragment: Option<&IngressProxyFragment>,
     ) -> serde_json::Value {
         let ServiceContainerSpec {
             image,
@@ -161,7 +156,6 @@ impl ServingShape {
             "mounts": sorted_json(mounts),
             "configs": sorted_json(configs),
             "config_mounts": sorted_json(config_mounts),
-            "ingress_proxy_fragment": ingress_proxy_fragment,
         });
         payload
     }

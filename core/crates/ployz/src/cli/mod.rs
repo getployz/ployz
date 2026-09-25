@@ -112,7 +112,6 @@ fn ingress() -> Command {
         )
         .subcommand(
             base("deploy", "Deploy the Ingress Proxy")
-                .arg(value("caddyfile", None).value_hint(ValueHint::FilePath))
                 .arg(value("image", None))
                 .arg(many("constraint", None))
                 .arg(switch("recreate", None))

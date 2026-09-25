@@ -94,7 +94,6 @@ const web: RequestedServiceSpec = {
   mounts: [],
   configs: [],
   pre_deploy: null,
-  ingress_proxy_fragment: null,
   update: { order: null, monitor_millis: null },
 };
 const intent: DeployIntent = {

@@ -1,8 +1,8 @@
 //! Ingress Proxy identity and deployment boundaries.
 
 use ployz_core::{
-    ContainerObservation, IngressProxyFragment, PlacementConstraint, QualifiedService,
-    RequestedServiceSpec, caddy_service_spec,
+    ContainerObservation, PlacementConstraint, QualifiedService, RequestedServiceSpec,
+    caddy_service_spec,
 };
 
 mod caddy;
@@ -16,13 +16,12 @@ pub use caddy::IngressImageError;
 pub async fn service_spec(
     image: Option<String>,
     constraints: std::collections::BTreeSet<PlacementConstraint>,
-    fragment: Option<IngressProxyFragment>,
 ) -> Result<RequestedServiceSpec, IngressImageError> {
     let image = match image {
         Some(image) => image,
         None => caddy::latest_image().await?,
     };
-    Ok(caddy_service_spec(image, constraints, fragment))
+    Ok(caddy_service_spec(image, constraints))
 }
 
 /// True when this observation is the reserved Ingress Proxy Service.
@@ -33,7 +32,7 @@ pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{IngressProxyFragment, PlacementConstraint, ServiceMode};
+    use ployz_core::{PlacementConstraint, ServiceMode};
 
     use super::*;
 
@@ -44,7 +43,6 @@ mod tests {
         let caddy = service_spec(
             Some("registry.test/caddy@sha256:caddy".into()),
             constraints.clone(),
-            Some(IngressProxyFragment::parse("{ admin off }").unwrap()),
         )
         .await
         .unwrap();
@@ -57,12 +55,5 @@ mod tests {
             ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
         );
         assert_eq!(caddy.ports.len(), 3);
-        assert_eq!(
-            caddy
-                .ingress_proxy_fragment
-                .as_ref()
-                .map(IngressProxyFragment::as_str),
-            Some("{ admin off }")
-        );
     }
 }

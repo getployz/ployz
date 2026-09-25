@@ -243,7 +243,12 @@ async fn install_locked(
     } else {
         if restart_required {
             progress(MachineUpgradeStage::Restarting)?;
-            systemctl("restart daemon", ["restart", "ployz.service"])?;
+            // One transaction: a changed socket unit takes effect, and
+            // After=ployz.socket starts the socket before the daemon.
+            systemctl(
+                "restart daemon",
+                ["restart", "ployz.socket", "ployz.service"],
+            )?;
             systemctl(
                 "restart volume plugin",
                 ["try-restart", "ployz-volume-plugin.service"],
@@ -561,6 +566,7 @@ mod tests {
                 assert_eq!(outcome.readiness, Readiness::InstallationOnly);
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
+                assert!(paths.systemd_dir.join("ployz.socket").is_file());
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
                     assert!(!paths.data_dir.exists());

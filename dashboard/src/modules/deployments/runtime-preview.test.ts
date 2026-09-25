@@ -111,7 +111,7 @@ describe("deploy intent lowering", () => {
           name: "api",
           mode: { mode: "replicated", replicas: 1 },
           placement: { constraints: [] },
-          configs: [], pre_deploy: null, ingress_proxy_fragment: null,
+          configs: [], pre_deploy: null,
           update: { order: null, monitor_millis: null },
           container: {
             ...resolvedServiceSpecFixture().container,

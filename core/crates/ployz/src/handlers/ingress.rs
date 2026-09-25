@@ -1,9 +1,7 @@
 //! CLI handlers for neutral Ingress Proxy operations.
 
-use std::{fs, path::Path};
-
 use clap::ArgMatches;
-use ployz_core::{GetIngressProxyConfigRequest, IngressProxyFragment, MachineTarget, op};
+use ployz_core::{GetIngressProxyConfigRequest, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 use crate::connect::TARGET_RPC_TIMEOUT;
@@ -38,16 +36,6 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let image = matches.get_one::<String>("image").cloned();
-    let caddy_config = matches
-        .get_one::<String>("caddyfile")
-        .map(|path| fs::read_to_string(Path::new(path)))
-        .transpose()
-        .map_err(|error| Error::usage(format!("read Caddyfile: {error}")))?;
-    let fragment = caddy_config
-        .filter(|config| !config.trim().is_empty())
-        .map(|config| IngressProxyFragment::parse(&config))
-        .transpose()
-        .map_err(|error| Error::usage(error.to_string()))?;
     let constraints = string_values(matches, "constraint")
         .into_iter()
         .map(ployz_core::PlacementConstraint::parse)
@@ -62,7 +50,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             .unwrap_or("default");
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
-        let requested = crate::ingress::service_spec(image, constraints, fragment).await?;
+        let requested = crate::ingress::service_spec(image, constraints).await?;
         crate::deploy::apply_requested(
             &mut client,
             &requested,

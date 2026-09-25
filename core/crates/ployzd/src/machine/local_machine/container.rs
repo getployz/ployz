@@ -416,7 +416,7 @@ mod tests {
             .await
             .unwrap();
         assert!(fake.existing_container.lock().unwrap().is_none());
-        let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
+        let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
             .to_resolved(ServiceId::random(), Default::default())
             .unwrap();
         let error = local

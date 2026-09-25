@@ -52,6 +52,9 @@ case "$*" in
             *'ployz.service')
                 [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || echo 'ployz.service loaded active running Daemon'
                 ;;
+            *'ployz.socket')
+                [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || echo 'ployz.socket loaded active listening Socket'
+                ;;
         esac
         ;;
     'stop ployz-upgrade-test.service')
@@ -59,6 +62,10 @@ case "$*" in
         rm -f "$PLOYZ_RUN_DIR/worker"
         ;;
     'stop ployz.service')
+        grep -Fxq 'systemctl stop ployz.socket' "$LOG" || {
+            echo "daemon stopped while its socket could still restart it" >&2
+            exit 1
+        }
         [ "$SCENARIO" != daemon-stop-failure ] || exit 1
         rm -f "$PLOYZ_RUN_DIR/daemon"
         # An accepted worker can appear after the initial worker stop.

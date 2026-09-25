@@ -199,7 +199,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
 async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let mut founder = founder_machine();
     founder.public_ip = Some("192.0.2.1".parse().unwrap());
-    let requested = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default(), None);
+    let requested = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default());
     let ingress = container_on(
         &founder,
         requested

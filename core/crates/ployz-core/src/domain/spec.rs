@@ -49,51 +49,6 @@ pub enum TransportProtocol {
     Udp,
 }
 
-/// Non-empty raw Caddy configuration for the reserved Ingress Proxy Service.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(try_from = "String", into = "String")]
-pub struct IngressProxyFragment(String);
-
-impl IngressProxyFragment {
-    /// Parse a non-empty raw Caddy fragment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when `config` is empty after trimming.
-    pub fn parse(config: impl Into<String>) -> Result<Self, ValueError> {
-        let config = config.into();
-        let trimmed = config.trim();
-        if trimmed.is_empty() {
-            return Err(ValueError::new(
-                "Caddy Ingress Proxy Fragment",
-                config,
-                "non-empty configuration",
-            ));
-        }
-        Ok(Self(trimmed.to_owned()))
-    }
-
-    /// Borrow the raw Caddy fragment.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for IngressProxyFragment {
-    type Error = ValueError;
-
-    fn try_from(config: String) -> Result<Self, Self::Error> {
-        Self::parse(config)
-    }
-}
-
-impl From<IngressProxyFragment> for String {
-    fn from(fragment: IngressProxyFragment) -> Self {
-        fragment.0
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum HostBind {
@@ -598,8 +553,6 @@ pub struct RequestedServiceSpec {
     pub ports: Vec<PortPublication>,
     pub mount_graph: crate::ServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    /// Custom Caddy configuration for the reserved Ingress Proxy Service.
-    pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: UpdateConfig,
 }
 
@@ -616,8 +569,6 @@ pub struct ResolvedServiceSpec {
     pub ports: Vec<PortPublication>,
     pub mount_graph: crate::ResolvedServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    /// Custom Caddy configuration for the reserved Ingress Proxy Service.
-    pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: ResolvedUpdateConfig,
 }
 
@@ -700,7 +651,6 @@ impl RequestedServiceSpec {
             ports: self.ports.clone(),
             mount_graph: self.mount_graph.clone().try_into()?,
             pre_deploy: self.pre_deploy.clone(),
-            ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update,
         })
     }
@@ -767,7 +717,6 @@ impl ResolvedServiceSpec {
             ports: self.ports.clone(),
             mount_graph: self.mount_graph.to_requested(),
             pre_deploy: self.pre_deploy.clone(),
-            ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update: UpdateConfig {
                 order: Some(self.update.order),
                 monitor_millis: self.update.monitor_millis,

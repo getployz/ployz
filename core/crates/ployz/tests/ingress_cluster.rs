@@ -79,8 +79,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             "load_balancer_port": 80,
             "container_port": 8080,
             "http_protocol": "http"
-        }],
-        "ingress_proxy_fragment": "custom.example {\n\trespond \"custom\" 200\n}"
+        }]
     }))
     .unwrap();
     let mut api_containers = Vec::new();
@@ -91,8 +90,6 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     for (index, machine) in machines.iter().enumerate() {
         let config = wait_config(&mut client, machine, |config| {
             config.contains("http://example.test")
-                && config.contains("custom.example {")
-                && config.contains("respond \"custom\" 200")
                 && observations.iter().all(|container| {
                     config.contains(&format!("{}:8080", container.address.unwrap().0))
                 })
@@ -105,7 +102,6 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             ),
             config
         );
-        assert!(!config.contains("admin API is not reachable"));
         assert_eq!(
             cluster
                 .machine_shell(index, "curl -fsS -H 'Host: example.test' http://127.0.0.1",)
@@ -147,9 +143,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     assert_health_transition(&mut client, &machines, &api_containers, &observations).await;
 
     assert_start_first_gap(&cluster, &mut client, &machines).await;
-    assert_failed_load_retry(&cluster, &mut client, &machines[0]).await;
     assert_membership_blind(&cluster, &mut client, &machines, &observations).await;
-    assert_invalid_template(&mut client, &machines[0]).await;
 }
 
 #[tokio::test]
@@ -300,73 +294,6 @@ async fn assert_health_transition(
     }
 }
 
-async fn assert_failed_load_retry(
-    cluster: &Cluster,
-    client: &mut ployz::connect::Client,
-    machine: &Machine,
-) {
-    let stable = client
-        .call::<op::GetIngressProxyConfig>(
-            GetIngressProxyConfigRequest {},
-            Some(&MachineTarget::from(&machine.id)),
-        )
-        .await
-        .unwrap()
-        .config()
-        .to_owned();
-    let load_failure: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": ServiceId::random(),
-        "name": "load-failure",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": {
-            "image": "alpine:3.23.3",
-            "command": ["sleep", "300"],
-            "pull_policy": "missing"
-        },
-        "ingress_proxy_fragment": "load-failure.example {\n\ttls /missing/cert.pem /missing/key.pem\n\trespond bad\n}"
-    }))
-    .unwrap();
-    let rejected = create_and_start(client, machine, load_failure).await;
-    wait_log_count(cluster, "failed to update Ingress Proxy configuration", 1).await;
-    let tick: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": ServiceId::random(),
-        "name": "tick",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": {
-            "image": "alpine:3.23.3",
-            "command": ["sleep", "300"],
-            "pull_policy": "missing"
-        }
-    }))
-    .unwrap();
-    create_and_start(client, machine, tick).await;
-    wait_log_count(cluster, "failed to update Ingress Proxy configuration", 2).await;
-    assert_eq!(
-        client
-            .call::<op::GetIngressProxyConfig>(
-                GetIngressProxyConfigRequest {},
-                Some(&MachineTarget::from(&machine.id)),
-            )
-            .await
-            .unwrap()
-            .config(),
-        stable
-    );
-    assert_eq!(request(cluster, "example.test"), (200, "ok\n".into()));
-    client
-        .call::<op::StopContainer>(
-            StopContainerRequest {
-                container_id: rejected,
-                signal: None,
-                grace_period_seconds: Some(0),
-            },
-            Some(&MachineTarget::from(&machine.id)),
-        )
-        .await
-        .unwrap();
-    wait_config(client, machine, |config| config != stable).await;
-}
-
 async fn assert_membership_blind(
     cluster: &Cluster,
     client: &mut ployz::connect::Client,
@@ -393,27 +320,6 @@ async fn assert_membership_blind(
             .config()
             .contains(&format!("{}:8080", retained_address.0))
     );
-}
-
-async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &Machine) {
-    let broken: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": ServiceId::random(),
-        "name": "broken",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": {
-            "image": "alpine:3.23.3",
-            "command": ["sleep", "300"],
-            "pull_policy": "missing"
-        },
-        "ingress_proxy_fragment": "{{unknown}}"
-    }))
-    .unwrap();
-    create_and_start(client, machine, broken).await;
-    let config = wait_config(client, machine, |config| {
-        config.contains("Service 'app/broken': rendering failed")
-    })
-    .await;
-    assert!(config.contains("http://example.test"));
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {
@@ -654,35 +560,6 @@ async fn wait_down(cluster: &Cluster, machine: &Machine) {
     })
     .await
     .unwrap();
-}
-
-async fn wait_log_count(cluster: &Cluster, needle: &str, count: usize) {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
-                .logs(0)
-                .is_ok_and(|logs| logs.matches(needle).count() >= count)
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-fn request(cluster: &Cluster, hostname: &str) -> (u16, String) {
-    let response = cluster
-        .machine_shell(
-            0,
-            &format!(
-                "curl -sS -H 'Host: {hostname}' -o /tmp/ployz-ingress-response -w '%{{http_code}}\\n' http://127.0.0.1; cat /tmp/ployz-ingress-response"
-            ),
-        )
-        .unwrap();
-    let (status, body) = response.split_once('\n').unwrap();
-    (status.parse().unwrap(), body.to_owned())
 }
 
 async fn create_and_start(

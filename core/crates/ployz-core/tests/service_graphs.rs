@@ -288,7 +288,6 @@ fn requested_with_graphs(
         )
         .unwrap(),
         pre_deploy: None,
-        ingress_proxy_fragment: None,
         update: Default::default(),
     }
 }

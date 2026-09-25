@@ -138,7 +138,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             println!("Reserved Cluster domain: {domain}");
         }
         if machine.accepts_ingress {
-            let requested = crate::ingress::service_spec(None, Default::default(), None).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
+            let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
             crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
                 let error: Error = error.into();
                 Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))

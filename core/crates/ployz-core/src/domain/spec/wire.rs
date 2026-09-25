@@ -1,9 +1,8 @@
 //! Checked wire admission and serialization for Service specifications.
 
 use super::{
-    ConfigMount, ConfigSpec, IngressProxyFragment, Placement, PortPublication, PreDeployHook,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainerSpec,
-    ServiceMode, UpdateConfig,
+    ConfigMount, ConfigSpec, Placement, PortPublication, PreDeployHook, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainerSpec, ServiceMode, UpdateConfig,
 };
 use crate::{
     ServiceConfigGraph, ServiceId, ServiceMount, ServiceName, ServiceSpecGraphError, ServiceVolume,
@@ -41,8 +40,6 @@ pub(super) struct RequestedServiceSpecWire {
     #[serde(default)]
     pre_deploy: Option<PreDeployHook>,
     #[serde(default)]
-    ingress_proxy_fragment: Option<IngressProxyFragment>,
-    #[serde(default)]
     update: UpdateConfig,
 }
 
@@ -67,8 +64,6 @@ pub(super) struct ResolvedServiceSpecWire {
     #[serde(default)]
     pre_deploy: Option<PreDeployHook>,
     #[serde(default)]
-    ingress_proxy_fragment: Option<IngressProxyFragment>,
-    #[serde(default)]
     update: ResolvedUpdateConfig,
 }
 
@@ -87,7 +82,6 @@ impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
                 ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             )?,
             pre_deploy: wire.pre_deploy,
-            ingress_proxy_fragment: wire.ingress_proxy_fragment,
             update: wire.update,
         })
     }
@@ -111,7 +105,6 @@ impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
             mounts,
             configs,
             pre_deploy: spec.pre_deploy,
-            ingress_proxy_fragment: spec.ingress_proxy_fragment,
             update: spec.update,
         }
     }
@@ -143,7 +136,6 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
             )?
             .try_into()?,
             pre_deploy: wire.pre_deploy,
-            ingress_proxy_fragment: wire.ingress_proxy_fragment,
             update: wire.update,
         })
     }
@@ -177,7 +169,6 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
             mounts,
             configs,
             pre_deploy: spec.pre_deploy,
-            ingress_proxy_fragment: spec.ingress_proxy_fragment,
             update: spec.update,
         }
     }

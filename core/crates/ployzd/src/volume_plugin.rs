@@ -111,17 +111,7 @@ struct MountResponse {
 ///
 /// Returns an error unless systemd supplied exactly one valid Unix listener.
 pub(super) fn inherited_listener() -> io::Result<StdUnixListener> {
-    let mut inherited = listenfd::ListenFd::from_env();
-    if inherited.len() != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "Volume plugin requires exactly one systemd socket, received {}",
-                inherited.len()
-            ),
-        ));
-    }
-    inherited.take_unix_listener(0)?.ok_or_else(|| {
+    ployzd::socket_activation::inherited_unix_listener()?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "systemd did not pass the Volume plugin socket",

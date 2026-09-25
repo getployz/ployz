@@ -276,8 +276,6 @@ export type IngressHost = string;
 
 export type IngressHostname = { "kind": "cluster_domain", label: ClusterDomainLabel | null, } | { "kind": "explicit", hostname: IngressHost, };
 
-export type IngressProxyFragment = string;
-
 export type InitialMachinePolicy = {
 /**
  * Operator classifications used by placement constraints.
@@ -597,13 +595,13 @@ spec: ResolvedServiceSpec,
  */
 skip_health_monitor: boolean, };
 
-export type RequestedServiceSpec = { name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, ingress_proxy_fragment: IngressProxyFragment | null, update: UpdateConfig, };
+export type RequestedServiceSpec = { name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, update: UpdateConfig, };
 
 export type ResolveVariablesInput = { parts: Array<ValuePart>, selfOwnerId: string, producers: Array<VariableProducer>, };
 
 export type ResolveVariablesResult = { "status": "resolved", value: string, secret: boolean, warnings: Array<TemplateWarning>, } | { "status": "cycle", path: Array<string>, };
 
-export type ResolvedServiceSpec = { service_id: ServiceId, name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, ingress_proxy_fragment: IngressProxyFragment | null, update: ResolvedUpdateConfig, };
+export type ResolvedServiceSpec = { service_id: ServiceId, name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, update: ResolvedUpdateConfig, };
 
 export type ResolvedServiceVolume = { reference: ServiceVolumeReference, source: ResolvedVolumeSource, };
 

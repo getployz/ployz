@@ -15,18 +15,18 @@ use ployz_core::{
     GetIngressProxyConfigRequest, HealthObservation, HttpProtocol, ImageIngestDestination,
     ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
     ImageSummary, ImagesRemoved, IngressHost, IngressHostname, IngressProxyConfig,
-    IngressProxyFragment, InspectMachineUpgradeRequest, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
-    MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess,
-    MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NameMatches,
-    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    PartialResult, PortPublication, ProjectName, PublicIpDiscovery, PublicIpUpdate,
-    PullImageFromMachineRequest, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId,
-    ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    InspectMachineUpgradeRequest, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
+    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
+    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
+    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
+    MachineVersion, ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
+    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, QualifiedService,
+    RESET_MACHINE_CAPABILITY, RemoveImagesRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestMachineUpgradeRequest, ReserveDomainRequest, ResetAccepted, ResetRequest,
+    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame,
+    grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1641,36 +1641,5 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     assert_eq!(
         response.decode::<op::InspectMachineUpgrade>().unwrap(),
         attempt
-    );
-}
-
-#[test]
-fn service_ingress_proxy_fragment_is_a_validated_caddy_string() {
-    let spec: RequestedServiceSpec = serde_json::from_value(json!({
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "api:1", "pull_policy": "missing" },
-        "ingress_proxy_fragment": "  reverse_proxy localhost:8080\n"
-    }))
-    .unwrap();
-
-    let value = serde_json::to_value(spec).unwrap();
-    assert_eq!(
-        value.get("ingress_proxy_fragment"),
-        Some(&json!("reverse_proxy localhost:8080"))
-    );
-    assert!(!value.as_object().unwrap().contains_key("caddy_config"));
-
-    assert!(
-        IngressProxyFragment::parse(" \n ")
-            .unwrap_err()
-            .to_string()
-            .contains("non-empty configuration")
-    );
-    assert!(
-        serde_json::from_value::<IngressProxyFragment>(json!(""))
-            .unwrap_err()
-            .to_string()
-            .contains("non-empty configuration")
     );
 }

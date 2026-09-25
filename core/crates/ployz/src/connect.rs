@@ -46,6 +46,12 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Bounds how long a connect waits for the entry daemon to confirm itself.
+///
+/// A socket-activated daemon accepts connects before it serves; this bound is
+/// what keeps a starting daemon from hanging the CLI.
+pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
     match grace_period_seconds {
         Some(seconds) if seconds < 0 => None,
@@ -419,6 +425,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             }
         }
         error @ (ConnectError::Attempt(_)
+        | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
@@ -617,6 +624,12 @@ pub enum ConnectError {
     },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
+    /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
+    #[error(
+        "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
+        CONNECT_CONFIRM_TIMEOUT
+    )]
+    EntryNotReady,
     #[error("connection attempt failed: {0}")]
     Io(#[from] io::Error),
     #[error("connection attempt failed: {0}")]
@@ -695,6 +708,7 @@ impl ConnectError {
             | Self::Join(_) => true,
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
+            | Self::EntryNotReady
             | Self::IdentityMismatch { .. }
             | Self::RefusedByIdentity
             | Self::PairingCleared
@@ -724,6 +738,8 @@ impl ConnectError {
             Self::AllFailed {
                 setup_retryable, ..
             } => *setup_retryable,
+            // A socket-activated daemon accepts before it serves; setup waits it out.
+            Self::EntryNotReady => true,
             Self::SshProbe { detail, .. } => [
                 "Connection timed out",
                 "Operation timed out",
@@ -757,7 +773,11 @@ impl ConnectError {
     pub(crate) fn is_unreachable(&self) -> bool {
         matches!(
             self,
-            Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
+            Self::Attempt(_)
+                | Self::EntryNotReady
+                | Self::Io(_)
+                | Self::Dial(_)
+                | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 }

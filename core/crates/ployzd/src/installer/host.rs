@@ -10,7 +10,7 @@ use std::{
 
 use tonic::transport::Endpoint;
 
-use crate::filesystem::atomic_write;
+use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
 use super::release::{fetch, installed_release};
@@ -110,12 +110,14 @@ pub(super) fn create_user_and_directories(
         )?;
     }
     let data = paths.data_dir.to_string_lossy();
+    // ployz.socket recreates run_dir on boot, but the installer's MutationGate needs it before the units exist.
     let run = paths.run_dir.to_string_lossy();
+    let mode = format!("{PLOYZ_DIR_MODE:04o}");
     run_host(
         "create Ployz directories",
         "install",
         [
-            "-d", "-m", "0750", "-o", PLOYZ_USER, "-g", PLOYZ_USER, &data, &run,
+            "-d", "-m", &mode, "-o", PLOYZ_USER, "-g", PLOYZ_USER, &data, &run,
         ],
     )?;
     Ok(())
@@ -163,35 +165,139 @@ pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Resul
         stage: "create systemd unit directory",
         source,
     })?;
-    let bin = paths.bin_dir.display();
     write_file_atomically(
         &paths.systemd_dir.join("ployz.service"),
-        &format!(
-            "[Unit]\nDescription=Ployz Machine daemon\nAfter=network-online.target docker.service\nWants=network-online.target\n\n[Service]\nType=notify\nExecStart={bin}/ployzd\n# Set PLOYZ_LOG=debug in /etc/default/ployz to raise verbosity.\nEnvironmentFile=-/etc/default/ployz\nTimeoutStartSec=20\nTimeoutStopSec=15\nRestart=always\nRestartPreventExitStatus=78\nRestartSec=2\nNoNewPrivileges=true\nProtectSystem=full\nProtectControlGroups=true\nProtectHome=read-only\nProtectKernelTunables=true\nPrivateTmp=true\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nRestrictNamespaces=true\n\n[Install]\nWantedBy=multi-user.target\n"
-        ),
-        "write systemd unit",
+        &machine_daemon_service_unit(&paths.bin_dir),
+        "write Machine daemon service unit",
+    )?;
+    write_file_atomically(
+        &paths.systemd_dir.join("ployz.socket"),
+        &machine_api_socket_unit(&paths.run_dir),
+        "write Machine API socket unit",
     )?;
     write_file_atomically(
         &paths.systemd_dir.join("ployz-volume-plugin.socket"),
-        "[Unit]\nDescription=Ployz Docker Volume plugin socket\nBefore=docker.service\n\n[Socket]\nListenStream=/run/docker/plugins/ployz.sock\nSocketMode=0660\nDirectoryMode=0755\nAccept=no\nService=ployz-volume-plugin.service\n\n[Install]\nWantedBy=sockets.target\n",
-        "write systemd unit",
+        volume_plugin_socket_unit(),
+        "write Volume plugin socket unit",
     )?;
     write_file_atomically(
         &paths.systemd_dir.join("ployz-volume-plugin.service"),
-        &format!(
-            "[Unit]\nDescription=Ployz Docker Volume plugin\nBefore=docker.service\nAfter=zfs-import.target zfs-mount.service ployz-volume-plugin.socket\nRequires=ployz-volume-plugin.socket docker.service\n\n[Service]\nType=simple\nExecStart={bin}/ployzd volume-plugin\nSockets=ployz-volume-plugin.socket\nEnvironmentFile=-/etc/default/ployz\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nRestrictAddressFamilies=AF_UNIX\nRestrictNamespaces=true\n"
-        ),
-        "write systemd unit",
+        &volume_plugin_service_unit(&paths.bin_dir),
+        "write Volume plugin service unit",
     )?;
     if !install_only {
         systemctl("reload systemd units", ["daemon-reload"])?;
         systemctl("enable daemon", ["enable", "ployz.service"])?;
+        systemctl(
+            "enable Machine API socket",
+            ["enable", "--now", "ployz.socket"],
+        )?;
         systemctl(
             "enable volume plugin socket",
             ["enable", "--now", "ployz-volume-plugin.socket"],
         )?;
     }
     Ok(())
+}
+
+fn machine_daemon_service_unit(bin_dir: &Path) -> String {
+    let bin = bin_dir.display();
+    format!(
+        "\
+[Unit]
+Description=Ployz Machine daemon
+After=network-online.target docker.service ployz.socket
+Wants=network-online.target
+Requires=ployz.socket
+
+[Service]
+Type=notify
+ExecStart={bin}/ployzd
+# Set PLOYZ_LOG=debug in /etc/default/ployz to raise verbosity.
+EnvironmentFile=-/etc/default/ployz
+TimeoutStartSec=20
+TimeoutStopSec=15
+Restart=always
+RestartPreventExitStatus=78
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
+/// Any connect starts `ployz.service`; stopping the daemon on purpose means
+/// stopping this socket too. `ExecStartPre` restores the `ployz` group on the
+/// runtime directory, which systemd would otherwise create as root-only on boot.
+fn machine_api_socket_unit(run_dir: &Path) -> String {
+    let run = run_dir.display();
+    format!(
+        "\
+[Unit]
+Description=Ployz Machine API socket
+
+[Socket]
+ExecStartPre=/usr/bin/install -d -m {PLOYZ_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
+ListenStream={run}/ployz.sock
+SocketMode={MACHINE_API_SOCKET_MODE:04o}
+SocketGroup={PLOYZ_USER}
+Accept=no
+
+[Install]
+WantedBy=sockets.target
+"
+    )
+}
+
+fn volume_plugin_socket_unit() -> &'static str {
+    "\
+[Unit]
+Description=Ployz Docker Volume plugin socket
+Before=docker.service
+
+[Socket]
+ListenStream=/run/docker/plugins/ployz.sock
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+Service=ployz-volume-plugin.service
+
+[Install]
+WantedBy=sockets.target
+"
+}
+
+fn volume_plugin_service_unit(bin_dir: &Path) -> String {
+    let bin = bin_dir.display();
+    format!(
+        "\
+[Unit]
+Description=Ployz Docker Volume plugin
+Before=docker.service
+After=zfs-import.target zfs-mount.service ployz-volume-plugin.socket
+Requires=ployz-volume-plugin.socket docker.service
+
+[Service]
+Type=simple
+ExecStart={bin}/ployzd volume-plugin
+Sockets=ployz-volume-plugin.socket
+EnvironmentFile=-/etc/default/ployz
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+"
+    )
 }
 
 pub(super) fn write_file_atomically(
@@ -354,6 +460,16 @@ fn require_running_version(observed: &str, target: &MachineVersion) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_api_socket_unit_listens_where_the_daemon_serves() {
+        let unit = machine_api_socket_unit(Path::new(super::super::DEFAULT_RUN_DIR));
+        let listen = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ListenStream="))
+            .unwrap();
+        assert_eq!(listen, super::super::DEFAULT_SOCKET_PATH);
+    }
 
     #[test]
     fn running_machine_api_version_must_match_the_target() {

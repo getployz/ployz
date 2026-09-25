@@ -1104,7 +1104,7 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default(), None);
+    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default());
     let spec = spec
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),

@@ -3,11 +3,10 @@
 use std::{collections::BTreeMap, num::NonZeroU16};
 
 use crate::{
-    ContainerPath, ContainerResources, HostBind, IngressProxyFragment, MachinePath, Placement,
-    PlacementConstraint, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
-    RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode,
-    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol,
-    UpdateConfig,
+    ContainerPath, ContainerResources, HostBind, MachinePath, Placement, PlacementConstraint,
+    PortPublication, PullPolicy, QualifiedService, RawVolumeSource, RequestedServiceSpec,
+    ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig,
 };
 
 const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/Caddyfile"];
@@ -24,13 +23,12 @@ pub struct IngressProxyServiceSpecError;
 
 /// Build the complete reserved Caddy Service deploy input.
 ///
-/// The image, Machine placement, and optional Caddy fragment are deploy inputs.
+/// The image and Machine placement are deploy inputs.
 /// Every other runtime field is fixed by Ployz.
 #[must_use]
 pub fn caddy_service_spec(
     image: String,
     constraints: std::collections::BTreeSet<PlacementConstraint>,
-    fragment: Option<IngressProxyFragment>,
 ) -> RequestedServiceSpec {
     RequestedServiceSpec {
         name: QualifiedService::system_ingress().name,
@@ -41,7 +39,6 @@ pub fn caddy_service_spec(
         mount_graph: crate::ServiceMountGraph::parse(caddy_volume_graph(), Default::default())
             .expect("built-in Caddy mounts are valid"),
         pre_deploy: None,
-        ingress_proxy_fragment: fragment,
         update: UpdateConfig::default(),
     }
 }
@@ -57,7 +54,6 @@ pub fn validate_requested_ingress_service_spec(
     let expected = caddy_service_spec(
         spec.container.image.clone(),
         spec.placement.constraints.clone(),
-        spec.ingress_proxy_fragment.clone(),
     );
     (expected == *spec)
         .then_some(())
@@ -78,7 +74,6 @@ pub fn validate_ingress_service_spec(
     let expected = caddy_service_spec(
         spec.container.image.clone(),
         spec.placement.constraints.clone(),
-        spec.ingress_proxy_fragment.clone(),
     )
     .to_resolved(spec.service_id, spec.update.clone())
     .expect("built-in Caddy mounts are resolved");
@@ -187,7 +182,7 @@ mod tests {
     #[test]
     fn caddy_wiring_round_trips_through_both_validators() {
         let machines = [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
-        let requested = caddy_service_spec("example.test/ingress:override".into(), machines, None);
+        let requested = caddy_service_spec("example.test/ingress:override".into(), machines);
 
         assert!(validate_requested_ingress_service_spec(&requested).is_ok());
         for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
@@ -212,7 +207,7 @@ mod tests {
 
     #[test]
     fn validators_reject_noncanonical_whole_spec_fields() {
-        let requested = caddy_service_spec("caddy:test".into(), Default::default(), None);
+        let requested = caddy_service_spec("caddy:test".into(), Default::default());
 
         let mut wrong_mode = requested.clone();
         wrong_mode.mode = ServiceMode::Replicated {

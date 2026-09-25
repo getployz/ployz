@@ -8,7 +8,7 @@ use ployz_core::{
     ContainerAddress, IngressHost, Machine, MachineId, MachineName, QualifiedService,
     WireGuardPublicKey,
 };
-use std::{collections::BTreeMap, num::NonZeroU16};
+use std::num::NonZeroU16;
 
 /// Projection that exercises HTTP, HTTPS, challenge, ordered, and empty routes.
 pub(crate) fn renderer_projection() -> IngressProjection {
@@ -76,15 +76,6 @@ pub(crate) fn renderer_projection() -> IngressProjection {
                 }),
             },
         ],
-        upstreams: BTreeMap::from([(
-            owner,
-            vec![
-                ContainerAddress("10.210.1.2".parse().unwrap()),
-                ContainerAddress("10.210.2.2".parse().unwrap()),
-            ],
-        )]),
-        global_fragment: None,
-        service_fragments: BTreeMap::new(),
     }
 }
 

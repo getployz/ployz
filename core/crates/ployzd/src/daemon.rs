@@ -1,10 +1,9 @@
 //! Local Machine daemon lifecycle.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::File,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -32,13 +31,13 @@ use crate::{
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
-    filesystem::set_ployz_group,
     ingress,
     machine::{
         LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
         StoreError,
     },
     machine_api::MachineApi,
+    machine_api_socket::MachineApiSocket,
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
 };
@@ -98,13 +97,14 @@ pub enum Error {
 impl Daemon {
     /// Start serving Machine RPC on the configured unix socket.
     ///
-    /// Returns only once that socket accepts connections. Local Machine Phase
+    /// Returns once the listener is held and every plane is spawned. Local Machine Phase
     /// decides which planes start, degrade, or wait for catch-up.
     ///
     /// # Errors
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        let socket = MachineApiSocket::claim(&config.socket)?;
         let run_dir = config
             .socket
             .parent()
@@ -115,11 +115,12 @@ impl Daemon {
             .map_err(io::Error::other)?;
         let build_policy = ployz_build::HostPolicy::from_environment()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Self::start_with_build_policy(config, build_policy, run_dir).await
+        Self::start_with_build_policy(config, socket, build_policy, run_dir).await
     }
 
     async fn start_with_build_policy(
         config: DaemonConfig,
+        socket: MachineApiSocket,
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
@@ -127,7 +128,6 @@ impl Daemon {
             &config.data_dir,
             run_dir,
         )?)?;
-        let socket_lock = claim_socket(&config.socket)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();
             move || ployz_build::Admission::cleanup_abandoned(&policy)
@@ -214,10 +214,9 @@ impl Daemon {
             .with_image_ingest(Arc::clone(&ingest))
             .build();
 
-        let rpc_listener = listen_socket(&config.socket)?;
         let rpc = Server::builder().serve_with_incoming_shutdown(
             machine_api.clone(),
-            UnixListenerStream::new(rpc_listener),
+            UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
             shutdown.clone().cancelled_owned(),
         );
         let publisher =
@@ -230,7 +229,7 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
-        let socket = config.socket.clone();
+        let socket_path = config.socket.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -357,18 +356,12 @@ impl Daemon {
             )
             .map(|_| ())
         });
-        if let Err(error) = wait_until_socket_accepts(&socket, Duration::from_secs(5)).await {
-            shutdown.cancel();
-            servers.abort();
-            let _ = servers.await;
-            return Err(error.into());
-        }
         tracing::info!(
             phase = local_phase.as_str(),
             version = env!("CARGO_PKG_VERSION"),
             "started"
         );
-        tracing::debug!(socket = %socket.display(), "listening");
+        tracing::debug!(socket = %socket_path.display(), "listening");
         Ok(Self {
             stop: CancellationToken::new(),
             shutdown,
@@ -377,7 +370,7 @@ impl Daemon {
             ingest,
             restart_requested,
             servers,
-            _socket_lock: socket_lock,
+            _socket_lock: socket.lock,
         })
     }
 
@@ -647,56 +640,6 @@ enum StopKind {
     WatchFailed(&'static str),
 }
 
-fn claim_socket(path: &Path) -> io::Result<File> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
-    let parent_created = !parent.exists();
-    fs::create_dir_all(parent)?;
-    if parent_created {
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
-        set_ployz_group(parent)?;
-    }
-
-    let mut lock_path = path.as_os_str().to_owned();
-    lock_path.push(".lock");
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
-        if error.kind() == io::ErrorKind::WouldBlock {
-            io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "socket is owned by another daemon",
-            )
-        } else {
-            error
-        }
-    })?;
-    Ok(lock)
-}
-
-fn listen_socket(path: &Path) -> io::Result<UnixListener> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "refusing to replace a non-socket path",
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = UnixListener::bind(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
-    set_ployz_group(path)?;
-    Ok(listener)
-}
-
 fn notify(state: NotifyState<'_>) {
     if let Err(error) = sd_notify::notify(&[state]) {
         eprintln!("systemd notification failed: {error}");
@@ -742,7 +685,7 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs, io,
+        fs,
         path::{Path, PathBuf},
     };
 
@@ -755,7 +698,7 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, ManagementConfig, claim_socket, listen_socket,
+        ContainerMode, Daemon, DaemonConfig, MachineApiSocket, ManagementConfig,
         wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
@@ -844,7 +787,8 @@ mod tests {
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
         let run_dir = config.socket.parent().unwrap().to_owned();
-        let daemon = Daemon::start_with_build_policy(config, policy.clone(), run_dir)
+        let claimed = MachineApiSocket::claim(&config.socket).unwrap();
+        let daemon = Daemon::start_with_build_policy(config, claimed, policy.clone(), run_dir)
             .await
             .unwrap();
         assert!(
@@ -1020,28 +964,6 @@ mod tests {
         shutdown.cancel();
         drop(owner);
         assert!(!wait_for_participation(records, shutdown).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn claimed_socket_path_refuses_connections_until_listen() {
-        let root = TestDir::new("ployzd-socket-claim");
-        fs::create_dir_all(root.0.join("run")).unwrap();
-        let path = root.0.join("run/ployz.sock");
-        let _lock = claim_socket(&path).unwrap();
-        let error = tokio::net::UnixStream::connect(&path)
-            .await
-            .expect_err("claim must not listen");
-        assert!(
-            matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ),
-            "{error}"
-        );
-        let _listener = listen_socket(&path).unwrap();
-        tokio::net::UnixStream::connect(&path)
-            .await
-            .expect("listen must queue connections");
     }
 
     #[tokio::test]

@@ -125,7 +125,7 @@ export function resolvedServiceSpecFixture(): ResolvedServiceSpec {
     mode: { mode: "replicated", replicas: 1 },
     placement: { constraints: [] },
     ports: [], volumes: [], mounts: [], configs: [],
-    pre_deploy: null, ingress_proxy_fragment: null,
+    pre_deploy: null,
     update: { order: "start_first", monitor_millis: null },
     container: {
       image: "nginx:1.27", pull_policy: "missing",

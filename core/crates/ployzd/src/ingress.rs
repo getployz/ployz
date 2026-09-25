@@ -1,9 +1,9 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerObservation, HttpProtocol, IngressHost,
-    IngressProxyFragment, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
-    hostname_owners, service_containers, serving_containers,
+    ContainerAddress, ContainerId, ContainerObservation, HttpProtocol, IngressHost, Machine,
+    MachineId, PortPublication, QualifiedService, ServiceContainer, hostname_owners,
+    service_containers, serving_containers,
 };
 use serde::Serialize;
 use std::{
@@ -64,12 +64,6 @@ pub(crate) struct IngressProjection {
     pub(super) machine: Machine,
     /// Hostname-grouped ingress routes in stable hostname order.
     pub(super) sites: Vec<IngressSite>,
-    /// Ordered Serving Container addresses available to tagged fragments.
-    pub(super) upstreams: BTreeMap<QualifiedService, Vec<ContainerAddress>>,
-    /// Newest healthy local reserved-service fragment.
-    pub(super) global_fragment: Option<IngressProxyFragment>,
-    /// Newest healthy tagged fragment for each user Service.
-    pub(super) service_fragments: BTreeMap<QualifiedService, IngressProxyFragment>,
 }
 
 /// All projected ingress state for one hostname.
@@ -181,12 +175,10 @@ impl IngressProjection {
 
         let mut serving = serving_containers(&containers);
         serving.sort_by_key(|serving| container_order(&machine.id, serving.as_container()));
-        let mut upstreams = BTreeMap::<QualifiedService, Vec<ContainerAddress>>::new();
         for serving in &serving {
             let observation = serving.as_observation();
             let address = serving.address();
             let owner = observation.identity();
-            upstreams.entry(owner.clone()).or_default().push(address);
             for port in &observation.resolved_spec.ports {
                 let PortPublication::Ingress {
                     hostname,
@@ -224,60 +216,9 @@ impl IngressProjection {
             .into_iter()
             .map(|(hostname, site)| site.into_site(hostname))
             .collect();
-        let global_fragment = containers
-            .iter()
-            .filter(|container| {
-                let observation = container.as_observation();
-                observation.runtime.is_healthy()
-                    && is_system_ingress(observation)
-                    && observation.machine_id == machine.id
-            })
-            .max_by_key(|container| creation_key(container))
-            .and_then(|container| {
-                container
-                    .as_observation()
-                    .resolved_spec
-                    .ingress_proxy_fragment
-                    .clone()
-            });
-        let mut newest = BTreeMap::<QualifiedService, &ServiceContainer>::new();
-        for container in containers
-            .iter()
-            .filter(|container| container.as_observation().runtime.is_healthy())
-        {
-            let identity = container.as_observation().identity();
-            if is_system_ingress(container.as_observation()) {
-                continue;
-            }
-            newest
-                .entry(identity)
-                .and_modify(|current| {
-                    if creation_key(container) > creation_key(current) {
-                        *current = container;
-                    }
-                })
-                .or_insert(container);
-        }
-        let service_fragments: BTreeMap<_, _> = newest
-            .into_iter()
-            .filter_map(|(identity, container)| {
-                container
-                    .as_observation()
-                    .resolved_spec
-                    .ingress_proxy_fragment
-                    .clone()
-                    .map(|fragment| (identity, fragment))
-            })
-            .collect();
-        if global_fragment.is_none() && service_fragments.is_empty() {
-            upstreams.clear();
-        }
         Self {
             machine: machine.clone(),
             sites,
-            upstreams,
-            global_fragment,
-            service_fragments,
         }
     }
 }

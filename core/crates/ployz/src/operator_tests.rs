@@ -647,7 +647,6 @@ fn container(
             ports: vec![],
             mount_graph: Default::default(),
             pre_deploy: None,
-            ingress_proxy_fragment: None,
             update: Default::default(),
         },
         address: None,

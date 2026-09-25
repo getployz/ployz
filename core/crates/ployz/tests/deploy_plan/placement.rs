@@ -1676,7 +1676,7 @@ fn equivalent_constraint_formatting_keeps_running_containers() {
 
 #[test]
 fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
-    let service = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None);
+    let service = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
     let mut target = machine('1', "edge");
     target.machine.accepts_services = false;
     let mut snapshot = DeploySnapshot {

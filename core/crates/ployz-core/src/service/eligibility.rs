@@ -315,7 +315,7 @@ mod tests {
         machine.accepts_builds = true;
         let reserved = crate::QualifiedService::system_ingress().project;
         let app = crate::ProjectName::parse("app").unwrap();
-        let caddy = crate::caddy_service_spec("caddy:test".into(), Default::default(), None);
+        let caddy = crate::caddy_service_spec("caddy:test".into(), Default::default());
         let denied = ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::WorkNotAccepted,
         );

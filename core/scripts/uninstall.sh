@@ -55,6 +55,8 @@ main() {
     fi
     exec {installation_lock}<>"$lock_path"
     flock -n "$installation_lock" || error "Ployz mutation or installation is active; retry uninstall"
+    # Stop the socket first: while it listens, any connect restarts the daemon.
+    stop_loaded_units ployz.socket
     stop_loaded_units ployz.service
     # Catch an accepted worker launched during the first stop, now blocked on our lock.
     stop_loaded_units 'ployz-upgrade-*.service'
@@ -74,8 +76,9 @@ main() {
     fi
 
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    systemctl disable ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    systemctl disable ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
     rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
+        "$INSTALL_SYSTEMD_DIR/ployz.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
     systemctl daemon-reload

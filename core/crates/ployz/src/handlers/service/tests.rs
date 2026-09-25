@@ -768,7 +768,7 @@ fn global_ingress_summary_uses_ingress_acceptance() {
     observation
         .try_update(|parts| {
             parts.resolved_spec =
-                ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
+                ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
                     .to_resolved(
                         service.service_id,
                         ployz_core::ResolvedUpdateConfig::default(),

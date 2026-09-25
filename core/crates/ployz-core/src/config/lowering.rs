@@ -260,7 +260,6 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             ports,
             mount_graph: Default::default(),
             pre_deploy,
-            ingress_proxy_fragment: None,
             update: Default::default(),
         };
         spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
