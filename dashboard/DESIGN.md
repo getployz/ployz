@@ -257,13 +257,13 @@ The staged-change system connects edited fields, affected resources, and environ
 
 Deployments are a view of the canvas, not a page. One floating **deploy bar** sits at the bottom of the canvas on every screen size and stays usable while a service panel is open:
 
-- A segmented control, **Live | Deployments ⌄**. Live is the environment as it is now. The second segment is a dropdown that always opens the deployment list, except while a deployment runs, when it reads **Deploying 2/4 ›** and opens that deployment directly.
+- A segmented control, **Editor | Deployments ⌄**. The Editor is the environment as it is now and the only place edits happen; an Intent Pink dot on it marks staged changes. (Not "Live": that read as the running production state.) The second segment is a dropdown that always opens the deployment list, except while a deployment runs, when it reads **Deploying 2/4 ›** and opens that deployment directly.
 - When changes are pending, the whole bar takes the staged-intent surface and adds **Apply N changes · Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Git-triggered deployments never clear these changes.
 - Bar text stays minimal: one short label per segment, fewer words on mobile. Explanations belong in the panel, never in the bar.
 
-Choosing a deployment puts the canvas into that deployment: the header and canvas tint, nodes show Build → Deploy with a short log tail, and the service panel becomes **Details · Build logs · Deploy logs**. Live-mode nodes never change. A manual Deploy opens its deployment (remembered if the user leaves it while running); Git-triggered deployments never take over the canvas, and nothing returns the user to live automatically. Deploying while another deployment runs queues.
+Choosing a deployment puts the canvas into that deployment: the header and canvas tint, nodes show Build → Deploy with a short log tail, and the service panel becomes **Details · Build logs · Deploy logs**. Editor Mode nodes never change. A manual Deploy opens its deployment (remembered if the user leaves it while running); Git-triggered deployments never take over the canvas, and nothing returns the user to the Editor automatically. Deploying while another deployment runs queues.
 
-The switch between live and a deployment is the product's one moment of flair, and it stays minimal: the tint and frame sweep in and reverse on Back to live. Motion is short, moves the same elements rather than swapping them, and falls back to a crossfade under reduced motion.
+The switch between the Editor and a deployment is the product's one moment of flair, and it stays minimal: the tint and frame sweep in and reverse on Back to editor. Motion is short, moves the same elements rather than swapping them, and falls back to a crossfade under reduced motion.
 
 The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
 

@@ -1,7 +1,7 @@
 import { createContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
-  ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon,
+  ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon, PencilIcon,
 } from "lucide-react";
 import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
 import { Button } from "#/components/ui/button";
@@ -31,11 +31,11 @@ function StatusIcon({ view }: { view: DeploymentView }) {
   }
 }
 
-/** The live canvas owns the change state, so it portals the apply zone into this slot of the bar. */
+/** The editor canvas owns the change state, so it portals the apply zone into this slot of the bar. */
 export const ApplyZoneSlot = createContext<HTMLElement | null>(null);
 
 /**
- * The floating deploy bar: Live | Deployments ⌄ on every screen size, usable while a service panel is open.
+ * The floating deploy bar: Editor | Deployments ⌄ on every screen size, usable while a service panel is open.
  * `children` renders after the segments (the apply zone, #1051).
  */
 export function DeployBar({ children }: { children?: ReactNode }) {
@@ -71,14 +71,14 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   }, [viewed, listOpen, selectedNodeId, navigate]);
 
   const listTrigger = (
-    <Button size="sm" variant={viewed ? "outline" : "ghost"} data-active={viewed !== null}
+    <Button size="sm" variant="ghost" data-active={viewed !== null}
       aria-label={viewed ? `Deployment ${shortDeploymentId(viewed.deployment.id)}, all deployments` : "Deployments"}>
       {viewed ? <><StatusIcon view={viewed.view} /><span className="font-mono">{shortDeploymentId(viewed.deployment.id)}</span></>
         : "Deployments"}
       <ChevronDownIcon />
     </Button>
   );
-  // A queued or running attempt opens directly from Live Mode, with no list.
+  // A queued or running attempt opens directly from Editor Mode, with no list.
   const openRunning = !viewed && running ? (
     <Link to="." search={(previous) => ({ ...previous, deployment: running.deployment.id, deploymentList: undefined })}
       className={buttonVariants({ size: "sm", variant: "secondary" })}>
@@ -97,10 +97,13 @@ export function DeployBar({ children }: { children?: ReactNode }) {
 
   return (
     <div ref={barRef} role="group" aria-label="Deploy bar" className="deploy-bar" data-deployment={viewed ? "" : undefined}>
-      <div className="flex min-w-0 items-center gap-0.5">
+      {/* One toggle: the Editor or a deployment; the active segment is raised out of the track. */}
+      <div className="flex min-w-0 items-center gap-0.5 rounded-lg bg-muted p-0.5 [&>[data-active=true]]:bg-background [&>[data-active=true]]:shadow-sm">
         <Link to="." search={(previous) => ({ ...previous, deployment: undefined, deploymentList: undefined })}
-          className={buttonVariants({ size: "sm", variant: viewed === null ? "outline" : "ghost" })} data-active={viewed === null}>
-          Live
+          className={buttonVariants({ size: "sm", variant: "ghost" })} data-active={viewed === null}>
+          {/* Intent Pink marks staged changes; styles.css shows it only while the bar holds the apply zone. */}
+          <span aria-hidden className="deploy-bar-pending size-2 rounded-full bg-changed" />
+          Editor
         </Link>
         {openRunning}
         {openQueued}
@@ -141,12 +144,12 @@ function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSu
   </>;
 }
 
-/** Live first, then the environment's deployments newest first. */
+/** The Editor first, then the environment's deployments newest first. */
 function DeploymentList({ attempts, viewedId, environmentSlug }: { attempts: DeploymentAttempt[]; viewedId: string | null; environmentSlug: string }) {
   return (
     <nav aria-label="Deployments" className="max-h-[min(28rem,70dvh)] overflow-y-auto"><ItemGroup>
       <ListRow current={viewedId === null} search={{ deployment: undefined }}
-        icon={<span className="size-2 rounded-full bg-success" />} title="Live" detail={`${environmentSlug} as it is now`} />
+        icon={<PencilIcon />} title="Editor" detail={`${environmentSlug} as it is now`} />
       <ItemSeparator />
       {attempts.length === 0 ? <Empty variant="placeholder"><EmptyDescription>No deployments yet</EmptyDescription></Empty> : null}
       {attempts.map(({ deployment, view }) => (

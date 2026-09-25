@@ -20,7 +20,7 @@ export type DeploymentServicePage = (typeof DEPLOYMENT_SERVICE_PAGES)[number]["i
 export const servicePageSchema = Schema.Literals(SERVICE_PAGES.map((page) => page.id));
 export const deploymentServicePageSchema = Schema.Literals(DEPLOYMENT_SERVICE_PAGES.map((page) => page.id));
 
-/** The panel's tabs for the mode in the URL: Deployment Mode when `deployment` is set, else Live Mode. */
+/** The panel's tabs for the mode in the URL: Deployment Mode when `deployment` is set, else Editor Mode. */
 export const servicePagesFor = (deployment: string | undefined) => deployment ? DEPLOYMENT_SERVICE_PAGES : SERVICE_PAGES;
 
 export const serviceSearchSchema = Schema.Struct({

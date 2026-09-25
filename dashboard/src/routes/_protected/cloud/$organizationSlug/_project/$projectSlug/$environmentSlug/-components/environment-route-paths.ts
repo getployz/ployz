@@ -16,5 +16,5 @@ export const ENVIRONMENT_RESOURCE_ROUTE_TO =
 /** The canvas search key that puts it into Deployment Mode for one attempt. */
 export const DEPLOYMENT_SEARCH_KEY = "deployment";
 
-/** The attempt a location's search string shows in Deployment Mode; null in Live Mode. */
+/** The attempt a location's search string shows in Deployment Mode; null in Editor Mode. */
 export const shownDeployment = (searchStr: string) => new URLSearchParams(searchStr).get(DEPLOYMENT_SEARCH_KEY);

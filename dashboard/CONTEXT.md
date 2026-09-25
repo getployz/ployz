@@ -168,11 +168,11 @@ _Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" i
 
 **Node Outcome**:
 One Environment Node's result within a Cloud Deployment Attempt: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
-_Avoid_: Applied, Skipped, Succeeded, Live (live mode is the current view, not an outcome)
+_Avoid_: Applied, Skipped, Succeeded, Live (Editor Mode is the current view, not an outcome)
 
 **Deployment Mode**:
-The canvas viewing one Cloud Deployment Attempt: it draws that attempt's Environment Nodes with their Node Outcomes, including nodes since deleted or removed by the attempt, and omits nodes created afterwards. **Live Mode** is the default canvas, drawing the Environment as it is now.
-_Avoid_: Deployment page, deployment detail screen
+The canvas viewing one Cloud Deployment Attempt: it draws that attempt's Environment Nodes with their Node Outcomes, including nodes since deleted or removed by the attempt, and omits nodes created afterwards. **Editor Mode** is the default canvas, drawing the Environment as it is now; it is the only mode that edits.
+_Avoid_: Deployment page, deployment detail screen, Live Mode (for Editor Mode)
 
 **Attempt Target**:
 The immutable complete runtime target frozen when a queued deployment request starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.

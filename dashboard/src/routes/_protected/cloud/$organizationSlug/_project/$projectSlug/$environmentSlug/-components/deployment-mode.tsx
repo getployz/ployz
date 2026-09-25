@@ -14,7 +14,7 @@ export const CANVAS_ROUTE_ID =
 /**
  * The canvas route's search: `deployment=<id>` puts the canvas into Deployment Mode for that
  * Cloud Deployment Attempt and is retained across navigations inside the canvas.
- * Removing it (Back to live, browser Back) returns to Live Mode.
+ * Removing it (Back to editor, browser Back) returns to Editor Mode.
  * `deploymentList=true` opens the deploy bar's deployment list; it is not retained.
  */
 export const canvasRouteSearch = {
@@ -27,12 +27,12 @@ export const canvasRouteSearch = {
 
 const DeploymentModeContext = createContext<DeploymentAttempt | null>(null);
 
-/** The attempt the canvas shows in Deployment Mode, or null in Live Mode. Everything in Deployment Mode is read-only. */
+/** The attempt the canvas shows in Deployment Mode, or null in Editor Mode. Everything in Deployment Mode is read-only. */
 export function useDeploymentMode() {
   return use(DeploymentModeContext);
 }
 
-// ponytail: an unknown or other-environment id falls back to Live Mode with the param still in the URL.
+// ponytail: an unknown or other-environment id falls back to Editor Mode with the param still in the URL.
 export function DeploymentModeProvider({ children }: { children: ReactNode }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
@@ -64,7 +64,7 @@ export function BackToLive({ className }: { className?: string }) {
       nativeButton={false}
       render={<Link to="." search={(previous) => ({ ...previous, deployment: undefined })} />}
     >
-      Back to live
+      Back to editor
     </Button>
   );
 }

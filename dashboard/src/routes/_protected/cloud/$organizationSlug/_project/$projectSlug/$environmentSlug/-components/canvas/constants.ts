@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
 /**
- * Names a node's element for the Live ↔ Deployment Mode view transition (styles.css), so each card moves in place across the switch.
+ * Names a node's element for the Editor ↔ Deployment Mode view transition (styles.css), so each card moves in place across the switch.
  * ponytail: two canvases morphed by view transitions; one shared canvas instance fed mode-specific nodes is the upgrade path.
  */
 export const canvasNodeTransition = (nodeId: string) => ({

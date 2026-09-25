@@ -35,7 +35,7 @@ export async function setOpenStartedDeployments(value: boolean) {
 export function openStartedDeploymentsChange({ shownBefore, shownNow, deploymentId }: {
   /** Your own running attempt shown before and now, if any. */
   shownBefore: string | null; shownNow: string | null;
-  /** The attempt in the URL; null is Live Mode. */
+  /** The attempt in the URL; null is Editor Mode. */
   deploymentId: string | null;
 }): boolean | null {
   if (shownNow !== null && shownNow !== shownBefore) return true;

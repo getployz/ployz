@@ -141,11 +141,11 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe("deployment mode on the environment canvas", () => {
   it("redraws the canvas as the attempt saw it and returns to live", async () => {
     const router = await openCanvas();
-    expect(screen.queryByText("Back to live")).toBeNull();
+    expect(screen.queryByText("Back to editor")).toBeNull();
     expect(screen.queryAllByText("Removed")).toEqual([]);
 
     await enterDeploymentMode(router);
-    expect((await screen.findAllByText("Back to live")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Back to editor")).length).toBeGreaterThan(0);
     // Deleted since and removed by the attempt: still drawn. Created afterwards: hidden.
     expect(screen.getAllByText("old")[0]?.closest("[data-canvas-node]")?.textContent).toContain("Removed");
     const unchanged = screen.getAllByText("api")[0]?.closest("[data-canvas-node]");
@@ -161,9 +161,9 @@ describe("deployment mode on the environment canvas", () => {
     expect(screen.queryByText("Live service panel")).toBeNull();
     await act(() => router.navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (prev) => prev }));
 
-    const [backToLive] = screen.getAllByText("Back to live");
-    if (!backToLive) throw new Error("Missing Back to live");
-    await act(async () => { fireEvent.click(backToLive); });
+    const [backToEditor] = screen.getAllByText("Back to editor");
+    if (!backToEditor) throw new Error("Missing Back to editor");
+    await act(async () => { fireEvent.click(backToEditor); });
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
     expect(router.state.location.search).not.toHaveProperty("deployment");
     expect(screen.queryAllByText("Removed")).toEqual([]);
@@ -249,7 +249,7 @@ describe("deployment mode on the environment canvas", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
-  it("opens an unchanged node on Details and keeps the live panel for Live Mode", async () => {
+  it("opens an unchanged node on Details and keeps the live panel for Editor Mode", async () => {
     const router = await openCanvas();
     await enterDeploymentMode(router);
     await openNode(api);
@@ -267,7 +267,7 @@ describe("deployment mode on the environment canvas", () => {
     await screen.findAllByText("Removed");
     await act(async () => { router.history.back(); });
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
-    expect(screen.queryByText("Back to live")).toBeNull();
+    expect(screen.queryByText("Back to editor")).toBeNull();
   });
 });
 
@@ -275,16 +275,16 @@ describe("the deploy bar", () => {
   const bar = () => within(screen.getByRole("group", { name: "Deploy bar" }));
   const click = (element: HTMLElement) => act(async () => { fireEvent.click(element); });
 
-  it("switches between Live and a deployment picked from the list", async () => {
+  it("switches between the Editor and a deployment picked from the list", async () => {
     const router = await openCanvas();
-    expect(bar().getByRole("link", { name: "Live" }).getAttribute("data-active")).toBe("true");
+    expect(bar().getByRole("link", { name: "Editor" }).getAttribute("data-active")).toBe("true");
 
     await click(bar().getByRole("button", { name: "Deployments" }));
     expect(router.state.location.search).toMatchObject({ deploymentList: true });
     const list = within(await screen.findByRole("navigation", { name: "Deployments" }));
-    // Live first, then deployments newest first.
+    // Editor first, then deployments newest first.
     expect(list.getAllByRole("link").map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Live"), expect.stringContaining("e0000000"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
+      expect.stringContaining("Editor"), expect.stringContaining("e0000000"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
     ]);
 
     await click(list.getByRole("link", { name: /b0000000/ }));
@@ -292,7 +292,7 @@ describe("the deploy bar", () => {
     expect(await screen.findByRole("button", { name: /Deployment b0000000/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Deployments" })).toBeNull();
 
-    await click(bar().getByRole("link", { name: "Live" }));
+    await click(bar().getByRole("link", { name: "Editor" }));
     expect(router.state.location.search).toEqual({});
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
   });
@@ -321,13 +321,13 @@ describe("the deploy bar", () => {
     expect(setOpenStarted()).not.toHaveBeenCalled();
     await click(bar().getByRole("link", { name: /Deploying/ }));
     expect(setOpenStarted()).toHaveBeenLastCalledWith(true);
-    await click(bar().getByRole("link", { name: "Live" }));
+    await click(bar().getByRole("link", { name: "Editor" }));
     expect(setOpenStarted()).toHaveBeenLastCalledWith(false);
     await click(bar().getByRole("link", { name: /Deploying/ }));
     expect(setOpenStarted()).toHaveBeenLastCalledWith(true);
     // Leaving a finished attempt keeps the preference.
     await enterDeploymentMode(router);
-    await click(bar().getByRole("link", { name: "Live" }));
+    await click(bar().getByRole("link", { name: "Editor" }));
     expect(setOpenStarted()).toHaveBeenCalledTimes(3);
   });
 
@@ -338,9 +338,9 @@ describe("the deploy bar", () => {
       } }],
       environment_node_config_snapshot: [snapshot(runningId, api, "api")],
     } });
-    expect(screen.queryByText("Back to live")).toBeNull();
+    expect(screen.queryByText("Back to editor")).toBeNull();
     await click(bar().getByRole("link", { name: /Deploying/ }));
-    await click(bar().getByRole("link", { name: "Live" }));
+    await click(bar().getByRole("link", { name: "Editor" }));
     expect(setOpenStarted()).not.toHaveBeenCalled();
   });
 
