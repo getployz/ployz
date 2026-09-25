@@ -1,0 +1,20 @@
+name: Ployz build
+on:
+  workflow_dispatch:
+    inputs:
+      build: { required: true, type: string }
+      cloud: { required: true, type: string }
+      ployz_version: { required: true, type: string }
+      runner: { required: false, type: string, default: ubuntu-latest }
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: getployz/build@v1
+        with:
+          build: ${{ inputs.build }}
+          cloud: ${{ inputs.cloud }}
+          ployz_version: ${{ inputs.ployz_version }}
