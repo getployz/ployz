@@ -12,6 +12,7 @@ the same Cluster over SSH contexts. Neither is a control plane.
 ```text
 core/              Cargo workspace, installer, release scripts
 dashboard/         pnpm application; self-host/ holds the Compose deployment
+Dockerfile         Cloud image built from source; Railway builds branches with it
 Dockerfile.cloud   Cloud runtime image, packaged by the Cloud CI job
 scripts/           CI check selection
 .github/           Workflows

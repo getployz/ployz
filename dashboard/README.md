@@ -48,7 +48,9 @@ what is missing or invalid.
 ## Build and deploy
 
 `pnpm build` compiles the native SDK and config WASM, then builds the web and
-Connect worker into `.output/`. `Dockerfile.cloud` packages both in one image:
+Connect worker into `.output/`. `Dockerfile.cloud` packages both in one image;
+the root `Dockerfile` builds the same image from source, so Railway can deploy
+any branch without CI:
 
 | Process | Start command | Healthcheck |
 | --- | --- | --- |
