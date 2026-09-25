@@ -101,8 +101,13 @@ export const deploymentOperationEvidencePageQuerySchema = Schema.Struct({
   deploymentId: Uuid,
   afterSequence: Schema.optional(PositiveSequence),
   limit: Schema.optional(
-    finiteNumber({ integer: true, minimum: 1, maximum: 100 }),
+    finiteNumber({ integer: true, minimum: 1, maximum: 10_000 }),
   ),
+});
+
+export const deploymentBuildTailQuerySchema = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  deploymentId: Uuid,
 });
 
 export const environmentDeploymentSummarySchema = Schema.Struct({
@@ -194,6 +199,7 @@ export type DispatchQueuedEnvironmentDeploymentInput =
   typeof dispatchQueuedEnvironmentDeploymentSchema.Type;
 export type DeploymentOperationEvidencePageQueryInput =
   typeof deploymentOperationEvidencePageQuerySchema.Type;
+export type DeploymentBuildTailQueryInput = typeof deploymentBuildTailQuerySchema.Type;
 export type EnvironmentDeploymentSummary = Omit<
   typeof environmentDeploymentSummarySchema.Type,
   "deployPreview"

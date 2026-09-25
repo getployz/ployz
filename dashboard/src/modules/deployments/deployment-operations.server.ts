@@ -16,7 +16,7 @@ import { strictParseOptions } from "#/modules/environment-design/schema";
 
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 
-import type { DeploymentOperationEvidencePageQueryInput, EnvironmentChangeStateNodeProjection, EnvironmentChangeStateProjection, OrganizationEnvironmentChangeStateQueryInput } from "#/modules/deployments/deployment-contract";
+import type { DeploymentBuildTailQueryInput, DeploymentOperationEvidencePageQueryInput, EnvironmentChangeStateNodeProjection, EnvironmentChangeStateProjection, OrganizationEnvironmentChangeStateQueryInput } from "#/modules/deployments/deployment-contract";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
   function* (actor: Actor, organizationSlug: string) {
@@ -138,6 +138,11 @@ const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, in
 
 export const listDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
   return yield* loadDeploymentBuildLog({ ...yield* logCursor(actor, input), limit: input.limit ?? 100 });
+});
+
+/** Each Build Step's last rows: enough for a node's log tail, however long the build ran. */
+export const listDeploymentBuildTail = Effect.fn("Deployments.buildTail")(function* (actor: Actor, input: DeploymentBuildTailQueryInput) {
+  return yield* loadDeploymentBuildLog({ ...yield* logCursor(actor, input), limit: 0, tail: 20 });
 });
 
 export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {

@@ -31,7 +31,7 @@ type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
 type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
-type EnvironmentDeploymentRow = typeof schemaEnvironmentDeployment.$inferSelect;
+type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy">;
 type EnvironmentSavedStateRevisionRow = Pick<
   typeof schemaEnvironmentSavedStateSnapshot.$inferSelect,
   "id" | "organizationId" | "environmentId"

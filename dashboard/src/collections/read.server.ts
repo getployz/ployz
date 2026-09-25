@@ -78,8 +78,11 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
           .where(scoped(tables.environmentCanvasNodePosition));
       case "environment_deployment":
+        // The plan the runtime executes (manifest, producers, action policy) stays on the server; no view reads it.
+        const { deployManifest: _manifest, variableProducers: _producers, serviceActionPolicy: _policy, ...deploymentColumns } =
+          getTableColumns(tables.environmentDeployment);
         return yield* database.drizzle.select({
-          ...getTableColumns(tables.environmentDeployment),
+          ...deploymentColumns,
           runtimeProgress: sql<typeof tables.environmentDeployment.$inferSelect.runtimeProgress>`coalesce(
             ${tables.environmentDeployment.runtimeProgress},
             (select progress from ${tables.environmentDeploymentEvent}

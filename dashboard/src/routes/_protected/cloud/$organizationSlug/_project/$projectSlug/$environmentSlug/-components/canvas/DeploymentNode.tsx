@@ -6,6 +6,7 @@ import { formatDuration } from "#/components/deployment-logs";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
@@ -46,6 +47,8 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
   const subtitle = source ? getServiceSubtitle({ source }) : "Named volume";
   const dimmed = view.outcome === "unchanged" || view.outcome === "not_attempted";
   const badge = outcomeBadges[view.outcome];
+  // Until the build tail arrives a Git service's stages are unknown; claiming Queued would be false.
+  const pending = useDeploymentMode()?.buildPending === true && source?.type === "git" && !dimmed;
   return (
     <Card size="node" state={badge === "destructive" || badge === "info" ? badge : undefined}
       data-canvas-node={node.nodeId} data-dimmed={dimmed} className={cn("justify-between", dimmed && "opacity-40", className)}>
@@ -58,10 +61,15 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
             <CardTitle className="truncate">{data.name}</CardTitle>
             {subtitle && !dimmed ? <CardDescription className="truncate">{subtitle}</CardDescription> : null}
           </div>
-          <Badge variant={badge}>{nodeOutcomeLabels[view.outcome]}</Badge>
+          {pending ? <Skeleton className="h-5 w-16" /> : <Badge variant={badge}>{nodeOutcomeLabels[view.outcome]}</Badge>}
         </div>
       </CardHeader>
-      {dimmed ? null : (
+      {dimmed ? null : pending ? (
+        <CardContent className="flex flex-col gap-2">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-3 w-full" />
+        </CardContent>
+      ) : (
         <CardContent className="flex flex-col gap-2">
           <div className="flex items-center gap-1.5 whitespace-nowrap text-muted-foreground">
             <StageLabel name="Build" stage={view.build} />

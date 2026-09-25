@@ -68,7 +68,7 @@ function DockerfilePathInput({
 /** Service Deployment Policy: saved at once, never staged, so Discard doesn't undo it. */
 function PreferredBuilderField({ state }: { state: ServiceDrawerState }) {
   const { service } = state;
-  const { machines } = useRuntimeLens(state.organizationSlug);
+  const { machines, status } = useRuntimeLens(state.organizationSlug);
   const builders = [
     { id: "github", label: "GitHub Actions" },
     ...machines.filter((machine) => machine.acceptsBuilds).map((machine) => ({ id: machine.id, label: machine.name })),
@@ -76,7 +76,9 @@ function PreferredBuilderField({ state }: { state: ServiceDrawerState }) {
   // The collection row widens the MachineId brand; the Select speaks plain strings.
   const value = String(service.policy.preferredBuilder ?? "auto");
   const label = value === "auto" ? "Auto"
-    : builders.find((builder) => builder.id === value)?.label ?? machines.find((machine) => machine.id === value)?.name ?? "A removed server";
+    : builders.find((builder) => builder.id === value)?.label ?? machines.find((machine) => machine.id === value)?.name
+      // Only an observed machine list can say the server is gone.
+      ?? (status === "observed" ? "A removed server" : "Unknown server");
   return (
     <Field>
       <FieldLabel>Preferred builder</FieldLabel>

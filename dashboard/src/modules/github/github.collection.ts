@@ -1,3 +1,4 @@
+import { githubInstallUrlQueryOptions, githubRepoAccessQueryOptions } from "./github.queries";
 import { getDbClient } from "#/collections/scope";
 import {
   type Collection,
@@ -96,7 +97,12 @@ export function useGithubReposReadState(scope: GithubCollectionScope) {
   return useQuery({ queryKey: githubReposQueryKey(scope), queryFn: skipToken });
 }
 
-/** Start the repository read when a picker opens; failures surface through `useGithubReposReadState`. */
+/**
+ * Start a picker's reads together (repositories, access, install URL) when it opens or is about to;
+ * failures surface through `useGithubReposReadState` and the picker's own queries.
+ */
 export function preloadGithubRepos(scope: GithubCollectionScope) {
   void preloadCollection(getRawGithubReposCollection(scope)).catch(() => {});
+  void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions());
+  void scope.queryClient.prefetchQuery(githubInstallUrlQueryOptions());
 }

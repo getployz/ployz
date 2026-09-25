@@ -1,5 +1,5 @@
 import { collectionOptions } from "@tanstack/react-db";
-import { useQuery, type Query } from "@tanstack/react-query";
+import { useQuery, type Query, type QueryClient } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { preloadCollection } from "#/collections/query-collection";
@@ -10,15 +10,17 @@ type EventRow = Awaited<ReturnType<typeof listDeploymentProgressLogsServerFn>>["
 export function createDeploymentLogsCollection(organizationSlug: string, deploymentId: string, scope: CollectionScope,
   readPage: (input: Parameters<typeof listDeploymentProgressLogsServerFn>[0]) => ReturnType<typeof listDeploymentProgressLogsServerFn>,
 ) {
+  const queryKey = ["collections", scope.sessionId, scope.userId, organizationSlug, "deployment_logs", deploymentId];
   const options = {
-    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "deployment_logs", deploymentId],
+    queryKey,
     // A finished log never changes, so reopening it reuses the cache; a running log is refetched and polled.
     staleTime: (query: Query<{ events: EventRow[]; finished: boolean }>) => query.state.data?.finished ? Infinity : 0,
     refetchInterval: (query: Query<{ events: EventRow[]; finished: boolean }>) => query.state.data?.finished ? false : 2_000,
-    queryFn: async ({ signal }: { signal: AbortSignal }) => {
-      const rows: EventRow[] = [];
+    // Each poll resumes from the last held event.
+    queryFn: async ({ signal, client }: { signal: AbortSignal; client: QueryClient }) => {
+      const rows: EventRow[] = [...client.getQueryData<{ events: EventRow[] }>(queryKey)?.events ?? []];
       let finished = false;
-      let afterSequence: string | null | undefined;
+      let afterSequence: string | null | undefined = rows.length ? String(rows.at(-1)?.id) : undefined;
       while (afterSequence !== null) {
         const page = await readPage({ data: { organizationSlug, deploymentId, afterSequence, limit: 50 }, signal });
         finished = page.finished;

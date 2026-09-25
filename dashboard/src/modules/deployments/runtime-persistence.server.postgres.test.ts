@@ -616,6 +616,11 @@ describe("deployment runtime persistence", () => {
     expect(rest.output.map((row) => row.text)).toEqual(["Finished\n", "Later output\n"]);
     expect(rest.output.every((row) => row.stepId === page.steps[0]?.id)).toBe(true);
     expect(rest.nextSequence).toBeNull();
+    // The tail keeps each step's last rows, so a long step never crowds out another.
+    await harness.runEffect(persistBuildLog(admitted.id, { steps: [], output: [{ build: 2, step: "sha256:b", stderr: false, text: "Other image\n" }] }));
+    const tail = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: admitted.id, after: 0, limit: 0, tail: 2 }));
+    expect(tail.output.map((row) => row.text)).toEqual(["Finished\n", "Later output\n", "Other image\n"]);
+    expect(tail.nextSequence).toBeNull();
     await expect(harness.runEffect(loadDeploymentBuildLog({ organizationId: userId, deploymentId: admitted.id, after: 0, limit: 100 }))).rejects.toThrow();
   });
 

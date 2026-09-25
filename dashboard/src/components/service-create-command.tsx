@@ -1,6 +1,7 @@
 import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useState } from "react";
+import { preloadGithubRepos } from "#/modules/github/github.collection";
+import { useEffect, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
@@ -122,6 +123,11 @@ type GitPanelReposProps = {
 type GitPanelProps = GitPanelReposProps;
 
 function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
+  const { queryClient, sessionId, userId } = useCollectionScope();
+  // "GitHub repository" is one tap away: its picker opens with repositories already read.
+  useEffect(() => {
+    preloadGithubRepos({ queryClient, sessionId, userId });
+  }, [queryClient, sessionId, userId]);
   const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id }) =>
     mode === "service" || id === "git-repository" || id === "container-image" || id === "empty-project",
   );

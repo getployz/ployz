@@ -76,9 +76,8 @@ export function githubBuildRepositoriesQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: [...githubKeys.all, "build-repositories", organizationSlug] as const,
     queryFn: () => listGithubBuildRepositoriesServerFn({ data: { organizationSlug } }),
-    // The workflow lands in GitHub, usually from another tab: refetch on focus, and poll while one is awaited.
+    // Each read calls GitHub per repository: focus refetches only once stale; an awaited workflow polls instead.
     staleTime: 30_000,
-    refetchOnWindowFocus: "always",
   });
 }
 

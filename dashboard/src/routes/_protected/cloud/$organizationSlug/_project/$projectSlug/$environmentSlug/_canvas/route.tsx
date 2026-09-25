@@ -3,7 +3,9 @@ import {
   createFileRoute,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
+import { prefetchRemote } from "#/collections/route-data";
 import { RouteErrorAlert } from "#/components/route-error-alert";
+import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
@@ -14,6 +16,11 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
   ...canvasRouteSearch,
+  loaderDeps: ({ search }) => ({ deployment: search.deployment }),
+  // Deployment Mode's nodes read the build tail; SSR renders them with it and hover preload warms it.
+  loader: async ({ params, context, deps }) => {
+    if (deps.deployment) await prefetchRemote(context, deploymentBuildTailQueryOptions(params.organizationSlug, deps.deployment));
+  },
   errorComponent: CanvasError,
   component: CanvasLayout,
 });

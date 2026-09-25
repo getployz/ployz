@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { Database } from "#/server/database.server";
@@ -24,9 +24,12 @@ export const loadDeploymentEvents = Effect.fn("Deployments.events")(function* (i
   return { events, finished: deployment.finishedAt !== null, nextSequence: events.length === 50 && last ? String(last.id) : null };
 });
 
-/** Steps in start order, then output after the cursor. Both are fetched only when opened. */
+/**
+ * Steps in start order, then output after the cursor; `tail` instead reads only each step's last rows, for the canvas.
+ * Both are fetched only when opened.
+ */
 export const loadDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function* (input: {
-  organizationId: string; deploymentId: string; after: number; limit: number;
+  organizationId: string; deploymentId: string; after: number; limit: number; tail?: number;
 }) {
   const { drizzle } = yield* Database;
   const [deployment] = yield* drizzle.select({ id: environmentDeployment.id, finishedAt: environmentDeployment.finishedAt })
@@ -35,18 +38,25 @@ export const loadDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function
   const steps = yield* drizzle.select().from(environmentDeploymentBuildStep)
     .where(eq(environmentDeploymentBuildStep.deploymentId, input.deploymentId))
     .orderBy(sql`${environmentDeploymentBuildStep.startedAt} nulls last`, asc(environmentDeploymentBuildStep.id));
-  const output = yield* drizzle.select().from(environmentDeploymentBuildOutput)
-    .where(and(eq(environmentDeploymentBuildOutput.deploymentId, input.deploymentId), gt(environmentDeploymentBuildOutput.id, input.after)))
-    .orderBy(asc(environmentDeploymentBuildOutput.id)).limit(input.limit);
+  const table = environmentDeploymentBuildOutput;
+  const output = input.tail === undefined
+    ? yield* drizzle.select().from(table)
+      .where(and(eq(table.deploymentId, input.deploymentId), gt(table.id, input.after)))
+      .orderBy(asc(table.id)).limit(input.limit)
+    // ponytail: ranks every output row of the attempt; index (step_id, id) if logs outgrow a quick scan.
+    : yield* drizzle.select().from(table).where(inArray(table.id, drizzle.select({ id: sql<number>`ranked.id` }).from(
+      drizzle.select({ id: table.id, rank: sql<number>`row_number() over (partition by ${table.stepId} order by ${table.id} desc)`.as("rank") })
+        .from(table).where(eq(table.deploymentId, input.deploymentId)).as("ranked"),
+    ).where(sql`ranked.rank <= ${input.tail}`))).orderBy(asc(table.id));
   // Which Server (or GitHub run) each image builds on, why, and what it skipped; never the receipt, grant or run state.
-  const table = environmentDeploymentImageBuild;
+  const builds = environmentDeploymentImageBuild;
   const imageBuilds: ImageBuildEvidence[] = yield* drizzle.select({
-    image: table.image, serverChoice: table.serverChoice, skips: table.skips,
-    runUrl: sql<string | null>`${table.github} ->> 'runUrl'`, reason: sql<CandidateReason | null>`${table.github} ->> 'reason'`,
-  }).from(table).where(eq(table.deploymentId, input.deploymentId)).pipe(Effect.map((rows) => rows.map(({ runUrl, reason, ...row }) =>
+    image: builds.image, serverChoice: builds.serverChoice, skips: builds.skips,
+    runUrl: sql<string | null>`${builds.github} ->> 'runUrl'`, reason: sql<CandidateReason | null>`${builds.github} ->> 'reason'`,
+  }).from(builds).where(eq(builds.deploymentId, input.deploymentId)).pipe(Effect.map((rows) => rows.map(({ runUrl, reason, ...row }) =>
     ({ ...row, github: runUrl && reason ? { runUrl, reason } : null }))));
   const last = output.at(-1);
-  return { steps, output, imageBuilds, finished: deployment.finishedAt !== null, nextSequence: output.length === input.limit && last ? String(last.id) : null };
+  return { steps, output, imageBuilds, finished: deployment.finishedAt !== null, nextSequence: input.tail === undefined && output.length === input.limit && last ? String(last.id) : null };
 });
 
 /**

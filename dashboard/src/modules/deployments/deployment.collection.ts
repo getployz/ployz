@@ -23,7 +23,7 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
-import { useBuildLog } from "#/modules/deployments/deployment-build-log.queries";
+import { useBuildTail } from "#/modules/deployments/deployment-build-log.queries";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
   const client = getDbClient(scope.queryClient);
@@ -145,7 +145,8 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
   ]);
 }
 
-export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView };
+/** `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
+export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView; buildPending: boolean };
 
 /** An environment's attempts newest first, with the attempt rows and node snapshots `attemptTarget` reads besides the attempt itself. */
 function useEnvironmentAttemptInputs(organizationSlug: string, environmentId: string) {
@@ -170,20 +171,21 @@ function useEnvironmentAttemptInputs(organizationSlug: string, environmentId: st
   });
   const project = (deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt => {
     const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
-    return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog }) };
+    return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog }), buildPending: false };
   };
   return { attempts, project };
 }
 
 /**
  * One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt.
- * `buildLog` also reads the attempt's Build Steps (polled until it finishes) for per-image build stages and tails.
+ * `buildLog` also reads the attempt's Build Steps and output tails (polled until it finishes) for per-image build stages and tails.
  */
 export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}): DeploymentAttempt | null {
   const { attempts, project } = useEnvironmentAttemptInputs(organizationSlug, environmentId);
   const deployment = attempts.find((candidate) => candidate.id === deploymentId);
-  const { data: log } = useBuildLog(organizationSlug, buildLog && deployment?.buildServiceIds.length ? deployment.id : null);
-  return deployment ? project(deployment, log) : null;
+  const tailId = buildLog && deployment?.buildServiceIds.length ? deployment.id : null;
+  const tail = useBuildTail(organizationSlug, tailId);
+  return deployment ? { ...project(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
 }
 
 /** Every Cloud Deployment Attempt of an environment through the deployment view projection, newest first. */

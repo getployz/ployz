@@ -4,6 +4,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import {
   cancelEnvironmentDeploymentSchema,
+  deploymentBuildTailQuerySchema,
   reviewedPublicationSchema,
   deploymentOperationEvidencePageQuerySchema,
   dispatchQueuedEnvironmentDeploymentSchema,
@@ -13,6 +14,7 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import {
   listDeploymentBuildLog,
+  listDeploymentBuildTail,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
 } from "#/modules/deployments/deployment-operations.server";
@@ -94,6 +96,11 @@ export const listDeploymentBuildLogServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)
   .validator(strictValidator(deploymentOperationEvidencePageQuerySchema))
   .handler(({ context, data }) => runActor(context, listDeploymentBuildLog(context.actor, data)));
+
+export const listDeploymentBuildTailServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(deploymentBuildTailQuerySchema))
+  .handler(({ context, data }) => runActor(context, listDeploymentBuildTail(context.actor, data)));
 
 export const listDeploymentProgressLogsServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)

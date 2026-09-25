@@ -9,7 +9,7 @@ import { routeTree } from "./routeTree.gen";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { routerWithDbClient } from "@tanstack/react-router-with-db";
 import { getDbClient } from "./collections/scope";
-import { defaultShouldDehydrateQuery, environmentManager, QueryClient } from "@tanstack/react-query";
+import { environmentManager, QueryClient } from "@tanstack/react-query";
 import { NotFoundPage } from "./components/not-found-page";
 import { PloyzMark } from "./components/icons/ployz-logo";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
@@ -84,14 +84,11 @@ export function getRouter() {
     defaultPendingMinMs: 180,
   });
 
-  setupRouterSsrQueryIntegration({
-    router,
-    queryClient,
-    dehydrateOptions: {
-      // DB already serializes collection rows and live-query snapshots.
-      shouldDehydrateQuery: (query) => query.queryKey[0] !== "collections" && defaultShouldDehydrateQuery(query),
-    },
-  });
+  // Collection Queries dehydrate too: DB hydration restores rows but not readiness, and a Query collection
+  // is ready only once its Query holds data; without it the canvas re-suspends mid-hydration and swaps
+  // the SSR HTML for its fallback. The Query also carries each change collection's cursor.
+  // ponytail: collection rows serialize twice (DB and Query); drop one once DB hydration marks collections ready.
+  setupRouterSsrQueryIntegration({ router, queryClient });
 
   return routerWithDbClient(router, dbClient);
 }
