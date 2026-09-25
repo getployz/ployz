@@ -38,7 +38,7 @@ fn complete_plan_reports_all_four_volumes_before_any_deployment() {
         machines: vec![target],
         ..Default::default()
     };
-    let error = preview_deploy(&intent(), &snapshot, IngressContext::default())
+    let error = preview_deploy(&intent(), &snapshot)
         .unwrap_err()
         .into_rpc_error();
     assert_eq!(error.details.get("code").unwrap(), "insufficient_storage");
@@ -68,14 +68,14 @@ fn placement_uses_an_alternative_and_unknown_capacity_holds() {
         machines: vec![first, second],
         ..Default::default()
     };
-    let preview = preview_deploy(&intent(), &snapshot, IngressContext::default()).unwrap();
+    let preview = preview_deploy(&intent(), &snapshot).unwrap();
     assert_eq!(preview.storage.len(), 1);
     assert_eq!(
         preview.storage.first().unwrap().machine_name.as_str(),
         "second"
     );
     snapshot.storage_capacity.clear();
-    let error = preview_deploy(&intent(), &snapshot, IngressContext::default())
+    let error = preview_deploy(&intent(), &snapshot)
         .unwrap_err()
         .into_rpc_error();
     assert_eq!(
@@ -123,8 +123,7 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
                 PlanOptions::default(),
             )
         };
-        let preview =
-            preview_deploy(&intent(&services), &snapshot, IngressContext::default()).unwrap();
+        let preview = preview_deploy(&intent(&services), &snapshot).unwrap();
         assert!(
             preview
                 .operations
@@ -161,7 +160,7 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
                     std::num::NonZeroU64::new(2 * STORAGE_GIB).unwrap(),
                 ),
             );
-        let error = preview_deploy(&intent(&services), &conflicting, IngressContext::default())
+        let error = preview_deploy(&intent(&services), &conflicting)
             .unwrap_err()
             .into_rpc_error();
         assert_eq!(error.details.get("code").unwrap(), "volume_size_conflict");
@@ -169,7 +168,7 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
             service.placement.constraints = [label_constraint("empty")].into();
         }
         assert!(
-            preview_deploy(&intent(&services), &snapshot, IngressContext::default()).is_err(),
+            preview_deploy(&intent(&services), &snapshot).is_err(),
             "must not create empty data on a different Machine"
         );
     }
@@ -199,7 +198,7 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
         if let Some(error) = failure {
             snapshot.storage_capacity.insert(owner_id, Err(error));
         }
-        let error = preview_deploy(&intent(), &snapshot, IngressContext::default())
+        let error = preview_deploy(&intent(), &snapshot)
             .unwrap_err()
             .into_rpc_error();
         assert_eq!(
@@ -211,7 +210,7 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
         for service in &mut targeted.target {
             service.placement.constraints = [label_constraint("empty")].into();
         }
-        assert!(preview_deploy(&targeted, &snapshot, IngressContext::default()).is_err());
+        assert!(preview_deploy(&targeted, &snapshot).is_err());
     }
     // A known local dataset may still be reused despite an unrelated inspection failure.
     let known_id = snapshot.machines.last().unwrap().machine.id;
@@ -234,7 +233,7 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
             )
         })
         .into();
-    let preview = preview_deploy(&intent(), &snapshot, IngressContext::default()).unwrap();
+    let preview = preview_deploy(&intent(), &snapshot).unwrap();
     assert_eq!(
         preview
             .storage
@@ -304,7 +303,7 @@ fn placement_budgets_include_observed_pinned_commitments() {
                 ..Default::default()
             },
         );
-        let preview = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+        let preview = preview_deploy(&intent, &snapshot).unwrap();
         assert_eq!(preview.storage.len(), 2);
         assert_eq!(preview.volumes_to_create.len(), 1);
         assert_eq!(
@@ -361,7 +360,7 @@ fn shared_groups_reserve_private_mounts_before_later_placement() {
                 ..Default::default()
             },
         );
-        let preview = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+        let preview = preview_deploy(&intent, &snapshot).unwrap();
         assert_eq!(preview.storage.len(), 2);
         assert!(
             preview
@@ -401,7 +400,7 @@ fn preparation_and_preview_include_unchanged_assigned_storage() {
         [&old, &new],
         PlanOptions::default(),
     );
-    let preview = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    let preview = preview_deploy(&intent, &snapshot).unwrap();
     assert!(!preview.operations.iter().any(|row| {
         matches!(&row.operation, DeployOperation::RunContainer { spec, .. } if spec.name.as_str() == "old")
     }));
@@ -460,7 +459,7 @@ fn preparation_and_preview_include_unchanged_assigned_storage() {
         app_volume("data"),
         ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(30 * STORAGE_GIB).unwrap()),
     );
-    let preview = preview_deploy(&intent, &recovered, IngressContext::default()).unwrap();
+    let preview = preview_deploy(&intent, &recovered).unwrap();
     assert_eq!(
         preview
             .volumes_to_create

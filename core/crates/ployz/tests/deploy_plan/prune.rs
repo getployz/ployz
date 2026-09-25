@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::{IngressContext, preview_deploy};
+use ployz::deploy::preview_deploy;
 use ployz_core::{
     ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure, PruneRefusal,
     QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
@@ -28,7 +28,6 @@ fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
             PlanOptions::default(),
         ),
         &snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -49,7 +48,6 @@ fn selected_services_list_obsolete_services_and_remove_nothing() {
             PlanOptions::default(),
         ),
         &snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -146,7 +144,7 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
             condition: DependencyCondition::ServiceStarted,
         }],
     )]));
-    let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
     assert_eq!(
         plan.would_remove,
         [QualifiedService::parse("app/debug").unwrap()]
@@ -196,7 +194,6 @@ fn selecting_one_service_does_not_remove_the_rest_of_the_project() {
             },
         ),
         &snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -228,7 +225,6 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
             PlanOptions::default(),
         ),
         &snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&partial, 'd'));
@@ -243,7 +239,6 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
             PlanOptions::default(),
         ),
         &snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     assert!(
@@ -280,7 +275,6 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
             containers: vec![leftover.clone()],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&shop, 'c'));
@@ -305,7 +299,6 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
             containers: vec![leftover, extra],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&system, '3'));
@@ -332,7 +325,6 @@ fn other_project_services_are_not_removed_by_a_user_project_reconcile() {
             containers: vec![other],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&plan, '9'));
@@ -357,7 +349,6 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
             containers: vec![container('d', '1', &debug, &service_id('b')), hook],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(removes(&plan, 'd'));
@@ -379,7 +370,6 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
             containers: vec![container('d', '1', &debug, &service_id('b'))],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     let ops = operations(&plan);

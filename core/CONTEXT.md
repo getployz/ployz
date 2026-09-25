@@ -292,15 +292,15 @@ The Project attributed to an Internal DNS query by matching its source Container
 _Avoid_: caller identity, authenticated client, source registry
 
 **Ingress Hostname**:
-The HTTP hostname a Service publishes through ingress. Cluster Domain assignment uses the automatic `{service}-{project}` label or a chosen DNS label with no Project suffix; otherwise the hostname is an explicit validated name. An empty string is not an assignment signal.
-_Avoid_: empty hostname sentinel
+The HTTP hostname a Service publishes through ingress. It is always an explicit validated name: the runtime never generates one, and Cloud expands its managed hostnames against the Organization's Cluster Domain before they arrive. An empty string is not a hostname.
+_Avoid_: empty hostname sentinel, Cluster Domain label
 
 **Hostname Owner**:
 The Qualified Service that wins an Ingress Hostname from one observer's Service Container observations; Serving is not required. Derived; not a persisted record, lease, or lock. Different observers may select different owners until their observations match.
 _Avoid_: hostname lease, ownership table, global hostname uniqueness, Serving as the ownership gate
 
 **Certificate Material**:
-The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
+The certificate and private key held in cluster state for one Ingress Hostname or single-level wildcard `*.x`. It is served as given; it is not an issuance request and not a local proxy store. Published material comes from an operator or Cloud; ACME never orders, renews, or overwrites it, and a published wildcard serves every hostname one label under `x`.
 _Avoid_: Caddy certificate, ACME certificate, cert secret
 
 **Certificate Policy**:
@@ -340,8 +340,8 @@ One of exactly two names a daemon or installer may follow: `stable` (the highest
 _Avoid_: latest, nightly, dev channel
 
 **Hosted DNS**:
-The Ployz-run service that grants a Cluster Domain and serves its public records. It is shared infrastructure separate from Cloud; a Cluster stores which endpoint granted its reservation and an encrypted reservation token.
-_Avoid_: Uncloud DNS, Cloud DNS, generated domain as Cloud state
+The Ployz-run service that grants Cluster Domains and serves their public records. Only Cloud calls it (see `dashboard/CONTEXT.md`); the daemon, SDK and CLI make no Hosted DNS calls, and a Cluster stores no reservation.
+_Avoid_: Cloud DNS, cluster-held reservation, generated domain as runtime state
 
 **Pairing Credential**:
 The secret identifying the current Cloud Pairing and authenticating the CLI's enrollment callbacks to Cloud for that attempt. It never reaches the daemon and is distinct from a Machine's Management Capability.

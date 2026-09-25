@@ -60,7 +60,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
         .map_err(Error::from)?;
-        crate::dns::update_records_if_reserved(&mut client).await.map_err(|error| Error::usage(format!("Ingress deployment completed; DNS publication pending: {error}; allow outbound access if blocked, then rerun the same ployz ingress deploy command")))?;
         Ok(())
     })
 }

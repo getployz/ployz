@@ -8,6 +8,8 @@ import {
   service as schemaService,
 } from "#/modules/environment-design/tables";
 import { machineEnrollmentToken as schemaMachineEnrollmentToken } from "#/modules/machines/tables";
+import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { organizationClusterDomain as schemaOrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import {
   environment as schemaEnvironment,
@@ -139,7 +141,7 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
     ]),
   ];
   const database = yield* Database;
-  yield* database.transaction(
+  const clusterDomain = yield* database.transaction(
     Effect.gen(function* () {
       const transaction = yield* Database;
       if (environmentIds.length > 0) {
@@ -171,6 +173,8 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
         if (pending) return yield* new PloyzProviderError({
           operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
         });
+        const [domain] = yield* transaction.drizzle.select().from(schemaOrganizationClusterDomain)
+          .where(eq(schemaOrganizationClusterDomain.organizationId, attempt.organizationId));
         yield* transaction.drizzle
           .delete(schemaOrganizationPairing)
           .where(eq(schemaOrganizationPairing.organizationId, attempt.organizationId));
@@ -180,9 +184,13 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
         yield* transaction.drizzle
           .delete(schemaOrganization)
           .where(eq(schemaOrganization.id, attempt.organizationId));
+        return domain ?? null;
       }
+      return null;
     }),
   );
+  // Only once the Organization is gone: its Cluster Domain row cascaded with it, so a retry never releases twice.
+  if (clusterDomain) yield* releaseClusterDomain(clusterDomain);
 });
 
 export const failOwnedTeardownAttemptActivity = Effect.fn(

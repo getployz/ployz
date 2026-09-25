@@ -33,7 +33,6 @@ describe("runtimeSnapshotFromWatchFrame", () => {
 
     const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
       observed_at: OBSERVED_AT,
-      hosted_dns_hostname: "brisk-river.up.ployz.app",
       machines: [
         runtimeWatchMachineObservationFixture({
           machine: runtimeWatchMachineFixture("machine-a", "edge-a", {
@@ -69,7 +68,6 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     expect(snapshot).toEqual({
       status: "observed",
       error: null,
-      hostedDnsHostname: "brisk-river.up.ployz.app",
       machines: [
         {
           id: "machine-a",

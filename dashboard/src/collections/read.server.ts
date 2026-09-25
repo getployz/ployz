@@ -9,6 +9,7 @@ import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { changeSources } from "#/modules/organization/change-log.sources";
+import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { Database } from "#/server/database.server";
@@ -100,6 +101,15 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           founderMachineId: tables.organizationPairing.founderMachineId,
         }).from(tables.organizationPairing).where(scoped(tables.organizationPairing));
         return pairings.map((row): OrganizationEnrollmentRow => ({ id: row.id, status: pairingEnrollmentStatus(row.founderMachineId) }));
+      }
+      case "organization_cluster_domain": {
+        // The token and certificate key stay on the server.
+        const domain = tables.organizationClusterDomain;
+        const rows: ClusterDomainRow[] = yield* database.drizzle.select({
+          id: domain.organizationId, name: domain.name, reservedAt: domain.reservedAt, leaseRenewedAt: domain.leaseRenewedAt,
+          recordsSyncedAt: domain.recordsSyncedAt, recordAddresses: domain.recordAddresses, unreachable: domain.unreachable, certificateNotAfter: domain.certificateNotAfter,
+        }).from(domain).where(scoped(domain));
+        return rows;
       }
     }
   });

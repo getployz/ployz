@@ -15,7 +15,6 @@ export function runtimeWatchFrameFixture(
   overrides: Partial<RuntimeWatchView> = {},
 ): RuntimeWatchView {
   return {
-    hosted_dns_hostname: null,
     machines: [],
     containers: [],
     services: [],

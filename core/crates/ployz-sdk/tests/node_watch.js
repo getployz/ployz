@@ -60,7 +60,6 @@ function assertFrame(frame, label) {
     "challenge_token",
     "challenge_response",
     "renewal_token",
-    "dns_endpoint",
   ]) {
     if (text.includes(forbidden)) {
       throw new Error(`${label} leaked ${forbidden}`);

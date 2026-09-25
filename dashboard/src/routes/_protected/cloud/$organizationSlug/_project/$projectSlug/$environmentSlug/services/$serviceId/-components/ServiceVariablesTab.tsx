@@ -1,4 +1,4 @@
-import { useRuntimeStatus } from "#/providers/runtime-provider";
+import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
 import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
@@ -36,8 +36,8 @@ export function ServiceVariablesTab({
   state: ServiceDrawerState;
 }) {
   const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
-  const { hostedDnsHostname } = useRuntimeStatus();
-  const ployzManagedVariables = getManagedServiceExports(state.service, hostedDnsHostname);
+  const clusterDomain = useClusterDomainName(state.organizationSlug);
+  const ployzManagedVariables = getManagedServiceExports(state.service, clusterDomain);
   const variableWriter = useVariableWriter(state.organizationSlug);
   const updateExport = useServerFn(updateServiceVariableExportServerFn);
   const [rawEditorOpen, setRawEditorOpen] = useState(false);

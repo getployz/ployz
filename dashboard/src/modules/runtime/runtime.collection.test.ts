@@ -16,7 +16,6 @@ function observedSnapshot(): RuntimeSnapshot {
   return {
     status: "observed",
     error: null,
-    hostedDnsHostname: "brisk-river.up.ployz.app",
     machines: [
       {
         id: "m1",
@@ -134,7 +133,6 @@ describe("unreachableRuntimeSnapshot", () => {
     expect(unreachableRuntimeSnapshot(CLUSTER_UNREACHABLE_ERROR)).toEqual({
       status: "unreachable",
       error: CLUSTER_UNREACHABLE_ERROR,
-      hostedDnsHostname: null,
       machines: [],
       services: [],
       certificates: [],

@@ -496,7 +496,7 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
 
 #[tokio::test]
 async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoints() {
-    use crate::deploy::{DeployIntent, DeploySnapshot, IngressContext, PlanOptions, plan_deploy};
+    use crate::deploy::{DeployIntent, DeploySnapshot, PlanOptions, plan_deploy};
     use ployz_core::{
         BridgeEndpointCapacity, ContainerChanged, ContainerDetails, ContainerList, Machine,
         MachineName, MachineObservation, MembershipObservation, OpaquePayload,
@@ -664,7 +664,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
             ..Default::default()
         },
     );
-    let first = plan_deploy(&intent, &snapshot(1), IngressContext::default()).unwrap();
+    let first = plan_deploy(&intent, &snapshot(1)).unwrap();
     assert!(matches!(
         execute_operation_sequence(&first, &client, &CancellationToken::new(), None).await,
         DeployOutcome::Failed { .. }
@@ -674,8 +674,8 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         2,
         "failed start retains v2 beside stopped v1"
     );
-    let retry = plan_deploy(&intent, &snapshot(2), IngressContext::default())
-        .expect("retained candidate needs no new endpoint");
+    let retry =
+        plan_deploy(&intent, &snapshot(2)).expect("retained candidate needs no new endpoint");
     let DeployOperation::RunContainer {
         machine_id, spec, ..
     } = retry.operations().first().unwrap()

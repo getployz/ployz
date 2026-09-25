@@ -9,10 +9,10 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, CertificateAvailability, CertificateBackoff,
-    CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
+    CertificateFailureKind, CertificateHost, CertificateObservation, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, HealthObservation, IngressHost, IssuanceClock, IssuanceFailure, Machine,
-    MachineId, MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
+    DockerVolumeName, HealthObservation, IssuanceClock, IssuanceFailure, Machine, MachineId,
+    MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -24,7 +24,6 @@ use super::{
     serve_runtime_watch,
 };
 use crate::corrosion::{CertificateChallenge, CertificateRow, Error, ReplicatedObservations};
-use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -39,8 +38,6 @@ const OBSERVED_AT: &str = "2024-01-01T00:00:00Z";
 const CHALLENGE_TOKEN: &str = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
 const CHALLENGE_RESPONSE: &str =
     "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const DNS_TOKEN: &str = "dns-renewal-token-secret";
-const DNS_ENDPOINT: &str = "https://dns.example.invalid/v1";
 const PAIRING: &str = "pairing-credential-secret";
 
 #[test]
@@ -68,12 +65,11 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             volumes: observations(vec![volume.clone()]),
             certificates: ReplicatedObservations {
                 observations: vec![(
-                    IngressHost::parse("ok.example.com").unwrap(),
+                    CertificateHost::parse("ok.example.com").unwrap(),
                     CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: Vec::new(),
             },
-            hosted_dns: Some(reservation()),
         },
         &entry.id,
         Some(&telemetry),
@@ -100,15 +96,11 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     assert_eq!(
         frame.certificates,
         vec![CertificateObservation {
-            hostname: IngressHost::parse("ok.example.com").unwrap(),
+            hostname: CertificateHost::parse("ok.example.com").unwrap(),
             status: CertificateAvailability::Available,
             last_error: None,
             backoff: None,
         }]
-    );
-    assert_eq!(
-        frame.hosted_dns_hostname.as_deref(),
-        Some("cluster.example.ts.net")
     );
     assert_eq!(frame.observed_at, OBSERVED_AT);
 }
@@ -124,7 +116,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
         machine_id: incomplete_machine,
         name: DockerVolumeName::parse("scratch").unwrap(),
     };
-    let incomplete_cert = IngressHost::parse("pending.example.com").unwrap();
+    let incomplete_cert = CertificateHost::parse("pending.example.com").unwrap();
 
     let frame = assemble_runtime_watch_frame(
         RuntimeWatchSnapshot {
@@ -142,12 +134,11 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
             },
             certificates: ReplicatedObservations {
                 observations: vec![(
-                    IngressHost::parse("ok.example.com").unwrap(),
+                    CertificateHost::parse("ok.example.com").unwrap(),
                     CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: vec![incomplete_cert.clone()],
             },
-            hosted_dns: None,
         },
         &entry.id,
         None,
@@ -192,19 +183,18 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
             certificates: ReplicatedObservations {
                 observations: vec![
                     (
-                        IngressHost::parse("ok.example.com").unwrap(),
+                        CertificateHost::parse("ok.example.com").unwrap(),
                         CertificateRow::issued(crate::ingress::tests::test_material()),
                     ),
-                    (IngressHost::parse("new.example.com").unwrap(), pending),
-                    (IngressHost::parse("app.example.com").unwrap(), failed),
+                    (CertificateHost::parse("new.example.com").unwrap(), pending),
+                    (CertificateHost::parse("app.example.com").unwrap(), failed),
                     (
-                        IngressHost::parse("maybe.example.com").unwrap(),
+                        CertificateHost::parse("maybe.example.com").unwrap(),
                         CertificateRow::default(),
                     ),
                 ],
                 incomplete_ids: Vec::new(),
             },
-            hosted_dns: Some(reservation()),
         },
         &entry.id,
         None,
@@ -215,19 +205,19 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         frame.certificates,
         vec![
             CertificateObservation {
-                hostname: IngressHost::parse("ok.example.com").unwrap(),
+                hostname: CertificateHost::parse("ok.example.com").unwrap(),
                 status: CertificateAvailability::Available,
                 last_error: None,
                 backoff: None,
             },
             CertificateObservation {
-                hostname: IngressHost::parse("new.example.com").unwrap(),
+                hostname: CertificateHost::parse("new.example.com").unwrap(),
                 status: CertificateAvailability::Pending,
                 last_error: None,
                 backoff: None,
             },
             CertificateObservation {
-                hostname: IngressHost::parse("app.example.com").unwrap(),
+                hostname: CertificateHost::parse("app.example.com").unwrap(),
                 status: CertificateAvailability::Failure,
                 last_error: Some(
                     "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
@@ -240,7 +230,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 }),
             },
             CertificateObservation {
-                hostname: IngressHost::parse("maybe.example.com").unwrap(),
+                hostname: CertificateHost::parse("maybe.example.com").unwrap(),
                 status: CertificateAvailability::Unknown,
                 last_error: None,
                 backoff: None,
@@ -251,12 +241,6 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
     let encoded = encode_runtime_watch_frame(&frame).unwrap();
     let round_trip: Value = encoded.decode_json().unwrap();
     assert_no_secret_material(&round_trip.to_string());
-    assert_eq!(
-        round_trip.get("hosted_dns_hostname"),
-        Some(&json!("cluster.example.ts.net"))
-    );
-    assert!(round_trip.get("endpoint").is_none());
-    assert!(round_trip.get("token").is_none());
     let certificates = round_trip
         .get("certificates")
         .and_then(Value::as_array)
@@ -282,7 +266,6 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
                 observations: Vec::new(),
                 incomplete_ids: Vec::new(),
             },
-            hosted_dns: None,
         },
         &entry.id,
         None,
@@ -296,7 +279,6 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
             MachineObservation::new(peer, MembershipObservation::Unknown),
         ]
     );
-    assert_eq!(frame.hosted_dns_hostname, None);
 }
 
 fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
@@ -304,15 +286,6 @@ fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
         observations,
         incomplete_ids: Vec::new(),
     }
-}
-
-fn reservation() -> Reservation {
-    Reservation::parse(
-        DNS_ENDPOINT.into(),
-        "cluster.example.ts.net".into(),
-        DNS_TOKEN.into(),
-    )
-    .unwrap()
 }
 
 fn machine(name: &str, id: &str, seed: u8) -> Machine {
@@ -409,8 +382,6 @@ fn assert_no_secret_material(text: &str) {
         "BEGIN PRIVATE KEY",
         CHALLENGE_TOKEN,
         CHALLENGE_RESPONSE,
-        DNS_TOKEN,
-        DNS_ENDPOINT,
         PAIRING,
         "private_key",
         "challenge_token",
@@ -846,7 +817,6 @@ fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchS
             observations: Vec::new(),
             incomplete_ids: Vec::new(),
         },
-        hosted_dns: None,
     }
 }
 

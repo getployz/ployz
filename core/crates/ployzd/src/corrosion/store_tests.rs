@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, IssuanceFailure,
-    Machine, MachineId,
+    CertificateHost, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock,
+    IssuanceFailure, Machine, MachineId,
 };
 use serde_json::json;
 
@@ -728,38 +728,6 @@ async fn store_preserves_published_identities_and_keyed_incomplete_rows() {
     task.abort();
 }
 
-#[tokio::test]
-async fn invalid_hosted_reservation_is_unavailable_and_explicit_release_recovers() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
-    db.execute(
-        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
-        [json!({"endpoint": "https://dns.example", "name": "", "token": ""}).to_string()],
-    )
-    .unwrap();
-    let (store, server) = identity_store(db).await;
-    let client = crate::hosted_dns::HostedDns::new();
-    assert!(store.domain_reservation().await.is_err());
-    assert!(client.domain(&store).await.is_err());
-    let error = client.release_domain(&store).await.unwrap_err();
-    assert!(error.to_string().contains("cleared locally"), "{error}");
-    assert!(store.domain_reservation().await.unwrap().is_none());
-    let valid = crate::hosted_dns::Reservation::parse(
-        "http://127.0.0.1:1".into(),
-        "cluster.example".into(),
-        "opaque-token".into(),
-    )
-    .unwrap();
-    store.publish_domain_reservation(&valid).await.unwrap();
-    assert_eq!(client.domain(&store).await.unwrap(), "cluster.example");
-    assert_eq!(
-        client.release_domain(&store).await.unwrap(),
-        "cluster.example"
-    );
-    assert!(store.domain_reservation().await.unwrap().is_none());
-    server.abort();
-}
-
 /// A newer Machine may add optional fields to any replicated body; this reader
 /// must still recover every value it knows.
 #[tokio::test]
@@ -789,12 +757,6 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         },
     };
     let hostname = IngressHost::parse("app.example.com").unwrap();
-    let reservation = crate::hosted_dns::Reservation::parse(
-        "https://dns.example".into(),
-        "cluster.example".into(),
-        "opaque-token".into(),
-    )
-    .unwrap();
     let mut container_body = serde_json::to_value(&container).unwrap();
     container_body
         .get_mut("resolved_spec")
@@ -837,13 +799,6 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         ],
     )
     .unwrap();
-    db.execute(
-        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
-        [with_future_field(
-            serde_json::to_value(&reservation).unwrap(),
-        )],
-    )
-    .unwrap();
     let (store, task) = identity_store(db).await;
     assert_eq!(
         store.machine(machine.id.as_str()).await.unwrap(),
@@ -858,7 +813,6 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         store.certificate_row(&hostname).await.unwrap().last_error(),
         Some("refused")
     );
-    assert_eq!(store.domain_reservation().await.unwrap(), Some(reservation));
     task.abort();
 }
 
@@ -885,7 +839,75 @@ async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
     assert_eq!(row.last_error(), Some("policy refused"));
     assert_eq!(
         store.certificates().await.unwrap(),
-        BTreeMap::from([(hostname, material)])
+        BTreeMap::from([(CertificateHost::from(hostname), material)])
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let published_name = CertificateHost::from(hostname.clone());
+    let material = |name: &str| {
+        let pair = rcgen::generate_simple_self_signed([name.to_owned()]).unwrap();
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap()
+    };
+    let published = material("app.example.com");
+    store
+        .publish_certificate_material(&published_name, published.clone())
+        .await
+        .unwrap();
+
+    store
+        .publish_certificate(&hostname, &material("app.example.com"))
+        .await
+        .unwrap();
+    store
+        .publish_certificate_challenge(
+            &hostname,
+            &super::CertificateChallenge::parse(
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    store
+        .record_certificate_error(&hostname, "policy refused")
+        .await
+        .unwrap();
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::Published(published)
+    );
+
+    let wildcard = CertificateHost::parse("*.example.com").unwrap();
+    let wildcard_material = material("*.example.com");
+    store
+        .publish_certificate_material(&wildcard, wildcard_material.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.certificates().await.unwrap().get("*.example.com"),
+        Some(&wildcard_material)
+    );
+
+    store
+        .clear_published_certificate(&published_name)
+        .await
+        .unwrap();
+    assert_eq!(store.certificate(&hostname).await.unwrap(), None);
+    let issued = material("app.example.com");
+    store.publish_certificate(&hostname, &issued).await.unwrap();
+    store
+        .clear_published_certificate(&published_name)
+        .await
+        .unwrap();
+    assert_eq!(store.certificate(&hostname).await.unwrap(), Some(issued));
     task.abort();
 }

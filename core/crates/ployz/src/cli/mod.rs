@@ -171,7 +171,6 @@ fn cloud_enroll() -> Command {
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
         )
         .arg(value("ingress-image", None).help("Caddy image to deploy when founding a Cluster"))
-        .arg(switch("no-dns", None))
         .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
@@ -314,9 +313,7 @@ fn machine_init() -> Command {
         .about("Initialise a cluster on this Machine or a remote machine")
         .args(connection_args(false))
         .arg(value("context", Some('c')).default_value("default"))
-        .arg(value("dns-endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT))
-        .arg(value("network", None).default_value("10.210.0.0/16"))
-        .arg(switch("no-dns", None));
+        .arg(value("network", None).default_value("10.210.0.0/16"));
     provisioning_flags(command).arg(positional("destination", false))
 }
 

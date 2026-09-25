@@ -11,6 +11,7 @@ import {
 } from "effect";
 
 const Uuid = Schema.String.check(Schema.isUUID());
+const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
 const EncryptionSecret = Schema.Redacted(
   Schema.String.check(Schema.isMinLength(32)),
@@ -63,6 +64,12 @@ const rawConfig = Config.all({
     Config.schema(NonEmptySecret, "POLAR_WEBHOOK_SECRET"),
   ),
   polarProductId: optional(Config.schema(Uuid, "POLAR_PRODUCT_ID")),
+  hostedDnsUrl: Config.url("PLOYZ_HOSTED_DNS_URL").pipe(
+    Config.withDefault(DEFAULT_HOSTED_DNS_URL),
+  ),
+  hostedDnsMintKey: optional(
+    Config.schema(NonEmptySecret, "PLOYZ_HOSTED_DNS_MINT_KEY"),
+  ),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
@@ -123,6 +130,10 @@ const makeAppConfig = Effect.gen(function* () {
     },
     polar,
     polarSuccessUrl: `${appUrl}/cloud?checkout_id={CHECKOUT_ID}`,
+    ployz: {
+      hostedDnsUrl: raw.hostedDnsUrl,
+      hostedDnsMintKey: raw.hostedDnsMintKey,
+    },
     inngest: {
       eventKey: raw.inngestEventKey,
       signingKey: raw.inngestSigningKey,

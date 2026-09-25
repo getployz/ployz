@@ -8,7 +8,7 @@ const collectionNames = [
   "environment_resource", "environment_canvas_node_position",
   "environment_deployment", "environment_saved_state_snapshot",
   "environment_node_config_snapshot", "environment_node_introduction",
-  "volume_remove_attempt", "organization_enrollment",
+  "volume_remove_attempt", "organization_enrollment", "organization_cluster_domain",
 ] as const;
 
 export const collectionReadInput = Schema.Struct({

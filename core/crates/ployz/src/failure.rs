@@ -1,9 +1,9 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    CodecError, ContainerSelectorError, DataLoss, IngressLabelTooLong, MachineSelectorError,
-    MachineUpdateError, PartialResult, RpcError, ServiceSelectorError, StreamProtocolError,
-    UnconfirmedDataLoss, ValueError,
+    CodecError, ContainerSelectorError, DataLoss, MachineSelectorError, MachineUpdateError,
+    PartialResult, RpcError, ServiceSelectorError, StreamProtocolError, UnconfirmedDataLoss,
+    ValueError,
 };
 
 use crate::{
@@ -11,7 +11,6 @@ use crate::{
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
-    dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
     ingress::IngressImageError,
     operator::OperatorError,
@@ -152,9 +151,6 @@ from_error!(
     ContainerSelectorError,
     PlanError,
     MachineUpdateError,
-    DomainRequired,
-    IngressLabelTooLong,
-    NoReachableMachines,
     StreamProtocolError,
     ConfigError,
     io::Error,
@@ -210,18 +206,6 @@ impl From<DeployError> for Failure {
     }
 }
 
-impl From<DnsError> for Failure {
-    #[expect(
-        clippy::wildcard_enum_match_arm,
-        reason = "opaque Failure peels ConnectError; the rest keep the original error"
-    )]
-    fn from(error: DnsError) -> Self {
-        match error {
-            DnsError::Connect(error) => error.into(),
-            error => Self::command(error),
-        }
-    }
-}
 impl From<tonic::Status> for Failure {
     fn from(status: tonic::Status) -> Self {
         TransportError::from(status).into()
@@ -350,21 +334,13 @@ mod tests {
 
     #[test]
     fn warned_follow_on_is_one_line_and_fails() {
-        let cause = "inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
-        let add = Failure::warned("hosted DNS refresh failed after adding the Machine", cause);
-        let remove = Failure::warned(
-            "hosted DNS refresh failed after removing the Machine",
-            cause,
-        );
-        assert_eq!(
-            add.to_string(),
-            "WARNING: hosted DNS refresh failed after adding the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
-        );
+        let cause = "write context file: permission denied";
+        let remove = Failure::warned("local context cleanup failed after Machine removal", cause);
         assert_eq!(
             remove.to_string(),
-            "WARNING: hosted DNS refresh failed after removing the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
+            "WARNING: local context cleanup failed after Machine removal: write context file: permission denied."
         );
-        assert_eq!(add.to_string().matches(cause).count(), 1);
+        assert_eq!(remove.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
     }
 

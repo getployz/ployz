@@ -23,6 +23,7 @@ export const changeNameSources = {
   environment_node_introduction: ["environment_node_introduction"],
   volume_remove_attempt: ["volume_remove_attempt"],
   organization_enrollment: ["organization_pairing"],
+  organization_cluster_domain: ["organization_cluster_domain"],
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 
 export function collectionsOf(sourceTables: Iterable<ChangeSource>) {

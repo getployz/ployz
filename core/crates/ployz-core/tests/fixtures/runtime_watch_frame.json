@@ -89,7 +89,6 @@
       "status": "unknown"
     }
   ],
-  "hosted_dns_hostname": "cluster.example.ts.net",
   "incomplete_ids": {
     "machines": ["fedcba9876543210fedcba9876543210"],
     "containers": ["2222222222222222222222222222222222222222222222222222222222222222"],

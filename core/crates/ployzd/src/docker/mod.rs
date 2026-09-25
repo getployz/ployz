@@ -1412,7 +1412,7 @@ mod tests {
             },
             {
                 "mode":"ingress",
-                "hostname":{"kind":"explicit","hostname":"api.example.com"},
+                "hostname":"api.example.com",
                 "load_balancer_port":443,
                 "container_port":8443,
                 "http_protocol":"https"

@@ -52,7 +52,6 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             "--name",
             "joiner",
             "--accepts-ingress=false",
-            "--no-dns",
             "--yes",
         ])
         .unwrap()

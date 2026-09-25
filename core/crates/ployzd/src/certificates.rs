@@ -18,8 +18,8 @@ use instant_acme::{
     ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation, HttpProtocol,
-    IngressHost, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
+    CertificateHost, CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
+    HttpProtocol, IngressHost, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
     cluster_dns_verdict, issuance_failure_clock, issuance_gate, issuance_refusal_reason,
     resolve_certificate_policy,
 };
@@ -29,7 +29,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
+    corrosion::{
+        CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore, published_cover,
+    },
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -317,10 +319,13 @@ pub(crate) fn directory_url() -> Option<String> {
     directory_from_env(std::env::var(DIRECTORY_ENV).ok().as_deref())
 }
 
-/// https Ingress Hostnames on Service Containers. The daemon does not know a Cluster Domain.
+/// https Ingress Hostnames on Service Containers that ACME must serve: hostnames
+/// with published material, or under a published wildcard, are not wanted.
+/// The daemon does not know a Cluster Domain.
 #[must_use]
 pub(crate) fn wanted_certificate_hosts<'a>(
     observations: impl IntoIterator<Item = &'a ContainerObservation>,
+    rows: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> BTreeSet<IngressHost> {
     let mut wanted = BTreeSet::new();
     for observation in observations {
@@ -336,10 +341,9 @@ pub(crate) fn wanted_certificate_hosts<'a>(
             else {
                 continue;
             };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                continue;
-            };
-            wanted.insert(hostname.clone());
+            if published_cover(hostname, rows).is_none() {
+                wanted.insert(hostname.clone());
+            }
         }
     }
     wanted
@@ -396,7 +400,8 @@ async fn issue_wanted(
         Ok(policy) => policy,
         Err(refusal) => {
             let containers = store.containers().await?;
-            for hostname in wanted_certificate_hosts(containers.observations.iter()) {
+            let rows = store.certificate_state().await?;
+            for hostname in wanted_certificate_hosts(containers.observations.iter(), &rows) {
                 store
                     .record_certificate_error(&hostname, refusal.reason())
                     .await?;
@@ -408,12 +413,12 @@ async fn issue_wanted(
         return Ok(RETRY_INTERVAL);
     };
     let containers = store.containers().await?;
-    let wanted = wanted_certificate_hosts(containers.observations.iter());
+    let mut rows = store.certificate_state().await?;
+    let wanted = wanted_certificate_hosts(containers.observations.iter(), &rows);
     first_seen.retain(|hostname, _| wanted.contains(hostname));
     if wanted.is_empty() {
         return Ok(RETRY_INTERVAL);
     }
-    let mut rows = store.certificate_state().await?;
     let machines = store.machines().await?;
     let cluster = cluster_addresses(&machines.observations);
     let rank = machine_rank(
@@ -424,7 +429,7 @@ async fn issue_wanted(
     let wall = SystemTime::now();
     let mut to_order = Vec::new();
     for hostname in &wanted {
-        let row = rows.get(hostname);
+        let row = rows.get(hostname.as_str());
         let elapsed = match row.and_then(CertificateRow::material) {
             Some(_) => {
                 first_seen.remove(hostname);
@@ -488,7 +493,7 @@ async fn issue_wanted(
             if let Err(error) = result {
                 eprintln!("failed to obtain certificate for {hostname}: {error}");
                 let clock = issuance_failure_clock(
-                    rows.get(*hostname).and_then(CertificateRow::clock),
+                    rows.get(hostname.as_str()).and_then(CertificateRow::clock),
                     IssuanceFailure::Authority,
                     wall,
                     policy.backoff_base(),
@@ -515,7 +520,14 @@ async fn issue_wanted(
                 .get(hostname)
                 .map(|seen| now.saturating_duration_since(*seen))
                 .unwrap_or(Duration::ZERO);
-            poll_wait(rows.get(hostname), rank, elapsed, wall, machine_id, &policy)
+            poll_wait(
+                rows.get(hostname.as_str()),
+                rank,
+                elapsed,
+                wall,
+                machine_id,
+                &policy,
+            )
         })
         .min()
         .unwrap_or(RETRY_INTERVAL))

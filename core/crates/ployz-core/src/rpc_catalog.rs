@@ -67,10 +67,7 @@ macro_rules! rpc_catalog {
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
                 PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container),
                 GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
-                ReserveDomain: (reserve_domain, "ReserveDomain", ReserveDomainRequest, "reserve_domain", Domain, RESERVE_DOMAIN_CAPABILITY, "ployz.dns.reserve.v1", Cluster),
-                GetDomain: (get_domain, "GetDomain", GetDomainRequest, "get_domain", Domain, GET_DOMAIN_CAPABILITY, "ployz.dns.show.v1", Cluster),
-                ReleaseDomain: (release_domain, "ReleaseDomain", ReleaseDomainRequest, "release_domain", Domain, RELEASE_DOMAIN_CAPABILITY, "ployz.dns.release.v1", Cluster),
-                CreateDomainRecords: (create_domain_records, "CreateDomainRecords", CreateDomainRecordsRequest, "create_domain_records", DomainRecords, CREATE_DOMAIN_RECORDS_CAPABILITY, "ployz.dns.records.create.v1", Cluster),
+                PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
                 Reset: (reset, "Reset", ResetRequest, "reset", ResetAccepted, RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1", Always),
             }
             server_streaming {

@@ -120,20 +120,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             crate::global_catch_up::joined_catch_up_error(error)
         )));
     }
-    let dns_result = runtime.block_on(async {
-        let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-        crate::dns::update_records_if_reserved(&mut entry).await?;
-        Ok::<_, Error>(())
-    });
-    if let Err(error) = dns_result {
-        let recovery =
-            super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
-        eprintln!("Machine joined; DNS publication pending. Continue with: {recovery}");
-        eprintln!(
-            "{}",
-            Error::warned("hosted DNS refresh failed after adding the Machine", error)
-        );
-    }
     Ok(())
 }
 

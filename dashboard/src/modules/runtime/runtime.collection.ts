@@ -132,9 +132,6 @@ export const runtimeStatusRecordSchema = Schema.Struct({
   id: Schema.Literal("runtime"),
   status: runtimeLensStatusSchema,
   error: Schema.NullOr(Schema.String),
-  /** Hosted DNS hostname as observed by Runtime. Its presence says nothing
-   * about DNS publication. */
-  hostedDnsHostname: Schema.NullOr(Schema.String),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
   incompleteIds: runtimeIncompleteIdsSchema,
   /** Null when Cloud has not received a Runtime Watch observation. */
@@ -148,7 +145,6 @@ export type RuntimeStatusRecord = typeof runtimeStatusRecordSchema.Type;
 export const runtimeSnapshotSchema = Schema.Struct({
   status: runtimeLensStatusSchema,
   error: Schema.NullOr(Schema.String),
-  hostedDnsHostname: Schema.NullOr(Schema.String),
   machines: Schema.Array(runtimeMachineRecordSchema),
   services: Schema.Array(runtimeServiceRecordSchema),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
@@ -165,7 +161,6 @@ function emptyRuntimeSnapshot(input: {
   return {
     status: input.status,
     error: input.error,
-    hostedDnsHostname: null,
     machines: [],
     services: [],
     certificates: [],
@@ -220,7 +215,6 @@ export function applyRuntimeSnapshot(input: {
       id: "runtime",
       status: input.snapshot.status,
       error: input.snapshot.error,
-      hostedDnsHostname: input.snapshot.hostedDnsHostname,
       certificates: input.snapshot.certificates,
       incompleteIds: input.snapshot.incompleteIds,
       observedAt: input.snapshot.observedAt,
@@ -234,7 +228,6 @@ export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
   return Schema.decodeUnknownSync(runtimeSnapshotSchema)({
     status: status.status,
     error: status.error,
-    hostedDnsHostname: status.hostedDnsHostname,
     // SAFETY: local-only collection values carry TanStack's four virtual keys at runtime.
     machines: Array.from(collections.machines.values()).map((row) =>
       withoutVirtualProps(row as VirtualRowProps & RuntimeMachineRecord),
@@ -276,7 +269,6 @@ function createRuntimeCollections(organizationSlug: string, scope: CollectionSco
             id: "runtime",
             status: snapshot.status,
             error: snapshot.error,
-            hostedDnsHostname: snapshot.hostedDnsHostname,
             certificates: snapshot.certificates,
             incompleteIds: snapshot.incompleteIds,
             observedAt: snapshot.observedAt,

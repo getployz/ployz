@@ -1,9 +1,9 @@
 //! Certificate row body held in the replicated store.
 
-use std::time::SystemTime;
+use std::{collections::BTreeMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::{IssuanceClock, IssuanceFailure};
+use ployz_core::{CertificateHost, IngressHost, IssuanceClock, IssuanceFailure};
 use serde::{Deserialize, Serialize};
 
 use super::Error;
@@ -29,6 +29,9 @@ pub enum CertificateMaterialError {
     /// The leaf certificate belongs to another key.
     #[error("certificate does not match its private key")]
     KeyMismatch,
+    /// No DNS name on the leaf certificate serves the hostname.
+    #[error("certificate does not cover the hostname")]
+    HostnameNotCovered,
 }
 
 impl CertificateMaterial {
@@ -75,6 +78,44 @@ impl CertificateMaterial {
             certificate,
             private_key,
         })
+    }
+
+    /// Keep this material only if a DNS subject alternative name on its leaf
+    /// serves `hostname`: the same name, or a wildcard one label above it.
+    ///
+    /// # Errors
+    /// Returns `HostnameNotCovered` when no leaf DNS name serves the hostname.
+    pub fn covering(self, hostname: &CertificateHost) -> Result<Self, CertificateMaterialError> {
+        use x509_parser::extensions::GeneralName;
+
+        // A wildcard target is only served by the same wildcard.
+        let host = IngressHost::parse(hostname.as_str()).ok();
+        let serves = |name: &str| {
+            CertificateHost::parse(name.to_ascii_lowercase()).is_ok_and(|name| {
+                name == *hostname || host.as_ref().is_some_and(|host| name.covers(host))
+            })
+        };
+        let (_, leaf) = x509_parser::pem::parse_x509_pem(self.certificate.as_bytes())
+            .map_err(|_| CertificateMaterialError::InvalidChain)?;
+        let leaf = leaf
+            .parse_x509()
+            .map_err(|_| CertificateMaterialError::InvalidChain)?;
+        let covered = leaf
+            .subject_alternative_name()
+            .ok()
+            .flatten()
+            .is_some_and(|names| {
+                names
+                    .value
+                    .general_names
+                    .iter()
+                    .any(|name| matches!(name, GeneralName::DNSName(name) if serves(name)))
+            });
+        if covered {
+            Ok(self)
+        } else {
+            Err(CertificateMaterialError::HostnameNotCovered)
+        }
     }
 
     /// Borrow the admitted PEM certificate chain.
@@ -169,107 +210,156 @@ impl CertificateChallenge {
 
 /// Operator-visible reason, with a shared clock only when issuance is backing off.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct RecordedRefusal {
+pub struct RecordedRefusal {
     reason: String,
     clock: Option<IssuanceClock>,
 }
 
-/// Replicated certificate row for one Ingress Hostname.
-#[derive(Clone, Default, Debug, Eq, PartialEq)]
-pub struct CertificateRow {
-    material: Option<CertificateMaterial>,
-    challenge: Option<CertificateChallenge>,
-    refusal: Option<RecordedRefusal>,
+/// Replicated certificate row for one certificate hostname.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CertificateRow {
+    /// Material, pending challenge and refusal that ACME owns.
+    Acme {
+        material: Option<CertificateMaterial>,
+        challenge: Option<CertificateChallenge>,
+        refusal: Option<RecordedRefusal>,
+    },
+    /// Operator- or Cloud-supplied material that ACME never orders, renews, or overwrites.
+    Published(CertificateMaterial),
+}
+
+impl Default for CertificateRow {
+    fn default() -> Self {
+        Self::from_parts(None, None)
+    }
 }
 
 impl CertificateRow {
-    /// Stored snapshot for one hostname.
+    /// ACME-owned snapshot for one hostname.
     #[must_use]
     pub fn from_parts(
         material: Option<CertificateMaterial>,
         challenge: Option<CertificateChallenge>,
     ) -> Self {
-        Self {
+        Self::Acme {
             material,
             challenge,
             refusal: None,
         }
     }
 
-    /// Row that holds newly issued material and no challenge.
+    /// ACME row that holds newly issued material and no challenge.
     #[must_use]
     pub fn issued(material: CertificateMaterial) -> Self {
-        Self {
-            material: Some(material),
-            challenge: None,
-            refusal: None,
+        Self::from_parts(Some(material), None)
+    }
+
+    /// Published material, if this row holds it.
+    #[must_use]
+    pub fn published(&self) -> Option<&CertificateMaterial> {
+        match self {
+            Self::Published(material) => Some(material),
+            Self::Acme { .. } => None,
         }
     }
 
     /// Attach a complete refusal clock, or leave the row unchanged if the text is empty.
+    /// A published row takes no refusal.
     #[must_use]
     pub fn with_backoff(self, last_error: impl Into<String>, clock: IssuanceClock) -> Self {
         let reason = last_error.into();
         if reason.is_empty() {
             return self;
         }
-        Self {
-            refusal: Some(RecordedRefusal {
-                reason,
-                clock: Some(clock),
-            }),
-            ..self
-        }
+        self.with_refusal(RecordedRefusal {
+            reason,
+            clock: Some(clock),
+        })
     }
 
-    /// Issued material, if any.
+    /// Material served for the hostname, published or ACME-issued.
     #[must_use]
     pub fn material(&self) -> Option<&CertificateMaterial> {
-        self.material.as_ref()
+        match self {
+            Self::Acme { material, .. } => material.as_ref(),
+            Self::Published(material) => Some(material),
+        }
     }
 
     /// Pending HTTP-01 challenge, if any.
     #[must_use]
     pub fn challenge(&self) -> Option<&CertificateChallenge> {
-        self.challenge.as_ref()
+        match self {
+            Self::Acme { challenge, .. } => challenge.as_ref(),
+            Self::Published(_) => None,
+        }
+    }
+
+    fn refusal(&self) -> Option<&RecordedRefusal> {
+        match self {
+            Self::Acme { refusal, .. } => refusal.as_ref(),
+            Self::Published(_) => None,
+        }
     }
 
     /// Last recorded refusal or issuance error, if any.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.refusal.as_ref().map(|refusal| refusal.reason.as_str())
+        self.refusal().map(|refusal| refusal.reason.as_str())
     }
 
     /// Shared backoff clock, if a complete refusal has been recorded.
     #[must_use]
     pub fn clock(&self) -> Option<IssuanceClock> {
-        self.refusal.as_ref().and_then(|refusal| refusal.clock)
+        self.refusal().and_then(|refusal| refusal.clock)
     }
 
-    /// Take issued material out of the row.
+    /// Take the served material out of the row.
     #[must_use]
     pub fn into_material(self) -> Option<CertificateMaterial> {
-        self.material
+        match self {
+            Self::Acme { material, .. } => material,
+            Self::Published(material) => Some(material),
+        }
     }
 
-    /// Keep existing material and set the pending challenge.
+    /// Keep existing material and set the pending challenge. A published row takes no challenge.
     #[must_use]
     pub fn with_challenge(self, challenge: CertificateChallenge) -> Self {
-        Self {
-            challenge: Some(challenge),
-            ..self
+        match self {
+            Self::Acme {
+                material, refusal, ..
+            } => Self::Acme {
+                material,
+                challenge: Some(challenge),
+                refusal,
+            },
+            published @ Self::Published(_) => published,
         }
     }
 
     /// Keep existing material and challenge and record a refusal reason.
+    /// A published row takes no refusal.
     #[must_use]
     pub fn with_error(self, reason: impl Into<String>) -> Self {
-        Self {
-            refusal: Some(RecordedRefusal {
-                reason: reason.into(),
-                clock: None,
-            }),
-            ..self
+        self.with_refusal(RecordedRefusal {
+            reason: reason.into(),
+            clock: None,
+        })
+    }
+
+    fn with_refusal(self, refusal: RecordedRefusal) -> Self {
+        match self {
+            Self::Acme {
+                material,
+                challenge,
+                ..
+            } => Self::Acme {
+                material,
+                challenge,
+                refusal: Some(refusal),
+            },
+            published @ Self::Published(_) => published,
         }
     }
 
@@ -299,7 +389,13 @@ impl CertificateRow {
             }
             last_error.push_str("stored HTTP-01 challenge is invalid");
         }
-        Ok(Self {
+        if body.published {
+            // Published material is supplied whole; a published row without it is corrupt.
+            return material.map(Self::Published).ok_or_else(|| {
+                Error::Protocol("published certificate row has no valid material".into())
+            });
+        }
+        Ok(Self::Acme {
             material,
             challenge,
             refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
@@ -334,8 +430,24 @@ impl CertificateRow {
                 .unwrap_or_default(),
             failures: clock.map_or(0, |clock| clock.failures()),
             last_failure: encode_failure(clock.map(|clock| clock.last_failure())).into(),
+            published: self.published().is_some(),
         })?)
     }
+}
+
+/// Published material that serves `hostname`: its own published row, else a
+/// published wildcard one label above it. ACME never orders a covered hostname.
+#[must_use]
+pub fn published_cover<'rows>(
+    hostname: &IngressHost,
+    rows: &'rows BTreeMap<CertificateHost, CertificateRow>,
+) -> Option<&'rows CertificateMaterial> {
+    rows.get(hostname.as_str())
+        .and_then(CertificateRow::published)
+        .or_else(|| {
+            rows.iter()
+                .find_map(|(name, row)| row.published().filter(|_| name.covers(hostname)))
+        })
 }
 
 /// Frozen JSON body of a `certificates` row. Every field defaults and unknown
@@ -351,6 +463,7 @@ struct CertificateBody {
     next_attempt_at: String,
     failures: u32,
     last_failure: String,
+    published: bool,
 }
 
 fn encode_attempt(time: SystemTime) -> String {
@@ -521,10 +634,64 @@ mod tests {
         assert_eq!(CertificateRow::decode(&row.encode().unwrap()).unwrap(), row);
     }
 
+    fn material_for(names: &[&str]) -> CertificateMaterial {
+        let pair = rcgen::generate_simple_self_signed(
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    }
+
+    #[test]
+    fn material_covers_its_names_and_one_label_under_its_wildcards() {
+        let covers = |names: &[&str], hostname: &str| {
+            material_for(names)
+                .covering(&ployz_core::CertificateHost::parse(hostname).unwrap())
+                .is_ok()
+        };
+        assert!(covers(&["app.example.com"], "app.example.com"));
+        assert!(covers(&["*.example.com"], "app.example.com"));
+        assert!(covers(&["*.example.com"], "*.example.com"));
+        assert!(covers(&["other.test", "*.example.com"], "api.example.com"));
+        assert!(!covers(&["*.example.com"], "example.com"));
+        assert!(!covers(&["*.example.com"], "deep.app.example.com"));
+        assert!(!covers(&["*.example.com"], "*.app.example.com"));
+        assert!(!covers(&["app.example.com"], "*.example.com"));
+        assert_eq!(
+            material_for(&["app.example.com"])
+                .covering(&ployz_core::CertificateHost::parse("web.example.com").unwrap()),
+            Err(CertificateMaterialError::HostnameNotCovered)
+        );
+    }
+
+    #[test]
+    fn published_flag_round_trips_and_defaults_to_acme() {
+        let material = issued_material();
+        let row = CertificateRow::Published(material.clone());
+        assert_eq!(CertificateRow::decode(&row.encode().unwrap()).unwrap(), row);
+        let body = serde_json::json!({
+            "certificate": material.certificate(), "private_key": material.private_key()
+        });
+        assert!(
+            CertificateRow::decode(&body.to_string())
+                .unwrap()
+                .published()
+                .is_none()
+        );
+    }
+
     #[test]
     fn invalid_certificate_body_is_an_error() {
         assert!(decode_material("{").is_err());
         assert!(decode_material("null").is_err());
+        assert!(decode_material(r#"{"published":true}"#).is_err());
+        assert!(
+            decode_material(r#"{"published":true,"certificate":"CERT","private_key":"KEY"}"#)
+                .is_err()
+        );
     }
 
     #[test]

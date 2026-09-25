@@ -276,7 +276,6 @@ where
         FounderLocalState::Resume { machine } => machine.accepts_ingress,
         FounderLocalState::Initialize => initial_policy.accepts_ingress,
     };
-    let no_dns = matches.get_flag("no-dns");
     let ingress_image = matches.get_one::<String>("ingress-image").cloned();
     let ingress = if !accepts_ingress {
         None
@@ -316,12 +315,6 @@ where
         }
     };
 
-    if !no_dns {
-        let domain =
-            crate::dns::reserve_if_missing(&mut ready, crate::dns::HOSTED_DNS_ENDPOINT.to_owned())
-                .await.map_err(|error| Error::usage(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
-        println!("Reserved Cluster domain: {domain}");
-    }
     if machine.accepts_ingress
         && let Some(requested) = ingress
     {
@@ -330,11 +323,6 @@ where
             let error: Error = error.into();
             Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
-        if !no_dns {
-            crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| {
-                Error::usage(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"))
-            })?;
-        }
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await

@@ -62,7 +62,6 @@ pub(crate) async fn apply_requested(
         )
         .await,
         &format!("Deployed to {context}"),
-        preview.cluster_domain.as_deref(),
     )
 }
 
@@ -155,7 +154,6 @@ async fn confirm_and_execute(
         )
         .await,
         &format!("Deployed to {}", gate.context),
-        preview.cluster_domain.as_deref(),
     )
     .map_err(Into::into)
 }
@@ -188,7 +186,6 @@ pub(crate) async fn remove_project(
         )
         .await,
         &format!("Removed Project {name} from {context}"),
-        preview.cluster_domain.as_deref(),
     )
     .map_err(Into::into)
 }
@@ -331,11 +328,10 @@ async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool,
 fn finish(
     (outcome, printer): (DeployOutcome<ExecutionError>, ProgressPrinter),
     success_title: &str,
-    cluster_domain: Option<&str>,
 ) -> Result<(), ApplyError> {
     match outcome {
         DeployOutcome::Success { completed } => {
-            let text = render::success_text(&completed, success_title, cluster_domain);
+            let text = render::success_text(&completed, success_title);
             if io::stdout().is_terminal() && printer.last_terminal_rows > 0 {
                 print!("\x1b[{}F\x1b[J", printer.last_terminal_rows);
             }
@@ -394,14 +390,14 @@ mod tests {
             "ports": [
                 {
                     "mode": "ingress",
-                    "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+                    "hostname": "app.example.com",
                     "load_balancer_port": 443,
                     "container_port": 8080,
                     "http_protocol": "https"
                 },
                 {
                     "mode": "ingress",
-                    "hostname": { "kind": "explicit", "hostname": "plain.example.com" },
+                    "hostname": "plain.example.com",
                     "load_balancer_port": 80,
                     "container_port": 8080,
                     "http_protocol": "http"

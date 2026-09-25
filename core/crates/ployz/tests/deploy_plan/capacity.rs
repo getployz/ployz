@@ -145,7 +145,7 @@ fn apply_one_run_and_scale_path_rejects_full_capacity() {
     );
 
     assert_eq!(
-        preview_deploy(&intent, &snapshot, IngressContext::default()),
+        preview_deploy(&intent, &snapshot),
         Err(PlanError::InsufficientCapacity)
     );
 }

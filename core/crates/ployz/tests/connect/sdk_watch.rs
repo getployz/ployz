@@ -10,7 +10,6 @@ use ployz_core::{
     RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
     RuntimeWatchRequest, op,
 };
-use serde_json::Value;
 use tokio::time::timeout;
 use tonic::{Request, Status, codec::CompressionEncoding};
 
@@ -563,17 +562,12 @@ fn assert_redacted(frame: &RuntimeWatchFrame) {
         "challenge_token",
         "challenge_response",
         "renewal_token",
-        "dns_endpoint",
     ] {
         assert!(
             !text.contains(forbidden),
             "{forbidden} must not appear on the Watch frame"
         );
     }
-    assert_eq!(
-        payload.get("hosted_dns_hostname"),
-        Some(&Value::String("cluster.example.ts.net".into()))
-    );
 }
 
 fn assert_no_list_rpc(service: &DiscoveryService) {

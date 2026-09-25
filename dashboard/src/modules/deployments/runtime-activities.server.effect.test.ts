@@ -5,6 +5,9 @@ import { Effect, Result } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { watchDeploymentCancellation } from "./runtime-activities.server";
+import { expandManagedHostnames } from "#/modules/environment-design/managed-hostnames.server";
+import { lowerDeployment } from "@ployz/sdk/config";
+import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createImageServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 
 const connections = [{ management: "ployz1:candidate" }];
 
@@ -42,4 +45,17 @@ it("aborts a quiet build when cancellation polling fails and awaits cleanup", as
     if (result.failure instanceof DeploymentExecutionError) assert.strictEqual(result.failure.failureCode, "sdk_deploy_outcome_unknown");
   }
   assert.isTrue(closed);
+});
+
+it("gives expanded managed hostnames the same core-valid route ids on every compile", () => {
+  const config = projectServiceDeploymentConfig({ source: createImageServiceSource({ image: "nginx:1" }), privateDns: "api",
+    managedHostnames: [{ prefix: "api", targetPort: null }, { prefix: "www", targetPort: 8080 }], preDeployCommand: null, startCommand: null,
+    healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
+  const first = expandManagedHostnames(config, "acme.ployz.test");
+  const second = expandManagedHostnames(config, "acme.ployz.test");
+  assert.deepStrictEqual(first.routes.map((route) => route.hostname), ["api.acme.ployz.test", "www.acme.ployz.test"]);
+  assert.deepStrictEqual(second.routes, first.routes);
+  assert.notStrictEqual(first.routes[0]?.id, first.routes[1]?.id);
+  // Core validation refuses route ids that are not UUIDs.
+  lowerDeployment({ projectName: "production", snapshots: [{ serviceId: "api", config: first }] });
 });

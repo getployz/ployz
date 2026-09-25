@@ -22,7 +22,6 @@ pub mod dns;
 pub mod docker;
 pub(crate) mod filesystem;
 mod host_capacity;
-mod hosted_dns;
 pub(crate) mod ingress;
 pub mod installer;
 pub mod logs;

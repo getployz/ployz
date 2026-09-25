@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use ployz_core::{
     AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
-    CertificateObservation, CodecError, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
-    DockerVolumeName, HealthObservation, IngressHost, Machine, MachineId, MachineName,
+    CertificateHost, CertificateObservation, CodecError, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, ContractDescription, DockerVolume,
+    DockerVolumeId, DockerVolumeName, HealthObservation, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
     ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, RuntimeWatchRequest,
@@ -136,7 +136,6 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
     assert!(defaults.services().is_empty());
     assert!(defaults.volumes.is_empty());
     assert!(defaults.certificates.is_empty());
-    assert_eq!(defaults.hosted_dns_hostname, None);
     assert_eq!(
         defaults.incomplete_ids,
         RuntimeWatchIncompleteIds::default()
@@ -191,7 +190,6 @@ fn assert_no_secret_material(payload: &Value) {
         "challenge_token",
         "challenge_response",
         "renewal_token",
-        "dns_endpoint",
     ] {
         assert!(
             !text.contains(forbidden),
@@ -247,19 +245,19 @@ fn expected_frame() -> RuntimeWatchFrame {
         }],
         certificates: vec![
             CertificateObservation {
-                hostname: IngressHost::parse("ok.example.com").unwrap(),
+                hostname: CertificateHost::parse("ok.example.com").unwrap(),
                 status: CertificateAvailability::Available,
                 last_error: None,
                 backoff: None,
             },
             CertificateObservation {
-                hostname: IngressHost::parse("new.example.com").unwrap(),
+                hostname: CertificateHost::parse("new.example.com").unwrap(),
                 status: CertificateAvailability::Pending,
                 last_error: None,
                 backoff: None,
             },
             CertificateObservation {
-                hostname: IngressHost::parse("app.example.com").unwrap(),
+                hostname: CertificateHost::parse("app.example.com").unwrap(),
                 status: CertificateAvailability::Failure,
                 last_error: Some(
                     "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
@@ -272,13 +270,12 @@ fn expected_frame() -> RuntimeWatchFrame {
                 }),
             },
             CertificateObservation {
-                hostname: IngressHost::parse("maybe.example.com").unwrap(),
+                hostname: CertificateHost::parse("maybe.example.com").unwrap(),
                 status: CertificateAvailability::Unknown,
                 last_error: None,
                 backoff: None,
             },
         ],
-        hosted_dns_hostname: Some("cluster.example.ts.net".into()),
         incomplete_ids: RuntimeWatchIncompleteIds {
             machines: vec![MachineId::parse(OTHER_MACHINE_ID).unwrap()],
             containers: vec![ContainerId::parse(INCOMPLETE_CONTAINER_ID).unwrap()],
@@ -286,7 +283,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                 machine_id: MachineId::parse(OTHER_MACHINE_ID).unwrap(),
                 name: DockerVolumeName::parse("scratch").unwrap(),
             }],
-            certificates: vec![IngressHost::parse("pending.example.com").unwrap()],
+            certificates: vec![CertificateHost::parse("pending.example.com").unwrap()],
         },
         observed_at: "2024-01-01T00:00:00Z".into(),
     }

@@ -28,6 +28,10 @@ import {
   createCancelTeardown,
   createProcessTeardown,
 } from "#/modules/runtime/teardown.inngest";
+import {
+  createScheduleClusterDomainSync,
+  createSyncClusterDomain,
+} from "#/modules/cluster-domain/sync.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
@@ -56,6 +60,8 @@ describe("Inngest function policies", () => {
       createProcessVolumeRemove(inngest),
       createCancelVolumeRemove(inngest),
       createPruneOrganizationChangeLog(inngest),
+    createSyncClusterDomain(inngest),
+    createScheduleClusterDomainSync(inngest),
     ];
 
     expect(
@@ -83,6 +89,8 @@ describe("Inngest function policies", () => {
       { id: "process-volume-remove", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
+      { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 

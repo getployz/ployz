@@ -83,27 +83,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             );
         }
 
-        // Drop the local connection before DNS refresh. A refresh failure
-        // must not leave the removed Machine named in the context (#249)
-        // and must not fail the command (#449).
+        // Cleanup failure must not leave the removed Machine named in the
+        // context (#249) and must not fail the command (#449).
         let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
         {
             context.drop_machine(&selected.id);
             config.save().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
-        }
-        if let Err(error) =
-            crate::dns::update_records_after_removal(&mut client, machines, &selected.id, &live)
-                .await
-        {
-            eprintln!(
-                "{}",
-                Error::warned(
-                    "hosted DNS refresh failed after removing the Machine",
-                    error,
-                )
-            );
         }
         if reset_failure.is_some() {
             return Err(Error::exit(1));

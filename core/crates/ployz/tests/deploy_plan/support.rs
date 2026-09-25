@@ -5,8 +5,8 @@ pub(super) use std::{
 
 pub(super) use ployz::deploy::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
-    EliminatingConstraints, IngressContext, PlanError, PlanOptions, ReplacementOperation,
-    ServiceAttempt, VolumeSnapshot, preview_deploy,
+    EliminatingConstraints, PlanError, PlanOptions, ReplacementOperation, ServiceAttempt,
+    VolumeSnapshot, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -17,7 +17,6 @@ pub(super) fn plan_deploy<'a>(
     preview_deploy(
         &DeployIntent::apply_all(ProjectName::parse("app").unwrap(), requested, options),
         snapshot,
-        IngressContext::default(),
     )
 }
 

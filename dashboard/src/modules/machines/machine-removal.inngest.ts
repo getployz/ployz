@@ -1,5 +1,6 @@
 import { Effect, Option, Schema } from "effect";
 import {
+  createClusterDomainSyncRequestedEvent,
   inngestEventEnvelopeFields,
   inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType,
@@ -38,7 +39,7 @@ export const decodeMachineRemoveFailureEvent = Schema.decodeUnknownOption(
   MachineRemoveFailureEnvelope,
 );
 
-type StepTools = Pick<PloyzStepTools, "run">;
+type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 
 export async function executeProcessMachineRemove({
   event,
@@ -114,6 +115,11 @@ export async function executeProcessMachineRemove({
         now: new Date(),
       }),
     ),
+  );
+  // The removed Server may have been in the Cluster Domain's apex set.
+  await step.sendEvent(
+    "request-cluster-domain-sync",
+    createClusterDomainSyncRequestedEvent({ organizationId: attempt.organizationId }),
   );
   return { attemptId, status: "succeeded" as const };
 }

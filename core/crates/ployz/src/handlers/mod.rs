@@ -296,7 +296,7 @@ mod tests {
         let matches = command()
             .try_get_matches_from(["ployz", "machine", "init", "root@host"])
             .unwrap();
-        recovery_command(leaf_matches(&matches), "staging", &["dns", "show"]);
+        recovery_command(leaf_matches(&matches), "staging", &["no-such", "command"]);
     }
 
     #[test]
@@ -371,7 +371,6 @@ mod tests {
                 "--yes",
                 "--storage",
                 "none",
-                "--no-dns",
                 "--accepts-ingress=false",
                 "--context",
                 "local-init",
@@ -399,7 +398,6 @@ mod tests {
                 "--yes",
                 "--storage",
                 "none",
-                "--no-dns",
                 "--accepts-ingress=false",
                 "--context",
                 "local-init-no-install",
@@ -520,7 +518,6 @@ mod tests {
                 "--storage",
                 "zfs",
                 "--accepts-ingress=false",
-                "--no-dns",
                 "--reset",
                 "--yes",
                 "--wg-mtu",
@@ -545,7 +542,6 @@ mod tests {
         );
         assert_eq!(enroll.get_one::<bool>("accepts-ingress"), Some(&false));
         assert!(enroll.get_flag("reset"));
-        assert!(enroll.get_flag("no-dns"));
         assert!(enroll.get_flag("yes"));
         assert_eq!(enroll.get_one::<u32>("wg-mtu").copied(), Some(1400));
         assert_eq!(

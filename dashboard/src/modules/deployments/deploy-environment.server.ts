@@ -23,7 +23,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
     config: Pick<ServiceDeploymentConfig, "env" | "routes" | "managedHostnames">;
   }>,
   frozenProducers: EnvironmentSnapshotVariableProducer[] | null,
-  hostedDnsHostname: string | null = null,
+  clusterDomain: string | null = null,
 ) {
   const envByServiceId = new Map<string, Record<string, string>>(
     snapshots.map((snapshot) => [snapshot.serviceId, {}]),
@@ -43,7 +43,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
 
   const producers: ResolvedVariableProducer[] = [];
   for (const snapshot of snapshots) {
-    const domain = servicePublicDomain(snapshot.config, hostedDnsHostname);
+    const domain = servicePublicDomain(snapshot.config, clusterDomain);
     if (!domain) continue;
     envByServiceId.set(snapshot.serviceId, { PLOYZ_PUBLIC_DOMAIN: domain });
     const owner = frozenProducers?.find((producer) => producer.ownerScope === "service" && producer.ownerId === snapshot.serviceId);

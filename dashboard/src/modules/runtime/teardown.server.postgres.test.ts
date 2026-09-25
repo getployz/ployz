@@ -18,6 +18,7 @@ import {
   startGithubPostgresTestHarness,
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import { InngestClient } from "#/modules/inngest/client";
+import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import {
   cancelTeardownAttemptActivity,
   destroyClusterActivity,
@@ -84,6 +85,22 @@ function completeFromRuntimeInput(input: RuntimeCompletionInput) {
 
 describe("teardown durable state", () => {
   let harness: GithubPostgresTestHarness;
+  let hostedDns: FakeHostedDns;
+
+  async function insertClusterDomain() {
+    await harness.pool.query(`insert into organization_cluster_domain
+      (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at)
+      values ($1, $2, 'acme.ployz.test', $3, now(), now())`,
+    [organizationId, hostedDns.url, JSON.stringify(encryption.encrypt("domain-token"))]);
+  }
+
+  async function dropOrganization() {
+    const attempt = await harness.runEffect(insertTeardownAttempt({
+      organizationId, requestedByUserId: userId, projectId: null, environmentId: null, scope: "organization", confirmDataLoss: [],
+      targets: { environments: [], destroyRuntimeProjects: true, revokePairing: true, runtimeMembership: "verified" },
+    }));
+    await runPromiseDb(dropTeardownCloudRowsActivity(attempt));
+  }
 
   function runPromiseDb<A, E>(
     operation: Effect.Effect<A, E, import("#/server/database.server").Database | OrganizationRuntime | SecretEncryption>,
@@ -98,14 +115,16 @@ describe("teardown durable state", () => {
   }
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    [harness, hostedDns] = await Promise.all([startGithubPostgresTestHarness(), startFakeHostedDns()]);
   }, 60_000);
 
   afterAll(async () => {
-    await harness.stop();
+    await Promise.all([harness.stop(), hostedDns.close()]);
   });
 
   beforeEach(async () => {
+    hostedDns.requests.length = 0;
+    hostedDns.state.failWith = null;
     await harness.pool.query(`
       truncate table organization, "user" cascade;
       insert into organization (id, name, slug)
@@ -214,7 +233,11 @@ describe("teardown durable state", () => {
     expect(Exit.isFailure(stolen)).toBe(true);
 
     if (claimed.kind !== "ready") return;
-    await harness.runEffect(dropTeardownCloudRowsActivity(claimed.attempt));
+    await insertClusterDomain();
+    await runPromiseDb(dropTeardownCloudRowsActivity(claimed.attempt));
+    // Only Organization teardown touches the Cluster Domain.
+    expect(hostedDns.requests).toEqual([]);
+    expect((await harness.pool.query("select name from organization_cluster_domain")).rowCount).toBe(1);
     await runPromiseDb(
       completeTeardownAttemptActivity({
         attemptId: attempt.id,
@@ -238,6 +261,24 @@ describe("teardown durable state", () => {
     );
     expect(state.rows).toEqual([{ status: "completed" }]);
     expect(environment.rowCount).toBe(0);
+  });
+
+  it("releases the Cluster Domain once when the Organization is deleted, and the row cascades away", async () => {
+    await insertClusterDomain();
+    await dropOrganization();
+    expect(hostedDns.requests).toEqual([
+      { method: "DELETE", path: "/domains/acme.ployz.test", authorization: "Bearer domain-token", body: null },
+    ]);
+    expect((await harness.pool.query("select 1 from organization_cluster_domain")).rowCount).toBe(0);
+    expect((await harness.pool.query("select 1 from organization")).rowCount).toBe(0);
+  });
+
+  it("deletes the Organization when the Cluster Domain release fails", async () => {
+    hostedDns.state.failWith = 500;
+    await insertClusterDomain();
+    await dropOrganization();
+    expect(hostedDns.requests).toHaveLength(1);
+    expect((await harness.pool.query("select 1 from organization")).rowCount).toBe(0);
   });
 
   it("rejects completed terminalization without a runtime outcome", async () => {

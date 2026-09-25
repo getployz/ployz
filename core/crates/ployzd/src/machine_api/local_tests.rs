@@ -1,6 +1,6 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, hosted_dns_error, ingress_config_missing, store_error};
+use super::{MachineService, ingress_config_missing, store_error};
 use crate::corrosion::{AdminClient, fake_cluster};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::{
@@ -27,55 +27,6 @@ fn out_of_order_machine_transitions_are_conflicts() {
     ] {
         assert_eq!(store_error(error).code, RpcErrorCode::Conflict);
     }
-}
-
-#[test]
-fn hosted_dns_codes_follow_who_caused_the_failure() {
-    use crate::hosted_dns::Error;
-    for (error, code) in [
-        (
-            Error::InvalidEndpoint("bad".into()),
-            RpcErrorCode::InvalidArgument,
-        ),
-        (Error::AlreadyReserved, RpcErrorCode::Conflict),
-        (Error::NotFound, RpcErrorCode::NotFound),
-        (Error::Authentication, RpcErrorCode::Unauthenticated),
-        (Error::AuthNoDomain, RpcErrorCode::Unauthenticated),
-        (
-            Error::InvalidReservation("invalid DNS hostname"),
-            RpcErrorCode::Unavailable,
-        ),
-        (
-            Error::Json(serde_json::from_str::<()>("nope").unwrap_err()),
-            RpcErrorCode::Unavailable,
-        ),
-        (Error::InvalidReservationCleared, RpcErrorCode::Internal),
-        (
-            Error::Status(400, "bad record".into()),
-            RpcErrorCode::Unavailable,
-        ),
-        (
-            Error::Status(403, "forbidden".into()),
-            RpcErrorCode::Unauthenticated,
-        ),
-        (
-            Error::Status(404, "no such domain".into()),
-            RpcErrorCode::NotFound,
-        ),
-        (Error::Status(409, "taken".into()), RpcErrorCode::Conflict),
-        (
-            Error::Status(429, "slow down".into()),
-            RpcErrorCode::Unavailable,
-        ),
-        (
-            Error::Status(502, "bad gateway".into()),
-            RpcErrorCode::Unavailable,
-        ),
-    ] {
-        assert_eq!(hosted_dns_error(error).code, code);
-    }
-    let error = hosted_dns_error(Error::Status(502, "bad gateway".into()));
-    assert_eq!(error.details.get("status"), Some(&serde_json::json!(502)));
 }
 
 #[test]

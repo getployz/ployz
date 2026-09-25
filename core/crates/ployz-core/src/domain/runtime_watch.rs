@@ -5,7 +5,7 @@ use thiserror::Error;
 use ts_rs::TS;
 
 use crate::{
-    CodecError, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost,
+    CertificateHost, CodecError, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
     MachineId, MachineObservation, OpaquePayload, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     ServiceObservation, derive_services,
 };
@@ -31,12 +31,12 @@ pub struct CertificateBackoff {
     pub failures: u32,
 }
 
-/// Redacted certificate status keyed by Ingress Hostname.
+/// Redacted certificate status keyed by certificate hostname.
 ///
 /// Never carries Certificate Material or HTTP-01 challenge bytes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateObservation {
-    pub hostname: IngressHost,
+    pub hostname: CertificateHost,
     pub status: CertificateAvailability,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -54,7 +54,7 @@ pub struct RuntimeWatchIncompleteIds {
     #[serde(default)]
     pub volumes: Vec<DockerVolumeId>,
     #[serde(default)]
-    pub certificates: Vec<IngressHost>,
+    pub certificates: Vec<CertificateHost>,
 }
 
 /// One complete Runtime Watch observation.
@@ -68,9 +68,6 @@ pub struct RuntimeWatchFrame {
     pub volumes: Vec<DockerVolume>,
     #[serde(default)]
     pub certificates: Vec<CertificateObservation>,
-    /// Hosted DNS hostname only; never the renewal token or endpoint.
-    #[serde(default)]
-    pub hosted_dns_hostname: Option<String>,
     #[serde(default)]
     pub incomplete_ids: RuntimeWatchIncompleteIds,
     /// Freshness of the entry-local membership/RTT sample. Not Cluster truth.

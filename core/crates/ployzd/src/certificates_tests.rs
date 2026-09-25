@@ -7,9 +7,9 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HttpProtocol, IngressHost, IngressHostname, IssuanceClock, IssuanceFailure,
-    IssuanceGate, MACHINE_API_PORT, Machine, MachineId, PortPublication, ProjectName,
-    ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, IssuanceClock, IssuanceFailure, IssuanceGate,
+    MACHINE_API_PORT, Machine, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
+    ServiceId, ServiceName, resolve_certificate_policy,
 };
 use serde_json::json;
 
@@ -62,8 +62,6 @@ fn wanted_hosts_are_https_ingress_only() {
                 ingress("web.opaque.ployz.example", HttpProtocol::Https),
             ],
         ),
-        observation(2, "www", vec![ingress_assign(HttpProtocol::Https)]),
-        observation(4, "edge", vec![ingress_chosen(HttpProtocol::Https)]),
         {
             let mut hook = observation(
                 3,
@@ -77,7 +75,7 @@ fn wanted_hosts_are_https_ingress_only() {
     ];
 
     assert_eq!(
-        wanted_certificate_hosts(observations.iter()),
+        wanted_certificate_hosts(observations.iter(), &BTreeMap::new()),
         BTreeSet::from([host("app.example.com"), host("web.opaque.ployz.example"),])
     );
     assert_eq!(
@@ -87,14 +85,68 @@ fn wanted_hosts_are_https_ingress_only() {
                 "api",
                 vec![ingress("plain.example.com", HttpProtocol::Http)]
             )]
-            .iter()
+            .iter(),
+            &BTreeMap::new(),
         ),
         BTreeSet::new()
     );
     assert_eq!(
-        wanted_certificate_hosts([observation(1, "api", Vec::new())].iter()),
+        wanted_certificate_hosts([observation(1, "api", Vec::new())].iter(), &BTreeMap::new()),
         BTreeSet::new()
     );
+}
+
+#[test]
+fn published_material_and_published_wildcards_are_not_wanted() {
+    let observations = [observation(
+        1,
+        "api",
+        vec![
+            ingress("pinned.example.com", HttpProtocol::Https),
+            ingress("web.apps.example.com", HttpProtocol::Https),
+            ingress("deep.web.apps.example.com", HttpProtocol::Https),
+            ingress("apps.example.com", HttpProtocol::Https),
+            ingress("acme.example.com", HttpProtocol::Https),
+        ],
+    )];
+    let acme = self_signed(&["acme.example.com"]);
+    let rows = BTreeMap::from([
+        (
+            certificate_host("pinned.example.com"),
+            CertificateRow::Published(self_signed(&["pinned.example.com"])),
+        ),
+        (
+            certificate_host("*.apps.example.com"),
+            CertificateRow::Published(self_signed(&["*.apps.example.com"])),
+        ),
+        (
+            certificate_host("acme.example.com"),
+            CertificateRow::issued(acme),
+        ),
+    ]);
+    assert_eq!(
+        wanted_certificate_hosts(observations.iter(), &rows),
+        BTreeSet::from([
+            host("acme.example.com"),
+            host("apps.example.com"),
+            host("deep.web.apps.example.com"),
+        ])
+    );
+}
+
+fn certificate_host(name: &str) -> ployz_core::CertificateHost {
+    ployz_core::CertificateHost::parse(name).unwrap()
+}
+
+fn self_signed(names: &[&str]) -> CertificateMaterial {
+    let pair = rcgen::generate_simple_self_signed(
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
 }
 
 #[test]
@@ -652,25 +704,7 @@ fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
 
 fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {
     PortPublication::Ingress {
-        hostname: IngressHostname::explicit(hostname).unwrap(),
-        load_balancer_port: 443.try_into().unwrap(),
-        container_port: 8080.try_into().unwrap(),
-        http_protocol,
-    }
-}
-
-fn ingress_assign(http_protocol: HttpProtocol) -> PortPublication {
-    PortPublication::Ingress {
-        hostname: IngressHostname::cluster_domain(),
-        load_balancer_port: 443.try_into().unwrap(),
-        container_port: 8080.try_into().unwrap(),
-        http_protocol,
-    }
-}
-
-fn ingress_chosen(http_protocol: HttpProtocol) -> PortPublication {
-    PortPublication::Ingress {
-        hostname: IngressHostname::cluster_domain_label("api").unwrap(),
+        hostname: IngressHost::parse(hostname).unwrap(),
         load_balancer_port: 443.try_into().unwrap(),
         container_port: 8080.try_into().unwrap(),
         http_protocol,

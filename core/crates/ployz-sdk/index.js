@@ -74,6 +74,10 @@ class Client {
     return withRpcError(this._inner.about());
   }
 
+  publishCertificateMaterial(request) {
+    return withRpcError(this._inner.publishCertificateMaterial(request));
+  }
+
   prepare(input, options = {}) {
     options.signal?.throwIfAborted();
     let pending;

@@ -7,6 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "#/components/ui/tabs";
 import { asTestDouble } from "#/lib/test-double";
 import { RuntimeProvider } from "#/providers/runtime-provider";
+import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { orgStoreSeed } from "#/test/org-store-tables";
 import {
   createEmptyServiceSource,
   createGitServiceSource,
@@ -17,10 +19,14 @@ import { ServiceSettingsTab } from "./ServiceSettingsTab";
 import type { ServiceDrawerState } from "./useServiceDrawerState";
 
 const clients: QueryClient[] = [];
+/** The Runtime Watch frame the stubbed event stream delivers, if any. */
+let frame: ReturnType<typeof runtimeWatchFrameFixture> | null = null;
 beforeEach(() => {
   vi.stubGlobal("scrollTo", () => {});
   vi.stubGlobal("EventSource", class {
-    addEventListener() {}
+    addEventListener(type: string, listener: (event: MessageEvent) => void) {
+      if (type === "runtime.watch" && frame) queueMicrotask(() => listener(new MessageEvent(type, { data: JSON.stringify(frame) })));
+    }
     removeEventListener() {}
     close() {}
   });
@@ -29,11 +35,23 @@ afterEach(() => {
   cleanup();
   for (const client of clients.splice(0)) client.clear();
   vi.unstubAllGlobals();
+  frame = null;
 });
 
-async function show(source: ServiceSource, buildMethod: "dockerfile" | "railpack" = "dockerfile") {
+async function show(
+  source: ServiceSource,
+  buildMethod: "dockerfile" | "railpack" = "dockerfile",
+  { clusterDomain = null, managedHostnames = [] }: {
+    clusterDomain?: string | null;
+    managedHostnames?: ServiceDrawerState["service"]["managedHostnames"];
+  } = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
+  client.setQueryData(
+    ["collections", "test-session", "test-user", "acme", "organization_cluster_domain"],
+    orgStoreSeed(clusterDomain === null ? [] : [{ id: "organization", name: clusterDomain }]),
+  );
   const update = vi.fn((_id: string, _apply: (draft: ServiceDrawerState["service"]) => void) => ({ isPersisted: { promise: Promise.resolve() } }));
   const build = { buildMethod, dockerfilePath: "docker/Dockerfile", command: null, } as const;
   const state = asTestDouble<ServiceDrawerState>()({
@@ -42,7 +60,7 @@ async function show(source: ServiceSource, buildMethod: "dockerfile" | "railpack
     service: {
       id: "service", environmentId: "environment", name: "api", privateDns: "api",
       source, build, policy: { autoDeploy: true, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" } },
-      routes: [], managedHostnames: [], replicas: 1,
+      routes: [], managedHostnames, replicas: 1,
       preDeployCommand: null, startCommand: null, healthcheck: { type: "none" },
       restartPolicy: "on-failure", maxRetries: 10,
       registryCredentialUsername: null,
@@ -128,4 +146,17 @@ it("saves and clears the Railpack build command using the command control", asyn
   fireEvent.change(screen.getByRole("textbox", { name: "Build command" }), { target: { value: "" } });
   fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
   await waitFor(() => expect(state.service.build.command).toBeNull());
+});
+
+it("shows a managed hostname's certificate status from the published wildcard that covers it", async () => {
+  // The Engine keeps no certificate row for a hostname a published wildcard covers.
+  frame = runtimeWatchFrameFixture({
+    certificates: [{ hostname: "*.acme.ployz.app", status: "available", last_error: null, backoff: null }],
+  });
+  await show(createEmptyServiceSource(), "dockerfile", {
+    clusterDomain: "acme.ployz.app",
+    managedHostnames: [{ prefix: "api", targetPort: null }],
+  });
+  expect(screen.getByText("api.acme.ployz.app")).toBeTruthy();
+  expect(await screen.findByText("Observed certificate status: available.")).toBeTruthy();
 });

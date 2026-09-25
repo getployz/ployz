@@ -144,7 +144,7 @@ export const loadDeploymentContext = Effect.fn(
 
 export const loadResolvedDeployEnv = Effect.fn(
   "Deployments.loadResolvedDeployEnv",
-)((context: DeploymentContext, hostedDnsHostname: string | null = null) =>
+)((context: DeploymentContext, clusterDomain: string | null = null) =>
   Effect.gen(function* () {
     const encryption = yield* SecretEncryption;
     return yield* getResolvedDeployEnvBySnapshotConfig(
@@ -154,6 +154,6 @@ export const loadResolvedDeployEnv = Effect.fn(
         config: snapshot.config,
       })),
       context.deployment.variableProducers ?? null,
-      hostedDnsHostname,
+      clusterDomain,
     );
   }));

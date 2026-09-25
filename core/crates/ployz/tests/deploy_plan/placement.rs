@@ -1688,7 +1688,7 @@ fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
         [&service],
         PlanOptions::default(),
     );
-    let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
     assert!(
         matches!(operations(&plan).as_slice(), [DeployOperation::RunContainer { machine_id: destination, .. }] if *destination == machine_id('1'))
     );
@@ -1705,7 +1705,7 @@ fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
         .machine
         .accepts_ingress = false;
     assert!(
-        preview_deploy(&intent, &snapshot, IngressContext::default())
+        preview_deploy(&intent, &snapshot)
             .unwrap_err()
             .to_string()
             .contains("do not accept this work")

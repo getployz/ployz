@@ -171,6 +171,25 @@ impl Client {
         )
     }
 
+    /// Publish or clear Certificate Material for a hostname or single-level wildcard.
+    ///
+    /// # Errors
+    /// Returns malformed input, transport failures, or the Machine's refusal of the material.
+    #[napi]
+    pub async fn publish_certificate_material(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request = serde_json::from_value(request).map_err(invalid_argument)?;
+        to_json(
+            &self
+                .inner
+                .publish_certificate_material(request)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors

@@ -8,17 +8,17 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, ContainerList, ContainerObservationMap, ContractDescription, Domain,
-    DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, op,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    ContainerList, ContainerObservationMap, ContractDescription, IngressProxyConfig,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
+    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    corrosion::{AdminClient, ReplicatedStore},
+    corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
@@ -31,7 +31,6 @@ const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct MachineService {
     local: LocalMachine,
-    hosted_dns: crate::hosted_dns::HostedDns,
     ingress_data_dir: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
@@ -47,7 +46,6 @@ impl MachineService {
     ) -> Self {
         Self {
             local: LocalMachine::new(owner).with_cluster(cluster),
-            hosted_dns: crate::hosted_dns::HostedDns::new(),
             ingress_data_dir: None,
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
@@ -662,78 +660,46 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn reserve_domain(
+    async fn publish_certificate_material(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ReserveDomain>(request)?;
-        if request.endpoint.is_empty() {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "hosted DNS endpoint is required".into(),
-                details: Value::Null,
-            });
-        }
+        let request = expect::<op::PublishCertificateMaterial>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
-        match self
-            .hosted_dns
-            .reserve_domain(replicated, &request.endpoint)
-            .await
-        {
-            Ok(name) => respond(Domain { name }),
-            Err(error) => respond(hosted_dns_error(error)),
-        }
-    }
-
-    async fn get_domain(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::GetDomain>(request)?;
-        let replicated = match self.ready_replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
+        let hostname = request.hostname;
+        let result = match request.change {
+            CertificateMaterialChange::Set {
+                certificate_chain_pem,
+                private_key_pem,
+            } => {
+                let material = CertificateMaterial::parse(certificate_chain_pem, private_key_pem)
+                    .and_then(|material| material.covering(&hostname));
+                let material = match material {
+                    Ok(material) => material,
+                    Err(error) => {
+                        return respond(RpcError {
+                            code: RpcErrorCode::InvalidArgument,
+                            message: format!(
+                                "refused Certificate Material for {hostname}: {error}"
+                            ),
+                            details: Value::Null,
+                        });
+                    }
+                };
+                replicated
+                    .publish_certificate_material(&hostname, material)
+                    .await
+            }
+            CertificateMaterialChange::Clear => {
+                replicated.clear_published_certificate(&hostname).await
+            }
         };
-        match self.hosted_dns.domain(replicated).await {
-            Ok(name) => respond(Domain { name }),
-            Err(error) => respond(hosted_dns_error(error)),
-        }
-    }
-
-    async fn release_domain(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::ReleaseDomain>(request)?;
-        let replicated = match self.ready_replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        match self.hosted_dns.release_domain(replicated).await {
-            Ok(name) => respond(Domain { name }),
-            Err(error) => respond(hosted_dns_error(error)),
-        }
-    }
-
-    async fn create_domain_records(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::CreateDomainRecords>(request)?;
-        let replicated = match self.ready_replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        match self
-            .hosted_dns
-            .create_records(replicated, &request.records)
-            .await
-        {
-            Ok(records) => respond(DomainRecords { records }),
-            Err(error) => respond(hosted_dns_error(error)),
+        match result {
+            Ok(()) => respond(CertificateMaterialPublished {}),
+            Err(error) => respond(cluster_store_error(error)),
         }
     }
 
@@ -893,41 +859,6 @@ fn ingress_config_missing(path: &Path) -> RpcError {
             path.display()
         ),
         details: serde_json::json!({ "path": path.display().to_string() }),
-    }
-}
-
-fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
-    use crate::hosted_dns::Error;
-    let (code, details) = match error {
-        Error::AlreadyReserved => (RpcErrorCode::Conflict, Value::Null),
-        Error::NotFound => (RpcErrorCode::NotFound, Value::Null),
-        Error::AuthNoDomain => (
-            RpcErrorCode::Unauthenticated,
-            serde_json::json!({ "no_domain": true }),
-        ),
-        Error::Authentication => (RpcErrorCode::Unauthenticated, Value::Null),
-        Error::InvalidEndpoint(_) => (RpcErrorCode::InvalidArgument, Value::Null),
-        // InvalidReservation is an unusable upstream response, not caller input; a
-        // malformed stored record surfaces as corrosion::InvalidDomainReservation instead.
-        Error::Http(_) | Error::Json(_) | Error::InvalidReservation(_) => {
-            (RpcErrorCode::Unavailable, Value::Null)
-        }
-        // Hosted DNS speaks HTTP; its status class is the taxonomy kind.
-        Error::Status(status, _) => (
-            match status {
-                403 => RpcErrorCode::Unauthenticated,
-                404 => RpcErrorCode::NotFound,
-                409 => RpcErrorCode::Conflict,
-                _ => RpcErrorCode::Unavailable,
-            },
-            serde_json::json!({ "status": status }),
-        ),
-        Error::Store(_) | Error::InvalidReservationCleared => (RpcErrorCode::Internal, Value::Null),
-    };
-    RpcError {
-        code,
-        message: error.to_string(),
-        details,
     }
 }
 

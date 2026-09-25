@@ -23,13 +23,17 @@ export type CertificateBackoff = { failure_kind: CertificateFailureKind, next_at
 
 export type CertificateFailureKind = "does_not_resolve" | "resolves_elsewhere" | "authority" | string;
 
-export type CertificateObservation = { hostname: IngressHost, status: CertificateAvailability, last_error: string | null, backoff: CertificateBackoff | null, };
+export type CertificateHost = string;
+
+export type CertificateMaterialChange = { "action": "set", certificate_chain_pem: string, private_key_pem: string, } | { "action": "clear" };
+
+export type CertificateMaterialPublished = Record<symbol, never>;
+
+export type CertificateObservation = { hostname: CertificateHost, status: CertificateAvailability, last_error: string | null, backoff: CertificateBackoff | null, };
 
 export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
-
-export type ClusterDomainLabel = string;
 
 export type ClusterTeardown = { destroyed_projects: Array<ProjectName>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
@@ -276,8 +280,6 @@ export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use"
 
 export type IngressHost = string;
 
-export type IngressHostname = { "kind": "cluster_domain", label: ClusterDomainLabel | null, } | { "kind": "explicit", hostname: IngressHost, };
-
 export type InitialMachinePolicy = {
 /**
  * Operator classifications used by placement constraints.
@@ -520,7 +522,7 @@ placement_seed: number,
  */
 selected: Array<ServiceAttempt>, };
 
-export type PortPublication = { "mode": "ingress", hostname: IngressHostname, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
+export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 
 export type PreDeployCommand = [string, ...string[]];
 
@@ -549,6 +551,8 @@ export type PruneTarget = { machine_id: MachineId,
 repository: string, };
 
 export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
+
+export type PublishCertificateMaterialRequest = { hostname: CertificateHost, change: CertificateMaterialChange, };
 
 export type PullPolicy = "always" | "missing" | "never";
 
@@ -677,13 +681,9 @@ unexecuted: number,
  */
 reason: RuntimeFailureKind, };
 
-export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<IngressHost>, };
+export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<CertificateHost>, };
 
-export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>,
-/**
- * Hosted DNS hostname only; never the renewal token or endpoint.
- */
-hosted_dns_hostname: string | null, incomplete_ids: RuntimeWatchIncompleteIds,
+export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, incomplete_ids: RuntimeWatchIncompleteIds,
 /**
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */

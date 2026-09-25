@@ -154,7 +154,7 @@ pub fn confirm_prompt(context: &str) -> String {
 #[cfg(test)]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
-        DeployOutcome::Success { completed } => endpoints_footer(completed, None),
+        DeployOutcome::Success { completed } => endpoints_footer(completed),
         DeployOutcome::Failed { .. } => report::paint_closing(outcome, &[], false, &Ink::plain()),
     }
 }
@@ -359,11 +359,7 @@ pub(super) fn status_kind(status: &OperationStatus) -> &'static str {
 
 /// Compact success report using only completed operations.
 #[must_use]
-pub(super) fn success_text(
-    completed: &[DeployOperation],
-    title: &str,
-    cluster_domain: Option<&str>,
-) -> String {
+pub(super) fn success_text(completed: &[DeployOperation], title: &str) -> String {
     let mut counts = BTreeMap::new();
     let mut ready = 0;
     let mut unchecked = 0;
@@ -409,11 +405,11 @@ pub(super) fn success_text(
     let noun = if count == 1 { "machine" } else { "machines" };
     parts.push(format!("{count} {noun}"));
     let mut out = format!("✓ {title}\n  {}\n", parts.join(" · "));
-    out.push_str(&endpoints_footer(completed, cluster_domain));
+    out.push_str(&endpoints_footer(completed));
     out
 }
 
-fn endpoints_footer(completed: &[DeployOperation], cluster_domain: Option<&str>) -> String {
+fn endpoints_footer(completed: &[DeployOperation]) -> String {
     let mut by_service = BTreeMap::<_, BTreeSet<_>>::new();
     for operation in completed {
         let spec = match operation {
@@ -437,9 +433,6 @@ fn endpoints_footer(completed: &[DeployOperation], cluster_domain: Option<&str>)
             else {
                 continue;
             };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                continue;
-            };
             let (scheme, default_port) = match http_protocol {
                 HttpProtocol::Https => ("https", 443),
                 HttpProtocol::Http => ("http", 80),
@@ -451,13 +444,13 @@ fn endpoints_footer(completed: &[DeployOperation], cluster_domain: Option<&str>)
             by_service
                 .entry((&spec.name, container_port))
                 .or_default()
-                .insert((hostname.under_cluster_domain(cluster_domain), url));
+                .insert(url);
         }
     }
     let mut out = String::new();
     for ((service, port), endpoints) in by_service {
         let _ = writeln!(out, "\n{service} → :{port}");
-        for (_, url) in endpoints {
+        for url in endpoints {
             let _ = writeln!(out, "  {url}");
         }
     }

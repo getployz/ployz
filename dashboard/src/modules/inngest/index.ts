@@ -22,6 +22,10 @@ import {
   createCancelTeardown,
   createProcessTeardown,
 } from "#/modules/runtime/teardown.inngest";
+import {
+  createScheduleClusterDomainSync,
+  createSyncClusterDomain,
+} from "#/modules/cluster-domain/sync.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
@@ -46,5 +50,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessTeardown(inngest),
     createCancelTeardown(inngest),
     createPruneOrganizationChangeLog(inngest),
+    createSyncClusterDomain(inngest),
+    createScheduleClusterDomainSync(inngest),
   ];
 }

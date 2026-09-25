@@ -5,7 +5,7 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use super::*;
-use crate::{ClusterDomainLabel, IngressHost, ServiceName};
+use crate::{IngressHost, ServiceName, value::is_dns_label};
 
 /// Validation errors identify the setting, never echo credentials or authored values.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, TS)]
@@ -285,9 +285,11 @@ fn managed_hostname(value: &mut ServiceManagedHostname) -> Result<(), ConfigErro
 
 fn hostname_prefix(value: &mut String) -> Result<(), ConfigError> {
     *value = value.trim().to_lowercase();
-    ClusterDomainLabel::parse(&*value)
-        .map(|_| ())
-        .map_err(|_| ConfigError::at("managedHostname.prefix", "Expected a lowercase DNS label"))
+    range(
+        is_dns_label(value),
+        "managedHostname.prefix",
+        "Expected a lowercase DNS label",
+    )
 }
 
 fn limit(value: Option<f64>, max: f64, path: &str) -> Result<(), ConfigError> {

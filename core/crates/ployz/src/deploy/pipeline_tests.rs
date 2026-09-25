@@ -9,7 +9,7 @@ use ployz_core::{
 use serde_json::Value;
 
 use super::*;
-use crate::deploy::{DeployOperation, DeploySnapshot, IngressContext, preview_deploy};
+use crate::deploy::{DeployOperation, DeploySnapshot, preview_deploy};
 
 #[test]
 fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
@@ -88,7 +88,6 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     let mixed = preview_deploy(
         &DeployIntent::apply_one(choice.project_name, requested, PlanOptions::default()),
         &mixed_snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     let image = mixed
@@ -262,7 +261,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
         "container": { "image": "nginx", "pull_policy": "missing" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+            "hostname": "app.example.com",
             "load_balancer_port": 443,
             "container_port": 8080,
             "http_protocol": "https"

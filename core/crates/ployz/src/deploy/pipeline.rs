@@ -27,7 +27,7 @@ use crate::{
 
 use super::{
     DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, IngressContext, ObservationKind, PlanError, PlanOptions,
+    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
     exec::execute_operation_sequence, plan_deploy, planning,
 };
 
@@ -57,7 +57,7 @@ impl Client {
     pub async fn preview(&mut self, intent: DeployIntent) -> Result<DeployPlan, DeployError> {
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_deploy_snapshot(self, machines, &intent).await?;
-        preview_gathered(self, snapshot, warnings, &intent).await
+        preview_gathered(snapshot, warnings, &intent).await
     }
 
     /// Calculate a Project-removal preview. Confirming executes these operations.
@@ -314,7 +314,7 @@ pub(crate) async fn plan_project(
     machines: Vec<MachineObservation>,
 ) -> Result<DeployPlan, DeployError> {
     let (snapshot, warnings) = gather_deploy_snapshot(client, machines, intent).await?;
-    preview_gathered(client, snapshot, warnings, intent).await
+    preview_gathered(snapshot, warnings, intent).await
 }
 
 pub(super) async fn plan_scale(
@@ -339,27 +339,15 @@ pub(super) async fn plan_scale(
     } else {
         (snapshot, warnings)
     };
-    Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
+    Ok(preview_gathered(snapshot, warnings, &intent).await?)
 }
 
 async fn preview_gathered(
-    client: &mut Client,
     snapshot: DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
     intent: &DeployIntent,
 ) -> Result<DeployPlan, DeployError> {
-    let domain = if intent.target.iter().any(needs_ingress_expansion) {
-        client.domain_if_reserved().await?
-    } else {
-        None
-    };
-    let mut preview = plan_deploy(
-        intent,
-        &snapshot,
-        IngressContext {
-            cluster_domain: domain.as_deref(),
-        },
-    )?;
+    let mut preview = plan_deploy(intent, &snapshot)?;
     warnings.extend(hostname_warnings(&preview, &snapshot.machines).await);
     preview.prepend_warnings(warnings);
     Ok(preview)
@@ -520,13 +508,6 @@ fn machine_public_addresses(machines: &[MachineObservation]) -> Vec<IpAddr> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-fn needs_ingress_expansion(requested: &RequestedServiceSpec) -> bool {
-    requested
-        .ports
-        .iter()
-        .any(|port| matches!(port, PortPublication::Ingress { .. }))
 }
 
 async fn push_image(

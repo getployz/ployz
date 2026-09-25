@@ -43,7 +43,7 @@ pub fn hostname_owners<'a>(
 /// Explicit Ingress Hostnames published by these ports.
 pub fn explicit_ingress_hosts(ports: &[PortPublication]) -> impl Iterator<Item = &IngressHost> {
     ports.iter().filter_map(|port| match port {
-        PortPublication::Ingress { hostname, .. } => hostname.as_explicit_host(),
+        PortPublication::Ingress { hostname, .. } => Some(hostname),
         PortPublication::Host { .. } => None,
     })
 }
@@ -51,15 +51,13 @@ pub fn explicit_ingress_hosts(ports: &[PortPublication]) -> impl Iterator<Item =
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::num::NonZeroU16;
 
     use serde_json::json;
 
     use super::hostname_owners;
     use crate::{
-        ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-        HttpProtocol, IngressHost, IngressHostname, MachineId, PortPublication, ProjectName,
-        QualifiedService, ResolvedServiceSpec, ServiceId, ServiceName,
+        ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, IngressHost,
+        MachineId, ProjectName, QualifiedService, ResolvedServiceSpec, ServiceId, ServiceName,
     };
 
     #[test]
@@ -128,33 +126,11 @@ mod tests {
     }
 
     #[test]
-    fn hooks_and_unassigned_ingress_do_not_claim_a_hostname() {
+    fn hooks_do_not_claim_a_hostname() {
         let mut hook = observation("shop", "web", '1', 'a', 1, "api.example.com");
         hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
             .unwrap();
-        let mut assigned = observation("blog", "web", '2', 'b', 2, "api.example.com");
-        assigned
-            .try_update(|parts| {
-                parts.resolved_spec.ports = vec![PortPublication::Ingress {
-                    hostname: IngressHostname::cluster_domain(),
-                    load_balancer_port: NonZeroU16::new(80).unwrap(),
-                    container_port: NonZeroU16::new(80).unwrap(),
-                    http_protocol: HttpProtocol::Http,
-                }]
-            })
-            .unwrap();
-        let mut chosen = observation("shop", "api", '3', 'c', 3, "api.example.com");
-        chosen
-            .try_update(|parts| {
-                parts.resolved_spec.ports = vec![PortPublication::Ingress {
-                    hostname: IngressHostname::cluster_domain_label("api").unwrap(),
-                    load_balancer_port: NonZeroU16::new(80).unwrap(),
-                    container_port: NonZeroU16::new(80).unwrap(),
-                    http_protocol: HttpProtocol::Http,
-                }]
-            })
-            .unwrap();
-        assert!(hostname_owners([&hook, &assigned, &chosen]).is_empty());
+        assert!(hostname_owners([&hook]).is_empty());
     }
 
     fn host(name: &str) -> IngressHost {
@@ -178,7 +154,7 @@ mod tests {
             "container": { "image": "example.test/image", "pull_policy": "missing" },
             "ports": [{
                 "mode": "ingress",
-                "hostname": { "kind": "explicit", "hostname": hostname },
+                "hostname": hostname,
                 "load_balancer_port": 80,
                 "container_port": 80,
                 "http_protocol": "http"

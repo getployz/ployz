@@ -40,7 +40,7 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn is_dns_label(value: &str) -> bool {
+pub(crate) fn is_dns_label(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 63
@@ -575,19 +575,6 @@ impl QualifiedService {
         format!("{}.{}", self.name, self.project)
     }
 
-    /// Combined public ingress DNS label `{name}-{project}` under a Cluster Domain wildcard.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IngressLabelTooLong`] when the hyphenated label exceeds 63 characters.
-    pub fn ingress_label(&self) -> Result<String, IngressLabelTooLong> {
-        let label = format!("{}-{}", self.name, self.project);
-        if label.len() > 63 {
-            return Err(IngressLabelTooLong { label });
-        }
-        Ok(label)
-    }
-
     /// Parse Internal DNS labels `{name}.{project}`.
     ///
     /// # Errors
@@ -614,15 +601,6 @@ impl QualifiedService {
             ServiceName::parse("ingress").expect("ingress is a DNS-label Service Name"),
         )
     }
-}
-
-/// Combined `{name}-{project}` label for a public Ingress Hostname.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error(
-    "generated Ingress Hostname label \"{label}\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
-)]
-pub struct IngressLabelTooLong {
-    pub label: String,
 }
 
 fn qualified_service_error(value: &str) -> ValueError {
@@ -675,20 +653,54 @@ impl From<&QualifiedService> for ServiceSelector {
     }
 }
 validated_string_newtype!(
-    /// One DNS label under the Cluster Domain for a public Ingress Hostname.
-    ClusterDomainLabel,
-    "Cluster Domain label",
-    "a 1-63 character lowercase DNS label",
-    |value| is_dns_label(value)
-);
-
-validated_string_newtype!(
     /// A validated HTTP ingress hostname. It is not a Machine Name.
     IngressHost,
     "Ingress Hostname",
     "a 1-253 character lowercase DNS hostname",
     |value| is_hostname(value)
 );
+
+validated_string_newtype!(
+    /// Name that Certificate Material is held under: an explicit Ingress Hostname
+    /// or a single-level wildcard `*.x`.
+    CertificateHost,
+    "certificate hostname",
+    "a lowercase DNS hostname or a single-level wildcard such as *.example.com",
+    |value| is_hostname(value) || value.strip_prefix("*.").is_some_and(is_hostname)
+);
+
+impl CertificateHost {
+    /// Whether this is a single-level wildcard `*.x`.
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        self.0.starts_with("*.")
+    }
+
+    /// Whether material held under this name serves `hostname`: the same name,
+    /// or exactly one label under a wildcard's parent.
+    #[must_use]
+    pub fn covers(&self, hostname: &IngressHost) -> bool {
+        match self.0.strip_prefix("*.") {
+            Some(parent) => hostname
+                .as_str()
+                .split_once('.')
+                .is_some_and(|(_, rest)| rest == parent),
+            None => self.0 == hostname.as_str(),
+        }
+    }
+}
+
+impl From<IngressHost> for CertificateHost {
+    fn from(hostname: IngressHost) -> Self {
+        Self(hostname.0)
+    }
+}
+
+impl std::borrow::Borrow<str> for CertificateHost {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
 
 /// One Machine's optimistic container subnet candidate.
 ///

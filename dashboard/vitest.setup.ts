@@ -8,4 +8,6 @@ process.env["POLAR_ACCESS_TOKEN"] ??= "test-polar-access-token";
 process.env["POLAR_SERVER"] ??= "sandbox";
 process.env["POLAR_WEBHOOK_SECRET"] ??= "test-polar-webhook-secret";
 process.env["POLAR_PRODUCT_ID"] ??= "22222222-2222-4222-8222-222222222222";
+// Refuses connections, so no test reaches the real Hosted DNS by accident.
+process.env["PLOYZ_HOSTED_DNS_URL"] ??= "http://127.0.0.1:9/";
 process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890";

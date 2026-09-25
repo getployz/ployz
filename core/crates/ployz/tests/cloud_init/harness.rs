@@ -8,11 +8,10 @@ use std::sync::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerChanged, ContainerCreated, ContainerDetails, ContainerId,
     ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
-    ContractDescription, CreateContainerRequest, CreateDomainRecordsRequest,
-    DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords, HealthObservation, InitializeRequest,
-    Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
-    MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
+    ContractDescription, CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, HealthObservation,
+    InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
+    MachineRpc, MachineToken, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered,
     ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
@@ -34,11 +33,10 @@ mod inspect_telemetry_fixture;
 mod servers;
 
 pub use enroll_http::{EnrollListen, EventLog};
-pub use servers::{cli, serve_ingress_probe, serve_local_machine, serve_machine};
+pub use servers::{cli, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
-pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
 pub const RESET_PUBLIC_KEY: WireGuardPublicKey = WireGuardPublicKey([0xff; 32]);
 
 fn consume_transient_failure(remaining: &AtomicUsize) -> bool {
@@ -68,14 +66,6 @@ struct JoinInner {
     lose_initialize_reply: AtomicBool,
     startup_inspect_failures: AtomicUsize,
     replace_identity_on_initialize: AtomicBool,
-    fail_reservation: AtomicBool,
-    reserve_request: Mutex<Option<ReserveDomainRequest>>,
-    reserve_attempts: AtomicUsize,
-    transient_reserve_failures: AtomicUsize,
-    domain_reserved: AtomicBool,
-    domain_record_requests: Mutex<Vec<CreateDomainRecordsRequest>>,
-    domain_record_attempts: AtomicUsize,
-    transient_domain_record_failures: AtomicUsize,
     cloud_managed: AtomicBool,
     set_management_client_attempts: AtomicUsize,
     transient_set_management_client_failures: AtomicUsize,
@@ -113,14 +103,6 @@ impl JoinDaemon {
                 lose_initialize_reply: AtomicBool::new(false),
                 startup_inspect_failures: AtomicUsize::new(0),
                 replace_identity_on_initialize: AtomicBool::new(false),
-                fail_reservation: AtomicBool::new(false),
-                reserve_request: Mutex::new(None),
-                reserve_attempts: AtomicUsize::new(0),
-                transient_reserve_failures: AtomicUsize::new(0),
-                domain_reserved: AtomicBool::new(false),
-                domain_record_requests: Mutex::new(Vec::new()),
-                domain_record_attempts: AtomicUsize::new(0),
-                transient_domain_record_failures: AtomicUsize::new(0),
                 cloud_managed: AtomicBool::new(false),
                 set_management_client_attempts: AtomicUsize::new(0),
                 transient_set_management_client_failures: AtomicUsize::new(0),
@@ -184,19 +166,9 @@ impl JoinDaemon {
         *self.inner.public_key.lock().unwrap()
     }
 
-    pub fn reserve_request(&self) -> Option<ReserveDomainRequest> {
-        self.inner.reserve_request.lock().unwrap().clone()
-    }
-
-    pub fn domain_record_requests(&self) -> Vec<CreateDomainRecordsRequest> {
-        self.inner.domain_record_requests.lock().unwrap().clone()
-    }
-
-    pub fn founder_tail_attempts(&self) -> [usize; 4] {
+    pub fn founder_tail_attempts(&self) -> [usize; 2] {
         [
-            self.inner.reserve_attempts.load(Ordering::SeqCst),
             self.inner.create_attempts.load(Ordering::SeqCst),
-            self.inner.domain_record_attempts.load(Ordering::SeqCst),
             self.inner
                 .set_management_client_attempts
                 .load(Ordering::SeqCst),
@@ -210,11 +182,6 @@ impl JoinDaemon {
 
     pub fn containers(&self) -> Vec<ContainerObservation> {
         self.inner.containers.lock().unwrap().clone()
-    }
-
-    pub fn with_reserved_domain(self) -> Self {
-        self.inner.domain_reserved.store(true, Ordering::SeqCst);
-        self
     }
 
     pub fn revoked_on_publication(self, events: EventLog) -> Self {
@@ -241,11 +208,6 @@ impl JoinDaemon {
         self
     }
 
-    pub fn fail_reservation(self) -> Self {
-        self.inner.fail_reservation.store(true, Ordering::SeqCst);
-        self
-    }
-
     pub fn join_attempts(&self) -> usize {
         self.inner.join_attempts.load(Ordering::SeqCst)
     }
@@ -255,13 +217,7 @@ impl JoinDaemon {
             .lose_initialize_reply
             .store(failures > 0, Ordering::SeqCst);
         self.inner
-            .transient_reserve_failures
-            .store(failures, Ordering::SeqCst);
-        self.inner
             .transient_create_failures
-            .store(failures, Ordering::SeqCst);
-        self.inner
-            .transient_domain_record_failures
             .store(failures, Ordering::SeqCst);
         self.inner
             .transient_set_management_client_failures
@@ -954,79 +910,11 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn reserve_domain(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.inner.reserve_attempts.fetch_add(1, Ordering::SeqCst);
-        if self.inner.fail_reservation.load(Ordering::SeqCst) {
-            return Err(Status::permission_denied("DNS reservation rejected"));
-        }
-        let decoded = request
-            .into_inner()
-            .decode_request()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::ReserveDomain(reserve) = decoded.body else {
-            return Err(Status::invalid_argument("expected ReserveDomain"));
-        };
-        *self.inner.reserve_request.lock().unwrap() = Some(reserve);
-        self.inner.domain_reserved.store(true, Ordering::SeqCst);
-        self.record("reserve_domain");
-        if consume_transient_failure(&self.inner.transient_reserve_failures) {
-            return Err(Status::unavailable("lost domain reservation reply"));
-        }
-        rpc_ok(Domain {
-            name: CLUSTER_DOMAIN.into(),
-        })
-    }
-    async fn get_domain(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        if self.inner.domain_reserved.load(Ordering::SeqCst) {
-            rpc_ok(Domain {
-                name: CLUSTER_DOMAIN.into(),
-            })
-        } else {
-            rpc_ok(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: "no reserved domain".into(),
-                details: serde_json::Value::Null,
-            })
-        }
-    }
-    async fn release_domain(
+    async fn publish_certificate_material(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
-    }
-    async fn create_domain_records(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.inner
-            .domain_record_attempts
-            .fetch_add(1, Ordering::SeqCst);
-        let decoded = request
-            .into_inner()
-            .decode_request()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::CreateDomainRecords(create) = decoded.body else {
-            return Err(Status::invalid_argument("expected CreateDomainRecords"));
-        };
-        if consume_transient_failure(&self.inner.transient_domain_record_failures) {
-            return Err(Status::unavailable("transient DNS publication failure"));
-        }
-        self.inner
-            .domain_record_requests
-            .lock()
-            .unwrap()
-            .push(create.clone());
-        self.record("publish_dns");
-        rpc_ok(DomainRecords {
-            records: create.records,
-        })
     }
     async fn reset(
         &self,

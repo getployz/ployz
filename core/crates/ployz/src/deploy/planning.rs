@@ -34,13 +34,6 @@ pub enum VolumeFate {
     Destroy,
 }
 
-/// Reserved Cluster Domain used to expand applied Ingress Hostname intents.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct IngressContext<'domain> {
-    /// Hosted Cluster Domain, when reserved. Absence fails Cluster Domain expansion.
-    pub cluster_domain: Option<&'domain str>,
-}
-
 /// Volume-bound target plus the expanded apply-set. Private planning phase.
 struct BoundIntent {
     target: Vec<RequestedServiceSpec>,
@@ -76,7 +69,6 @@ struct Planned {
 pub struct DeployPlan {
     operations: Vec<DeployOperation>,
     preview: DeployPreview,
-    pub(super) cluster_domain: Option<String>,
 }
 
 impl DeployPlan {
@@ -115,7 +107,6 @@ impl DeployPlan {
         Self {
             operations: Vec::new(),
             preview: DeployPreview::new(Vec::new(), warnings, project),
-            cluster_domain: None,
         }
     }
 
@@ -128,7 +119,6 @@ impl DeployPlan {
         Self {
             operations,
             preview: DeployPreview::new(rows, Vec::new(), project),
-            cluster_domain: None,
         }
     }
 }
@@ -166,7 +156,7 @@ pub(super) fn prepare_project_removal(
     volumes: VolumeFate,
 ) -> Result<DeployPlan, PlanError> {
     let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
-    let mut planned = plan_operations(&intent, snapshot, IngressContext::default())?;
+    let mut planned = plan_operations(&intent, snapshot)?;
     if volumes == VolumeFate::Destroy && planned.prune_refusal.is_none() {
         planned.operations.extend(
             planned
@@ -215,15 +205,14 @@ fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
 ///
 /// # Errors
 ///
-/// Returns when domain assignment, generated labels, hostname conflicts,
+/// Returns when hostname conflicts,
 /// placement, volumes, service identity, or the apply-set dependency graph
 /// cannot produce a preview.
 pub fn preview_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
-    ingress: IngressContext<'_>,
 ) -> Result<DeployPreview, PlanError> {
-    Ok(plan_deploy(intent, snapshot, ingress)?.preview)
+    Ok(plan_deploy(intent, snapshot)?.preview)
 }
 
 /// Admit a Deploy for confirmation against this observer-relative snapshot.
@@ -233,9 +222,8 @@ pub fn preview_deploy(
 pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
-    ingress: IngressContext<'_>,
 ) -> Result<DeployPlan, PlanError> {
-    let mut planned = plan_operations(intent, snapshot, ingress)?;
+    let mut planned = plan_operations(intent, snapshot)?;
     let budgets = std::mem::take(&mut planned.volumes.budgets);
     let mut plan = seal_plan(planned, snapshot, &intent.project_name);
     if !budgets.is_empty() {
@@ -257,7 +245,6 @@ pub fn plan_deploy(
         }
     }
     plan.preview.storage = budgets;
-    plan.cluster_domain = ingress.cluster_domain.map(str::to_owned);
     Ok(plan)
 }
 
@@ -306,21 +293,16 @@ fn seal_plan(
     DeployPlan {
         operations: planned.operations,
         preview,
-        cluster_domain: None,
     }
 }
 
-fn plan_operations(
-    intent: &DeployIntent,
-    snapshot: &DeploySnapshot,
-    ingress: IngressContext<'_>,
-) -> Result<Planned, PlanError> {
-    let bound = bind(intent, ingress)?;
+fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<Planned, PlanError> {
+    let bound = bind(intent)?;
     let warnings = hostname_policy_for(&intent.project_name, &bound.requested, snapshot)?;
     assemble_plan(intent, bound, snapshot, warnings)
 }
 
-fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundIntent, PlanError> {
+fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
     let specs = order_included(intent, &intent.applied_names())?;
     let target: Vec<_> = intent
         .target
@@ -328,20 +310,16 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
         .collect::<Result<_, _>>()?;
-    let mut requested = Vec::new();
-    for spec in specs {
-        let scoped = target
-            .iter()
-            .find(|candidate| candidate.name == spec.name)
-            .expect("apply-set names are drawn from the Intent target");
-        let mut planned = scoped.clone();
-        crate::dns::expand_ingress_ports(
-            &mut planned,
-            &intent.project_name,
-            ingress.cluster_domain,
-        )?;
-        requested.push(planned);
-    }
+    let requested = specs
+        .into_iter()
+        .map(|spec| {
+            target
+                .iter()
+                .find(|candidate| candidate.name == spec.name)
+                .expect("apply-set names are drawn from the Intent target")
+                .clone()
+        })
+        .collect();
     Ok(BoundIntent { target, requested })
 }
 

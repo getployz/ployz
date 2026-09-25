@@ -10,7 +10,7 @@ fn success_with_ingress_deduplicates_endpoints() {
         "container": { "image": "excalidraw/excalidraw:latest", "pull_policy": "missing" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "excalidraw.acme.ployz.app" },
+            "hostname": "excalidraw.acme.ployz.app",
             "load_balancer_port": 443,
             "container_port": 80,
             "http_protocol": "https"
@@ -44,7 +44,7 @@ fn success_with_ingress_deduplicates_endpoints() {
 }
 
 #[test]
-fn success_groups_unique_urls_by_service_and_target_port_with_custom_domains_first() {
+fn success_groups_unique_urls_by_service_and_target_port_in_hostname_order() {
     let mut spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": "a".repeat(32),
         "name": "web",
@@ -64,7 +64,7 @@ fn success_groups_unique_urls_by_service_and_target_port_with_custom_domains_fir
         spec.ports.push(
             serde_json::from_value(serde_json::json!({
                 "mode": "ingress",
-                "hostname": { "kind": "explicit", "hostname": host },
+                "hostname": host,
                 "load_balancer_port": published,
                 "container_port": target,
                 "http_protocol": protocol
@@ -92,7 +92,7 @@ fn success_groups_unique_urls_by_service_and_target_port_with_custom_domains_fir
         );
         4
     ]);
-    let text = success_text(&completed, "Deployed to default", Some("project.example"));
+    let text = success_text(&completed, "Deployed to default");
     assert_eq!(
         text,
         "\
@@ -103,8 +103,8 @@ web → :8080
   http://a.example.com
   https://a.example.com
   https://a.example.com:8443
-  https://z.example.com
   https://web.project.example
+  https://z.example.com
 
 web → :9090
   https://a.example.com
@@ -133,7 +133,7 @@ fn success_without_ingress_reports_skipped_health_and_cleanup_on_multiple_machin
         },
     ];
     assert_eq!(
-        success_text(&completed, "Deployed to staging", None),
+        success_text(&completed, "Deployed to staging"),
         "✓ Deployed to staging\n  1 ready · health checks skipped: 1 · 1 created · 1 removed · 2 machines\n"
     );
 }

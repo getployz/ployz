@@ -5,14 +5,12 @@ use std::{
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
-    DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
-    MachineName, MachineObservation, PartialResult, PlacementConstraint, ProjectName,
+    DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
+    MachineObservation, PartialResult, PlacementConstraint, ProjectName,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
-
-use crate::dns::{DomainRequired, ExpandIngressError};
 
 mod apply;
 mod exec;
@@ -26,8 +24,7 @@ pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, remove_projec
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
-    DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
-    preview_deploy,
+    DeployPlan, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal, preview_deploy,
 };
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
@@ -552,19 +549,6 @@ pub enum PlanError {
         hostname: IngressHost,
         owner: QualifiedService,
     },
-    #[error(transparent)]
-    DomainRequired(#[from] DomainRequired),
-    #[error(transparent)]
-    GeneratedLabel(#[from] IngressLabelTooLong),
-}
-
-impl From<ExpandIngressError> for PlanError {
-    fn from(error: ExpandIngressError) -> Self {
-        match error {
-            ExpandIngressError::DomainRequired(error) => Self::DomainRequired(error),
-            ExpandIngressError::LabelTooLong(error) => Self::GeneratedLabel(error),
-        }
-    }
 }
 
 struct MachineNames<'names>(&'names [MachineName]);
@@ -616,9 +600,7 @@ impl PlanError {
             | Self::MixedVolumeModes { .. }
             | Self::DependencyCycle { .. }
             | Self::DockerVolumeUnavailable { .. }
-            | Self::HostnameConflict { .. }
-            | Self::DomainRequired(_)
-            | Self::GeneratedLabel(_)) => RpcError {
+            | Self::HostnameConflict { .. }) => RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: error.to_string(),
                 details: serde_json::Value::Null,

@@ -14,6 +14,8 @@ import {
 } from "#/components/ui/field";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
+import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
+import { managedHostname } from "#/modules/environment-design/managed-service-exports";
 import type { ServiceDrawerState } from "./useServiceDrawerState";
 import { CustomDomainDialog } from "./CustomDomainDialog";
 import { CustomDomainRow, type DomainCertificateEvidence } from "./domain-row";
@@ -56,20 +58,28 @@ export function ServiceNetworkingSection({
   const routes = service.routes;
   const managedList = service.managedHostnames;
   const runtimeStatus = useRuntimeStatus();
-  const hostedDnsHostname = runtimeStatus.hostedDnsHostname;
-  const hostedDnsHostnameIsCurrent = runtimeStatus.lensStatus === "observed";
+  const clusterDomain = useClusterDomainName(state.organizationSlug);
+  const runtimeIsCurrent = runtimeStatus.lensStatus === "observed";
   const [editor, setEditor] = useState<PublicDomainEditor>(null);
 
   const certificateEvidence = (hostname: string): DomainCertificateEvidence => {
-    const certificate = runtimeStatus.certificates.find(
-      (candidate) => candidate.hostname === hostname
+    // A published `*.parent` serves every hostname one label under it, and the
+    // Engine then keeps no row of the hostname's own.
+    const wildcard = `*.${hostname.slice(hostname.indexOf(".") + 1)}`;
+    const certificate =
+      runtimeStatus.certificates.find(
+        (candidate) => candidate.hostname === hostname
+      ) ??
+      runtimeStatus.certificates.find(
+        (candidate) => candidate.hostname === wildcard
+      );
+    const incomplete = [hostname, wildcard].some((name) =>
+      runtimeStatus.incompleteIds.certificates.includes(name)
     );
-    const incomplete =
-      runtimeStatus.incompleteIds.certificates.includes(hostname);
     if (!certificate && !incomplete) return null;
     return {
       status: certificate?.status ?? null,
-      lastObserved: !hostedDnsHostnameIsCurrent,
+      lastObserved: !runtimeIsCurrent,
       incomplete,
     };
   };
@@ -116,14 +126,12 @@ export function ServiceNetworkingSection({
           {managedList.map((managed, index) => (
             <ManagedDomainRow
               key={managed.prefix}
+              organizationSlug={state.organizationSlug}
               managed={managed}
-              hostedDnsHostname={hostedDnsHostname}
-              hostedDnsHostnameIsCurrent={hostedDnsHostnameIsCurrent}
+              clusterDomain={clusterDomain}
               certificateEvidence={
-                hostedDnsHostname
-                  ? certificateEvidence(
-                      `${managed.prefix}.${hostedDnsHostname}`
-                    )
+                clusterDomain
+                  ? certificateEvidence(managedHostname(managed.prefix, clusterDomain))
                   : null
               }
               defaultTargetPort={defaultTargetPort}
@@ -181,7 +189,7 @@ export function ServiceNetworkingSection({
               ),
               targetPort: null,
             }}
-            hostedDnsHostname={hostedDnsHostname}
+            clusterDomain={clusterDomain}
             takenPrefixes={takenPrefixesFor(null)}
             defaultTargetPort={defaultTargetPort}
             onClose={() => setEditor(null)}
@@ -191,7 +199,7 @@ export function ServiceNetworkingSection({
         {editor?.kind === "managed" && editedManaged ? (
           <ManagedDomainDialog
             managed={editedManaged}
-            hostedDnsHostname={hostedDnsHostname}
+            clusterDomain={clusterDomain}
             takenPrefixes={takenPrefixesFor(editor.index)}
             defaultTargetPort={defaultTargetPort}
             onClose={() => setEditor(null)}

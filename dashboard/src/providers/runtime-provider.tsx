@@ -138,7 +138,6 @@ export function useRuntimeStatus() {
     error: row?.error ?? null,
     // These are direct Runtime Watch fields. They deliberately do not imply
     // DNS publication, route binding, certificate use, or service health.
-    hostedDnsHostname: row?.hostedDnsHostname ?? null,
     certificates: row?.certificates ?? [],
     incompleteIds: row?.incompleteIds ?? EMPTY_RUNTIME_INCOMPLETE_IDS,
   };

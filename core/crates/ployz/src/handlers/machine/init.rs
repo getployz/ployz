@@ -115,7 +115,6 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         println!("Switched context to '{current_context}'");
     }
     println!("Initialised Machine {} ({})", machine.name, machine.id);
-    let want_dns = !matches.get_flag("no-dns");
     let ingress_recovery =
         super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
     let inspect_recovery = super::super::recovery_command(
@@ -127,25 +126,12 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         let mut ready =
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
-        if want_dns {
-            let endpoint = matches
-                .get_one::<String>("dns-endpoint")
-                .cloned()
-                .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
-            let domain = crate::dns::reserve_if_missing(&mut ready, endpoint).await.map_err(|error| {
-                Error::usage(format!("Machine initialized; domain reservation incomplete: {error}\nContinue ingress setup without a Cluster domain: {ingress_recovery}"))
-            })?;
-            println!("Reserved Cluster domain: {domain}");
-        }
         if machine.accepts_ingress {
             let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
             crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
                 let error: Error = error.into();
                 Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
             })?;
-            if want_dns {
-                crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| Error::usage(format!("Machine initialized; ingress healthy; DNS publication pending: {error}\nAllow outbound access if blocked, then run: {ingress_recovery}")))?;
-            }
         }
         Ok::<_, Error>(())
     })?;

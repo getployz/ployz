@@ -21,7 +21,7 @@ use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};
 pub use certificate::{
     CertificateChallenge, CertificateChallengeError, CertificateMaterial, CertificateMaterialError,
-    CertificateRow,
+    CertificateRow, published_cover,
 };
 pub use machine_view::{MachineView, MachinesSnapshot};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};
@@ -41,8 +41,6 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("Corrosion JSON failed: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("invalid stored hosted DNS reservation: {0}")]
-    InvalidDomainReservation(serde_json::Error),
     #[error(transparent)]
     Value(#[from] ployz_core::ValueError),
     #[error("Corrosion TOML failed: {0}")]

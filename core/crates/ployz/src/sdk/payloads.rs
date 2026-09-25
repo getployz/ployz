@@ -78,6 +78,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::SetManagementClientResponse>();
     declarations.add::<MachineTarget>();
     declarations.add::<ployz_core::PruneTarget>();
+    declarations.add::<ployz_core::PublishCertificateMaterialRequest>();
+    declarations.add::<ployz_core::CertificateMaterialPublished>();
     declarations.add::<ObservedDataLoss>();
     declarations.add::<PlanOptions>();
     declarations.add::<ProjectName>();

@@ -7,8 +7,8 @@ mod harness;
 mod policy;
 
 use harness::{
-    CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
-    founder_machine, ingress_on, registration, serve_ingress_probe, serve_machine,
+    EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN, founder_machine,
+    ingress_on, registration, serve_machine,
 };
 use ployz_core::{InitializeRequest, InspectRequest, LocalMachinePhase, Registered, op};
 use serde_json::json;
@@ -177,7 +177,6 @@ async fn cloud_init_initialize_participates() {
             "--accepts-ingress=false",
             "--label-add",
             "pool=build",
-            "--no-dns",
             "--yes",
         ])
         .output()
@@ -246,10 +245,6 @@ async fn cloud_init_initialize_participates() {
         })]
     );
 
-    assert!(
-        daemon.reserve_request().is_none(),
-        "initialize with --no-dns must not ReserveDomain"
-    );
     assert_eq!(
         events.entries(),
         ["initialize", "set_management_client", "publish", "callback"]
@@ -313,7 +308,6 @@ async fn caddy_lookup_failure_happens_before_initialize() {
             &enroll.url,
             "--name",
             "founder",
-            "--no-dns",
             "--yes",
         ])
         .env("HTTPS_PROXY", &proxy)
@@ -334,89 +328,6 @@ async fn caddy_lookup_failure_happens_before_initialize() {
     );
     assert!(daemon.initialize_requests().is_empty());
     assert!(enroll.callbacks().is_empty());
-}
-
-#[tokio::test]
-async fn cloud_init_initialize_reserves_hosted_dns() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let pairing = json!({ "secret": PAIRING });
-    let events = EventLog::default();
-    let enroll = EnrollListen::script_recording(
-        [json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": pairing,
-        })],
-        events.clone(),
-    )
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    })
-    .with_events(events.clone());
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--accepts-ingress=false",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Reserved Cluster domain: {CLUSTER_DOMAIN}")),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    let reserved = daemon.reserve_request().expect("ReserveDomain was called");
-    assert_eq!(reserved.endpoint, "https://dns.uncloud.run/v1");
-    assert_ne!(
-        reserved.endpoint,
-        format!("{}/api/dns/v1", enroll.url),
-        "Cloud enroll must not derive hosted DNS from --cloud-url"
-    );
-    assert_eq!(
-        enroll.callbacks(),
-        [json!({
-            "machineId": machine_id.as_str(),
-            "pairingCredential": PAIRING,
-        })]
-    );
-    assert_eq!(
-        events.entries(),
-        [
-            "initialize",
-            "reserve_domain",
-            "set_management_client",
-            "publish",
-            "callback"
-        ]
-    );
 }
 
 #[tokio::test]
@@ -531,7 +442,6 @@ async fn cloud_init_retries_not_yet_then_initializes() {
             "--name",
             "founder",
             "--accepts-ingress=false",
-            "--no-dns",
             "--yes",
         ])
         .output()
@@ -581,7 +491,6 @@ async fn init_cloud(
         "--name",
         name,
         "--accepts-ingress=false",
-        "--no-dns",
     ]);
     if reset {
         command.arg("--reset");
@@ -689,7 +598,6 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
             "--reset",
             "--yes",
             "--accepts-ingress=false",
-            "--no-dns",
         ])
         .output()
         .await

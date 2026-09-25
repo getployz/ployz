@@ -10,3 +10,4 @@ export * from "#/modules/machines/tables";
 export * from "#/modules/github/tables";
 export * from "#/modules/billing/tables";
 export * from "#/modules/waitlist/tables";
+export * from "#/modules/cluster-domain/tables";

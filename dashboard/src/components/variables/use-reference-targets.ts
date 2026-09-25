@@ -1,4 +1,4 @@
-import { useRuntimeStatus } from "#/providers/runtime-provider";
+import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
 import { useServicesCollection } from "#/modules/services/services.collection";
 import { useLiveQuery, eq } from "@tanstack/react-db";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -10,7 +10,7 @@ export function useReferenceTargets(input: {
   environmentId: string;
   serviceId: string;
 }): ReferenceTarget[] {
-  const { hostedDnsHostname } = useRuntimeStatus();
+  const clusterDomain = useClusterDomainName(input.organizationSlug);
   const document = useEnvironmentDocument(input.organizationSlug, input.environmentId);
   const services = useServicesCollection(input.organizationSlug);
   const { data: identities } = useLiveQuery({ queryKey: ['reference-services', services.id, input.environmentId], query: q => q.from({ service: services }).where(({ service }) => eq(service.environmentId, input.environmentId)) });
@@ -22,7 +22,7 @@ export function useReferenceTargets(input: {
       variables: service.variables.map((variable) => ({
         key: variable.key, exported: variable.exported, isSecret: variable.value.kind === "secret", description: variable.description,
       })),
-      managedExports: getManagedServiceExports({ ...service.config, name: names.get(service.id) ?? service.slug, id: service.id, lineageId: service.lineageId, slug: service.slug, environmentId: document.id, environmentSlug: document.namespace }, hostedDnsHostname).map((exported) => ({ key: exported.key, description: exported.description })),
+      managedExports: getManagedServiceExports({ ...service.config, name: names.get(service.id) ?? service.slug, id: service.id, lineageId: service.lineageId, slug: service.slug, environmentId: document.id, environmentSlug: document.namespace }, clusterDomain).map((exported) => ({ key: exported.key, description: exported.description })),
     })),
   });
 }

@@ -1,5 +1,6 @@
 import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
+import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
@@ -69,6 +70,7 @@ export const getEnvironmentNodeIntroductionsCollection = changeCollection<Enviro
   "environment_node_introduction", (row) => `${row.nodeType}:${row.nodeId}`);
 export const getVolumeRemoveAttemptsCollection = changeCollection<VolumeRemoveAttemptRow>("volume_remove_attempt", (row) => row.id);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
+export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
 
 export type EnvironmentSummary = Pick<EnvironmentRow, "id" | "projectId" | "organizationId" | "name" | "namespace" | "createdAt">;
 export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary {
@@ -99,4 +101,5 @@ export const orgStoreTables = {
   environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
   volume_remove_attempt: getVolumeRemoveAttemptsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
+  organization_cluster_domain: getClusterDomainCollection,
 } satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

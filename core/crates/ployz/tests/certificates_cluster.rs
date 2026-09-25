@@ -5,10 +5,10 @@ use std::{
 };
 
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, ContainerKind,
-    GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate, ProjectName,
-    PublicIpUpdate, ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest,
-    op,
+    CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, CertificateHost, CertificateMaterialChange,
+    ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate,
+    ProjectName, PublicIpUpdate, PublishCertificateMaterialRequest, ResolvedServiceSpec, ServiceId,
+    StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -421,6 +421,167 @@ async fn joining_machine_serves_existing_certificate() {
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
 }
 
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
+async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme() {
+    let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
+    ca.set_advertised_host("host.docker.internal");
+    let cluster = Cluster::create(plan("l3-acme-published", 1)).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let first = cluster.initialize_first().await.unwrap();
+    wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
+    let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
+    ca.set_validation(validation_host(ip), 80);
+    point_hostname(&cluster, [0], "app.example.com", &[ip]);
+
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
+
+    // Past two thirds of its lifetime: ACME-issued material this old renews at once.
+    let (certificate, private_key) = past_renewal_material("app.example.com");
+    publish_material(&mut client, "app.example.com", &certificate, &private_key)
+        .await
+        .unwrap();
+    let app_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &first,
+        service(app_id, "api", "app.example.com", 443, "https"),
+    )
+    .await;
+    wait_running(&mut client, &app_id, 1).await;
+    let published_config = wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/caddy/certs/app.example.com-")
+    })
+    .await;
+    wait_https(&cluster, 0, "app.example.com").await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(ca.ordered(), Vec::<String>::new());
+    assert!(certificate_bodies(&cluster, 0).contains(r#"\"published\":true"#));
+
+    clear_material(&mut client, "app.example.com").await;
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/caddy/certs/app.example.com-") && config != published_config
+    })
+    .await;
+    assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
+    assert!(!certificate_bodies(&cluster, 0).contains(r#"\"published\":true"#));
+    wait_https(&cluster, 0, "app.example.com").await;
+}
+
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
+async fn published_wildcard_covers_hostnames_so_acme_orders_nothing() {
+    let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
+    ca.set_advertised_host("host.docker.internal");
+    let cluster = Cluster::create(plan("l3-acme-wildcard", 1)).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let first = cluster.initialize_first().await.unwrap();
+    wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
+    let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
+    ca.set_validation(validation_host(ip), 80);
+    point_hostname(&cluster, [0], "app.example.com", &[ip]);
+    point_hostname(&cluster, [0], "web.example.com", &[ip]);
+
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
+
+    let (certificate, private_key) = past_renewal_material("*.example.com");
+    let refused = publish_material(&mut client, "*.other.test", &certificate, &private_key)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("does not cover"), "{refused}");
+    publish_material(&mut client, "*.example.com", &certificate, &private_key)
+        .await
+        .unwrap();
+
+    let app_id = ServiceId::random();
+    let web_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &first,
+        service(app_id, "api", "app.example.com", 443, "https"),
+    )
+    .await;
+    create_and_start(
+        &mut client,
+        &first,
+        service(web_id, "www", "web.example.com", 443, "https"),
+    )
+    .await;
+    wait_running(&mut client, &app_id, 1).await;
+    wait_running(&mut client, &web_id, 1).await;
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/caddy/certs/app.example.com-")
+            && config.contains("tls /config/caddy/certs/web.example.com-")
+    })
+    .await;
+    wait_https(&cluster, 0, "app.example.com").await;
+    wait_https(&cluster, 0, "web.example.com").await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(ca.ordered(), Vec::<String>::new());
+    assert!(!certificate_bodies(&cluster, 0).contains("\"app.example.com\""));
+
+    clear_material(&mut client, "*.example.com").await;
+    wait_until(Duration::from_secs(90), || {
+        let ordered = ca.ordered();
+        count_orders(&ordered, "app.example.com") == 1
+            && count_orders(&ordered, "web.example.com") == 1
+    })
+    .await;
+}
+
+async fn publish_material(
+    client: &mut ployz::connect::Client,
+    hostname: &str,
+    certificate: &str,
+    private_key: &str,
+) -> Result<(), ployz::connect::ConnectError> {
+    client
+        .call::<op::PublishCertificateMaterial>(
+            PublishCertificateMaterialRequest {
+                hostname: CertificateHost::parse(hostname).unwrap(),
+                change: CertificateMaterialChange::Set {
+                    certificate_chain_pem: certificate.to_owned(),
+                    private_key_pem: private_key.to_owned(),
+                },
+            },
+            None,
+        )
+        .await
+        .map(|_| ())
+}
+
+async fn clear_material(client: &mut ployz::connect::Client, hostname: &str) {
+    client
+        .call::<op::PublishCertificateMaterial>(
+            PublishCertificateMaterialRequest {
+                hostname: CertificateHost::parse(hostname).unwrap(),
+                change: CertificateMaterialChange::Clear,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+fn past_renewal_material(hostname: &str) -> (String, String) {
+    let now = std::time::SystemTime::now();
+    ployz_testkit::fake_acme::self_signed_material(
+        hostname,
+        now - Duration::from_secs(10 * 24 * 60 * 60),
+        now + Duration::from_secs(24 * 60 * 60),
+    )
+}
+
 fn plan(name: &str, machines: usize) -> ClusterPlan {
     ClusterPlan::new(&format!("{name}-{}", process::id()), machines).unwrap()
 }
@@ -564,7 +725,7 @@ fn service(
         },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": hostname },
+            "hostname": hostname,
             "load_balancer_port": load_balancer_port,
             "container_port": 8080,
             "http_protocol": http_protocol

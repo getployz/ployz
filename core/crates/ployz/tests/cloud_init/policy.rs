@@ -123,9 +123,6 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
             "--accepts-ingress=false",
             "--yes",
         ]);
-        if !adding {
-            command.arg("--no-dns");
-        }
         let output = command.output().await.unwrap();
         assert!(
             output.status.success(),

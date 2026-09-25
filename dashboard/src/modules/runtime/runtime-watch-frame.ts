@@ -59,7 +59,6 @@ export const runtimeWatchFrameSchema = Schema.Struct({
   machines: Schema.Array(runtimeWatchMachineSchema),
   containers: Schema.Array(runtimeWatchContainerSchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
-  hosted_dns_hostname: Schema.NullOr(Schema.String),
   incomplete_ids: Schema.Struct({
     machines: Schema.Array(Schema.String),
     containers: Schema.Array(Schema.String),
@@ -122,7 +121,6 @@ export function runtimeWatchFrameForTransport(
           }
         : null,
     })),
-    hosted_dns_hostname: frame.hosted_dns_hostname,
     incomplete_ids: {
       machines: [...frame.incomplete_ids.machines],
       containers: [...frame.incomplete_ids.containers],
@@ -160,7 +158,6 @@ export function runtimeSnapshotFromWatchFrame(
   return {
     status: "observed",
     error: null,
-    hostedDnsHostname: frame.hosted_dns_hostname,
     machines: frame.machines.map((machine) => ({
       id: machine.machine.id,
       name: machine.machine.name,

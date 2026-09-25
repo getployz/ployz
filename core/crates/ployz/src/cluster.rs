@@ -8,12 +8,12 @@ use futures_util::future::join_all;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolume, DockerVolumeName, GetDomainRequest, InspectRequest,
-    InspectVolumeRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
-    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    DescribeContractRequest, DockerVolume, DockerVolumeName, InspectRequest, InspectVolumeRequest,
+    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
+    LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
+    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
+    MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss,
+    OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
@@ -792,14 +792,6 @@ impl Client {
             }
         }
         outcomes
-    }
-
-    pub async fn domain_if_reserved(&mut self) -> Result<Option<String>, ConnectError> {
-        match self.call::<op::GetDomain>(GetDomainRequest {}, None).await {
-            Ok(domain) => Ok(Some(domain.name)),
-            Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
     }
 
     /// Gather an observer-relative Deploy Snapshot from the given Machines.

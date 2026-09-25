@@ -10,12 +10,8 @@ use std::{
 };
 
 use futures_util::StreamExt as _;
-use ployz_core::{MachineId, MachineRpcServer};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixListener},
-    task::JoinHandle,
-};
+use ployz_core::MachineRpcServer;
+use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -30,27 +26,6 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(tcp)),
     );
     address
-}
-
-pub async fn serve_ingress_probe(machine_id: MachineId) -> (JoinHandle<()>, u16) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(async move {
-        loop {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0; 1024];
-            let _ = stream.read(&mut request).await.unwrap();
-            // Probe retry coverage lives in dns::probe::tests; this fixture
-            // verifies that founder enrollment reaches the real HTTP endpoint.
-            let body = machine_id.as_str();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes()).await;
-        }
-    });
-    (server, port)
 }
 
 pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<AtomicUsize>) {

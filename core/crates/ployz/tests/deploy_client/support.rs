@@ -17,14 +17,13 @@ use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContainerAddress, ContainerCreated, ContainerDetails,
     ContainerId, ContainerKind, ContainerList, ContainerObservationMap, ContainerPath,
     ContainerRuntimeObservation, ContractDescription, CreateVolumeReport, DockerVolume,
-    DockerVolumeId, DockerVolumeName, Domain, ExecResponseFrame,
-    GET_CONTAINER_OBSERVATIONS_CAPABILITY, HealthObservation, LocalMachinePhase,
-    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
-    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    DockerVolumeId, DockerVolumeName, ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
+    HealthObservation, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
+    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
+    MachineRpc, MachineRpcServer, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
+    ProjectName, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -58,7 +57,6 @@ pub(super) struct DeployService {
     observation_serving: bool,
     hold_observations: bool,
     advertise_observations: bool,
-    domain: Option<String>,
     exec_exit: Option<i32>,
     hold_health: bool,
 }
@@ -82,7 +80,6 @@ impl DeployService {
             observation_serving: true,
             hold_observations: false,
             advertise_observations: false,
-            domain: None,
             exec_exit: None,
             hold_health: false,
         }
@@ -106,7 +103,6 @@ impl DeployService {
             observation_serving: true,
             hold_observations: false,
             advertise_observations: false,
-            domain: None,
             exec_exit: None,
             hold_health: false,
         }
@@ -127,11 +123,6 @@ impl DeployService {
             message: message.into(),
             details: Value::Null,
         });
-        self
-    }
-
-    pub(super) fn with_domain(mut self, name: &str) -> Self {
-        self.domain = Some(name.into());
         self
     }
 
@@ -784,34 +775,7 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn reserve_domain(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
-    async fn get_domain(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        match &self.domain {
-            Some(name) => encoded(RpcResponse::from(Domain { name: name.clone() })),
-            None => encoded(RpcResponse::from(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: "domain is not reserved".into(),
-                details: Value::Null,
-            })),
-        }
-    }
-    async fn release_domain(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
-    async fn create_domain_records(
+    async fn publish_certificate_material(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

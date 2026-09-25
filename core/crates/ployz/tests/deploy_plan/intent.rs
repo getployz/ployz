@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::{IngressContext, preview_deploy};
+use ployz::deploy::preview_deploy;
 use ployz_core::{
     ConfiguredHealthcheck, DependencyCondition, DeployWarning, HealthcheckCommand, HealthcheckSpec,
     PreDeployHook, ServiceDependency, ServiceName,
@@ -16,7 +16,7 @@ fn empty_selected_plans_every_target_service_in_dependency_order() {
         PlanOptions::default(),
     )
     .with_dependencies(dependencies);
-    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot()).unwrap();
     assert_eq!(run_names(&plan), ["db", "web", "worker"]);
 }
 
@@ -38,7 +38,7 @@ fn apply_web_plans_web_and_db_not_worker() {
         containers: vec![container('c', '1', &worker, &service_id('a'))],
         ..Default::default()
     };
-    let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
     assert_eq!(run_names(&plan), ["db", "web"]);
     assert!(!plan.operations.iter().any(|row| {
         matches!(
@@ -58,7 +58,6 @@ fn one_spec_intent_plans_that_name() {
             PlanOptions::default(),
         ),
         &snapshot(),
-        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(run_names(&plan), ["caddy"]);
@@ -94,7 +93,7 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
     )
     .with_dependencies(dependencies);
     assert!(matches!(
-        preview_deploy(&intent, &snapshot(), IngressContext::default()),
+        preview_deploy(&intent, &snapshot()),
         Err(PlanError::DependencyCycle { service }) if service == "db"
     ));
 }
@@ -111,7 +110,6 @@ fn skip_health_on_options_is_set_on_planned_operations() {
             },
         ),
         &snapshot(),
-        IngressContext::default(),
     )
     .unwrap();
     assert!(matches!(
@@ -151,7 +149,7 @@ fn selected_service_healthy_wait_precedes_the_dependent_hook() {
         }],
     )]));
 
-    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot()).unwrap();
     assert!(matches!(
         operations(&plan).as_slice(),
         [
@@ -199,7 +197,6 @@ fn healthy_dependency_does_not_gate_scale_down() {
             ],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
 
@@ -232,7 +229,7 @@ fn skip_health_omits_wait_and_warns_for_each_weakened_edge() {
         }],
     )]));
 
-    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot()).unwrap();
     assert!(
         !operations(&plan)
             .iter()
@@ -345,7 +342,6 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
             containers: vec![system_container],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!targets_container(&shop, &container_id('c')));
@@ -367,7 +363,6 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
             containers: vec![leftover],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!targets_container(&full, &container_id('c')));
@@ -396,7 +391,6 @@ fn run_in_a_named_project_replaces_that_projects_matching_service() {
             containers: vec![owned],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     match operations(&plan).as_slice() {
@@ -430,7 +424,6 @@ fn run_in_a_named_project_does_not_take_over_another_projects_service() {
             containers: vec![other],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(!targets_container(&plan, &container_id('c')));
@@ -470,7 +463,6 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
             PlanOptions::default(),
         ),
         &snapshot,
-        IngressContext::default(),
     )
     .unwrap();
     assert!(targets_container(&plan, &container_id('d')));
@@ -501,7 +493,6 @@ fn system_project_deploy_still_replaces_its_own_ingress() {
             containers: vec![system_container],
             ..Default::default()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(targets_container(&plan, &container_id('c')));
@@ -524,7 +515,7 @@ fn cloud_lowering_orders_dependency_before_migration_and_container() {
         .unwrap(),
     )
     .unwrap();
-    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
+    let plan = preview_deploy(&intent, &snapshot()).unwrap();
     assert!(matches!(operations(&plan).as_slice(), [
         DeployOperation::RunContainer { spec: db, .. },
         DeployOperation::RunHook { spec: hook, .. },

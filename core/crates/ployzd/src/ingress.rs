@@ -1,9 +1,9 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerObservation, HttpProtocol, IngressHost, Machine,
-    MachineId, PortPublication, QualifiedService, ServiceContainer, hostname_owners,
-    service_containers, serving_containers,
+    CertificateHost, ContainerAddress, ContainerId, ContainerObservation, HttpProtocol,
+    IngressHost, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
+    hostname_owners, service_containers, serving_containers,
 };
 use serde::Serialize;
 use std::{
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        ReplicatedStore, Subscription,
+        ReplicatedStore, Subscription, published_cover,
     },
     filesystem::{atomic_write, set_ployz_group},
 };
@@ -98,7 +98,7 @@ pub(crate) struct IngressEndpoint {
 }
 
 /// Certificate state that can affect ingress behavior or generated output.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct ProjectedCertificate {
     /// Pending HTTP-01 challenge.
     pub(super) challenge: Option<CertificateChallenge>,
@@ -142,7 +142,7 @@ impl IngressProjection {
     pub(crate) fn derive(
         machine: &Machine,
         observations: &[ContainerObservation],
-        certificates: &BTreeMap<IngressHost, CertificateRow>,
+        certificates: &BTreeMap<CertificateHost, CertificateRow>,
     ) -> Self {
         // TODO: keep the ingress projection membership-blind until the membership model is
         // intentionally changed across replicated projections.
@@ -159,9 +159,6 @@ impl IngressProjection {
                     ..
                 } = port
                 else {
-                    continue;
-                };
-                let Some(hostname) = hostname.as_explicit_host() else {
                     continue;
                 };
                 if owners.get(hostname) == Some(&owner) {
@@ -189,9 +186,6 @@ impl IngressProjection {
                 else {
                     continue;
                 };
-                let Some(hostname) = hostname.as_explicit_host() else {
-                    continue;
-                };
                 if owners.get(hostname) == Some(&owner) {
                     sites
                         .get_mut(hostname)
@@ -206,11 +200,24 @@ impl IngressProjection {
         }
 
         for (hostname, row) in certificates {
-            sites.entry(hostname.clone()).or_default().certificate = Some(ProjectedCertificate {
+            // A wildcard is not a site; it only lends material to the sites it covers.
+            let Ok(hostname) = IngressHost::parse(hostname.as_str()) else {
+                continue;
+            };
+            sites.entry(hostname).or_default().certificate = Some(ProjectedCertificate {
                 challenge: row.challenge().cloned(),
                 material: row.material().cloned(),
                 last_error: row.last_error().map(ToOwned::to_owned),
             });
+        }
+        for (hostname, site) in &mut sites {
+            if site.https.is_none() {
+                continue;
+            }
+            // Published wildcard material wins over ACME material, which stops renewing once covered.
+            if let Some(material) = published_cover(hostname, certificates) {
+                site.certificate.get_or_insert_default().material = Some(material.clone());
+            }
         }
         let sites = sites
             .into_iter()

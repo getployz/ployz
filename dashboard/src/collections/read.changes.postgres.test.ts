@@ -276,6 +276,8 @@ describe("every Org Store collection reads its changes from the Organization cha
       [organizationId, userId, environmentId]);
     await sql("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_public_key) values ($1, '{}', $2, 'key')",
       [organizationId, "0".repeat(32)]);
+    await sql("insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at) values ($1, 'https://dns.example.test/', 'acme.ployz.test', '{}', now(), now())",
+      [organizationId]);
   }, 60_000);
 
   afterAll(async () => {

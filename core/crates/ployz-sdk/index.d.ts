@@ -1,4 +1,5 @@
 import type {
+  CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
   DeployIntent,
@@ -17,6 +18,7 @@ import type {
   ClusterTeardown,
   PlanOptions,
   ProjectName,
+  PublishCertificateMaterialRequest,
   RegisterRequest,
   Registered,
   EnrollmentAssignment,
@@ -139,6 +141,10 @@ export declare class Client {
   observeEnrollment(): Promise<EnrollmentSnapshot>;
   register(assignment: EnrollmentAssignment): Promise<Registered>;
   about(): Promise<ContractDescription>;
+  /** Idempotent. Rejects with invalid_argument when the chain, key, or hostname coverage fails. */
+  publishCertificateMaterial(
+    request: PublishCertificateMaterialRequest,
+  ): Promise<CertificateMaterialPublished>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options?: LogOptions): AsyncIterable<LogEvent>;

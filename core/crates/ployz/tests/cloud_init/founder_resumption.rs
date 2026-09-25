@@ -219,8 +219,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         visible_peers: Vec::new(),
         target_versions: Default::default(),
     })
-    .with_containers(vec![ingress])
-    .with_reserved_domain();
+    .with_containers(vec![ingress]);
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
@@ -267,7 +266,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
             "founder",
             "--ingress-image",
             "caddy:2.10.0",
-            "--no-dns",
             "--yes",
         ])
         .env("HTTPS_PROXY", &proxy)
@@ -285,7 +283,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert_eq!(daemon.initialize_requests().len(), 1);
-    assert!(daemon.reserve_request().is_none());
     assert_eq!(
         events.entries(),
         ["set_management_client", "publish", "callback"]
@@ -295,7 +292,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
 #[tokio::test]
 async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let mut founder = founder_machine();
-    let machine_id = founder.id;
     founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let events = EventLog::default();
     let pairing = json!({ "secret": PAIRING });
@@ -319,7 +315,6 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     .with_events(events.clone())
     .transient_founder_tail_failures(1);
     let machine_addr = serve_machine(daemon.clone()).await;
-    let (probe, probe_port) = serve_ingress_probe(machine_id).await;
 
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
@@ -343,7 +338,6 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             ])
             // Health-monitor timing is covered under virtual time in deploy tests.
             .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
-            .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
             .env("HTTPS_PROXY", &proxy)
             .env("https_proxy", &proxy)
             .env("NO_PROXY", "127.0.0.1,localhost")
@@ -358,7 +352,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     assert!(
         String::from_utf8_lossy(&first.stderr).contains("lost Ingress container creation reply")
     );
-    assert_eq!(daemon.founder_tail_attempts(), [1, 1, 0, 0]);
+    assert_eq!(daemon.founder_tail_attempts(), [1, 0]);
     assert_eq!(
         daemon.initialize_requests().len(),
         1,
@@ -372,7 +366,6 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     );
 
     let output = command().output().await.unwrap();
-    probe.abort();
 
     assert!(
         output.status.success(),
@@ -381,7 +374,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert_eq!(daemon.reset_count(), 0, "resume must omit --reset");
-    assert_eq!(daemon.founder_tail_attempts(), [1, 2, 2, 2]);
+    assert_eq!(daemon.founder_tail_attempts(), [2, 2]);
     let containers = daemon.containers();
     assert_eq!(containers.len(), 1);
     assert_eq!(
@@ -389,18 +382,10 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         "ingress"
     );
     assert_eq!(
-        serde_json::to_value(daemon.domain_record_requests()).unwrap(),
-        json!([{
-            "records": [{ "name": "*", "type": "A", "values": ["127.0.0.1"] }]
-        }])
-    );
-    assert_eq!(
         events.entries(),
         [
             "initialize",
-            "reserve_domain",
             "deploy_ingress",
-            "publish_dns",
             "set_management_client",
             "publish",
             "callback",
@@ -412,8 +397,8 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
 }
 
 #[tokio::test]
-async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservation() {
-    for replaced in [true, false] {
+async fn founder_recovery_rejects_replaced_identity() {
+    {
         let pairing = json!({ "secret": PAIRING });
         let enroll = EnrollListen::start(json!({
             "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
@@ -424,11 +409,7 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
             visible_peers: Vec::new(),
             target_versions: Default::default(),
         });
-        let daemon = if replaced {
-            daemon.replace_identity_on_initialize()
-        } else {
-            daemon.fail_reservation()
-        };
+        let daemon = daemon.replace_identity_on_initialize();
         let address = serve_machine(daemon.clone()).await;
         let output = super::harness::cli()
             .args([
@@ -450,15 +431,7 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
             .unwrap();
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        if replaced {
-            assert!(error.contains("different Machine identity"), "{error}");
-        } else {
-            assert!(error.contains("DNS reservation pending"), "{error}");
-            assert!(
-                error.contains("without --reset (keep all other options)"),
-                "{error}"
-            );
-        }
+        assert!(error.contains("different Machine identity"), "{error}");
         assert_eq!(daemon.initialize_requests().len(), 1);
         assert_eq!(daemon.reset_count(), 0);
         assert!(enroll.callbacks().is_empty());

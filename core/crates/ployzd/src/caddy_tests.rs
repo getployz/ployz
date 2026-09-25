@@ -7,9 +7,9 @@ use crate::{
     },
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
-    IngressHost, IngressHostname, MACHINE_API_PORT, Machine, MachineId, MachineName,
+    AdvertisedEndpoint, CertificateHost, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
+    INGRESS_VERIFY_PATH, IngressHost, MACHINE_API_PORT, Machine, MachineId, MachineName,
     PortPublication, ProjectName, ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceName,
     TransportProtocol, WireGuardPublicKey, service_containers,
 };
@@ -26,7 +26,7 @@ fn projection(
     local_machine: &MachineId,
     machine_name: &str,
     containers: &[ServiceContainer],
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> IngressProjection {
     let machine = Machine {
         labels: Default::default(),
@@ -57,7 +57,7 @@ fn caddyfile_for(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> String {
     render_caddyfile(
         &projection(local_machine, machine_name, containers, certificates),
@@ -68,7 +68,7 @@ fn caddyfile_for(
 async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
@@ -158,7 +158,7 @@ fn projection_resolves_route_endpoints_and_certificate() {
     )
     .unwrap();
     let certificates = BTreeMap::from([(
-        IngressHost::parse("example.com").unwrap(),
+        CertificateHost::parse("example.com").unwrap(),
         CertificateRow::from_parts(Some(material.clone()), Some(challenge.clone())),
     )]);
 
@@ -341,7 +341,7 @@ fn https_site_with_material_pins_tls_paths() {
         ],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
@@ -370,6 +370,69 @@ fn https_site_with_material_pins_tls_paths() {
 }
 
 #[test]
+fn published_wildcard_serves_covered_https_sites_over_acme_material() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![
+            ingress("api.apps.example.com", 8443, HttpProtocol::Https),
+            ingress("web.apps.example.com", 8443, HttpProtocol::Https),
+            ingress("deep.web.apps.example.com", 8443, HttpProtocol::Https),
+            ingress("plain.apps.example.com", 80, HttpProtocol::Http),
+        ],
+    )];
+    let pair = rcgen::generate_simple_self_signed(["*.apps.example.com".to_owned()]).unwrap();
+    let wildcard = crate::corrosion::CertificateMaterial::parse(
+        pair.cert.pem(),
+        pair.signing_key.serialize_pem(),
+    )
+    .unwrap();
+    let certificates = BTreeMap::from([
+        (
+            CertificateHost::parse("*.apps.example.com").unwrap(),
+            CertificateRow::Published(wildcard.clone()),
+        ),
+        (
+            CertificateHost::parse("web.apps.example.com").unwrap(),
+            CertificateRow::issued(test_material()),
+        ),
+    ]);
+    let projection = projection(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        &certificates,
+    );
+    let material = |hostname: &str| {
+        projection
+            .sites
+            .iter()
+            .find(|site| site.hostname.as_str() == hostname)
+            .and_then(|site| site.material().cloned())
+    };
+    assert_eq!(material("api.apps.example.com"), Some(wildcard.clone()));
+    assert_eq!(material("web.apps.example.com"), Some(wildcard));
+    assert_eq!(material("deep.web.apps.example.com"), None);
+    assert_eq!(material("plain.apps.example.com"), None);
+    assert!(
+        projection
+            .sites
+            .iter()
+            .all(|site| !site.hostname.as_str().starts_with('*'))
+    );
+
+    let caddyfile = render_caddyfile(&projection, "TIMESTAMP");
+    assert!(
+        pinned_tls_line(&caddyfile, "api.apps.example.com").is_some(),
+        "{caddyfile}"
+    );
+    assert!(!caddyfile.contains("*.apps.example.com"), "{caddyfile}");
+}
+
+#[test]
 fn changing_material_changes_the_pin_paths() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![observation(
@@ -386,7 +449,7 @@ fn changing_material_changes_the_pin_paths() {
         &containers,
         "TIMESTAMP",
         &BTreeMap::from([(
-            IngressHost::parse("secure.example.com").unwrap(),
+            CertificateHost::parse("secure.example.com").unwrap(),
             CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
@@ -396,7 +459,7 @@ fn changing_material_changes_the_pin_paths() {
         &containers,
         "TIMESTAMP",
         &BTreeMap::from([(
-            IngressHost::parse("secure.example.com").unwrap(),
+            CertificateHost::parse("secure.example.com").unwrap(),
             CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
@@ -420,7 +483,7 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
     let containers = service_containers(observations);
     let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
     let unused = BTreeMap::from([(
-        IngressHost::parse("other.example.com").unwrap(),
+        CertificateHost::parse("other.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
@@ -448,7 +511,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(
             None,
             Some(CertificateChallenge::parse(
@@ -488,7 +551,7 @@ fn last_error_is_a_skipped_certificate_comment() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(None, None).with_error(
             "Ingress Hostname secure.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1.",
         ),
@@ -528,7 +591,7 @@ fn last_error_is_omitted_once_material_exists() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None).with_error("stale"),
     )]);
 
@@ -582,28 +645,14 @@ fn automatic_sites_exclude_hook_containers() {
 }
 
 #[test]
-fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
+fn automatic_sites_keep_unreachable_hosts_and_omit_host_ports() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
-    let ports = vec![
-        PortPublication::Host {
-            bind: HostBind::All,
-            published_port: 80.try_into().unwrap(),
-            container_port: 80.try_into().unwrap(),
-            transport_protocol: TransportProtocol::Tcp,
-        },
-        PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain(),
-            load_balancer_port: 80.try_into().unwrap(),
-            container_port: 80.try_into().unwrap(),
-            http_protocol: HttpProtocol::Http,
-        },
-        PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
-            load_balancer_port: 80.try_into().unwrap(),
-            container_port: 80.try_into().unwrap(),
-            http_protocol: HttpProtocol::Http,
-        },
-    ];
+    let ports = vec![PortPublication::Host {
+        bind: HostBind::All,
+        published_port: 80.try_into().unwrap(),
+        container_port: 80.try_into().unwrap(),
+        transport_protocol: TransportProtocol::Tcp,
+    }];
     let observations = [
         observation(
             7,
@@ -641,7 +690,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
     assert!(
         serde_json::from_value::<PortPublication>(json!({
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "invalid.example" },
+            "hostname": "invalid.example",
             "load_balancer_port": 0,
             "container_port": 0,
             "http_protocol": "http"
@@ -780,7 +829,7 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     )];
     let material = test_material();
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(Some(material.clone()), None),
     )]);
     let admin = FakeAdmin::default();
@@ -900,7 +949,7 @@ impl CaddyAdmin for FakeAdmin {
 
 fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublication {
     PortPublication::Ingress {
-        hostname: IngressHostname::explicit(hostname).unwrap(),
+        hostname: IngressHost::parse(hostname).unwrap(),
         load_balancer_port: port.try_into().unwrap(),
         container_port: port.try_into().unwrap(),
         http_protocol,

@@ -23,6 +23,7 @@ import type {
   RemoveVolumesRequest,
   ImageCleanupReport,
   PruneTarget,
+  PublishCertificateMaterialRequest,
   RuntimeWatchView,
   WatchOptions,
   VolumeRemoval,
@@ -115,6 +116,9 @@ export interface PloyzSession {
   readonly pruneImages: (
     targets: readonly PruneTarget[],
   ) => Effect.Effect<ImageCleanupReport, PloyzSdkError>;
+  readonly publishCertificateMaterial: (
+    request: PublishCertificateMaterialRequest,
+  ) => Effect.Effect<void, PloyzSdkError>;
   readonly prepare: (
     input: PreparationInput,
     onEvent: (event: PreparationEvent) => Promise<void>,
@@ -293,6 +297,8 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("remove volumes", () => client.removeVolumes(request)),
     pruneImages: (targets) =>
       sdkPromise("prune images", () => client.pruneImages(targets)),
+    publishCertificateMaterial: (request) =>
+      sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     prepare: (input, onEvent, cancellation) => Effect.gen(function* () {
       const secrets = input.deployment.snapshots.flatMap((snapshot) => Object.values(snapshot.resolvedEnv ?? {}));
       const running = yield* Effect.acquireRelease(

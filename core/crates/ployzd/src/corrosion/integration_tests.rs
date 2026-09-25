@@ -264,7 +264,7 @@ async fn certificates_round_trip_and_notify_on_change() {
         Some(&material)
     );
     assert_eq!(
-        store.certificates().await.unwrap().get(&hostname),
+        store.certificates().await.unwrap().get(hostname.as_str()),
         Some(&material)
     );
 

@@ -4,7 +4,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { Schema, SchemaGetter } from "effect";
-import { Skeleton } from "#/components/ui/skeleton";
+import { Link } from "@tanstack/react-router";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -23,6 +23,7 @@ import {
   validateOnChangeOrBlur,
 } from "#/form";
 import type { ServiceManagedHostname } from "#/modules/environment-design/tables";
+import { managedHostname } from "#/modules/environment-design/managed-service-exports";
 import {
   serviceManagedHostnamePrefixSchema,
   serviceManagedHostnameSchema,
@@ -37,27 +38,25 @@ import {
 import { domainPortSchema } from "./domain-port";
 
 export function ManagedDomainRow({
+  organizationSlug,
   managed,
-  hostedDnsHostname,
-  hostedDnsHostnameIsCurrent,
+  clusterDomain,
   certificateEvidence,
   defaultTargetPort,
   changed,
   onEdit,
   onDelete,
 }: {
+  organizationSlug: string;
   managed: ServiceManagedHostname;
-  hostedDnsHostname: string | null;
-  hostedDnsHostnameIsCurrent: boolean;
+  clusterDomain: string | null;
   certificateEvidence: DomainCertificateEvidence;
   defaultTargetPort: number | null;
   changed: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const hostname = hostedDnsHostname
-    ? `${managed.prefix}.${hostedDnsHostname}`
-    : null;
+  const hostname = clusterDomain ? managedHostname(managed.prefix, clusterDomain) : null;
   const port = managed.targetPort ?? defaultTargetPort;
   return (
     <div className="flex flex-col gap-1">
@@ -92,21 +91,21 @@ export function ManagedDomainRow({
         ) : (
           <div className="truncate font-mono text-sm">
             {managed.prefix}
-            <span className="text-muted-foreground">
-              .<Skeleton variant="inline" aria-label="pending" />
-              .up.ployz.dev
-            </span>
+            <span className="text-muted-foreground">.pending</span>
           </div>
         )}
         <div className="text-muted-foreground text-sm">
           → {port === null ? "Uses PORT" : `Port ${port}`}
         </div>
       </DomainRowShell>
-      <FieldDescription>
-        {hostname && !hostedDnsHostnameIsCurrent
-          ? "Last seen address; the server is not connected right now."
-          : null}
-      </FieldDescription>
+      {hostname ? null : (
+        <FieldDescription>
+          The Cluster Domain is pending.{" "}
+          <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }}>
+            Open Server Settings
+          </Link>
+        </FieldDescription>
+      )}
       <CertificateEvidence evidence={certificateEvidence} />
     </div>
   );
@@ -115,7 +114,7 @@ export function ManagedDomainRow({
 export function ManagedDomainDialog({
   mode = "edit",
   managed,
-  hostedDnsHostname,
+  clusterDomain,
   takenPrefixes,
   defaultTargetPort,
   onClose,
@@ -123,7 +122,7 @@ export function ManagedDomainDialog({
 }: {
   mode?: "edit" | "generate";
   managed: ServiceManagedHostname;
-  hostedDnsHostname: string | null;
+  clusterDomain: string | null;
   takenPrefixes: string[];
   defaultTargetPort: number | null;
   onClose: () => void;
@@ -191,9 +190,11 @@ export function ManagedDomainDialog({
                     <field.Text
                       label="Subdomain"
                       className="font-mono"
-                      description={`.${
-                        hostedDnsHostname ?? "{pending}.up.ployz.dev"
-                      }`}
+                      description={
+                        clusterDomain
+                          ? `.${clusterDomain}`
+                          : "The Cluster Domain is pending."
+                      }
                     />
                   )}
                 </form.Field>

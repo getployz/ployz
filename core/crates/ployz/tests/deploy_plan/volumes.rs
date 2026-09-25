@@ -178,7 +178,6 @@ fn explicitly_targeted_provisioned_deploy(
                 .expect("valid Volume Snapshot fixture"),
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
 }
 
@@ -424,7 +423,6 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
             .expect("valid Volume Snapshot fixture"),
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap();
 
@@ -457,7 +455,6 @@ fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
             .expect("valid Volume Snapshot fixture"),
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap();
 
@@ -486,7 +483,6 @@ fn automatic_provisioned_volume_reports_unknown_storage_guidance() {
             machines: vec![stateless, machine('2', "unobserved")],
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap_err();
 
@@ -520,7 +516,6 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
             .expect("valid Volume Snapshot fixture"),
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap_err()
     .to_string();
@@ -557,7 +552,6 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
                     .expect("valid Volume Snapshot fixture"),
                 ..storage_snapshot()
             },
-            IngressContext::default(),
         ),
         &[EliminatingConstraint::VolumeAlreadyOn {
             volume: app_volume("data"),
@@ -598,7 +592,6 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
             machines: vec![stateless],
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap();
 
@@ -680,7 +673,6 @@ fn disjoint_global_volumes_may_have_different_bounds() {
             machines: vec![first_machine, second_machine],
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap();
 }
@@ -706,7 +698,6 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
             machines: vec![machine('1', "first")],
             ..storage_snapshot()
         },
-        IngressContext::default(),
     );
     assert!(
         matches!(
@@ -745,7 +736,6 @@ fn colocated_global_services_reject_conflicting_provisioned_labels() {
             machines: vec![machine('1', "first")],
             ..storage_snapshot()
         },
-        IngressContext::default(),
     );
 
     assert!(matches!(
@@ -775,7 +765,6 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
             machines: vec![ready],
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap();
 
@@ -808,11 +797,7 @@ fn duplicate_target_services_fail_before_volume_resolution() {
         PlanOptions::default(),
     );
     assert_eq!(
-        preview_deploy(
-            &intent,
-            &DeploySnapshot::default(),
-            IngressContext::default(),
-        ),
+        preview_deploy(&intent, &DeploySnapshot::default()),
         Err(PlanError::DuplicateTargetService {
             service: ServiceName::parse("api").unwrap(),
         })
@@ -876,7 +861,6 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
             .expect("valid Volume Snapshot fixture"),
             ..storage_snapshot()
         },
-        IngressContext::default(),
     )
     .unwrap();
     assert!(

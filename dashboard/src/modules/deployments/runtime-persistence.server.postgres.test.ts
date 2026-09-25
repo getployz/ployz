@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
@@ -19,9 +20,10 @@ import { loadDeploymentBuildLog, loadDeploymentEvents, persistBuildLog, persistD
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { Database } from "#/server/database.server";
-import { Effect, Layer, Redacted } from "effect";
+import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import { AppConfig } from "#/server/config.server";
 import type { Client, ConfirmOptions, PreparedDeploy, ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
-import { resolvedServiceSpecFixture, runtimeWatchMachineFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { readCollection } from "#/collections/read.server";
 import { collectionReadInput } from "#/collections/read.contract";
 import { Inngest } from "inngest";
@@ -43,6 +45,10 @@ import { admitEnvironmentDeployment } from "./admission.server";
 import { InngestClient } from "#/modules/inngest/client";
 
 const encryption = makeSecretEncryption("test-encryption-secret");
+// Hosted DNS points at a closed port, so an inline reserve fails fast.
+const appConfig = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {
+  ...testConfigEnvironment(), DATABASE_URL: "postgres://unused.example.test/db", PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
+} }))));
 
 const organizationId = "00000000-0000-4000-8000-000000000501";
 const userId = "00000000-0000-4000-8000-000000000502";
@@ -241,7 +247,7 @@ describe("deployment runtime persistence", () => {
         Effect.provideService(GithubApi, {
           json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo", private: false }).pipe(Effect.orDie),
           archive: () => Effect.succeed(new Response(archive)),
-        }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption),
+        }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig),
       ));
       const [completed] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
       expect(completed?.status).toBe("applied");
@@ -302,10 +308,15 @@ describe("deployment runtime persistence", () => {
     const archive = gzipSync(Buffer.concat([Buffer.from(header.block), Buffer.alloc(1024)]));
     let checkout: string | undefined;
     let confirmed = 0;
+    await harness.db.insert(schema.organizationClusterDomain).values({
+      organizationId, endpoint: "https://dns.example.test/", name: "cluster.example.test",
+      encryptedToken: encryption.encrypt("token"), reservedAt: new Date(), leaseRenewedAt: new Date(),
+    });
     const client = asTestDouble<Client>()({
-      runtime: { watch: async function* () { yield runtimeWatchFrameFixture({ hosted_dns_hostname: "cluster.example.test" }); } },
       prepare: (input: Parameters<Client["prepare"]>[0]) => {
         expect(input.deployment.snapshots[0]?.resolvedEnv?.["PLOYZ_PUBLIC_DOMAIN"]).toBe("api.cluster.example.test");
+        expect(input.deployment.snapshots[0]?.config.managedHostnames).toEqual([]);
+        expect(input.deployment.snapshots[0]?.config.routes.map((route) => route.hostname)).toEqual(["api.cluster.example.test"]);
         checkout = Object.values(input.sources)[0];
         const finished = Promise.reject({ code: "internal", details: { preparation: { kind: kind === "progress-storage" ? "cancelled" : kind, stage: "Building" } } });
         void finished.catch(() => undefined);
@@ -330,7 +341,7 @@ describe("deployment runtime persistence", () => {
       Effect.provideService(GithubApi, {
         json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo" }).pipe(Effect.orDie),
         archive: () => Effect.succeed(new Response(archive)),
-      }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.result));
+      }), Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig), Effect.result));
     if (kind === "progress-storage") await harness.pool.query("ALTER TABLE environment_deployment_build_step DROP CONSTRAINT reject_test_progress");
     expect(confirmed).toBe(0);
     expect(checkout).toBeDefined();
@@ -342,6 +353,30 @@ describe("deployment runtime persistence", () => {
     expect(attempt?.finishedAt).toBeInstanceOf(Date);
     expect(attempt?.deployPreview).toBeNull();
     if (kind !== "progress-storage") expect(attempt?.runtimeProgress?.preparation?.phase).toBe("build");
+  });
+
+  it("refuses a managed hostname deploy when the inline Cluster Domain reserve fails", async () => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId,
+      triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+    let previewed = false;
+    const client = asTestDouble<Client>()({ preview: async () => { previewed = true; throw new Error("A refused deploy must never preview"); }, close: async () => undefined });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const config = projectServiceDeploymentConfig({ source: createImageServiceSource({ image: "nginx:1" }),
+      privateDns: "api", managedHostnames: [{ prefix: "api", targetPort: null }], preDeployCommand: null, startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
+    const result = await harness.runEffect(executeEnvironmentDeployment({
+      deployment: { id: admitted.id, environmentId, status: "planning", inngestRunId: null, sourcePins: {} },
+      environment: { id: environmentId, namespace: "production" }, project: { id: projectId, organizationId }, organization: { id: organizationId, slug: "runtime" },
+      snapshots: [{ serviceId: apiNodeId, serviceSlug: "api", config }], volumes: [],
+    }).pipe(Effect.scoped, Effect.provide(runtime),
+      Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }),
+      Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig), Effect.flip));
+    expect(result).toMatchObject({ _tag: "DeploymentExecutionError", failureCode: "cluster_domain_unreserved" });
+    expect(result.message).toContain("Server Settings");
+    expect(previewed).toBe(false);
   });
 
   it.each(["outcome", "rejection"])("settles a cancelled quiet runner after runtime %s", async (completion) => {
@@ -379,7 +414,7 @@ describe("deployment runtime persistence", () => {
       kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }],
     }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
-      Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
+      Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig),
     ));
     const settled = result.then(value => ({ value }), error => ({ error }));
     try {
@@ -427,7 +462,7 @@ describe("deployment runtime persistence", () => {
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
-      Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
+      Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
     ));
     expect(result).toMatchObject({ type: "failed", reason: "cancelled", completed: 0 });
     expect(confirm).not.toHaveBeenCalled();
@@ -458,7 +493,7 @@ describe("deployment runtime persistence", () => {
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const running = harness.runEffect(executeLatestEnvironmentDeployment(admitted.id).pipe(Effect.scoped, Effect.provide(runtime),
       Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
-      Effect.provideService(InngestClient, new Inngest({ id: "cleanup-test" })), Effect.provideService(SecretEncryption, encryption)));
+      Effect.provideService(InngestClient, new Inngest({ id: "cleanup-test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig)));
     try {
       await closeStarted;
       const [active] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
@@ -493,7 +528,7 @@ describe("deployment runtime persistence", () => {
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.scoped, Effect.provide(runtime),
       Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
-      Effect.provideService(InngestClient, new Inngest({ id: "image-cleanup-test" })), Effect.provideService(SecretEncryption, encryption));
+      Effect.provideService(InngestClient, new Inngest({ id: "image-cleanup-test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig));
     await harness.runEffect(provide(executeLatestEnvironmentDeployment(admitted.id)));
     expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ imageCleanup: "manual" }));
     expect(pruneImages).not.toHaveBeenCalled();
