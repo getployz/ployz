@@ -250,8 +250,11 @@ export const environmentDeploymentBuildOutput = pgTable("environment_deployment_
 
 export type ImageBuildStatus = "building" | "built" | "failed" | "cancelled";
 
-/** The Server the Engine chose for an Image Build, named as it was then, and why. */
-export type ServerChoice = { machineName: string; reason: BuilderReason };
+/**
+ * The Server the Engine chose for an Image Build, named as it was then, and why; `reused`: Cloud
+ * found this commit's image already on it, so nothing built.
+ */
+export type ServerChoice = { machineName: string; reason: BuilderReason | { kind: "reused" } };
 
 /**
  * One Image Build of a Cloud Deployment Attempt: one Git Service's image, started at admission.

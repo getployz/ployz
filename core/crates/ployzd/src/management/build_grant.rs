@@ -4,7 +4,8 @@
 //! is not a Management Capability (a Machine-local safety boundary, DESIGN bet 10).
 //!
 //! A grant allows the OCI Distribution calls one `docker push` makes into its one
-//! repository, and ends after one tagged manifest lands, when its Build ends
+//! repository, and ends after one tagged manifest lands (or the ingest confirms it
+//! already holds that tag at its digest), when its Build ends
 //! ([`BuildGrants::end`]), after [`GRANT_LIFETIME`], or when the daemon stops.
 //! The Machine RPC handlers only forward to [`mint_for`] and [`BuildGrants::end`].
 
@@ -214,6 +215,9 @@ enum Route {
     Blob,
     Upload,
     ManifestHead,
+    /// A HEAD of the one tag a push may write, which the pusher sends first and
+    /// stops at when the Machine already holds the image.
+    ManifestTagHead(ImageDigest),
     /// A manifest pushed by digest, such as an index's platform manifest.
     ManifestByDigest(ImageDigest),
     /// The one tagged manifest; its tag names its own digest.
@@ -253,11 +257,11 @@ impl Route {
         }
         let reference = rest.strip_prefix("manifests/")?;
         match *method {
-            Method::HEAD => Some(Self::ManifestHead),
+            Method::HEAD => {
+                Some(tagged(reference).map_or(Self::ManifestHead, Self::ManifestTagHead))
+            }
             Method::PUT => match reference.strip_prefix(RETAINED_DIGEST_TAG_PREFIX) {
-                Some(hex) => ImageDigest::parse(format!("sha256:{hex}"))
-                    .ok()
-                    .map(Self::ManifestTag),
+                Some(_) => tagged(reference).map(Self::ManifestTag),
                 None => ImageDigest::parse(reference)
                     .ok()
                     .map(Self::ManifestByDigest),
@@ -265,6 +269,12 @@ impl Route {
             _ => None,
         }
     }
+}
+
+/// The digest a `ployz-sha256-<hex>` tag names.
+fn tagged(reference: &str) -> Option<ImageDigest> {
+    let hex = reference.strip_prefix(RETAINED_DIGEST_TAG_PREFIX)?;
+    ImageDigest::parse(format!("sha256:{hex}")).ok()
 }
 
 async fn handle(
@@ -288,6 +298,21 @@ async fn handle(
         Route::Ping | Route::Blob | Route::Upload | Route::ManifestHead => {
             let body = reqwest::Body::wrap_stream(Body::new(body).into_data_stream());
             return forward(client, grant.ingest, &parts, body).await;
+        }
+        Route::ManifestTagHead(digest) => {
+            let response = forward(client, grant.ingest, &parts, reqwest::Body::from("")).await;
+            // containerd's pusher HEADs the tag and never PUTs a manifest the Machine
+            // already holds under it; the ingest confirming that digest is the push.
+            let held = response.status() == StatusCode::OK
+                && response
+                    .headers()
+                    .get("docker-content-digest")
+                    .is_some_and(|value| value.as_bytes() == digest.as_str().as_bytes());
+            let mut push = grant.push.lock().expect("grant push lock");
+            if held && matches!(*push, Push::Open) {
+                *push = Push::Pushed(digest);
+            }
+            return response;
         }
         Route::ManifestByDigest(digest) => (digest, false),
         Route::ManifestTag(digest) => (digest, true),
@@ -432,6 +457,18 @@ mod tests {
                 None
             ),
             Some(Route::ManifestTag(pushed.clone()))
+        );
+        assert_eq!(
+            route(
+                Method::HEAD,
+                &format!("/v2/ployz-build/web/manifests/ployz-sha256-{digest}"),
+                None
+            ),
+            Some(Route::ManifestTagHead(pushed.clone()))
+        );
+        assert_eq!(
+            route(Method::HEAD, "/v2/ployz-build/web/manifests/latest", None),
+            Some(Route::ManifestHead)
         );
         assert_eq!(
             route(

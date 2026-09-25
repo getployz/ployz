@@ -35,6 +35,17 @@ pub struct PreparationInput {
     pub preferred_machine: Option<ployz_core::MachineId>,
 }
 
+/// The one Git Service's frozen deployment, the commit a build would build, and
+/// its latest receipt, if any: what a Builder outside the Cluster must do.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutsideBuildInput {
+    pub deployment: Value,
+    pub commit: String,
+    #[serde(default)]
+    pub receipt: Option<BuildReceipt>,
+}
+
 /// Private build evidence, independent of deployment success or current image availability.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -151,7 +151,7 @@ One execution of a Build, which may succeed, fail, or stop before producing an i
 _Avoid_: Build as an execution identity, Deploy Attempt
 
 **Build Grant**:
-A Machine-minted permission to push one Build's image into that Machine and nothing else. It ends when that Build finishes or is cancelled, and it grants no Machine RPC access.
+A Machine-minted permission to push one Build's image into that Machine and nothing else. Its one push is recorded when that image's digest-named tag lands, or when the Machine confirms it already holds exactly that tag at that digest. It ends when that Build finishes or is cancelled, and it grants no Machine RPC access.
 _Avoid_: CI credential, push token, Management Capability
 
 **Deploy**:

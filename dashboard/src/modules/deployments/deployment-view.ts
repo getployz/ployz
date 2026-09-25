@@ -69,6 +69,7 @@ function builderReason(reason: ServerChoice["reason"]): string {
     case "spread": return "spread across Servers";
     case "cache_holder_unavailable": return `${reason.name ?? "the Server with the cache"} has the cache but is offline or no longer builds`;
     case "preferred_unavailable": return preferredServerUnavailableText(reason.name);
+    case "reused": return "reused the build of this commit";
   }
 }
 

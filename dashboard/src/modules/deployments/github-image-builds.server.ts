@@ -11,7 +11,7 @@ import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Val
 import type { BuildCandidate } from "./build-order";
 import { persistBuildLog } from "./deployment-events.server";
 import {
-  awaitsCheckIn, checkInImageBuild, claimForGithub, loadGithubImageBuilds, loadImageBuild, recordGithubReport, settleImageBuild, settled,
+  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, loadImageBuild, recordGithubReport, recordServerChoice, settleImageBuild, settled,
   skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
@@ -20,6 +20,7 @@ import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { connectedRuntime, oneServiceDeployment } from "./runtime-session.server";
 import { pinSourceCommit } from "./runtime-sources.server";
+import { reusedImageStep } from "./server-image-builds.server";
 
 /**
  * GitHub as a Builder. Cloud dispatches the repository's build workflow, the runner checks in once
@@ -59,10 +60,12 @@ const installedSource = (snapshot: Snapshot | undefined) => {
 const grantRepository = (image: string) => `ployz-build/${image}`;
 
 /**
- * Dispatches an Image Build to GitHub Actions on the native runner for its one platform, and records
- * why GitHub took it. GitHub is skipped at once, with the reason on the Image Build, when it can't
- * take the build: the repository isn't reachable through the GitHub App or lacks permission, has no
- * workflow, needs several platforms, or the dispatch fails.
+ * Settles an Image Build built, dispatching nothing, when the Service's latest receipt is for this
+ * commit and the Cluster still holds its image. Otherwise dispatches it to GitHub Actions on the
+ * native runner for its one platform, and records why GitHub took it. GitHub is skipped at once,
+ * with the reason on the Image Build, when it can't take the build: the repository isn't reachable
+ * through the GitHub App or lacks permission, has no workflow, needs several platforms, or the
+ * dispatch fails.
  */
 export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuild")(function* (build: ImageBuildTarget, candidate: Pick<BuildCandidate, "reason">) {
   const context = yield* loadDeploymentContext(build.deploymentId);
@@ -76,14 +79,28 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
     return yield* skipUnstarted(build, { builder: "github", kind: "no_workflow", repository });
   }
   const deployment = yield* oneServiceDeployment(context, build.serviceId);
-  const platforms = yield* connectedRuntime(context.organization.id).pipe(Effect.flatMap((sdk) => sdk.buildPlatforms(deployment)), Effect.scoped);
+  // The check-in hands the runner this pinned commit.
+  const commit = yield* pinSourceCommit(context, snapshot, source);
+  const hint = (yield* loadBuildReceipts({ environmentId: context.environment.id }))[build.image];
+  const outside = yield* Effect.gen(function* () {
+    const sdk = yield* connectedRuntime(context.organization.id);
+    // An unchanged commit whose image the Cluster still holds is built already, as on the servers.
+    return yield* sdk.outsideBuild({ deployment, commit, receipt: hint }).pipe(Effect.catch((error) => hint
+      // Reuse is only a shortcut: a receipt that can't be checked means GitHub builds.
+      ? Effect.logWarning("Could not check a receipt for reuse; GitHub builds.", error).pipe(Effect.andThen(sdk.outsideBuild({ deployment, commit })))
+      : Effect.fail(error)));
+  }).pipe(Effect.scoped);
+  if (outside.kind === "reuse") {
+    yield* recordServerChoice(build.id, outside.receipt.machine_id, { machineName: outside.machine_name, reason: { kind: "reused" } });
+    yield* persistBuildLog(build.deploymentId, { steps: [reusedImageStep()], output: [] }, build.image);
+    return yield* settleImageBuild(build, { status: "built", receipt: outside.receipt });
+  }
+  const { platforms } = outside;
   if (platforms.length > 1) {
     return yield* skipUnstarted(build, { builder: "github", kind: "multi_platform", platforms: platforms.map((platform) => platform.replace(/^linux\//, "")) });
   }
   // With no visible placement, deploy's coverage check decides, as it does after a server build.
   const runner = platforms[0] === "linux/arm64" ? "ubuntu-24.04-arm" : "ubuntu-latest";
-  // The check-in hands the runner this pinned commit.
-  yield* pinSourceCommit(context, snapshot, source);
   const config = yield* AppConfig;
   const run = yield* dispatchGithubBuildWorkflow({
     installationId: source.installationId, fullName: workflow.fullName, defaultBranch: workflow.defaultBranch,

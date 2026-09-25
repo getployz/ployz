@@ -16,8 +16,11 @@ import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import { connectedRuntime, oneServiceDeployment, watchDeploymentCancellation } from "./runtime-session.server";
 import { acquireDeploymentSources } from "./runtime-sources.server";
 
-/** A build that reused an image still leaves one Build Step as its evidence. */
-export const REUSED_KEY = "stage:Reused";
+/** A build that reused an image still leaves this one Build Step as its evidence. */
+export const reusedImageStep = (): BuildStepWrite => {
+  const now = new Date();
+  return { build: 0, key: "stage:Reused", name: "Reused image", startedAt: now, completedAt: now, cached: true, error: null };
+};
 
 /** How one go on the Cluster ended, before the Image Build records it. */
 type ClusterBuild =
@@ -81,10 +84,7 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
   // The build log closes once, whichever way the go ended.
   const failed = outcome.kind === "failed" || outcome.kind === "cancelled" ? outcome : null;
   const steps = collector.finish(failed?.message ?? null, failed?.stage ?? null);
-  if (outcome.kind === "built" && !logged && !steps.length) {
-    const now = new Date();
-    steps.push({ build: 0, key: REUSED_KEY, name: "Reused image", startedAt: now, completedAt: now, cached: true, error: null });
-  }
+  if (outcome.kind === "built" && !logged && !steps.length) steps.push(reusedImageStep());
   yield* log({ steps, output: [] });
   switch (outcome.kind) {
     case "queued": {

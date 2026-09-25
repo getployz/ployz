@@ -26,6 +26,7 @@ pub use platforms::placement_platforms;
 mod remote;
 pub use local::LocalImage;
 mod reuse;
+pub(crate) use reuse::{holder, image_stores, runs_everywhere};
 
 /// How one Service's checked-out source becomes an image.
 #[derive(Clone, Debug, Eq, PartialEq)]

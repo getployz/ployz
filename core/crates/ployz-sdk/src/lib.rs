@@ -318,18 +318,18 @@ impl Client {
         })
     }
 
-    /// The platforms the one Service in `deployment` may be placed on run: what
-    /// a GitHub runner must build.
+    /// What a Builder outside the Cluster does for the one Git Service in
+    /// `input.deployment` at `input.commit`: reuse `input.receipt`, whose image a
+    /// Machine still holds, or build the platforms its placements run.
     ///
     /// # Errors
     /// Returns a generated [`RpcError`] JSON payload for a closed session,
-    /// invalid deployment, transport failure, or an unbuildable architecture.
+    /// invalid input, transport failure, or an unbuildable architecture.
     #[napi]
-    pub async fn build_platforms(&self, deployment: serde_json::Value) -> Result<Vec<String>> {
-        self.inner
-            .build_platforms(deployment)
-            .await
-            .map_err(rpc_to_napi)
+    pub async fn outside_build(&self, input: serde_json::Value) -> Result<serde_json::Value> {
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let outside = self.inner.outside_build(input).await.map_err(rpc_to_napi)?;
+        serde_json::to_value(outside).map_err(invalid_argument)
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.

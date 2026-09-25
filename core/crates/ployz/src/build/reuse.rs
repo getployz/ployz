@@ -1,7 +1,10 @@
 //! Reuse completed images only after observing complete content and placement coverage.
 use super::{BuiltService, CapturedBuild, CapturedTarget, platforms::placeable};
 use crate::connect::Client;
-use ployz_core::{DeployIntent, MachineObservation, PartialResult, RpcError};
+use ployz_core::{
+    DeployIntent, MachineId, MachineObservation, PartialResult, ProjectName, RequestedServiceSpec,
+    RpcError,
+};
 use tokio_util::sync::CancellationToken;
 
 impl CapturedBuild {
@@ -18,15 +21,8 @@ impl CapturedBuild {
         if receipts.is_empty() {
             return Vec::new();
         }
-        let visible = machines
-            .iter()
-            .filter(|machine| machine.membership.invites_rpc())
-            .map(|machine| machine.machine.clone())
-            .collect::<Vec<_>>();
-        let stores = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return Vec::new(),
-            stores = client.list_images(None, &visible) => stores,
+        let Some(stores) = image_stores(client, machines, cancellation).await else {
+            return Vec::new();
         };
         let mut reused = Vec::new();
         let mut remaining = Vec::new();
@@ -60,30 +56,62 @@ fn reusable(
         .platforms
         .iter()
         .all(|platform| receipt.built.platforms.contains(platform));
-    let runs_everywhere = placeable(spec, &intent.project_name, machines).all(|machine| {
-        receipt.built.platforms.iter().any(|platform| {
-            crate::image::platform_compatible(platform, &machine.machine.runtime.architecture)
-        })
-    });
-    if !covers_platforms || !runs_everywhere {
+    if !covers_platforms || !runs_everywhere(&receipt.built, spec, &intent.project_name, machines) {
         return None;
     }
-    // Keep the receipt's Machine while it still holds the image, so the next
-    // receipt keeps naming the Machine with the warm build cache.
-    let source = stores
+    let mut image = receipt.clone();
+    image.machine_id = holder(stores, &receipt.built, receipt.machine_id)?;
+    Some(image)
+}
+
+/// Whether `built` has a platform for every Machine `spec` may be placed on.
+pub(crate) fn runs_everywhere(
+    built: &ployz_build::BuiltImage,
+    spec: &RequestedServiceSpec,
+    project: &ProjectName,
+    machines: &[MachineObservation],
+) -> bool {
+    placeable(spec, project, machines).all(|machine| {
+        built.platforms.iter().any(|platform| {
+            crate::image::platform_compatible(platform, &machine.machine.runtime.architecture)
+        })
+    })
+}
+
+/// Every reachable Machine's image store; `None` once cancelled.
+pub(crate) async fn image_stores(
+    client: &Client,
+    machines: &[MachineObservation],
+    cancellation: &CancellationToken,
+) -> Option<PartialResult<crate::cluster::MachineImagesObservation, RpcError>> {
+    let visible = machines
+        .iter()
+        .filter(|machine| machine.membership.invites_rpc())
+        .map(|machine| machine.machine.clone())
+        .collect::<Vec<_>>();
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => None,
+        stores = client.list_images(None, &visible) => Some(stores),
+    }
+}
+
+/// A Machine holding `built` for every one of its platforms. Keep the receipt's
+/// Machine (`preferred`) while it still holds the image, so the next receipt keeps
+/// naming the Machine with the warm build cache.
+pub(crate) fn holder(
+    stores: &PartialResult<crate::cluster::MachineImagesObservation, RpcError>,
+    built: &ployz_build::BuiltImage,
+    preferred: MachineId,
+) -> Option<MachineId> {
+    stores
         .successes
         .iter()
         .filter(|source| {
-            receipt.built.platforms.iter().all(|platform| {
-                crate::image::holds_platform(
-                    &source.value.images,
-                    &receipt.built.reference,
-                    platform,
-                )
+            built.platforms.iter().all(|platform| {
+                crate::image::holds_platform(&source.value.images, &built.reference, platform)
             })
         })
-        .min_by_key(|source| source.machine_id != receipt.machine_id)?;
-    let mut image = receipt.clone();
-    image.machine_id = source.machine_id;
-    Some(image)
+        .min_by_key(|source| source.machine_id != preferred)
+        .map(|source| source.machine_id)
 }

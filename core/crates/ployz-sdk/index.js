@@ -78,8 +78,8 @@ class Client {
     return withRpcError(this._inner.publishCertificateMaterial(request));
   }
 
-  buildPlatforms(deployment) {
-    return withRpcError(this._inner.buildPlatforms(deployment));
+  outsideBuild(input) {
+    return withRpcError(this._inner.outsideBuild(input));
   }
 
   mintBuildGrant(request) {

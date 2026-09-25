@@ -32,7 +32,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
-pub use build::BuildOutcome;
+pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use running::Running;
 
@@ -42,7 +42,9 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 /// Cancellable Image Build whose progress is retained until read, within a byte budget.
 pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
-pub use preparation::{BuildReceipt, PreparationInput, VERSION, expected_fingerprints};
+pub use preparation::{
+    BuildReceipt, OutsideBuildInput, PreparationInput, VERSION, expected_fingerprints,
+};
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
 /// from it: the Services of its Containers, and each Machine's build
@@ -399,19 +401,18 @@ impl Session {
         }))
     }
 
-    /// The Build Platform Requirement of the one Service in `deployment`
-    /// (`PreparationInput.deployment`), read from the Machines it may be placed on.
+    /// What a Builder outside the Cluster does for the one Git Service in
+    /// `input.deployment` at `input.commit`: reuse `input.receipt` while a Machine
+    /// still holds its image for every Machine the Service may run on, or build the
+    /// Build Platform Requirement. Needs no checkout and never builds.
     ///
     /// # Errors
     /// Rejects a closed session or invalid deployment; returns transport errors,
     /// or `invalid_argument` naming a Machine no build platform runs.
-    pub async fn build_platforms(
-        &self,
-        deployment: serde_json::Value,
-    ) -> Result<Vec<String>, RpcError> {
+    pub async fn outside_build(&self, input: OutsideBuildInput) -> Result<OutsideBuild, RpcError> {
         let client = self.client()?;
         let token = self.inner.cancel.child_token();
-        build::platforms(client, deployment, token).await
+        build::outside(client, input, token).await
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
