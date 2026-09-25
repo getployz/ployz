@@ -150,7 +150,15 @@ _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 
 **Applied State**:
 The per-Environment-Node projection of the latest confirmed runtime outcomes. Successful or removed nodes advance independently; failed or skipped nodes retain their previous Applied State.
-_Avoid_: Latest deployment, active attempt, all-or-nothing baseline
+_Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" in user-facing copy
+
+**Node Outcome**:
+One Environment Node's result within a Cloud Deployment Attempt: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
+_Avoid_: Applied, Skipped, Succeeded, Live (live mode is the current view, not an outcome)
+
+**Deployment Mode**:
+The canvas viewing one Cloud Deployment Attempt: it draws that attempt's Environment Nodes with their Node Outcomes, including nodes since deleted or removed by the attempt, and omits nodes created afterwards. **Live Mode** is the default canvas, drawing the Environment as it is now.
+_Avoid_: Deployment page, deployment detail screen
 
 **Attempt Target**:
 The immutable complete runtime target frozen when a queued deployment request starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.
@@ -197,8 +205,12 @@ _Avoid_: Organization Cluster architecture, global build platform, builder archi
 The user-facing output for a Cloud Deployment Attempt: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
 _Avoid_: Deploy Progress alone, Build Logs
 
+**Image Build**:
+The build of one Service image within a Cloud Deployment Attempt, with its own Build Steps, output, and outcome. An attempt's Image Builds share one builder Server and run one at a time; shared steps show as cached in later Image Builds.
+_Avoid_: Build batch, combined build log, Bake run
+
 **Build Step**:
-One unit of a Cloud Deployment Attempt's build as the Engine reports it: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload or image delivery. A Build Step is keyed stably within its attempt, changes state until it completes, and owns the output attributed to it. Build Steps are retained with the attempt, separately from lifecycle history.
+One unit of an Image Build as the Engine reports it: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload or image delivery. A Build Step is keyed stably within its attempt, changes state until it completes, and owns the output attributed to it. Build Steps are retained with the attempt, separately from lifecycle history.
 _Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a Build Step)
 
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Cloud Deployment Attempt and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
