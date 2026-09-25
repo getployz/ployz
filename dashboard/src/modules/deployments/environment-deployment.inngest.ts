@@ -41,6 +41,7 @@ import {
   cancelGithubImageBuilds,
   checkGithubImageBuild,
   GITHUB_CHECK_INTERVAL,
+  settledGithubImageBuild,
   startGithubImageBuild,
 } from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
@@ -153,16 +154,20 @@ const walkServers: Builder = (build, candidate, { key, last, step, runEffect }) 
   step.run(`build-image-${key}`, () => runEffect(buildOnServers(build, candidate, last ? undefined : START_WITHIN_MINUTES * 60_000)));
 
 /**
- * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The Workflow run
- * webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
- * that landed between two waits. Not last: the first check is the "start within" limit, and a run
- * that hasn't checked in by then is withdrawn. Last: it waits for the run to start without a limit.
+ * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The runner's final
+ * report settles the build and ends a wait at once, as the Workflow run webhook does. Each wait first
+ * reads whether the build settled, so a report that landed before the wait began is not missed. Each
+ * timeout checks the run on GitHub too, which catches a completion that landed between two waits.
+ * Not last: the first check is the "start within" limit, and a run that hasn't checked in by then
+ * is withdrawn. Last: it waits for the run to start without a limit.
  */
 const walkGithub: Builder = async (build, candidate, { key, last, step, runEffect }) => {
   const started = await step.run(`start-github-build-${key}`, () => runEffect(startGithubImageBuild(build, candidate)));
   if (started.kind !== "dispatched") return started;
   const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
   for (let check = 0; ; check += 1) {
+    const before = await step.run(`settled-github-build-${key}-${check}`, () => runEffect(settledGithubImageBuild(build)));
+    if (before) return before;
     const startLimit = check === 0 && !last;
     const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });
     const found = await step.run(`check-github-build-${key}-${check}`, () => runEffect(checkGithubImageBuild(build, { ended: ended !== null, startLimit })));

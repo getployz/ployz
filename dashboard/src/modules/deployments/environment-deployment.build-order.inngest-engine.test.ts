@@ -79,6 +79,8 @@ vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation((_build,
   fake.githubReasons.push(candidate.reason);
   return fake.githubStart ?? { kind: "dispatched", runId: RUN_ID };
 }));
+// Nothing settles a build between two waits here; the Postgres tests cover a report that did.
+vi.spyOn(githubImageBuilds, "settledGithubImageBuild").mockImplementation(() => Effect.succeed(null));
 vi.spyOn(githubImageBuilds, "checkGithubImageBuild").mockImplementation((_build, seen) => Effect.sync(() => {
   fake.seen.push(seen);
   return fake.checks.shift() ?? (seen.ended ? settled("built") : { kind: "waiting" });

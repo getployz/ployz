@@ -383,6 +383,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
 
     let validate = bake_arguments(
         &request(Output::Validate),
+        Produce::Output(Output::Validate),
         &builder_name(),
         planned,
         metadata,
@@ -394,6 +395,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
 
     let load = bake_arguments(
         &request(Output::Load),
+        Produce::Output(Output::Load),
         &builder_name(),
         planned,
         metadata,
@@ -410,6 +412,7 @@ fn requested_output_selects_exclusive_bake_behavior() {
 
     let registry = bake_arguments(
         &request(Output::Registry),
+        Produce::Output(Output::Registry),
         &builder_name(),
         planned,
         metadata,
@@ -427,13 +430,31 @@ fn requested_output_selects_exclusive_bake_behavior() {
             environment: &environment,
             ..request(Output::Load)
         },
+        Produce::Output(Output::Load),
         &builder_name(),
         planned,
         metadata,
         None,
     );
     assert!(runner.contains(&"api.cache-from=type=gha,scope=api".to_owned()));
-    assert!(runner.contains(&"api.cache-to=type=gha,scope=api,mode=max".to_owned()));
+    // Uploading cache never delays the image: only a cache export writes it, and it
+    // produces no image.
+    assert!(!runner.iter().any(|argument| argument.contains("cache-to")));
+    let export = bake_arguments(
+        &Request {
+            environment: &environment,
+            ..request(Output::Load)
+        },
+        Produce::Cache,
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
+    assert!(export.contains(&"api.cache-to=type=gha,scope=api,mode=max".to_owned()));
+    assert!(export.contains(&"api.output=type=cacheonly".to_owned()));
+    assert!(!export.contains(&"--load".to_owned()));
+    assert!(!export.contains(&"--metadata-file".to_owned()));
 }
 
 #[test]
@@ -689,4 +710,25 @@ fn repository_reference_rejects_a_malformed_service_image() {
         image.repository_reference("not a repository"),
         Err(BuildError::Result(_))
     ));
+}
+
+#[test]
+fn a_cache_export_without_a_runner_cache_runs_nothing() {
+    let environment = BTreeMap::new();
+    let targets = [target("api", None)];
+    let request = Request {
+        image_contexts: &BTreeMap::new(),
+        compose_file: Path::new("compose.yaml"),
+        working_dir: Path::new("/nonexistent"),
+        environment: &environment,
+        docker: Some(Path::new("/nonexistent/docker")),
+        targets: &targets,
+        railpack: &[],
+        build_args: &[],
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    // Any Docker call would fail: this Docker does not exist.
+    assert_eq!(export_cache(&request, &Cancellation::new()), Ok(()));
 }

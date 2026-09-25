@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Header } from "tar";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "#/db/schema";
 import { asTestDouble } from "#/lib/test-double";
 import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createGitServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
@@ -71,6 +71,10 @@ type Fake = {
   /** Whether the Cluster refuses to mint Build Grants (a ployzd without the RPC). */
   mintFails: boolean;
   ended: string[];
+  /** Whether the Machine can't be reached to end a Build Grant. */
+  endFails: boolean;
+  /** How many times the walk began waiting for the run. */
+  waits: number;
   prepared: BuildReceipts[];
   /** The Service's Build Platform Requirement, as the Engine reads it from placement. */
   platforms: string[];
@@ -130,6 +134,7 @@ function fakeClient(fake: Fake) {
       return { id: grantId(fake.minted.length), grant: "ployzgrant1:secret", expires_in_seconds: 3600 };
     },
     endBuildGrant: async ({ id }: { id: string }) => {
+      if (fake.endFails) throw new Error("connection refused");
       fake.ended.push(id);
       return { pushed };
     },
@@ -165,6 +170,8 @@ function fakeClient(fake: Fake) {
 describe("Image Builds on GitHub Actions", () => {
   let harness: PostgresTestHarness;
   let fake: Fake;
+  const inngest = new Inngest({ id: "github-builds" });
+  vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
@@ -174,7 +181,8 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   beforeEach(async () => {
-    fake = { github: [], minted: [], mintFails: false, ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
+    vi.mocked(inngest.send).mockClear();
+    fake = { github: [], minted: [], mintFails: false, ended: [], endFails: false, waits: 0, prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -220,7 +228,7 @@ describe("Image Builds on GitHub Actions", () => {
     Effect.provide(AppConfig.layer),
     Effect.provideService(GithubApi, githubApi(fake)),
     Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
-    Effect.provideService(InngestClient, new Inngest({ id: "github-builds" })),
+    Effect.provideService(InngestClient, inngest),
     Effect.provideService(SecretEncryption, encryption),
   ));
   // SAFETY: `run` supplies every service the deployment workflow's activities use.
@@ -253,8 +261,10 @@ describe("Image Builds on GitHub Actions", () => {
       // @inngest/test hands waitForEvent a lazy promise that inngest 4 then validates as an event,
       // so the run's completion is delivered by replacing the tool rather than mocking the step.
       // A GitHub Builder that isn't last waits its start limit first; the run completes after it.
-      const waitForEvent = async (_id: string, options: { timeout?: string | number }) => options.timeout === "3m" && !fake.runEndsBeforeLimit
-        ? null : { name: "github/build-run.completed", data: { runId: githubRunId } };
+      const waitForEvent = async (_id: string, options: { timeout?: string | number }) => {
+        fake.waits += 1;
+        return options.timeout === "3m" && !fake.runEndsBeforeLimit ? null : { name: "github/build-run.completed", data: { runId: githubRunId } };
+      };
       return { ...ctx, runId, step: { ...ctx.step, waitForEvent: asTestDouble<typeof ctx.step.waitForEvent>()(waitForEvent) } };
     },
   });
@@ -321,8 +331,13 @@ describe("Image Builds on GitHub Actions", () => {
     await dispatch();
     await checkIn(oidcToken());
     await report(["linux/amd64"]);
+    // The final report settles the build while the run still uploads cache, and wakes the walk.
+    expect(await row()).toMatchObject({ status: "built" });
+    expect(inngest.send).toHaveBeenCalledWith(expect.objectContaining({ name: "github/build-run.completed", data: { runId: githubRunId } }));
     const output = await engine(runCompleted()).execute();
     expect(output.error).toBeUndefined();
+    // The report landed before the walk began waiting: it moves on without a wait.
+    expect(fake.waits).toBe(0);
     const built = await row();
     expect(built).toMatchObject({ status: "built", machineId: machine.id, github: { report: { platforms: ["linux/amd64"] } } });
     const receipt = JSON.parse(encryption.decrypt(built?.encryptedReceipt ?? encryption.encrypt("null")));
@@ -360,13 +375,66 @@ describe("Image Builds on GitHub Actions", () => {
     expect(log.steps.find((step) => step.image === "api" && step.name === "Building")?.completedAt).not.toBeNull();
   });
 
-  it("fails the build when the run ends without pushing", async () => {
+  it("fails the build when the runner reports it failed", async () => {
     await dispatch();
     await checkIn(oidcToken());
     await report([]);
+    expect(await row()).toMatchObject({ status: "failed", failureMessage: "GitHub: the run pushed no image." });
+    const output = await engine(runCompleted()).execute();
+    expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
+  });
+
+  it("leaves a reported build unsettled while the Machine can't end its grant, and settles it on the next check", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    fake.endFails = true;
+    await report(["linux/amd64"]);
+    expect(await row()).toMatchObject({ status: "building", github: { report: { platforms: ["linux/amd64"] } } });
+    // The report was taken: the runner can't send another.
+    expect(await refused({ from: 3, events: [] })).toMatchObject({ _tag: "Conflict" });
+    fake.endFails = false;
+    const output = await engine(runCompleted()).execute();
+    expect(output.error).toBeUndefined();
+    expect(await row()).toMatchObject({ status: "built" });
+    expect(fake.ended).toEqual([grantId(1)]);
+  }, 30_000);
+
+  it("fails a reported build once its budget passed and the Machine still can't end its grant", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    fake.endFails = true;
+    await report(["linux/amd64"]);
+    fake.runStatus = "completed";
+    // Within the budget the next check retries.
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false }))).toEqual({ kind: "waiting" });
+    await harness.db.update(schema.environmentDeploymentImageBuild).set({ checkedInAt: new Date(Date.now() - 3 * 60 * 60_000) });
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "failed" } });
+    expect(await row()).toMatchObject({ failureMessage: "GitHub: your Machine couldn't be reached to confirm the push within 2 hours." });
+  });
+
+  it("ignores the run failing after the final report settled the build", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    await report(["linux/amd64"]);
+    const built = await row();
+    // The cache upload failed the run, or it was cancelled: the Workflow run webhook changes nothing.
+    fake.runStatus = "completed";
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "built" } });
+    expect(await row()).toEqual(built);
+    expect(fake.ended).toEqual([grantId(1)]);
+  });
+
+  it("settles a run that never reported its end when the Workflow run webhook arrives", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    await post({ from: 0, events: runnerEvents });
+    expect(await row()).toMatchObject({ status: "building" });
     const output = await engine(runCompleted()).execute();
     expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
     expect(await row()).toMatchObject({ status: "failed", failureMessage: "GitHub: the run pushed no image." });
+    expect(fake.ended).toEqual([grantId(1)]);
   });
 
   it("cancels the GitHub run and ends the grant when the attempt is cancelled", async () => {
@@ -439,11 +507,11 @@ describe("Image Builds on GitHub Actions", () => {
   it("settles a run whose completion no webhook delivered once GitHub says it completed", async () => {
     await dispatch();
     await checkIn(oidcToken());
-    await report(["linux/amd64"]);
+    await post({ from: 0, events: runnerEvents });
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false }))).toEqual({ kind: "waiting" });
     fake.runStatus = "completed";
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
-      .toMatchObject({ kind: "settled", result: { status: "built" } });
+      .toMatchObject({ kind: "settled", result: { status: "failed" } });
   });
 
   it("gives the last Builder's run no start limit, and a started run a budget", async () => {

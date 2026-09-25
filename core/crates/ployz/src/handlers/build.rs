@@ -90,17 +90,29 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let cancellation = crate::cancellation::on_ctrl_c();
         let build = captured.build;
-        let built = tokio::task::spawn_blocking(move || {
-            build.execute_local(&cancellation, &|event| {
+        let export = cancellation.clone();
+        let (build, built) = tokio::task::spawn_blocking(move || {
+            let built = build.execute_local(&cancellation, &|event| {
                 if let Some(file) = &events {
                     write_event(file, event);
                 }
-            })
+            });
+            (build, built)
         })
         .await
-        .map_err(std::io::Error::other)?
-        .map_err(BuildCommandError::from)?;
-        push(&grant, &built).await
+        .map_err(std::io::Error::other)?;
+        push(&grant, &built.map_err(BuildCommandError::from)?).await?;
+        // The pushed image and its printed result are final; uploading cache only speeds up
+        // the next Build, so its failure is a warning and it never reaches the events file.
+        let exported = tokio::task::spawn_blocking(move || build.export_local_cache(&export))
+            .await
+            .map_err(std::io::Error::other)?;
+        if let Err(error) = exported {
+            eprintln!(
+                "warning: the image was pushed, but its build cache was not exported: {error}"
+            );
+        }
+        Ok(())
     })
 }
 

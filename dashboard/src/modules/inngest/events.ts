@@ -451,10 +451,13 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubBuildRunCompletedEvent>;
 
-/** A dispatched GitHub build run completed, whatever its conclusion. The waiting Image Build settles. */
+/**
+ * A dispatched GitHub build run completed, whatever its conclusion, or its runner's final report
+ * settled the build. The waiting Image Build checks it. `id` dedupes the send.
+ */
 export const githubBuildRunCompletedEvent = "github/build-run.completed";
-export function createGithubBuildRunCompletedEvent(data: { deliveryId: string; runId: number }) {
-  return { id: data.deliveryId, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
+export function createGithubBuildRunCompletedEvent(data: { id: string; runId: number }) {
+  return { id: data.id, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
 }
 
 export const environmentDeployCancelRequestedEvent = "environment/deploy.cancel.requested";

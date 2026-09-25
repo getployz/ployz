@@ -79,11 +79,12 @@ export const handleGithubWebhookRequest = Effect.fn(
       : new Response("Malformed webhook", { status: 400 });
   }
   if (event === "ping") return new Response("OK", { status: 200 });
-  // A completed build workflow run settles its waiting Image Build; every other run is ignored.
+  // A completed build workflow run settles its waiting Image Build unless its report already did;
+  // every other run is ignored.
   if (event === "workflow_run") {
     const run = Schema.decodeUnknownOption(workflowRunPayloadSchema)(payload.value);
     if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
-      yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ deliveryId, runId: run.value.workflow_run.id }));
+      yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: deliveryId, runId: run.value.workflow_run.id }));
     }
     return new Response("OK", { status: 200 });
   }

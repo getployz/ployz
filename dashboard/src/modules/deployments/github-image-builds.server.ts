@@ -3,6 +3,8 @@ import type { BuildGrantId, BuildReceipt, MachineId, PreparationEvent } from "@p
 import { Effect, Schema } from "effect";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
+import { sendInngestEvent } from "#/modules/inngest/client";
+import { createGithubBuildRunCompletedEvent } from "#/modules/inngest/events";
 import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
@@ -22,12 +24,15 @@ import { pinSourceCommit } from "./runtime-sources.server";
 /**
  * GitHub as a Builder. Cloud dispatches the repository's build workflow, the runner checks in once
  * with its OIDC token for the build's grant and secrets, posts its Build Steps as it builds, and
- * when the run completes Cloud ends the grant and writes the receipt from the digest the Machine received.
+ * once it pushed, its final report makes Cloud end the grant and write the receipt from the digest
+ * the Machine received. The run then goes on uploading build cache, which Cloud never waits for.
  *
- *   dispatch ──▶ check-in (once) ──▶ steps … ──▶ workflow_run completed ──▶ end grant ──▶ receipt
+ *   dispatch ──▶ check-in (once) ──▶ steps … ──▶ final report ──▶ end grant ──▶ receipt
  *
  * Check-in is the build starting. Until then GitHub can still be skipped: at once when it can't take
- * the build, at the "start within" limit, or when the run ends first.
+ * the build, at the "start within" limit, or when the run ends first. The run completing (the
+ * Workflow run webhook) or the budget running out settles only a build that never reported its end;
+ * once settled, a failed or cancelled run changes nothing.
  */
 
 /**
@@ -116,6 +121,15 @@ export const checkGithubImageBuild = Effect.fn("Deployments.checkGithubImageBuil
   if (row.checkedInAt === null) return seen.startLimit ? yield* withdrawGithubImageBuild(build, row) : waiting;
   if (Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS) return yield* finishGithubImageBuild(build, row, true);
   return waiting;
+});
+
+/**
+ * The build's result once it settled, which a final report may do before the walk begins a wait;
+ * null while it still builds.
+ */
+export const settledGithubImageBuild = Effect.fn("Deployments.settledGithubImageBuild")(function* (build: ImageBuildTarget) {
+  const row = yield* loadImageBuild(build.id);
+  return row?.status === "building" ? null : settled(build, row?.status ?? "failed");
 });
 
 /** Whether GitHub says the build's run completed; unknown (GitHub unreachable) reads as still running. */
@@ -259,18 +273,30 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
   if (platforms) steps.push(...collector.finish(platforms.length ? null : "The build failed on GitHub; see its run."));
   yield* persistBuildLog(row.deploymentId, { steps, output }, row.image);
   const taken = Math.max(received, report.from + report.events.length);
-  if (!(yield* recordGithubReport(row.id, received, { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] }))) {
+  const recorded = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
+  if (!(yield* recordGithubReport(row.id, received, recorded))) {
     return yield* new Conflict({ message: "Another report of this build was taken first." });
+  }
+  if (platforms) {
+    // The runner reports its end once the image is pushed, before its run completes (it still
+    // uploads build cache), so the report settles the build and wakes the waiting walk. A failure
+    // after the report was recorded leaves settling to the run's completion or the poll.
+    yield* finishGithubImageBuild(row, { ...row, github: { ...github, report: recorded } }, false);
+    yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${row.id}`, runId: row.githubRunId })).pipe(
+      // The run's completion wakes it anyway.
+      Effect.catch((error) => Effect.logWarning("Could not wake the walk for a reported GitHub build.", error)),
+    );
   }
   return { received: taken };
 });
 
 /**
- * Settles a GitHub build once its run ended, or ran out of budget (`timedOut`: its run is cancelled
- * first): ends the grant and writes the receipt from the digest the Machine verified. A run that
- * ended before it checked in never started, so GitHub is skipped. A started run that pushed nothing failed.
+ * Settles a GitHub build once its runner reported its end, its run ended, or it ran out of budget
+ * (`timedOut`: its run is cancelled first): ends the grant and writes the receipt from the digest
+ * the Machine verified. A run that ended before it checked in never started, so GitHub is skipped.
+ * A started run that pushed nothing failed.
  */
-const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(function* (build: ImageBuildTarget, row: GithubRow, timedOut: boolean) {
+const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(function* (build: Pick<ImageBuildTarget, "id" | "image">, row: GithubRow, timedOut: boolean) {
   if (row.checkedInAt === null) {
     const skip = yield* skipImageBuilder(build, { builder: "github", kind: "ended_before_start" });
     // It checked in just now; the next check finds its run ended on GitHub and finishes it.
@@ -280,10 +306,18 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
   const failed = (message: string) => settleImageBuild(build, { status: "failed", message, machineId: row.machineId });
   const grant = row.github.grant;
   if (!grant || !row.machineId) return yield* failed("GitHub: the run ended before it received its grant.");
-  const pushed = yield* endGrant(row.organizationId, row.machineId, grant.id).pipe(
-    Effect.map((ended) => ended.pushed ?? null),
-    Effect.orElseSucceed(() => null),
+  // Only the Machine's answer decides; while it can't be reached the build stays unsettled and the
+  // next check (the run's completion or the poll) ends the grant again, until the run's budget is
+  // spent: a Machine gone for good must not hold the deploy forever.
+  const ended = yield* endGrant(row.organizationId, row.machineId, grant.id).pipe(
+    Effect.map((answer) => ({ pushed: answer.pushed ?? null })),
+    Effect.catch((error) => Effect.logWarning("Could not end a GitHub build's grant; the next check retries.", error).pipe(Effect.as(null))),
   );
+  if (!ended) {
+    const spent = timedOut || Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS;
+    return spent ? yield* failed("GitHub: your Machine couldn't be reached to confirm the push within 2 hours.") : waiting;
+  }
+  const pushed = ended.pushed;
   const platforms = row.github.report?.platforms;
   if (!pushed || !platforms?.length) return yield* failed(timedOut ? "GitHub: the run didn't finish within 2 hours." : "GitHub: the run pushed no image.");
   const receipt: BuildReceipt = {
