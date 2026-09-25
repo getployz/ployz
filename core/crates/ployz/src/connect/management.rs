@@ -22,9 +22,10 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tonic::transport::Channel;
 
-/// Application close code the daemon uses to refuse a connection whose key is not accepted.
-const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
-const PAIRING_CLEARED: VarInt = VarInt::from_u32(0x52);
+/// Application close codes the daemon refuses an unadmitted key with: never admitted or
+/// rotated away, and confirmed cleared.
+const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
+const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
 
 /// The relay the management transport dials through. Production uses the compiled
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
@@ -142,14 +143,14 @@ pub(super) async fn connect_management(
         .await
         .map_err(|error| match session.connection.close_reason() {
             Some(iroh::endpoint::ConnectionError::ApplicationClosed(close))
-                if close.error_code == REFUSED_BY_IDENTITY =>
+                if close.error_code == CLIENT_REFUSED =>
             {
-                ConnectError::RefusedByIdentity
+                ConnectError::ClientRefused
             }
             Some(iroh::endpoint::ConnectionError::ApplicationClosed(close))
-                if close.error_code == PAIRING_CLEARED =>
+                if close.error_code == CLIENT_CLEARED =>
             {
-                ConnectError::PairingCleared
+                ConnectError::ClientCleared
             }
             _ => error,
         })

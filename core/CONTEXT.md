@@ -349,7 +349,7 @@ It is shared administrative authority, not per-user access; rotating a Managemen
 _Avoid_: per-user permission, read-only grant, Pairing Credential, management endpoint
 
 **Management Client**:
-One named holder slot on a Machine, such as `cloud`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections. The Machine knows holders, never the people or Organizations behind them.
+One named holder slot on a Machine, such as `cloud`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Identity**:

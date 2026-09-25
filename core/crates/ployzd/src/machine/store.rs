@@ -16,7 +16,7 @@ use ployz_core::{
 use thiserror::Error;
 
 use super::{
-    FoundingCluster, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
+    FoundingCluster, LiveSlot, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
     ParticipationOrigin, local_runtime,
 };
 use crate::management::ManagementSecret;
@@ -352,6 +352,7 @@ impl LocalMachineStore {
     }
 
     /// Stage a fresh client key in `label`'s slot, beside any key it has accepted.
+    /// A Cleared tombstone is replaced.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
@@ -361,16 +362,16 @@ impl LocalMachineStore {
         pending: [u8; 32],
     ) -> Result<(), StoreError> {
         let slot = match self.record.accepted_client(&label) {
-            Some(accepted) => ManagementClientSlot::Rotating { accepted, pending },
-            None => ManagementClientSlot::Pending { pending },
+            Some(accepted) => ManagementClientSlot::Live(LiveSlot::Rotating { accepted, pending }),
+            None => ManagementClientSlot::Live(LiveSlot::Pending { pending }),
         };
         self.persist_management_clients(|clients| {
             clients.insert(label, slot);
         })
     }
 
-    /// Remove `label`'s slot, with its accepted and pending keys, in one write.
-    /// An absent label stays absent.
+    /// Turn `label`'s slot into a Cleared tombstone of its public keys, in one write.
+    /// An absent label stays absent and a tombstone stays unchanged, without a write.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
@@ -378,8 +379,17 @@ impl LocalMachineStore {
         &mut self,
         label: &ManagementClientLabel,
     ) -> Result<(), StoreError> {
+        // An absent label or a tombstone has no live slot to clear.
+        let Some(was) = self
+            .record
+            .management_clients
+            .get(label)
+            .and_then(|slot| slot.live())
+        else {
+            return Ok(());
+        };
         self.persist_management_clients(|clients| {
-            clients.remove(label);
+            clients.insert(label.clone(), ManagementClientSlot::Cleared { was });
         })
     }
 
@@ -392,7 +402,10 @@ impl LocalMachineStore {
             return Ok(());
         };
         self.persist_management_clients(|clients| {
-            clients.insert(label, ManagementClientSlot::Active { accepted: remote });
+            clients.insert(
+                label,
+                ManagementClientSlot::Live(LiveSlot::Active { accepted: remote }),
+            );
         })
     }
 

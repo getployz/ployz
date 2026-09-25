@@ -227,21 +227,85 @@ async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
 }
 
 #[tokio::test]
-async fn set_management_client_clear_persists() {
+async fn clear_persists_a_tombstone_of_public_keys_only() {
     let dir = TestDir::new("ployzd-clear-management-client");
     let local = participating(&dir).await;
-    local
-        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
-        .await
-        .unwrap();
-    local
-        .set_management_client(SetManagementClientRequest::Clear { label: cloud() })
-        .await
-        .unwrap();
+    let set = |label: &'static str| {
+        let local = local.clone();
+        async move {
+            let capability = local
+                .set_management_client(SetManagementClientRequest::Set {
+                    label: ManagementClientLabel::parse(label).unwrap(),
+                })
+                .await
+                .unwrap()
+                .capability
+                .unwrap();
+            let public = *iroh::SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes();
+            (capability, public)
+        }
+    };
+    let clear = |label: &'static str| {
+        let local = local.clone();
+        async move {
+            local
+                .set_management_client(SetManagementClientRequest::Clear {
+                    label: ManagementClientLabel::parse(label).unwrap(),
+                })
+                .await
+                .unwrap()
+        }
+    };
+    // One slot in each live state: pending, active and rotating.
+    let (pending, pending_key) = set("pending").await;
+    let (active, active_key) = set("active").await;
+    local.activate_management_client(active_key).await.unwrap();
+    let (rotated, rotated_key) = set("rotating").await;
+    local.activate_management_client(rotated_key).await.unwrap();
+    let (rotating, rotating_key) = set("rotating").await;
+    for label in ["pending", "active", "rotating"] {
+        clear(label).await;
+    }
     assert!(!local.record().has_management_clients());
+    let cleared = local.record();
+    // Clear is idempotent: a tombstone stays unchanged and an absent label stays absent.
+    clear("rotating").await;
+    clear("cli").await;
+    assert_eq!(local.record(), cleared);
     drop(local);
+
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert!(!reopened.record().has_management_clients());
+    assert_eq!(reopened.record(), &*cleared);
+    assert_eq!(reopened.record().management_clients().count(), 0);
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
+    assert_eq!(
+        persisted.get("management_clients"),
+        Some(&serde_json::json!({
+            "pending": {
+                "state": "cleared",
+                "was": { "state": "pending", "pending": pending_key },
+            },
+            "active": {
+                "state": "cleared",
+                "was": { "state": "active", "accepted": active_key },
+            },
+            "rotating": {
+                "state": "cleared",
+                "was": {
+                    "state": "rotating",
+                    "accepted": rotated_key,
+                    "pending": rotating_key,
+                },
+            },
+        }))
+    );
+    let text = persisted.to_string();
+    for capability in [pending, active, rotated, rotating] {
+        assert!(!text.contains(&serde_json::to_string(capability.client_secret()).unwrap()));
+    }
 }
 
 #[tokio::test]
@@ -422,6 +486,14 @@ async fn inspect_lists_management_clients_holding_keys() {
     );
     assert!(!encoded.to_string().contains("cloud_pair"));
     assert!(encoded.get("secret").is_none());
+
+    // A Cleared tombstone holds no key the Machine serves, so Inspect does not list it.
+    local
+        .set_management_client(SetManagementClientRequest::Clear { label: cloud() })
+        .await
+        .unwrap();
+    let details = local.inspect(InspectRequest::default()).await.unwrap();
+    assert!(details.management_clients.is_empty());
 }
 
 #[tokio::test]
@@ -909,6 +981,11 @@ fn local_record_rejects_incomplete_management_client_slots() {
         serde_json::json!({"cloud": {"state": "pending"}}),
         serde_json::json!({"cloud": {"state": "rotating", "accepted": key}}),
         serde_json::json!({"cloud": {"state": "enrolling", "accepted": key}}),
+        serde_json::json!({"cloud": {"state": "cleared"}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "cleared"}}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "active"}}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "active", "accepted": key}, "secret": "s"}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "active", "accepted": key, "secret": "s"}}}),
         serde_json::json!({"Cloud": {"state": "active", "accepted": key}}),
     ] {
         let mut invalid = valid.clone();

@@ -405,25 +405,23 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             ..
         } if matches!(
             *error,
-            ConnectError::RefusedByIdentity | ConnectError::PairingCleared
+            ConnectError::ClientRefused | ConnectError::ClientCleared
         ) =>
         {
             rpc_error(*error)
         }
-        ConnectError::PairingCleared => RpcError {
+        ConnectError::ClientCleared => RpcError {
             code: RpcErrorCode::Unauthenticated,
-            message: "Machine confirmed its management pairing is cleared".into(),
-            details: json!({ "management_pairing": "cleared" }),
+            message: "Machine confirmed this Management Client was cleared".into(),
+            details: json!({ "management_client": "cleared" }),
         },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::RefusedByIdentity) => {
-            RpcError {
-                code: RpcErrorCode::Unauthenticated,
-                message: error.to_string(),
-                details: Value::Null,
-            }
-        }
+        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClientRefused) => RpcError {
+            code: RpcErrorCode::Unauthenticated,
+            message: error.to_string(),
+            details: Value::Null,
+        },
         error @ (ConnectError::Attempt(_)
         | ConnectError::EntryNotReady
         | ConnectError::Io(_)
@@ -637,9 +635,9 @@ pub enum ConnectError {
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
     #[error("Machine refused this Management Capability")]
-    RefusedByIdentity,
-    #[error("Machine confirmed its management pairing is cleared")]
-    PairingCleared,
+    ClientRefused,
+    #[error("Machine confirmed this Management Client was cleared")]
+    ClientCleared,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
@@ -710,8 +708,8 @@ impl ConnectError {
             Self::Remote(_)
             | Self::EntryNotReady
             | Self::IdentityMismatch { .. }
-            | Self::RefusedByIdentity
-            | Self::PairingCleared
+            | Self::ClientRefused
+            | Self::ClientCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)

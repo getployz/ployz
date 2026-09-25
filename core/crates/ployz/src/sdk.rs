@@ -171,7 +171,7 @@ impl Session {
 
     /// Clear `label`'s Management Client slot. A reply confirms the Clear, but revoking
     /// the caller's own connection may drop it. A later dial confirms removal only with explicit
-    /// `management_pairing: "cleared"` details; a replaced key refusal does not.
+    /// `management_client: "cleared"` details; a replaced key refusal does not.
     ///
     /// # Errors
     /// Returns cancellation or transport errors, including uncertain outcomes.

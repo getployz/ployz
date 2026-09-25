@@ -1,49 +1,51 @@
-//! In-process iroh management transport: serves the Machine API to the one
-//! accepted client key, reachable through the Ployz Relay by Management Identity.
+//! In-process iroh management transport: serves the Machine API to the client keys
+//! of the Management Client slots, reachable through the Ployz Relay by Management Identity.
 
 use std::{
     convert::Infallible,
-    io,
+    future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
+use bytes::Bytes;
+use http_body::Frame;
+use hyper::server::conn::http2;
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    service::TowerToHyperService,
+};
 use iroh::{
     Endpoint, RelayMode, RelayUrl, SecretKey,
     endpoint::{
-        BindError, Connection, IdleTimeout, QuicTransportConfig, RecvStream, SendStream, VarInt,
-        WeakConnectionHandle, presets,
+        BindError, Connection, IdleTimeout, Incoming, QuicTransportConfig, VarInt, presets,
     },
     tls::CaTlsConfig,
 };
-use ployz_core::{DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT};
+use ployz_core::{DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, Rpc, op};
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncRead, AsyncWrite, Join, ReadBuf},
-    sync::{Semaphore, mpsc, watch},
-};
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::{
     body::Body,
     codegen::{Service, http},
-    transport::{Server, server::Connected},
 };
 
 use crate::machine::{LocalMachine, LocalMachineRecord};
 
-/// Application close code sent when the remote key is not the accepted client.
-pub const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
-/// Application close code sent to a live connection whose key was cleared.
+/// Application close code sent when the remote key is not admitted and no tombstone holds it.
+pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
+/// Application close code sent to a live connection whose key no slot holds any more.
 pub const REVOKED: VarInt = VarInt::from_u32(0x51);
-
-/// Authenticated endpoint confirmation that neither accepted nor pending client access remains.
-pub const PAIRING_CLEARED: VarInt = VarInt::from_u32(0x52);
+/// Authenticated confirmation that the dialing key was cleared: a Cleared tombstone holds it.
+pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
 
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a revoked connection may take to drain and acknowledge before it closes.
+const REVOCATION_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the management endpoint binds and which relay it uses.
 ///
@@ -128,22 +130,16 @@ pub async fn bind(
         .await
 }
 
-/// Serve `api` over `endpoint` until `shutdown`.
+/// Serve `api` over `endpoint` until `shutdown`, then drain every connection.
 ///
-/// Keys other than a Management Client slot's accepted or pending key receive
-/// [`REFUSED_BY_IDENTITY`], or [`PAIRING_CLEARED`] when no slot remains. Authenticating
-/// with a pending key permits read-only identity negotiation. Its first operational
-/// RPC activates it. A Clear or replacement activation closes only the connections of
-/// keys no slot holds any more, with [`REVOKED`].
-///
-/// # Errors
-/// Returns the tonic transport error when the RPC server fails.
-pub async fn serve<S>(
-    endpoint: Endpoint,
-    local: LocalMachine,
-    api: S,
-    shutdown: CancellationToken,
-) -> io::Result<()>
+/// Keys other than a Management Client slot's accepted or pending key are closed with
+/// [`CLIENT_CLEARED`] when a Cleared tombstone holds them, otherwise [`CLIENT_REFUSED`].
+/// Authenticating with a pending key permits read-only identity negotiation. Its first
+/// operational RPC activates it. A record change that removes a key from every slot
+/// revokes only that key's connections: in-flight `SetManagementClient` responses, such
+/// as the caller's own Clear, are delivered and acknowledged, every other stream ends at
+/// once, and the connection then closes with [`REVOKED`].
+pub async fn serve<S>(endpoint: Endpoint, local: LocalMachine, api: S, shutdown: CancellationToken)
 where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
         + Clone
@@ -151,173 +147,258 @@ where
         + 'static,
     S::Future: Send,
 {
-    let mut records = local.owner().watch();
-    let live: Arc<Mutex<Vec<WeakConnectionHandle>>> = Arc::default();
-    let (accepted_tx, accepted_rx) = mpsc::channel::<io::Result<ManagementIo>>(16);
-    let acceptor = tokio::spawn(accept_loop(
-        endpoint.clone(),
-        records.clone(),
-        Arc::clone(&live),
-        accepted_tx,
-        shutdown.clone(),
-    ));
-    let revoker = tokio::spawn({
-        let live = Arc::clone(&live);
-        let shutdown = shutdown.clone();
-        async move {
-            loop {
-                tokio::select! {
-                    () = shutdown.cancelled() => break,
-                    changed = records.changed() => {
-                        if changed.is_err() {
-                            break;
-                        }
-                        revoke_others(&live, &records);
-                    }
-                }
-            }
-        }
-    });
-    let served = Server::builder()
-        .serve_with_incoming_shutdown(
-            api,
-            ReceiverStream::new(accepted_rx),
-            shutdown.cancelled_owned(),
-        )
-        .await;
-    acceptor.abort();
-    revoker.abort();
-    endpoint.close().await;
-    served.map_err(io::Error::other)
-}
-
-fn revoke_others(
-    live: &Mutex<Vec<WeakConnectionHandle>>,
-    records: &watch::Receiver<Arc<LocalMachineRecord>>,
-) {
-    let mut live = live.lock().expect("live connection list is not poisoned");
-    let record = records.borrow();
-    live.retain(|weak| {
-        let Some(connection) = weak.upgrade() else {
-            return false;
-        };
-        let keep = record.admits_management_client(connection.remote_id().as_bytes());
-        if !keep {
-            connection.close(REVOKED, b"revoked");
-        }
-        keep && connection.close_reason().is_none()
-    });
-}
-
-async fn accept_loop(
-    endpoint: Endpoint,
-    records: watch::Receiver<Arc<LocalMachineRecord>>,
-    live: Arc<Mutex<Vec<WeakConnectionHandle>>>,
-    accepted: mpsc::Sender<io::Result<ManagementIo>>,
-    shutdown: CancellationToken,
-) {
+    let records = local.owner().watch();
     let handshakes = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
-    let mut tasks = tokio::task::JoinSet::new();
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let incoming = tokio::select! {
-            () = shutdown.cancelled() => return,
-            _ = tasks.join_next(), if !tasks.is_empty() => continue,
+            () = shutdown.cancelled() => break,
+            _ = connections.join_next(), if !connections.is_empty() => continue,
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => incoming,
-                None => return,
+                None => break,
             },
         };
         let Ok(permit) = Arc::clone(&handshakes).acquire_owned().await else {
-            return;
+            break;
         };
-        let records = records.clone();
-        let live = Arc::clone(&live);
-        let accepted = accepted.clone();
-        tasks.spawn(async move {
-            let connection = match incoming.await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    tracing::debug!(%error, "management handshake failed");
-                    return;
-                }
-            };
-            {
-                // Admission and registration share the revoker's lock, before waiting
-                // for peer input: a delayed first stream cannot escape key rotation.
-                let mut live = live.lock().expect("live connection list is not poisoned");
-                let record = records.borrow();
-                if !record.admits_management_client(connection.remote_id().as_bytes()) {
-                    let code = if !record.has_management_clients() {
-                        PAIRING_CLEARED
-                    } else {
-                        REFUSED_BY_IDENTITY
-                    };
-                    connection.close(code, b"management access refused");
-                    return;
-                }
-                live.retain(|weak| {
-                    weak.upgrade()
-                        .is_some_and(|connection| connection.close_reason().is_none())
-                });
-                live.push(connection.weak_handle());
+        connections.spawn(serve_connection(
+            incoming,
+            permit,
+            records.clone(),
+            api.clone(),
+            shutdown.clone(),
+        ));
+    }
+    while connections.join_next().await.is_some() {}
+    endpoint.close().await;
+}
+
+async fn serve_connection<S>(
+    incoming: Incoming,
+    permit: OwnedSemaphorePermit,
+    mut records: watch::Receiver<Arc<LocalMachineRecord>>,
+    api: S,
+    shutdown: CancellationToken,
+) where
+    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
+    let connection = match incoming.await {
+        Ok(connection) => connection,
+        Err(error) => {
+            tracing::debug!(%error, "management handshake failed");
+            return;
+        }
+    };
+    let remote = *connection.remote_id().as_bytes();
+    // Marking this version seen before waiting for peer input means any later
+    // change wakes `revoked`: a delayed first stream cannot escape key rotation.
+    let refused = refusal(&records.borrow_and_update(), &remote);
+    if let Some(code) = refused {
+        connection.close(code, b"management access refused");
+        return;
+    }
+    match serve_admitted(&connection, permit, revoked(records, remote), api, shutdown).await {
+        Ended::Closed => {}
+        Ended::Revoked => connection.close(REVOKED, b"revoked"),
+    }
+}
+
+/// The close code refusing `remote`, or `None` when a slot admits it.
+fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
+    if record.admits_management_client(remote) {
+        None
+    } else if record.clears_management_client(remote) {
+        Some(CLIENT_CLEARED)
+    } else {
+        Some(CLIENT_REFUSED)
+    }
+}
+
+/// Why an admitted connection stopped being served.
+enum Ended {
+    /// The peer closed, the connection failed, or the transport shut down.
+    Closed,
+    /// A record change revoked the key; delivery of the bytes already sent was awaited
+    /// for up to `REVOCATION_DELIVERY_TIMEOUT`.
+    Revoked,
+}
+
+async fn serve_admitted<S>(
+    connection: &Connection,
+    permit: OwnedSemaphorePermit,
+    revoked: impl Future<Output = ()>,
+    api: S,
+    shutdown: CancellationToken,
+) -> Ended
+where
+    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
+    tokio::pin!(revoked);
+    let (send, recv) = tokio::select! {
+        () = &mut revoked => return Ended::Revoked,
+        () = shutdown.cancelled() => return Ended::Closed,
+        streams = connection.accept_bi() => match streams {
+            Ok(streams) => streams,
+            Err(error) => {
+                tracing::debug!(%error, "management client opened no RPC stream");
+                return Ended::Closed;
             }
-            let (send, recv) = match connection.accept_bi().await {
-                Ok(streams) => streams,
-                Err(error) => {
-                    tracing::debug!(%error, "management client opened no RPC stream");
-                    return;
-                }
-            };
-            drop(permit);
-            let io = ManagementIo {
-                io: tokio::io::join(recv, send),
-                _connection: connection,
-            };
-            let _ = accepted.send(Ok(io)).await;
-        });
+        },
+    };
+    drop(permit);
+    // Created before serving so the acknowledgement of the final bytes cannot be missed.
+    let acknowledged = send.stopped();
+    let drain = CancellationToken::new();
+    let service = ConnectionApi {
+        api,
+        connection: connection.clone(),
+        drain: drain.clone(),
+    };
+    let serving = http2::Builder::new(TokioExecutor::new()).serve_connection(
+        TokioIo::new(tokio::io::join(recv, send)),
+        TowerToHyperService::new(service),
+    );
+    tokio::pin!(serving);
+    let ended = tokio::select! {
+        served = serving.as_mut() => {
+            if let Err(error) = served {
+                tracing::debug!(%error, "management connection ended");
+            }
+            return Ended::Closed;
+        }
+        () = &mut revoked => {
+            drain.cancel();
+            Ended::Revoked
+        }
+        () = shutdown.cancelled() => Ended::Closed,
+    };
+    // GOAWAY; once the remaining streams end, hyper finishes the QUIC stream.
+    serving.as_mut().graceful_shutdown();
+    let drained = async {
+        if let Err(error) = serving.await {
+            tracing::debug!(%error, "management connection failed while draining");
+        }
+    };
+    let Ended::Revoked = ended else {
+        drained.await;
+        return ended;
+    };
+    // Closing discards unacknowledged data, so wait until the peer holds every byte,
+    // including the caller's own Clear response. The key can no longer run any RPC,
+    // and the bound keeps revocation prompt when a peer never acknowledges.
+    let delivered = async {
+        drained.await;
+        let outcome = acknowledged.await;
+        tracing::debug!(?outcome, "revoked management stream delivery settled");
+    };
+    if tokio::time::timeout(REVOCATION_DELIVERY_TIMEOUT, delivered)
+        .await
+        .is_err()
+    {
+        tracing::debug!("revoked management client did not acknowledge in time");
+    }
+    ended
+}
+
+/// Completes once a published record no longer admits `remote`.
+async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: [u8; 32]) {
+    loop {
+        if records.changed().await.is_err() {
+            // The record owner stopped; shutdown ends this connection.
+            return std::future::pending().await;
+        }
+        if !records
+            .borrow_and_update()
+            .admits_management_client(&remote)
+        {
+            return;
+        }
     }
 }
 
-/// One accepted RPC stream, shaped for tonic's incoming-connection stream.
-pub struct ManagementIo {
-    io: Join<RecvStream, SendStream>,
-    // Keeps the QUIC connection open for as long as tonic serves this stream.
-    _connection: Connection,
+/// The Machine API as one management connection serves it: each request carries its
+/// connection, and once the connection drains every stream but `SetManagementClient`
+/// ends.
+#[derive(Clone)]
+struct ConnectionApi<S> {
+    api: S,
+    connection: Connection,
+    drain: CancellationToken,
 }
 
-impl AsyncRead for ManagementIo {
-    fn poll_read(
+impl<S> Service<http::Request<hyper::body::Incoming>> for ConnectionApi<S>
+where
+    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+        + Send
+        + 'static,
+    S::Future: Send,
+{
+    type Response = http::Response<Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+        self.api.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
+        // Clearing its own slot revokes the caller, and the Clear response is its only
+        // confirmation on this connection, so that response survives the drain.
+        let drain_exempt = request.uri().path() == op::SetManagementClient::PATH;
+        let mut request = request.map(Body::new);
+        request
+            .extensions_mut()
+            .insert(self.connection.weak_handle());
+        let response = self.api.call(request);
+        if drain_exempt {
+            return Box::pin(response);
+        }
+        let drain = self.drain.clone();
+        Box::pin(async move {
+            tokio::select! {
+                response = response => Ok(response?.map(|body| {
+                    Body::new(Drained {
+                        body,
+                        drained: Box::pin(drain.cancelled_owned()),
+                    })
+                })),
+                () = drain.cancelled() => Ok(revoked_status().into_http()),
+            }
+        })
+    }
+}
+
+fn revoked_status() -> tonic::Status {
+    tonic::Status::unauthenticated("management credential revoked")
+}
+
+/// A response body that fails once its connection drains.
+struct Drained {
+    body: Body,
+    drained: Pin<Box<WaitForCancellationFutureOwned>>,
+}
+
+impl http_body::Body for Drained {
+    type Data = Bytes;
+    type Error = tonic::Status;
+
+    fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for ManagementIo {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_shutdown(cx)
-    }
-}
-
-impl Connected for ManagementIo {
-    type ConnectInfo = WeakConnectionHandle;
-
-    fn connect_info(&self) -> Self::ConnectInfo {
-        self._connection.weak_handle()
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        if self.drained.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Some(Err(revoked_status())));
+        }
+        Pin::new(&mut self.body).poll_frame(cx)
     }
 }
 

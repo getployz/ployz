@@ -244,12 +244,16 @@ impl Daemon {
                     ),
                     serve_machine_api(management_listener, machine_api.clone(), shutdown.clone()),
                     serve_machine_api(gateway_listener, machine_api.clone(), shutdown.clone()),
-                    management::serve(
-                        management_endpoint,
-                        crate::machine::LocalMachine::new(local.clone()),
-                        machine_api.clone(),
-                        shutdown.clone()
-                    ),
+                    async {
+                        management::serve(
+                            management_endpoint,
+                            crate::machine::LocalMachine::new(local.clone()),
+                            machine_api.clone(),
+                            shutdown.clone(),
+                        )
+                        .await;
+                        Ok(())
+                    },
                 )
                 .map(|_| ())
             };

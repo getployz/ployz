@@ -109,9 +109,9 @@ const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
   },
 );
 
-const PairingCleared = Schema.Struct({
+const ManagementClientCleared = Schema.Struct({
   code: Schema.Literal("unauthenticated"),
-  details: Schema.Struct({ management_pairing: Schema.Literal("cleared") }),
+  details: Schema.Struct({ management_client: Schema.Literal("cleared") }),
 });
 
 /** Clear one Machine's `cloud` Management Client. Only a successful Clear or an authenticated cleared response confirms removal. */
@@ -124,7 +124,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
       return true;
     })).pipe(Effect.catch((error) => Effect.succeed(
       error._tag === "PloyzProviderError" && error.operation === "connect"
-        && Option.isSome(Schema.decodeUnknownOption(PairingCleared)(error.cause)),
+        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)),
     )));
   },
 );

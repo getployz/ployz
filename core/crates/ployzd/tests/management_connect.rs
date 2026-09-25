@@ -92,7 +92,7 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
             .unwrap();
     assert_eq!(local.record().accepted_client(&cloud()), Some(old_key));
     // Removal wins publication and retains only the previous saved capability.
-    let _ = MachineRpcClient::new(previous)
+    MachineRpcClient::new(previous.clone())
         .set_management_client(
             op::SetManagementClient::into_request(SetManagementClientRequest::Clear {
                 label: cloud(),
@@ -100,16 +100,18 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
             .encode()
             .unwrap(),
         )
-        .await;
-    // Clear may revoke its own response; the authenticated cleared response is confirmation.
-    wait_until(|| !local.record().has_management_clients()).await;
+        .await
+        .unwrap();
+    assert!(!local.record().has_management_clients());
+    revoked(previous).await;
+    // The candidate is in the tombstone too: its redial confirms the removal.
     assert!(matches!(
         connector.connect(&connection(&replacement)).await,
-        Err(ConnectError::PairingCleared)
+        Err(ConnectError::ClientCleared)
     ));
     drop(verified);
     shutdown.cancel();
-    server.await.unwrap().unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -175,14 +177,38 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
         .await
         .unwrap();
     revoked(cli_channel).await;
-    assert_eq!(describe(cloud_channel).await.unwrap(), machine_id);
+    assert_eq!(describe(cloud_channel.clone()).await.unwrap(), machine_id);
     assert_eq!(
         local.record().management_clients().collect::<Vec<_>>(),
         [&cloud()]
     );
+    assert!(matches!(
+        connector.connect(&connection(&cli_capability)).await,
+        Err(ConnectError::ClientCleared)
+    ));
+
+    // Once `cloud` is cleared too, its rotated-away key is still never confirmed as cleared.
+    local
+        .set_management_client(SetManagementClientRequest::Clear { label: cloud() })
+        .await
+        .unwrap();
+    revoked(cloud_channel).await;
+    assert!(matches!(
+        connector.connect(&connection(&cloud_new)).await,
+        Err(ConnectError::ClientCleared)
+    ));
+    assert!(matches!(
+        connector.connect(&connection(&cloud_old)).await,
+        Err(ConnectError::ClientRefused)
+    ));
+
+    // Set replaces the tombstone with a working capability.
+    let cloud_again = set(cloud()).await;
+    let channel = connector.connect(&connection(&cloud_again)).await.unwrap();
+    assert_eq!(describe(channel).await.unwrap(), machine_id);
 
     shutdown.cancel();
-    server.await.unwrap().unwrap();
+    server.await.unwrap();
 }
 
 async fn contract() {
@@ -225,7 +251,7 @@ async fn contract() {
         ),
     );
 
-    // A key the Machine never accepted is refused by identity, not by reachability.
+    // A key the Machine never accepted gets CLIENT_REFUSED, not an unreachable error.
     let stranger =
         ManagementCapability::new(*capability.machine(), SecretKey::generate().to_bytes());
     assert_refused(connector.connect(&connection(&stranger)).await);
@@ -285,7 +311,7 @@ async fn contract() {
     assert_eq!(describe(retry.clone()).await.unwrap(), machine_id);
     assert!(matches!(
         connector.connect(&connection(&abandoned)).await,
-        Err(ConnectError::RefusedByIdentity)
+        Err(ConnectError::ClientRefused)
     ));
     drop(retry);
     tokio::time::timeout(Duration::from_secs(10), retry_connection.closed())
@@ -386,8 +412,8 @@ async fn contract() {
         .unwrap();
     drop(channel);
 
-    // Exercise Cloud's actual SDK path. A lost Clear response is not confirmation;
-    // the subsequent SDK connect must preserve the daemon's identity refusal.
+    // Exercise Cloud's actual SDK path. A replaced key's refusal is not confirmation;
+    // the SDK must preserve the daemon's identity refusal.
     let session = ployz::sdk::connect_connections(vec![connection(&capability)], connector.clone())
         .await
         .unwrap();
@@ -403,11 +429,14 @@ async fn contract() {
     };
     assert_eq!(replaced.code, RpcErrorCode::Unauthenticated);
     assert_eq!(replaced.details, serde_json::Value::Null);
-    let _ = session.clear_management_client(cloud()).await;
+    // Clearing its own slot, the caller receives the response before the Machine
+    // revokes the connection the session still holds open.
+    session.clear_management_client(cloud()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), removal_connection.closed())
         .await
         .unwrap();
     drop(session);
+    // A lost Clear response is confirmed by the redial.
     let error =
         match ployz::sdk::connect_connections(vec![connection(&capability)], connector.clone())
             .await
@@ -418,11 +447,11 @@ async fn contract() {
     assert_eq!(error.code, RpcErrorCode::Unauthenticated);
     assert_eq!(
         error.details,
-        serde_json::json!({ "management_pairing": "cleared" })
+        serde_json::json!({ "management_client": "cleared" })
     );
     assert!(matches!(
         connector.connect(&connection(&capability)).await,
-        Err(ConnectError::PairingCleared)
+        Err(ConnectError::ClientCleared)
     ));
 
     // Shutdown drains every remaining connection and closes the endpoint.
@@ -430,16 +459,15 @@ async fn contract() {
     tokio::time::timeout(Duration::from_secs(10), server)
         .await
         .expect("serve must finish once every client is gone")
-        .unwrap()
         .unwrap();
     assert!(endpoint.is_closed());
 }
 
 fn assert_refused(result: Result<Channel, ConnectError>) {
     match result {
-        Err(ConnectError::RefusedByIdentity) => {}
-        Err(error) => panic!("expected refusal by identity, got: {error} ({error:?})"),
-        Ok(_) => panic!("expected refusal by identity, got a channel"),
+        Err(ConnectError::ClientRefused) => {}
+        Err(error) => panic!("expected CLIENT_REFUSED, got: {error} ({error:?})"),
+        Ok(_) => panic!("expected CLIENT_REFUSED, got a channel"),
     }
 }
 

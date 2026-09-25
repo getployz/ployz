@@ -13,8 +13,8 @@ impl LocalMachine {
     /// `Set` stages a fresh client public key in the slot and returns its Management
     /// Capability. The slot's accepted key remains usable through read-only replacement
     /// verification. Its first operational RPC activates the replacement after the caller
-    /// saves it. `Clear` removes the slot with its accepted and pending keys; record
-    /// publication revokes only that slot's live connections. The client secret is
+    /// saves it. `Clear` turns the slot into a Cleared tombstone of its public keys;
+    /// record publication revokes only that slot's live connections. The client secret is
     /// never persisted.
     ///
     /// # Errors
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_removes_accepted_and_pending_keys_in_one_write() {
+    async fn clear_tombstones_accepted_and_pending_keys_in_one_write() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         local.set_management_client(set()).await.unwrap();

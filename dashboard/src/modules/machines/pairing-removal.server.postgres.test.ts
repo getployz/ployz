@@ -38,7 +38,7 @@ describe("protected pairing removal", () => {
   }
 
   function fixture() {
-    // The authenticated endpoint distinguishes cleared pairing from a replaced client key.
+    // The authenticated endpoint distinguishes a cleared Management Client from a replaced client key.
     const endpoint = { paired: true, online: true, loseAck: false, replaced: false };
     const dialed: ConnectOptions[] = [];
     let mutations = 0;
@@ -51,7 +51,7 @@ describe("protected pairing removal", () => {
         }
         if (!endpoint.online) throw new Error("Endpoint unavailable");
         if (endpoint.replaced) throw Object.assign(new Error("key replaced"), { code: "unauthenticated", details: null });
-        if (!endpoint.paired) throw Object.assign(new Error("pairing cleared"), { code: "unauthenticated", details: { management_pairing: "cleared" } });
+        if (!endpoint.paired) throw Object.assign(new Error("management client cleared"), { code: "unauthenticated", details: { management_client: "cleared" } });
         return asTestDouble<Client>()({
           clearManagementClient: async (label: string) => {
             if (label !== "cloud") throw new Error(`unexpected Management Client ${label}`);
@@ -133,7 +133,7 @@ describe("protected pairing removal", () => {
     } finally { await runtime.dispose(); }
   });
 
-  it("confirms a lost removal acknowledgement only through an authenticated cleared-pairing response on retry", async () => {
+  it("confirms a lost removal acknowledgement only through an authenticated cleared Management Client response on retry", async () => {
     const fake = fixture();
     fake.endpoint.loseAck = true;
     const runtime = fake.makeRuntime();
