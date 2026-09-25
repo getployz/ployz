@@ -13,6 +13,9 @@ import { decodeStrict } from "./schema";
 import { loadCurrentEnvironmentState, writeEnvironmentDocument } from "./working-state-repository.server";
 import { environmentDeployment, environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { withMutationResult } from "#/server/mutation-result.server";
+import { listLatestOrganizationEnvironmentChangeStates } from "#/modules/deployments/deployment-operations.server";
+import { readCollection } from "#/collections/read.server";
+import { collectionNames } from "#/collections/read.contract";
 import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent } from "./saved-intent";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
@@ -218,6 +221,17 @@ it.live(
         });
         yield* recordAttempt(1, "applied");
         const active = yield* recordAttempt(5, "queued");
+        // Sealed ciphertext never reaches the browser: not in any Org Store read, not in the change-state projection.
+        const snapshots = yield* database.drizzle.select().from(environmentNodeConfigSnapshot)
+          .where(eq(environmentNodeConfigSnapshot.environmentId, scope.environmentId));
+        assert.ok(JSON.stringify(snapshots).includes("ciphertext"), "deploy resolution still reads the stored ciphertext");
+        const clientPayloads = [
+          yield* listLatestOrganizationEnvironmentChangeStates(actor, { organizationSlug: "acme" }),
+          ...yield* Effect.forEach(collectionNames, (table) => readCollection(actor, { table, userId: actor.userId, organizationSlug: "acme" })),
+        ];
+        assert.ok(!JSON.stringify(clientPayloads).includes("ciphertext"));
+        const clientSnapshots = yield* readCollection(actor, { table: "environment_node_config_snapshot", userId: actor.userId, organizationSlug: "acme" });
+        assert.ok(clientSnapshots.rows.some((row) => JSON.stringify(row).includes(`"TOKEN":{"kind":"secret"`)), "a sealed value still reads as sealed");
         yield* updateService(actor, { ...scope, revision: yield* revision(), serviceId, replicas: 7, startCommand: "later-command" });
         const field = { kind: "node" as const, nodeType: "service" as const, nodeId: serviceId, path: "replicas" };
         const reviewed = yield* reviewDiscard(field);

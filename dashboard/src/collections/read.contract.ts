@@ -3,7 +3,7 @@ import { Schema } from "effect";
 /** An xid8 horizon from the Organization change log: every change before it has been read. */
 export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20}$/u));
 
-const collectionNames = [
+export const collectionNames = [
   "project", "environment_summary", "project_preference", "environment", "service", "resource_lineage",
   "environment_resource", "environment_canvas_node_position",
   "environment_deployment", "environment_saved_state_snapshot",

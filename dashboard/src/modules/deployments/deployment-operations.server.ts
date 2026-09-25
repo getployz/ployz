@@ -13,6 +13,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
 import { strictParseOptions } from "#/modules/environment-design/schema";
+import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 
@@ -46,8 +47,9 @@ function parseEnvironmentChangeStateNode(input: {
   const invalid = () =>
     new Conflict({ message: "Environment change state is invalid." });
   if (input.nodeType === "service") {
+    // Sealed variable ciphertext stays on the server; the browser sees each sealed value's fingerprint.
     return Schema.decodeUnknownEffect(serviceDeploymentConfigSchema)(
-      input.config,
+      withoutSealedCiphertext(input.config),
       strictParseOptions,
     ).pipe(
       Effect.map(

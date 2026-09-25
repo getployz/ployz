@@ -13,6 +13,7 @@ import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
+import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 import { Database } from "#/server/database.server";
 
 export class CollectionReadFailure extends Data.TaggedError("CollectionReadFailure")<{
@@ -89,12 +90,13 @@ export const readCollection = Effect.fn("Collections.read")(function* (
              where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
           )`,
         }).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
+      // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
       case "environment_node_config_snapshot":
-        return yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)
-          .where(scoped(tables.environmentNodeConfigSnapshot));
+        return (yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)
+          .where(scoped(tables.environmentNodeConfigSnapshot))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
       case "environment_node_introduction":
-        return yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
-          .where(scoped(tables.environmentNodeIntroduction));
+        return (yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
+          .where(scoped(tables.environmentNodeIntroduction))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
       case "volume_remove_attempt":
         return yield* database.drizzle.select().from(tables.volumeRemoveAttempt)
           .where(scoped(tables.volumeRemoveAttempt));

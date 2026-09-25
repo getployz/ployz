@@ -10,7 +10,7 @@ import {
   type ServiceConfig,
   type VolumeConfig,
 } from "@ployz/sdk/config";
-import type { EncryptedSecretValue } from "#/db/tables";
+import type { EncryptedSecretValue, JsonValue } from "#/db/tables";
 import type { ValuePart } from "./tables";
 import { savedServiceIntentConfigEffectSchema } from "./services";
 import { sharedSchema } from "./service-config";
@@ -152,6 +152,11 @@ export function redactSavedEnvironmentIntent(intent: SavedEnvironmentIntent): Sa
   const next = structuredClone(intent);
   for (const owner of next.services) for (const variable of owner.variables) if (variable.value.kind === "secret") variable.value.encryptedValue = null;
   return next;
+}
+/** Drops every sealed `encryptedValue` from a JSON value bound for the browser; a sealed value still reads as `kind: "secret"` with its fingerprint. */
+export function withoutSealedCiphertext<Value>(value: Value): Value {
+  // SAFETY: a JSON round trip of JSON data returns the same shape minus the dropped key.
+  return JSON.parse(JSON.stringify(value, (key: string, entry: JsonValue) => key === "encryptedValue" ? undefined : entry)) as Value;
 }
 export function encodePersistedSavedEnvironmentIntent(input: { intent: SavedEnvironmentIntent }) { return { intent: canonicalizeSavedEnvironmentIntent(input.intent) }; }
 export function reuseSavedEnvironmentPublication(input: {
