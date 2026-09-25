@@ -214,6 +214,9 @@ describe("deployment Inngest durable smoke", () => {
           const image = Object.keys(input.sources)[0] ?? "";
           const hint = input.build_receipts?.[image];
           fake.builds.push({ image, snapshots: input.deployment.snapshots.length, hint: hint !== undefined, index: input.build_index });
+          // Like the SDK: a replayed step can reach the build after its cancellation watcher aborted,
+          // and a held build waiting on that past abort would hang the harness teardown.
+          options?.signal?.throwIfAborted();
           const aborted = new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort",
             () => reject({ code: "cancelled", details: { preparation: { kind: "cancelled" } } }), { once: true }));
           void aborted.catch(() => undefined);
