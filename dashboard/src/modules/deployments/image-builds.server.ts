@@ -15,7 +15,7 @@ import { environmentDeployment, environmentDeploymentImageBuild as table, type I
  * Image Build rows and every transition they make. Each transition is one guarded update and
  * returns what happened, so no caller re-reads a row to learn it:
  *
- *   start ──▶ building ─┬─ claim for GitHub ─▶ check-in ─▶ grant ─▶ report …
+ *   start ──▶ building ─┬─ claim for GitHub ─▶ check-in with grant ─▶ report …
  *                       ├─ skip (not once started) ─▶ building, next Builder
  *                       └─ settle ─▶ built | failed | cancelled
  */
@@ -151,27 +151,27 @@ export const skipUnstarted = (build: Build, reason: SkipReason) => skipImageBuil
     : Effect.succeed<ImageBuildAttempt>(skip)),
 );
 
+/** Whether a GitHub build may still check in; `checkInImageBuild` claims under these conditions and its run's. */
+export const awaitsCheckIn = (row: ImageBuildRow) => row.status === "building" && row.checkedInAt === null;
+
 /**
- * The runner of `runId` checks in: the build starts on GitHub. Only while that run still holds the
- * build and once; the "start within" skip updates the same row, so exactly one of them wins.
+ * The runner of `runId` checks in with the Build Grant just minted for it: the build starts on GitHub.
+ * Accepted once, while that run still holds the build. The grant is minted before this claim, so a
+ * failed mint claims nothing and the runner may check in again. The "start within" skip clears the
+ * run in the same row, so exactly one of it and the check-in wins.
  */
-export const checkInImageBuild = Effect.fn("Deployments.checkInImageBuild")(function* (imageBuildId: string, runId: number) {
+export const checkInImageBuild = Effect.fn("Deployments.checkInImageBuild")(function* (checkIn: {
+  imageBuildId: string; runId: number; machineId: MachineId; grant: { id: BuildGrantId; fingerprint: string };
+}) {
   const { drizzle } = yield* Database;
-  const now = new Date();
-  const [checkedIn] = yield* drizzle.update(table).set({ checkedInAt: now, updatedAt: now }).where(and(
-    eq(table.id, imageBuildId), eq(table.status, "building"), eq(table.githubRunId, runId), isNull(table.checkedInAt),
+  const [checkedIn] = yield* drizzle.update(table).set({
+    checkedInAt: sql`now()`, machineId: checkIn.machineId,
+    github: sql`jsonb_set(${table.github}, '{grant}', ${JSON.stringify(checkIn.grant)}::jsonb)`, updatedAt: sql`now()`,
+  }).where(and(
+    eq(table.id, checkIn.imageBuildId), eq(table.status, "building"), eq(table.builder, "github"),
+    eq(table.githubRunId, checkIn.runId), isNull(table.checkedInAt),
   )).returning({ id: table.id });
   return checkedIn !== undefined;
-});
-
-/** The Build Grant minted for a checked-in run, on the Machine it pushes into. */
-export const recordGithubGrant = Effect.fn("Deployments.recordGithubGrant")(function* (
-  imageBuildId: string, machineId: MachineId, grant: { id: BuildGrantId; fingerprint: string },
-) {
-  const { drizzle } = yield* Database;
-  yield* drizzle.update(table).set({
-    machineId, github: sql`jsonb_set(${table.github}, '{grant}', ${JSON.stringify(grant)}::jsonb)`, updatedAt: new Date(),
-  }).where(and(eq(table.id, imageBuildId), eq(table.status, "building"), eq(table.builder, "github")));
 });
 
 /**

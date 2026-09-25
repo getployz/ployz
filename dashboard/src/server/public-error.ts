@@ -33,12 +33,20 @@ export class Unauthorized extends Data.TaggedError("Unauthorized") {
   readonly publicErrorCategory = "unauthorized" as const;
 }
 
+/** The Cluster could not mint a GitHub run's Build Grant. The cause stays in the server log. */
+export class BuildGrantUnavailable extends Data.TaggedError("BuildGrantUnavailable")<{
+  readonly cause: unknown;
+}> {
+  readonly publicErrorCategory = "build-grant-unavailable" as const;
+}
+
 export const PublicErrorCategory = Schema.Literals([
   "validation",
   "unauthorized",
   "forbidden",
   "not-found",
   "conflict",
+  "build-grant-unavailable",
   "internal",
 ]);
 
@@ -146,6 +154,12 @@ export function encodePublicError(cause: unknown): PublicErrorData {
         code: "CONFLICT",
         message: "The request conflicts with the current state.",
       });
+    case "build-grant-unavailable":
+      return encode({
+        _tag: "PublicError",
+        code: "BUILD_GRANT_UNAVAILABLE",
+        message: "Your Cluster could not mint a Build Grant.",
+      });
     case "internal":
       return encode({
         _tag: "PublicError",
@@ -175,6 +189,8 @@ export function statusForPublicError(error: PublicErrorData): number {
       return 404;
     case "CONFLICT":
       return 409;
+    case "BUILD_GRANT_UNAVAILABLE":
+      return 503;
     case "INTERNAL":
       return 500;
   }

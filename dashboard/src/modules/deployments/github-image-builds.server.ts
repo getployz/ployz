@@ -5,11 +5,11 @@ import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow,
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
-import { Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
+import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
 import { persistBuildLog } from "./deployment-events.server";
 import {
-  checkInImageBuild, claimForGithub, loadGithubImageBuilds, loadImageBuild, recordGithubGrant, recordGithubReport, settleImageBuild, settled,
+  awaitsCheckIn, checkInImageBuild, claimForGithub, loadGithubImageBuilds, loadImageBuild, recordGithubReport, settleImageBuild, settled,
   skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
@@ -172,10 +172,9 @@ const authorizeRunner = Effect.fn("Deployments.authorizeGithubRunner")(function*
  */
 export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(function* (request: Request, imageBuildId: string) {
   const { row, context } = yield* authorizeRunner(request, imageBuildId);
-  // The run must still hold the build: a skip at the start limit clears it in the same row.
-  if (!(yield* checkInImageBuild(row.id, row.githubRunId))) {
-    return yield* new Conflict({ message: "This build already checked in or is no longer wanted." });
-  }
+  const refused = new Conflict({ message: "This build already checked in or is no longer wanted." });
+  // Only an early exit, so a refused runner mints nothing; the claim below decides.
+  if (!awaitsCheckIn(row)) return yield* refused;
   const snapshot = context.snapshots.find((candidate) => candidate.serviceId === row.serviceId);
   const source = snapshot?.config.source;
   if (!snapshot || source?.type !== "git") return yield* new NotFound({ message: "No GitHub build has this id." });
@@ -183,12 +182,27 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
   const deployment = yield* oneServiceDeployment(context, row.serviceId);
   const fingerprint = buildFingerprints({ deployment, source_commits: { [row.image]: commit } })[row.image];
   if (!fingerprint) return yield* new Validation({ message: "The build has no fingerprint." });
-  const sdk = yield* connectedRuntime(context.organization.id);
-  const minted = yield* sdk.mintBuildGrant(grantRepository(row.image));
-  const machine = yield* sdk.inspect();
-  yield* recordGithubGrant(row.id, machine.id, { id: minted.id, fingerprint });
+  const { minted, machine } = yield* Effect.gen(function* () {
+    const sdk = yield* connectedRuntime(context.organization.id);
+    // Inspect first: a failure after the mint would leave an unclaimed grant.
+    const machine = yield* sdk.inspect();
+    const minted = yield* sdk.mintBuildGrant(grantRepository(row.image)).pipe(
+      Effect.tapError((error) => Effect.logWarning("Could not mint a Build Grant.", error)),
+      Effect.mapError((cause) => new BuildGrantUnavailable({ cause })),
+    );
+    return { minted, machine };
+  }).pipe(Effect.scoped);
+  const grant = { id: minted.id, fingerprint };
+  if (!(yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant }))) {
+    // Lost to a second check-in or to the start-within skip during a slow mint (rare). The grant's
+    // secret never left Cloud, so a grant that fails to end is unusable anyway.
+    yield* endGrant(row.organizationId, machine.id, minted.id).pipe(
+      Effect.catch((error) => Effect.logWarning("Could not end an unclaimed Build Grant.", error)),
+    );
+    return yield* refused;
+  }
   return { grant: minted.grant, commit, fingerprint, deployment };
-}, Effect.scoped);
+});
 
 const buildStepSchema = Schema.Struct({
   id: Schema.String, name: Schema.String, started: Schema.NullOr(Schema.String), completed: Schema.NullOr(Schema.String),

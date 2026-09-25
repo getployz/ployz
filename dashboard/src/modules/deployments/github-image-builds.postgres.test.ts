@@ -18,6 +18,7 @@ import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database, ReportingDatabase } from "#/server/database.server";
+import { encodePublicError } from "#/server/public-error";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -67,6 +68,8 @@ const runnerRequest = (token: string) => new Request("http://localhost:3000/api/
 type Fake = {
   github: { operation: string; url: string; body?: unknown }[];
   minted: string[];
+  /** Whether the Cluster refuses to mint Build Grants (a ployzd without the RPC). */
+  mintFails: boolean;
   ended: string[];
   prepared: BuildReceipts[];
   /** The Service's Build Platform Requirement, as the Engine reads it from placement. */
@@ -116,11 +119,15 @@ function githubApi(fake: Fake) {
   };
 }
 
+/** The `n`th grant the fake Cluster mints. */
+const grantId = (n: number) => n.toString(16).padStart(64, "0");
+
 function fakeClient(fake: Fake) {
   return asTestDouble<Client>()({
     mintBuildGrant: async ({ repository }: { repository: string }) => {
+      if (fake.mintFails) throw new Error("unknown method MintBuildGrant");
       fake.minted.push(repository);
-      return { id: "f".repeat(64), grant: "ployzgrant1:secret", expires_in_seconds: 3600 };
+      return { id: grantId(fake.minted.length), grant: "ployzgrant1:secret", expires_in_seconds: 3600 };
     },
     endBuildGrant: async ({ id }: { id: string }) => {
       fake.ended.push(id);
@@ -167,7 +174,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   beforeEach(async () => {
-    fake = { github: [], minted: [], ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
+    fake = { github: [], minted: [], mintFails: false, ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -292,6 +299,20 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.minted).toHaveLength(1);
   });
 
+  it("claims nothing when the Cluster can't mint, so the run checks in again", async () => {
+    await dispatch();
+    fake.mintFails = true;
+    const failed = await rejection(oidcToken());
+    expect(failed).toMatchObject({ _tag: "BuildGrantUnavailable" });
+    expect(encodePublicError(failed)).toEqual({ _tag: "PublicError", code: "BUILD_GRANT_UNAVAILABLE", message: "Your Cluster could not mint a Build Grant." });
+    expect(await row()).toMatchObject({ checkedInAt: null, github: { grant: null } });
+
+    fake.mintFails = false;
+    expect(await checkIn(oidcToken())).toMatchObject({ grant: "ployzgrant1:secret" });
+    expect(await row()).toMatchObject({ checkedInAt: expect.any(Date), machineId: machine.id, github: { grant: { id: grantId(1) } } });
+    expect(await rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
+  });
+
   it("writes the receipt from the digest the Machine received, shows the runner's steps, and deploys with it", async () => {
     await harness.db.update(schema.environmentDeployment).set({ status: "queued" }).where(eq(schema.environmentDeployment.id, deploymentId));
     // The runner, while Cloud waits for the run to complete: check in, build, report its steps.
@@ -307,7 +328,7 @@ describe("Image Builds on GitHub Actions", () => {
       machine_id: machine.id, fingerprint: built?.github?.grant?.fingerprint,
       image: { reference: pushed, platforms: ["linux/amd64"], tags: [`ployz-build/api:ployz-sha256-${"e".repeat(64)}`] },
     });
-    expect(fake.ended).toEqual(expect.arrayContaining(["f".repeat(64)]));
+    expect(fake.ended).toEqual(expect.arrayContaining([grantId(1)]));
     expect(fake.prepared.at(-1)).toEqual({ api: receipt });
 
     const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId, after: 0, limit: 50 }));
@@ -355,7 +376,7 @@ describe("Image Builds on GitHub Actions", () => {
     }).execute();
     expect(cancelled.error).toBeUndefined();
     expect(fake.github).toContainEqual({ operation: "cancel_run", url: "https://api.github.com/repos/owner/repo/actions/runs/9001/cancel", body: undefined });
-    expect(fake.ended).toEqual(["f".repeat(64)]);
+    expect(fake.ended).toEqual([grantId(1)]);
     expect(await row()).toMatchObject({ status: "cancelled" });
   });
 

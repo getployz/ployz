@@ -7,6 +7,7 @@ export const PublicError = Schema.TaggedStruct("PublicError", {
     "FORBIDDEN",
     "NOT_FOUND",
     "CONFLICT",
+    "BUILD_GRANT_UNAVAILABLE",
     "INTERNAL",
   ]),
   message: Schema.String,
