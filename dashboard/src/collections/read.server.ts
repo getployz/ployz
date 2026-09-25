@@ -106,8 +106,8 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         // The token and certificate key stay on the server.
         const domain = tables.organizationClusterDomain;
         const rows: ClusterDomainRow[] = yield* database.drizzle.select({
-          id: domain.organizationId, name: domain.name, reservedAt: domain.reservedAt, leaseRenewedAt: domain.leaseRenewedAt,
-          recordsSyncedAt: domain.recordsSyncedAt, recordAddresses: domain.recordAddresses, unreachable: domain.unreachable, certificateNotAfter: domain.certificateNotAfter,
+          id: domain.organizationId, name: domain.name, recordsSyncedAt: domain.recordsSyncedAt, traffic: domain.traffic,
+          certificateNotAfter: domain.certificateNotAfter, checkedAt: domain.checkedAt,
         }).from(domain).where(scoped(domain));
         return rows;
       }

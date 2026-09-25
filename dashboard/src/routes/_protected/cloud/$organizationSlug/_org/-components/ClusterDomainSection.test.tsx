@@ -1,8 +1,17 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import { ClusterDomainSection } from "./ClusterDomainSection";
+
+const ready: Omit<ClusterDomainRow, "id"> = {
+  name: "acme.ployz.app",
+  recordsSyncedAt: new Date(Date.now() - 5 * 60_000),
+  traffic: { kind: "probed", unreachable: [] },
+  certificateNotAfter: new Date(Date.now() + 60 * 86_400_000),
+  checkedAt: new Date(Date.now() - 5 * 60_000),
+};
 
 describe("ClusterDomainSection", () => {
   afterEach(() => {
@@ -10,38 +19,34 @@ describe("ClusterDomainSection", () => {
     document.body.replaceChildren();
   });
 
-  it("shows when the records were published and each ingress Server's place in the set", () => {
-    render(
-      <ClusterDomainSection
-        domain={{
-          name: "acme.ployz.app",
-          recordsSyncedAt: new Date(Date.now() - 5 * 60_000),
-          recordAddresses: [{ machineId: "a", address: "203.0.113.1" }],
-          unreachable: [{ machineId: "b", address: "198.51.100.7" }],
-          certificateNotAfter: new Date(Date.now() + 60 * 86_400_000),
-        }}
-        onPublish={vi.fn()}
-      />,
-    );
+  it("says when the domain arrives before the first deploy", () => {
+    render(<ClusterDomainSection organizationSlug="acme" domain={null} onCheck={vi.fn()} />);
 
-    expect(screen.getByText("Records published 5 minutes ago")).toBeTruthy();
-    expect(screen.getByText("Wildcard certificate expires in 2 months")).toBeTruthy();
-    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-      "203.0.113.1 · in the set",
-      "198.51.100.7 · not reachable on port 80",
-    ]);
+    expect(screen.getByText("You’ll get one on your first deploy.")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("says when nothing is published yet", () => {
-    render(
-      <ClusterDomainSection
-        domain={{ name: "acme.ployz.app", recordsSyncedAt: null, recordAddresses: [], unreachable: [], certificateNotAfter: null }}
-        onPublish={vi.fn()}
-      />,
-    );
+  it("shows a ready domain with nothing to act on", () => {
+    render(<ClusterDomainSection organizationSlug="acme" domain={ready} onCheck={vi.fn()} />);
 
-    expect(screen.getByText("Records not published yet")).toBeTruthy();
-    expect(screen.getByText("No wildcard certificate yet")).toBeTruthy();
-    expect(screen.queryByRole("list")).toBeNull();
+    expect(screen.getByText("acme.ployz.app")).toBeTruthy();
+    expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+  });
+
+  it("checks again until the sync records a newer check", async () => {
+    const blocked = { ...ready, traffic: { kind: "probed", unreachable: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
+    const onCheck = vi.fn(() => Promise.resolve());
+    const { rerender } = render(<ClusterDomainSection organizationSlug="acme" domain={blocked} onCheck={onCheck} />);
+
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Traffic can’t reach 203.0.113.1. Make sure port 80 is open.")).toBeTruthy();
+    const button = () => screen.getByText("Check again").closest("button") as HTMLButtonElement;
+    await act(async () => { fireEvent.click(button()); });
+    expect(onCheck).toHaveBeenCalledOnce();
+    expect(button().disabled).toBe(true);
+
+    rerender(<ClusterDomainSection organizationSlug="acme" domain={{ ...blocked, checkedAt: new Date() }} onCheck={onCheck} />);
+    expect(button().disabled).toBe(false);
   });
 });

@@ -25,8 +25,9 @@ export const loadClusterDomain = Effect.fn("ClusterDomain.load")(function* (orga
 
 /**
  * The Organization's Cluster Domain row, reserving one from `PLOYZ_HOSTED_DNS_URL` with the
- * Organization slug as the preferred label when there is none. Fails with `HostedDnsError`
- * when Hosted DNS grants nothing.
+ * Organization slug as the preferred label when there is none, and requesting the first sync for
+ * a new name. Only a deployment that needs a generated hostname calls it. Fails with
+ * `HostedDnsError` when Hosted DNS grants nothing.
  */
 export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function* (organizationId: string) {
   const existing = yield* loadClusterDomain(organizationId);
@@ -51,7 +52,13 @@ export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function*
     reservedAt: now,
     leaseRenewedAt: now,
   }).onConflictDoNothing().returning();
-  if (inserted) return inserted;
+  if (inserted) {
+    // A lost request only delays the records and wildcard until the hourly sync.
+    yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
+      Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
+    );
+    return inserted;
+  }
   // A concurrent reserve won; hand our name back rather than let it wait for the reaper.
   yield* releaseHostedDomain({ endpoint, name: granted.name, token: granted.token }).pipe(Effect.ignore);
   return (yield* loadClusterDomain(organizationId)) ?? (yield* organizationNotFound());
@@ -67,20 +74,15 @@ export const releaseClusterDomain = Effect.fn("ClusterDomain.release")(function*
   );
 });
 
-/** Server Settings' Publish now: reserves the name when the Organization has none, then requests a sync. */
-export const publishClusterDomainNow = Effect.fn("ClusterDomain.publishNow")(function* (
+/** Server Settings' Check again: requests a sync of the Organization's reserved name; the sync skips one with none. */
+export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
   const { id } = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
-  const row = yield* reserveClusterDomain(id).pipe(Effect.catchTag("HostedDnsError", (error) =>
-    Effect.logWarning("Cluster Domain reservation failed.", error).pipe(
-      Effect.andThen(Effect.fail(new Conflict({ message: "Hosted DNS is unreachable. Try again shortly." }))),
-    )));
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
     Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
-      Effect.andThen(Effect.fail(new Conflict({ message: "The records couldn’t be published. Try again shortly." }))),
+      Effect.andThen(Effect.fail(new Conflict({ message: "The domain couldn’t be checked. Try again shortly." }))),
     )),
   );
-  return { name: row.name };
 });

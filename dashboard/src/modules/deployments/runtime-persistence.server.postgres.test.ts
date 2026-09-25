@@ -375,7 +375,7 @@ describe("deployment runtime persistence", () => {
       Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }),
       Effect.provideService(InngestClient, new Inngest({ id: "test" })), Effect.provideService(SecretEncryption, encryption), Effect.provide(appConfig), Effect.flip));
     expect(result).toMatchObject({ _tag: "DeploymentExecutionError", failureCode: "cluster_domain_unreserved" });
-    expect(result.message).toContain("Server Settings");
+    expect(result.message).toBe("Hosted DNS couldn’t reserve the Organization’s domain. Deploy again shortly.");
     expect(previewed).toBe(false);
   });
 

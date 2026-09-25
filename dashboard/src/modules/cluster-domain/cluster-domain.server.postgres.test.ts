@@ -4,7 +4,7 @@ import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
 import { readCollection } from "#/collections/read.server";
-import { publishClusterDomainNow, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { checkClusterDomainNow, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import {
   type PostgresTestHarness,
@@ -57,6 +57,7 @@ describe("Organization Cluster Domain", () => {
   beforeEach(async () => {
     hostedDns.requests.length = 0;
     hostedDns.state.failWith = null;
+    send.mockClear();
     await harness.pool.query(`
       truncate table organization, "user" cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -66,7 +67,7 @@ describe("Organization Cluster Domain", () => {
     `);
   });
 
-  it("reserves once with the Organization slug and stores the granted name, endpoint and encrypted token", async () => {
+  it("reserves once with the Organization slug, stores the granted name, endpoint and encrypted token, and requests its first sync", async () => {
     const reserved = await run(reserveClusterDomain(organizationId));
     const again = await run(reserveClusterDomain(organizationId));
 
@@ -75,6 +76,7 @@ describe("Organization Cluster Domain", () => {
     const [row] = (await rows()).rows;
     expect(row).toMatchObject({ endpoint: hostedDns.url, name: "acme.ployz.test" });
     expect(row && encryption.decrypt(row.encrypted_token)).toBe("token-1");
+    expect(send.mock.calls).toEqual([[{ name: "cluster-domain/sync.requested", data: { organizationId } }]]);
   });
 
   it("sends the mint key as the bearer token only when it is configured", async () => {
@@ -96,19 +98,18 @@ describe("Organization Cluster Domain", () => {
     expect((await read()).rows).toEqual([]);
     await run(reserveClusterDomain(organizationId));
     const [row] = (await read()).rows;
-    expect(row).toMatchObject({ id: organizationId, name: "acme.ployz.test", recordsSyncedAt: null, recordAddresses: [], certificateNotAfter: null });
+    expect(row).toEqual({
+      id: organizationId, name: "acme.ployz.test", recordsSyncedAt: null, traffic: null,
+      certificateNotAfter: null, checkedAt: null,
+    });
     expect(JSON.stringify(row)).not.toContain("token");
   });
 
-  it("Publish now reserves a missing name and reports an unreachable Hosted DNS", async () => {
-    hostedDns.state.failWith = 500;
-    expect(await run(publishClusterDomainNow({ userId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
-      .toMatchObject({ _tag: "Conflict" });
-    expect(send).not.toHaveBeenCalled();
-    hostedDns.state.failWith = null;
-    expect(await run(publishClusterDomainNow({ userId }, { organizationSlug: "acme" }))).toEqual({ name: "acme.ployz.test" });
-    expect(send).toHaveBeenCalledWith({ name: "cluster-domain/sync.requested", data: { organizationId } });
-    expect(await run(publishClusterDomainNow({ userId: organizationId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
+  it("Check again requests a sync for a member and never reserves a name", async () => {
+    await run(checkClusterDomainNow({ userId }, { organizationSlug: "acme" }));
+    expect(send.mock.calls).toEqual([[{ name: "cluster-domain/sync.requested", data: { organizationId } }]]);
+    expect(hostedDns.requests).toEqual([]);
+    expect(await run(checkClusterDomainNow({ userId: organizationId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
       .toMatchObject({ _tag: "NotFound" });
   });
 });

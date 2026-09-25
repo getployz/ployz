@@ -12,9 +12,9 @@ const execFile = promisify(execFileCallback);
 export type HostedDnsRequest = { method: string; path: string; authorization: string | null; body: unknown };
 
 /**
- * An in-process Hosted DNS: grants `<preferred>.ployz.test` (`<preferred>-x7k2.ployz.test` when that name is
- * retired), answers a lease renewal with 200 and every other call with 204. `failWith` fails every call;
- * `gone` answers calls for a name with a status (404 reaped, 410 retired) until the name is granted again. The certificate route signs the CSR with a throwaway
+ * An in-process Hosted DNS: grants `<preferred>.ployz.test`, answers a lease renewal with 200 and every
+ * other call with 204. `failWith` fails every call; `gone` answers calls for a name with a status (401
+ * rejected token, 404 reaped, 410 retired). The certificate route signs the CSR with a throwaway
  * `openssl` CA for `certificateDays`, refuses (422) one naming anything but `name` and `*.name`, and
  * answers `certificateFailWith` when set.
  */
@@ -48,10 +48,7 @@ export async function startFakeHostedDns() {
       if (state.failWith !== null) {
         response.writeHead(state.failWith).end();
       } else if (request.method === "POST" && path === "/domains") {
-        const preferred = `${body?.preferred}.ployz.test`;
-        // A retired name is never granted again; a reaped one is.
-        const name = state.gone.get(preferred) === 410 ? `${body?.preferred}-x7k2.ployz.test` : preferred;
-        state.gone.delete(name);
+        const name = `${body?.preferred}.ployz.test`;
         response.writeHead(201, { "content-type": "application/json" })
           .end(JSON.stringify({ name, token: `token-${requests.length}` }));
       } else if (goneStatus !== undefined) {

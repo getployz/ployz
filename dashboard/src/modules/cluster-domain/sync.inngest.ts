@@ -1,11 +1,12 @@
 import { Effect, Option, Schema } from "effect";
-import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
   ensureClusterDomainCertificate,
   listClusterDomainOrganizationIds,
   probeIngressServers,
   publishClusterDomainCertificate,
   publishClusterDomainRecords,
+  recordClusterDomainCheck,
   renewClusterDomainLease,
 } from "#/modules/cluster-domain/sync.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
@@ -21,9 +22,9 @@ type EffectRunner = typeof runInngestEffect;
 const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
 /**
- * Keeps the Organization's Cluster Domain correct: reserve if missing → probe ingress Servers →
- * full-set records PUT when a frame was read and something answered (which renews the lease) →
- * otherwise renew the lease → replace the wildcard certificate when missing or near expiry →
+ * Keeps the Organization's Cluster Domain correct: skip when none is reserved → probe ingress Servers →
+ * record what the probe found → full-set records PUT when something answered (which renews the lease)
+ * → otherwise renew the lease → replace the wildcard certificate when missing or near expiry →
  * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
@@ -36,17 +37,21 @@ export async function executeSyncClusterDomain(
   });
   if (organizationId === null) return { organizationId: null, skipped: true };
 
-  const name = await step.run("reserve", () =>
-    runEffect(reserveClusterDomain(organizationId).pipe(Effect.map((row) => row.name))));
+  // Only a deployment that needs a generated hostname reserves the name.
+  const name = await step.run("load-name", () =>
+    runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
+  if (name === null) return { organizationId, skipped: true };
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  const recordsPut = probe === null
-    ? false
-    : await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
-  if (!recordsPut) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+  await step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));
+  const reachable = probe.kind === "probed" ? probe.reachable : [];
+  // Hosted DNS refuses an empty set, and the last good set is better than none.
+  const recordsPut = reachable.length > 0;
+  if (recordsPut) await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, reachable)));
+  else await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
   const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));
-  return { organizationId, name, observed: probe !== null, recordsPut, certificateIssued, certificatePublished };
+  return { organizationId, name, observed: probe.kind !== "unknown", recordsPut, certificateIssued, certificatePublished };
 }
 
 export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {

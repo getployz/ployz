@@ -28,7 +28,6 @@ import {
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
-import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
@@ -444,11 +443,8 @@ export const completeMachineEnrollment = Effect.fn(
         encryptedPairingSecret: row.encryptedPairingSecret,
       }),
     );
-    // Before dispatch, so first deployments find the name. A Hosted DNS outage never fails enrollment.
-    yield* reserveClusterDomain(token.organizationId).pipe(
-      Effect.catch((error) => Effect.logWarning("Cluster Domain reservation failed; enrollment continues.", error)),
-    );
-    // Completion never sees the founder's IP; the sync publishes it from the runtime frame, and the hourly sync covers a lost event.
+    // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
+    // completion never sees the founder's IP, and the hourly sync covers a lost event.
     yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
     );

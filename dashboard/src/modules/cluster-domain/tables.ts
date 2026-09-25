@@ -9,6 +9,17 @@ const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezo
 export type IngressServerAddress = { machineId: MachineId; address: string };
 
 /**
+ * What the last sync found about the Servers that carry the Cluster Domain's traffic:
+ * - `no_servers`: no Cluster is paired, or its runtime frame has no Machines.
+ * - `no_public_ip`: no ingress Server has a public IP.
+ * - `probed`: ingress Servers were probed; `unreachable` lists those that did not answer on port 80.
+ */
+export type ClusterDomainTraffic =
+  | { kind: "no_servers" }
+  | { kind: "no_public_ip" }
+  | { kind: "probed"; unreachable: IngressServerAddress[] };
+
+/**
  * The Organization's Cluster Domain, granted by Hosted DNS. Owned by the Organization, not a pairing:
  * it survives teardown and re-pairing, and cascades away only with the Organization.
  */
@@ -25,10 +36,13 @@ export const organizationClusterDomain = pgTable(
     leaseRenewedAt: timestamptz("lease_renewed_at").notNull(),
     /** Null until the first successful records PUT. */
     recordsSyncedAt: timestamptz("records_synced_at"),
-    /** The ingress Servers the last records PUT pointed the apex at. */
-    recordAddresses: jsonb("record_addresses").notNull().default([]).$type<IngressServerAddress[]>(),
-    /** Ingress Servers with a public IP that the last sync could not reach on port 80. */
-    unreachable: jsonb("unreachable").notNull().default([]).$type<IngressServerAddress[]>(),
+    /**
+     * What the last sync found about the ingress Servers. Null when never checked, or when the last
+     * check could not read a paired Cluster's frame: an offline Cluster reads as ready.
+     */
+    traffic: jsonb("traffic").$type<ClusterDomainTraffic>(),
+    /** When a sync last recorded what it found about the Servers, right after its probe. Null until the first one. */
+    checkedAt: timestamptz("checked_at"),
     /** The wildcard certificate for `*.name`: all three set together, or none. */
     encryptedCertificatePrivateKey: jsonb("encrypted_certificate_private_key").$type<EncryptedSecretValue>(),
     certificateChain: text("certificate_chain"),
@@ -37,7 +51,10 @@ export const organizationClusterDomain = pgTable(
     updatedAt,
   },
   (table) => [
-    check("organization_cluster_domain_record_addresses_check", sql`jsonb_typeof(${table.recordAddresses}) = 'array'`),
+    check(
+      "organization_cluster_domain_traffic_check",
+      sql`${table.traffic} is null or ${table.traffic}->>'kind' in ('no_servers', 'no_public_ip', 'probed')`,
+    ),
     check(
       "organization_cluster_domain_certificate_check",
       sql`num_nulls(${table.encryptedCertificatePrivateKey}, ${table.certificateChain}, ${table.certificateNotAfter}) in (0, 3)`,

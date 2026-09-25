@@ -75,13 +75,13 @@ export class DeploymentRuntimeInvalid extends Data.TaggedError(
   readonly retriable = false as const;
 }
 
-/** The Organization's Cluster Domain name. With no row, one inline reserve; a Hosted DNS failure refuses the deploy. */
+/** The Organization's Cluster Domain name. The first deploy that needs one reserves it; a Hosted DNS failure refuses the deploy. */
 const requireClusterDomain = (organizationId: string) =>
   reserveClusterDomain(organizationId).pipe(
     Effect.map((row) => row.name),
     Effect.catchTag("HostedDnsError", (cause) => Effect.fail(new DeploymentExecutionError({
       failureCode: "cluster_domain_unreserved",
-      message: "The Organization has no Cluster Domain yet. Open Server Settings and choose Publish now, then deploy again.",
+      message: "Hosted DNS couldn’t reserve the Organization’s domain. Deploy again shortly.",
       cause,
     }))),
   );
