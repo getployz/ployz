@@ -251,9 +251,7 @@ async fn queue_upload_timeout_and_daemon_restart_discard_waiters_before_a_safe_b
         .environment
         .insert("PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS".into(), "1".into());
     let cluster = Cluster::create(plan).unwrap();
-    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
-    let selected = cluster.initialize_first().await.unwrap().id;
-    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+    let selected = cluster.initialize_entry().await.unwrap().id;
     let address = cluster.api_address(0).unwrap();
     let (uploading, mut active) = request(&address, selected).await;
     assert!(matches!(event(&mut active).await, Event::Admitted { .. }));

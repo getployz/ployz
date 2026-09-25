@@ -5,6 +5,7 @@ log_dir=${PLOYZ_LAYER3_LOG_DIR:-target/layer3-logs}
 mkdir -p "$log_dir"
 failed=0
 
+# Each suite gets 5 minutes unless its call sets SUITE_TIMEOUT.
 run_suite() {
     local name=$1 started=$SECONDS status=0 result
     shift
@@ -12,7 +13,7 @@ run_suite() {
     printf 'Reproduce: '
     printf '%q ' "$@"
     printf '\n'
-    timeout --kill-after=10s 5m "$@" 2>&1 | tee "$log_dir/$name.log" || status=$?
+    timeout --kill-after=10s "${SUITE_TIMEOUT:-5m}" "$@" 2>&1 | tee "$log_dir/$name.log" || status=$?
     printf '::endgroup::\n'
     result=passed
     if [ "$status" -ne 0 ]; then
@@ -38,7 +39,8 @@ timeout --kill-after=10s 10m cargo test --locked --no-run \
     --tests \
     --lib 2>&1 | tee "$log_dir/compile.log"
 
-run_suite build_layer3 cargo test --locked --no-fail-fast \
+# Seven cluster tests of real builds: ~12 minutes locally, the policy test alone 4-6.
+SUITE_TIMEOUT=20m run_suite build_layer3 cargo test --locked --no-fail-fast \
     --package ployz \
     --test build_layer3 \
     -- --ignored --test-threads=1

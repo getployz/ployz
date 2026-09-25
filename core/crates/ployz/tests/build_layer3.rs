@@ -34,7 +34,8 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     )
     .unwrap();
     cluster.wait_ready(Duration::from_secs(120)).await.unwrap();
-    cluster.initialize_first().await.unwrap();
+    cluster.initialize_entry().await.unwrap();
+    configure_build(&cluster, 0, RETAIN_CACHE);
     let session = session(&cluster).await;
     let built_content = |prepared: &PreparedDeploy| {
         let receipt = prepared.build_receipts().values().next().unwrap();
@@ -131,27 +132,33 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     session.close().await;
 }
 
-/// A Cloud session through the entry Machine's plain TCP endpoint, once the daemon's
-/// restart after initialization has it listening again.
-async fn session(cluster: &Cluster) -> Session {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let connected = ployz::sdk::connect_connections(
-            vec![ployz::context::Connection::tcp(
-                cluster.api_socket_address(0).unwrap(),
-            )],
-            Arc::new(ployz::connect::SystemConnector::default()),
+/// Host build policy that keeps layer reuse independent of the test host's
+/// free disk. The default GC target keeps 20% of the Docker root free, and
+/// below it evicts cache until that much is free again.
+const RETAIN_CACHE: &str = "min_free_bytes: 1\n";
+
+/// Write `policy` as Machine `index`'s host build policy.
+fn configure_build(cluster: &Cluster, index: usize, policy: &str) {
+    cluster
+        .machine_shell(
+            index,
+            &format!(
+                "mkdir -p /root/.ployz; cat > /root/.ployz/build.yaml <<'PLOYZ_POLICY'\n{policy}\nPLOYZ_POLICY"
+            ),
         )
-        .await;
-        match connected {
-            Ok(session) => return session,
-            Err(error) if Instant::now() < deadline => {
-                eprintln!("waiting for the entry Machine: {}", error.message);
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            Err(error) => panic!("entry Machine never accepted a session: {error:?}"),
-        }
-    }
+        .unwrap();
+}
+
+/// A Cloud session through the entry Machine's plain TCP endpoint.
+async fn session(cluster: &Cluster) -> Session {
+    ployz::sdk::connect_connections(
+        vec![ployz::context::Connection::tcp(
+            cluster.api_socket_address(0).unwrap(),
+        )],
+        Arc::new(ployz::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap()
 }
 
 /// One Git Service `app` in Project `build`, as Cloud freezes it. `MESSAGE`

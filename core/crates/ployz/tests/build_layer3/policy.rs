@@ -67,7 +67,7 @@ exit "$status"
         );
         // The script is test-authored, not user-provided text.
         host.shell(&format!("cat > /usr/local/bin/docker <<'PLOYZ_AUDIT'\n{wrapper}\nPLOYZ_AUDIT\nchmod +x /usr/local/bin/docker"));
-        host.configure(POLICY);
+        host.configure(&format!("{POLICY}{}", super::RETAIN_CACHE));
         host
     }
 
@@ -76,9 +76,7 @@ exit "$status"
     }
 
     fn configure(&self, policy: &str) {
-        self.shell(&format!(
-            "cat > /root/.ployz/build.yaml <<'PLOYZ_POLICY'\n{policy}\nPLOYZ_POLICY"
-        ));
+        super::configure_build(&self.cluster, 1, policy);
     }
 
     /// Build the project on the selected Machine; the error text on failure.
@@ -186,7 +184,7 @@ async fn selected_machine_build_resource_policy_and_cache_administration() {
             "configured GC retained the build layer: {target}"
         );
     }
-    host.configure(POLICY);
+    host.configure(&format!("{POLICY}{}", super::RETAIN_CACHE));
     let unrelated = format!("ployz-unrelated-808-{}", uuid::Uuid::new_v4());
     host.shell(&format!("docker volume create --label dev.ployz.test=unrelated {unrelated}; docker run --rm -v {unrelated}:/data alpine:3.23.3 sh -c 'echo preserved > /data/value'"));
     let before_clear = host.stamp("/built-at");

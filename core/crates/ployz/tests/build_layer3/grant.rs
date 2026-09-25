@@ -15,7 +15,7 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
         Cluster::create(ClusterPlan::new(&format!("l3-grant-{}", std::process::id()), 1).unwrap())
             .unwrap();
     cluster.wait_ready(Duration::from_secs(120)).await.unwrap();
-    cluster.initialize_first().await.unwrap();
+    cluster.initialize_entry().await.unwrap();
     let session = super::session(&cluster).await;
     let dockerfile = "FROM alpine:3.23.3\nRUN echo pushed-with-a-grant > /grant\n";
 

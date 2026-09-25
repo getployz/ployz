@@ -259,7 +259,14 @@ impl Cluster {
             .expect("checked length"))
     }
 
-    async fn prepare_entry_machine(&self) -> Result<Machine, TestkitError> {
+    /// Initialize Machine 0 and wait out the daemon restart that follows:
+    /// returns once the Machine participates and its store lists it.
+    ///
+    /// # Errors
+    ///
+    /// Returns if initialization fails, the Machine never participates, or
+    /// its record changed across the restart.
+    pub async fn initialize_entry(&self) -> Result<Machine, TestkitError> {
         self.wait_ready(Duration::from_secs(30)).await?;
         let initialized = self.initialize_first().await?;
         let first = self
@@ -278,7 +285,7 @@ impl Cluster {
     }
 
     async fn initialize_all(&self) -> Result<Vec<Machine>, TestkitError> {
-        let first = self.prepare_entry_machine().await?;
+        let first = self.initialize_entry().await?;
         let mut machines = vec![first];
         for index in 1..self.plan.machines.len() {
             machines.push(
@@ -307,7 +314,7 @@ impl Cluster {
                 actual: self.plan.machines.len(),
             });
         }
-        let first = self.prepare_entry_machine().await?;
+        let first = self.initialize_entry().await?;
         self.seed_observation(0)?;
         let token = self.machine_token(1, vec![self.endpoint(1)?]).await?;
         let registered = self.register_machine(0, "machine-2", token).await?;

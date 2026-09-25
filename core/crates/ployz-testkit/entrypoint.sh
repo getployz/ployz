@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-rm -f /var/run/docker.pid /var/run/docker.sock
+# /var/run survives a container restart. A stale containerd pid that a new
+# process reuses makes dockerd wait on it instead of starting containerd.
+rm -f /var/run/docker.pid /var/run/docker.sock /var/run/docker/containerd/containerd.pid
 if [ "${PLOYZ_TESTKIT_CONTAINERD_STORE:-1}" = 0 ]; then
   cp /etc/docker/daemon-overlay.json /etc/docker/daemon.json
 fi
