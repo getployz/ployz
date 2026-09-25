@@ -44,15 +44,8 @@ export const InngestLive = Layer.effect(
     (config) =>
       new Inngest({
         id: "ployz-cloud",
-        eventKey: config.inngest.eventKey === undefined
-          ? undefined
-          : Redacted.value(config.inngest.eventKey),
-        signingKey: config.inngest.signingKey === undefined
-          ? undefined
-          : Redacted.value(config.inngest.signingKey),
-        signingKeyFallback: config.inngest.signingKeyFallback === undefined
-          ? undefined
-          : Redacted.value(config.inngest.signingKeyFallback),
+        eventKey: Redacted.value(config.inngest.eventKey),
+        signingKey: Redacted.value(config.inngest.signingKey),
       }),
   ),
 );

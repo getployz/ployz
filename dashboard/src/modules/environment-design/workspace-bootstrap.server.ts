@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { session as schemaSession } from "#/modules/identity/tables";
-import { ensureOrganizationFreeSubscription } from "#/modules/billing/billing.server";
 import { Database } from "#/server/database.server";
 import {
   ensurePersonalOrganizationForUser,
@@ -71,11 +70,7 @@ const setActiveOrganizationForSession = Effect.fn(
 
 export const handleUserCreated = Effect.fn("Workspace.handleUserCreated")(
   function* (user: PersonalOrganizationUser) {
-    const organizationId = yield* ensurePersonalOrganizationForUser(user);
-    yield* ensureOrganizationFreeSubscription({
-      organizationId,
-      userId: user.id,
-    });
+    yield* ensurePersonalOrganizationForUser(user);
   },
 );
 

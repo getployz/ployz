@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import {
@@ -33,25 +34,15 @@ function createStepTools() {
 
 const polar = {
   mode: "hosted",
-  productIds: {
-    free: "00000000-0000-4000-8000-000000000101",
-    solo: "00000000-0000-4000-8000-000000000102",
-    teams: "00000000-0000-4000-8000-000000000103",
-  },
+  productId: "00000000-0000-4000-8000-000000000102",
   listActiveSubscriptions: () =>
     Effect.succeed([
       {
-        id: "sub-teams",
-        productId: "00000000-0000-4000-8000-000000000103",
-        amount: 2900,
-        currency: "usd",
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
+        id: "sub-pro",
+        productId: "00000000-0000-4000-8000-000000000102",
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
       },
     ]),
-  createFreeSubscription: () => Effect.die("unused"),
-  getProductPrices: () => Effect.die("unused"),
-  updateSubscriptionPlan: () => Effect.die("unused"),
   createCheckout: () => Effect.die("unused"),
 } satisfies PolarService;
 
@@ -66,13 +57,8 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...testConfigEnvironment(),
                 DATABASE_URL: container.url.href,
-                APP_URL: "http://localhost:3000",
-                BETTER_AUTH_SECRET: "better-auth-secret",
-                GITHUB_CLIENT_ID: "github-client-id",
-                GITHUB_CLIENT_SECRET: "github-client-secret",
-                APP_ENCRYPTION_SECRET:
-                  "app-encryption-secret-at-least-32-characters",
               },
             }),
           ),
@@ -118,7 +104,6 @@ it.live(
       assert.deepStrictEqual(result, {
         organizationId: "00000000-0000-4000-8000-000000000001",
         hasActiveSubscription: true,
-        currentPlan: "teams",
       });
       const stored = yield* Effect.promise(() =>
         runEffect(
@@ -135,12 +120,7 @@ it.live(
       if (storedSnapshot === undefined) assert.fail("Missing billing snapshot");
       assert.deepStrictEqual(storedSnapshot, {
         organizationId: "00000000-0000-4000-8000-000000000001",
-        activeSubscriptionId: "sub-teams",
-        currentPlan: "teams",
-        productId: "00000000-0000-4000-8000-000000000103",
-        amount: 2900,
-        currency: "usd",
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
+        activeSubscriptionId: "sub-pro",
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
         hasActiveSubscription: true,
         syncedAt: storedSnapshot.syncedAt,

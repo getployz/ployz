@@ -5,7 +5,6 @@ describe("service source selector helpers", () => {
   it("returns the no-installations selector state before empty repo state", () => {
     expect(
       getGitRepoSelectorState({
-        configured: true,
         hasInstallations: false,
         repoCount: 0,
         filteredRepoCount: 0,

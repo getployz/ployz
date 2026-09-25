@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import { checkout, polar, portal, webhooks } from "@polar-sh/better-auth";
+import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar as PolarSdk } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
 import { organization as organizationPlugin } from "better-auth/plugins";
@@ -118,19 +118,11 @@ function hostedPolarPlugin(
     accessToken: Redacted.value(config.polar.accessToken),
     server: config.polar.server,
   });
+  // Sign-up never calls Polar; checkout creates the customer.
   return polar({
     client,
-    createCustomerOnSignUp: true,
+    createCustomerOnSignUp: false,
     use: [
-      checkout({
-        products: [
-          { productId: config.polar.productIds.free, slug: "free" },
-          { productId: config.polar.productIds.solo, slug: "solo" },
-          { productId: config.polar.productIds.teams, slug: "teams" },
-        ],
-        successUrl: config.polarSuccessUrl,
-        authenticatedUsersOnly: true,
-      }),
       portal({ returnUrl: new URL("/cloud", config.app.url).href }),
       webhooks({
         secret: Redacted.value(config.polar.webhookSecret),

@@ -397,15 +397,7 @@ export const GithubApiLive = Layer.effect(
 
     const fetchInstallationToken = Effect.fn("GithubApi.fetchInstallationToken")(
       function* (installationId: number) {
-        const appId = config.github.appId;
-        const appPrivateKey = config.github.appPrivateKey;
-        if (appId === undefined || appPrivateKey === undefined) {
-          return yield* githubObservationError({
-            code: "request_failed",
-            operation: "installation_token",
-            retriable: false,
-          });
-        }
+        const { appId, appPrivateKey } = config.github;
         const jwt = yield* Effect.try({
           try: () =>
             createGithubAppJwt({

@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { editServiceMetadata } from "./service-metadata.server";
 import { loadEnvironmentDocument, loadCurrentEnvironmentState } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
@@ -42,13 +43,8 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...testConfigEnvironment(),
                 DATABASE_URL: container.url.href,
-                APP_URL: "http://localhost:3000",
-                BETTER_AUTH_SECRET: "better-auth-secret",
-                GITHUB_CLIENT_ID: "github-client-id",
-                GITHUB_CLIENT_SECRET: "github-client-secret",
-                APP_ENCRYPTION_SECRET:
-                  "app-encryption-secret-at-least-32-characters",
               },
             }),
           ),
@@ -206,11 +202,8 @@ it.live(
 
 const hostedPolar: PolarService = {
   mode: "hosted",
-  productIds: { free: "free", solo: "solo", teams: "teams" },
+  productId: "pro",
   listActiveSubscriptions: () => Effect.die("Custom domains read the cached billing row."),
-  createFreeSubscription: () => Effect.die("unused"),
-  getProductPrices: () => Effect.die("unused"),
-  updateSubscriptionPlan: () => Effect.die("unused"),
   createCheckout: () => Effect.die("unused"),
 };
 
@@ -221,9 +214,8 @@ it.live(
       const container = yield* postgresTestContainer;
       yield* migrateTestDatabase(container.url);
       const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {
-        DATABASE_URL: container.url.href, APP_URL: "http://localhost:3000", BETTER_AUTH_SECRET: "better-auth-secret",
-        GITHUB_CLIENT_ID: "github-client-id", GITHUB_CLIENT_SECRET: "github-client-secret",
-        APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
+        ...testConfigEnvironment(),
+        DATABASE_URL: container.url.href,
       } }))));
       const layer = (polar: PolarService) => Layer.mergeAll(DatabaseLive.pipe(Layer.provide(config)),
         Layer.succeed(Polar, polar), SecretEncryptionLive.pipe(Layer.provide(config)));
@@ -267,14 +259,16 @@ it.live(
           serviceId: seeded.serviceId, revision, routes: [] });
 
         const database = yield* Database;
-        const subscribe = (currentPlan: "free" | "solo") => database.drizzle.insert(organizationBillingState).values({
-          organizationId: seeded.organizationId, activeSubscriptionId: `sub-${currentPlan}`, currentPlan, productId: randomUUID(),
-          amount: 900, currency: "usd", currentPeriodStart: new Date("2026-01-01T00:00:00Z"),
-          currentPeriodEnd: new Date("2099-01-01T00:00:00Z"), hasActiveSubscription: true,
-        }).onConflictDoUpdate({ target: organizationBillingState.organizationId, set: { currentPlan } });
-        yield* subscribe("free");
-        assert.strictEqual((yield* linkRoute("free.example.com").pipe(Effect.flip))._tag, "Forbidden");
-        yield* subscribe("solo");
+        const setSubscription = (hasActiveSubscription: boolean) => {
+          const state = hasActiveSubscription
+            ? { hasActiveSubscription, activeSubscriptionId: "sub-pro", currentPeriodEnd: new Date("2099-01-01T00:00:00Z") }
+            : { hasActiveSubscription, activeSubscriptionId: null, currentPeriodEnd: null };
+          return database.drizzle.insert(organizationBillingState).values({ organizationId: seeded.organizationId, ...state })
+            .onConflictDoUpdate({ target: organizationBillingState.organizationId, set: state });
+        };
+        yield* setSubscription(false);
+        assert.strictEqual((yield* linkRoute("lapsed.example.com").pipe(Effect.flip))._tag, "Forbidden");
+        yield* setSubscription(true);
         yield* linkRoute("paid.example.com");
       }).pipe(Effect.provide(layer(hostedPolar)));
     }),

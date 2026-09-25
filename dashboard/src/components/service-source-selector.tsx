@@ -233,8 +233,6 @@ function GitRepoSelectorActions() {
     }
   );
 
-  if (!accessState.configured) return null;
-
   if (!accessState.hasInstallations) {
     return (
       <Empty>
@@ -249,11 +247,8 @@ function GitRepoSelectorActions() {
         </EmptyHeader>
         <EmptyContent>
           <Button
-            disabled={!installUrlData.url}
             onClick={() => {
-              if (installUrlData.url) {
-                window.open(installUrlData.url, "_blank", "width=1020,height=680");
-              }
+              window.open(installUrlData.url, "_blank", "width=1020,height=680");
             }}
           >
             Connect GitHub
@@ -269,9 +264,7 @@ function GitRepoSelectorActions() {
         value="Configure GitHub App"
         keywords={["github", "configure", "app"]}
         onSelect={() => {
-          if (installUrlData.url) {
-            window.open(installUrlData.url, "_blank", "width=1020,height=680");
-          }
+          window.open(installUrlData.url, "_blank", "width=1020,height=680");
         }}
       >
         <Settings2Icon />
@@ -345,7 +338,6 @@ function GitRepoSelectorResults({
   });
   const repoCount = repoCountRows?.[0]?.count ?? 0;
   const selectorState = getGitRepoSelectorState({
-    configured: accessState.configured,
     hasInstallations: accessState.hasInstallations,
     repoCount,
     filteredRepoCount: repos.length,
@@ -353,17 +345,6 @@ function GitRepoSelectorResults({
 
   if (isError && dataUpdatedAt === 0) return <GithubRepositoryRefreshNotice initial />;
   if (!rawReady || isLoading) return <SelectorLoading />;
-
-  if (selectorState === "not-configured") {
-    return (
-      <SelectorEmpty>
-        <p>GitHub connection is unavailable.</p>
-        <p className="mt-1">
-          Please try again later or contact support.
-        </p>
-      </SelectorEmpty>
-    );
-  }
 
   if (selectorState === "no-installations") {
     return null;

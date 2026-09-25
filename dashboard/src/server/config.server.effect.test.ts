@@ -8,8 +8,23 @@ const requiredEnvironment = {
   BETTER_AUTH_SECRET: "better-auth-secret",
   GITHUB_CLIENT_ID: "github-client-id",
   GITHUB_CLIENT_SECRET: "github-client-secret",
+  GITHUB_APP_ID: "12345",
+  GITHUB_APP_PRIVATE_KEY: "github-app-private-key",
+  GITHUB_APP_SLUG: "ployz-test",
+  GITHUB_APP_WEBHOOK_SECRET: "github-app-webhook-secret",
+  INNGEST_EVENT_KEY: "inngest-event-key",
+  INNGEST_SIGNING_KEY: "inngest-signing-key",
   APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
 };
+
+const hostedPolar = {
+  POLAR_ACCESS_TOKEN: "polar-token",
+  POLAR_WEBHOOK_SECRET: "polar-webhook-secret",
+  POLAR_PRODUCT_ID: "22222222-2222-4222-8222-222222222222",
+};
+
+const without = (environment: Record<string, string>, name: string) =>
+  Object.fromEntries(Object.entries(environment).filter(([key]) => key !== name));
 
 const load = (environment: Record<string, string>) =>
   AppConfig.make.pipe(
@@ -20,77 +35,46 @@ const load = (environment: Record<string, string>) =>
   );
 
 describe("AppConfig", () => {
-  it.effect("loads startup configuration without Electric and keeps secrets redacted", () =>
+  it.effect("starts self-hosted without Polar and keeps secrets redacted", () =>
     Effect.gen(function* () {
-      const config = yield* load({
-        ...requiredEnvironment,
-      });
+      const config = yield* load(requiredEnvironment);
 
       assert.strictEqual(config.app.port, 3000);
-      assert.strictEqual(config.ployz.installerUrl.href, "https://ployz.sh/");
       assert.strictEqual(String(config.auth.secret), "<redacted>");
       assert.strictEqual(Redacted.value(config.auth.secret), "better-auth-secret");
+      assert.strictEqual(config.github.appSlug, "ployz-test");
       assert.deepStrictEqual(config.polar, { mode: "self_hosted" });
     }),
   );
 
-  const hostedPolar = {
-    POLAR_ACCESS_TOKEN: "polar-token",
-    POLAR_WEBHOOK_SECRET: "polar-webhook-secret",
-    POLAR_PRODUCT_FREE_ID: "11111111-1111-4111-8111-111111111111",
-    POLAR_PRODUCT_SOLO_ID: "22222222-2222-4222-8222-222222222222",
-    POLAR_PRODUCT_TEAMS_ID: "33333333-3333-4333-8333-333333333333",
-  };
-
-  const { POLAR_WEBHOOK_SECRET: _webhookSecret, ...withoutWebhookSecret } = hostedPolar;
-  const invalidPolar: ReadonlyArray<readonly [string, Record<string, string>, string]> = [
-    ["only an access token", { POLAR_ACCESS_TOKEN: "polar-token" }, "must be entirely absent"],
-    ["everything but the webhook secret", withoutWebhookSecret, "must be entirely absent"],
-    ["Solo and Teams sharing a product", { ...hostedPolar, POLAR_PRODUCT_TEAMS_ID: hostedPolar.POLAR_PRODUCT_SOLO_ID }, "distinct Polar product IDs"],
-  ];
-
-  it.effect.each(invalidPolar)("rejects hosted Polar configuration with %s", ([, polar, reason]) =>
+  it.effect("names each missing required variable", () =>
     Effect.gen(function* () {
-      const failure = yield* Effect.flip(load({ ...requiredEnvironment, ...polar }));
-
-      assert.instanceOf(failure, InvalidConfiguration);
-      assert.include(failure.message, reason);
+      for (const name of Object.keys(requiredEnvironment)) {
+        const failure = yield* Effect.flip(load(without(requiredEnvironment, name)));
+        assert.instanceOf(failure, Config.ConfigError);
+        assert.include(String(failure), name);
+      }
     }),
   );
 
-  it.effect("accepts legacy Polar aliases but rejects conflicting IDs", () =>
+  it.effect("loads hosted Polar with one product", () =>
     Effect.gen(function* () {
-      const config = yield* load({
-        ...requiredEnvironment,
-        POLAR_ACCESS_TOKEN: "polar-token",
-        POLAR_WEBHOOK_SECRET: "polar-webhook-secret",
-        POLAR_PRODUCT_FREE_ID: "11111111-1111-4111-8111-111111111111",
-        POLAR_PRODUCT_HOBBY_ID: "22222222-2222-4222-8222-222222222222",
-        POLAR_PRODUCT_PRO_ID: "33333333-3333-4333-8333-333333333333",
-      });
+      const config = yield* load({ ...requiredEnvironment, ...hostedPolar });
 
       assert.strictEqual(config.polar.mode, "hosted");
       if (config.polar.mode === "hosted") {
-        assert.deepStrictEqual(config.polar.productIds, {
-          free: "11111111-1111-4111-8111-111111111111",
-          solo: "22222222-2222-4222-8222-222222222222",
-          teams: "33333333-3333-4333-8333-333333333333",
-        });
+        assert.strictEqual(config.polar.productId, hostedPolar.POLAR_PRODUCT_ID);
       }
+    }),
+  );
 
-      const failure = yield* Effect.flip(
-        load({
-          ...requiredEnvironment,
-          POLAR_ACCESS_TOKEN: "polar-token",
-          POLAR_WEBHOOK_SECRET: "polar-webhook-secret",
-          POLAR_PRODUCT_FREE_ID: "11111111-1111-4111-8111-111111111111",
-          POLAR_PRODUCT_SOLO_ID: "22222222-2222-4222-8222-222222222222",
-          POLAR_PRODUCT_HOBBY_ID: "33333333-3333-4333-8333-333333333333",
-          POLAR_PRODUCT_TEAMS_ID: "44444444-4444-4444-8444-444444444444",
-        }),
-      );
-
-      assert.instanceOf(failure, InvalidConfiguration);
+  it.effect("requires the complete hosted Polar configuration", () =>
+    Effect.gen(function* () {
+      for (const name of Object.keys(hostedPolar)) {
+        const polar = without(hostedPolar, name);
+        const failure = yield* Effect.flip(load({ ...requiredEnvironment, ...polar }));
+        assert.instanceOf(failure, InvalidConfiguration);
+      }
     }),
   );
 
@@ -99,8 +83,8 @@ describe("AppConfig", () => {
       const invalid: ReadonlyArray<Record<string, string>> = [
         { APP_URL: "not-a-url" },
         { PORT: "65536" },
-        { PLOYZ_INSTALLER_SHA256: "not-a-digest" },
         { APP_ENCRYPTION_SECRET: "too-short" },
+        { ...hostedPolar, POLAR_PRODUCT_ID: "not-a-uuid" },
       ];
 
       for (const value of invalid) {

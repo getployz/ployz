@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { createHmac } from "node:crypto";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
@@ -44,14 +45,9 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...testConfigEnvironment(),
                 DATABASE_URL: container.url.href,
-                APP_URL: "http://localhost:3000",
-                BETTER_AUTH_SECRET: "better-auth-secret",
-                GITHUB_CLIENT_ID: "github-client-id",
-                GITHUB_CLIENT_SECRET: "github-client-secret",
                 GITHUB_APP_WEBHOOK_SECRET: webhookSecret,
-                APP_ENCRYPTION_SECRET:
-                  "app-encryption-secret-at-least-32-characters",
               },
             }),
           ),

@@ -10,10 +10,6 @@ import {
   Schema,
 } from "effect";
 
-const DEFAULT_INSTALLER_URL = new URL("https://ployz.sh/");
-const Sha256 = Schema.String.check(
-  Schema.isPattern(/^[a-fA-F0-9]{64}$/),
-);
 const Uuid = Schema.String.check(Schema.isUUID());
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
 const EncryptionSecret = Schema.Redacted(
@@ -27,11 +23,7 @@ export type PolarConfiguration =
       readonly accessToken: Redacted.Redacted<string>;
       readonly webhookSecret: Redacted.Redacted<string>;
       readonly server: "production" | "sandbox";
-      readonly productIds: {
-        readonly free: string;
-        readonly solo: string;
-        readonly teams: string;
-      };
+      readonly productId: string;
     };
 
 export class InvalidConfiguration extends Data.TaggedError(
@@ -54,13 +46,12 @@ const rawConfig = Config.all({
   ),
   githubClientId: Config.nonEmptyString("GITHUB_CLIENT_ID"),
   githubClientSecret: Config.schema(NonEmptySecret, "GITHUB_CLIENT_SECRET"),
-  githubAppId: optional(Config.nonEmptyString("GITHUB_APP_ID")),
-  githubAppPrivateKey: optional(
-    Config.schema(NonEmptySecret, "GITHUB_APP_PRIVATE_KEY"),
-  ),
-  githubAppSlug: optional(Config.nonEmptyString("GITHUB_APP_SLUG")),
-  githubAppWebhookSecret: optional(
-    Config.schema(NonEmptySecret, "GITHUB_APP_WEBHOOK_SECRET"),
+  githubAppId: Config.nonEmptyString("GITHUB_APP_ID"),
+  githubAppPrivateKey: Config.schema(NonEmptySecret, "GITHUB_APP_PRIVATE_KEY"),
+  githubAppSlug: Config.nonEmptyString("GITHUB_APP_SLUG"),
+  githubAppWebhookSecret: Config.schema(
+    NonEmptySecret,
+    "GITHUB_APP_WEBHOOK_SECRET",
   ),
   polarAccessToken: optional(
     Config.schema(NonEmptySecret, "POLAR_ACCESS_TOKEN"),
@@ -71,96 +62,40 @@ const rawConfig = Config.all({
   polarWebhookSecret: optional(
     Config.schema(NonEmptySecret, "POLAR_WEBHOOK_SECRET"),
   ),
-  polarProductFreeId: optional(Config.schema(Uuid, "POLAR_PRODUCT_FREE_ID")),
-  polarProductSoloId: optional(Config.schema(Uuid, "POLAR_PRODUCT_SOLO_ID")),
-  polarProductTeamsId: optional(Config.schema(Uuid, "POLAR_PRODUCT_TEAMS_ID")),
-  polarProductHobbyId: optional(Config.schema(Uuid, "POLAR_PRODUCT_HOBBY_ID")),
-  polarProductProId: optional(Config.schema(Uuid, "POLAR_PRODUCT_PRO_ID")),
-  installerUrl: Config.url("PLOYZ_INSTALLER_URL").pipe(
-    Config.withDefault(DEFAULT_INSTALLER_URL),
-  ),
-  installerSha256: optional(Config.schema(Sha256, "PLOYZ_INSTALLER_SHA256")),
-  inngestEventKey: optional(Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY")),
-  inngestSigningKey: optional(
-    Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
-  ),
-  inngestSigningKeyFallback: optional(
-    Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY_FALLBACK"),
-  ),
+  polarProductId: optional(Config.schema(Uuid, "POLAR_PRODUCT_ID")),
+  inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
+  inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
 });
 
-function invalid(message: string) {
-  return Effect.fail(new InvalidConfiguration({ message }));
-}
-
-function resolveAlias(input: {
-  readonly canonicalName: string;
-  readonly canonicalId: string | undefined;
-  readonly legacyName: string;
-  readonly legacyId: string | undefined;
-}) {
-  if (
-    input.canonicalId !== undefined &&
-    input.legacyId !== undefined &&
-    input.canonicalId !== input.legacyId
-  ) {
-    return invalid(
-      `${input.canonicalName} conflicts with transitional alias ${input.legacyName}`,
-    );
-  }
-  return Effect.succeed(input.canonicalId ?? input.legacyId);
-}
-
+/** No Polar variables means a Self-hosted Cloud; a partial set is a mistake. */
 const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
   input: Config.Success<typeof rawConfig>,
 ) {
-  const solo = yield* resolveAlias({
-    canonicalName: "POLAR_PRODUCT_SOLO_ID",
-    canonicalId: input.polarProductSoloId,
-    legacyName: "POLAR_PRODUCT_HOBBY_ID",
-    legacyId: input.polarProductHobbyId,
-  });
-  const teams = yield* resolveAlias({
-    canonicalName: "POLAR_PRODUCT_TEAMS_ID",
-    canonicalId: input.polarProductTeamsId,
-    legacyName: "POLAR_PRODUCT_PRO_ID",
-    legacyId: input.polarProductProId,
-  });
-  const hostedValues = [
-    input.polarAccessToken,
-    input.polarWebhookSecret,
-    input.polarProductFreeId,
-    solo,
-    teams,
-  ];
-
-  if (hostedValues.every((value) => value === undefined)) {
+  const { polarAccessToken, polarWebhookSecret, polarProductId } = input;
+  if (
+    polarAccessToken === undefined &&
+    polarWebhookSecret === undefined &&
+    polarProductId === undefined
+  ) {
     return { mode: "self_hosted" } as const;
   }
   if (
-    input.polarAccessToken === undefined ||
-    input.polarWebhookSecret === undefined ||
-    input.polarProductFreeId === undefined ||
-    solo === undefined ||
-    teams === undefined
+    polarAccessToken === undefined ||
+    polarWebhookSecret === undefined ||
+    polarProductId === undefined
   ) {
-    return yield* invalid(
-      "Polar configuration must be entirely absent or include access token, webhook secret, and Free/Solo/Teams product IDs",
-    );
+    return yield* new InvalidConfiguration({
+      message:
+        "Polar configuration must be entirely absent or include POLAR_ACCESS_TOKEN, POLAR_WEBHOOK_SECRET, and POLAR_PRODUCT_ID",
+    });
   }
-  if (new Set([input.polarProductFreeId, solo, teams]).size !== 3) {
-    return yield* invalid(
-      "Free, Solo, and Teams must use distinct Polar product IDs",
-    );
-  }
-
   return {
     mode: "hosted",
-    accessToken: input.polarAccessToken,
-    webhookSecret: input.polarWebhookSecret,
+    accessToken: polarAccessToken,
+    webhookSecret: polarWebhookSecret,
     server: input.polarServer,
-    productIds: { free: input.polarProductFreeId, solo, teams },
+    productId: polarProductId,
   } as const;
 });
 
@@ -188,14 +123,9 @@ const makeAppConfig = Effect.gen(function* () {
     },
     polar,
     polarSuccessUrl: `${appUrl}/cloud?checkout_id={CHECKOUT_ID}`,
-    ployz: {
-      installerUrl: raw.installerUrl,
-      installerSha256: raw.installerSha256,
-    },
     inngest: {
       eventKey: raw.inngestEventKey,
       signingKey: raw.inngestSigningKey,
-      signingKeyFallback: raw.inngestSigningKeyFallback,
     },
     encryptionSecret: raw.encryptionSecret,
   } as const;

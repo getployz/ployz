@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Inngest } from "inngest";
 import {
+  billingInngestFunctions,
   createScheduleNightlyBillingReconcile,
   createSyncOrganizationBillingStateFunction,
 } from "#/modules/billing/inngest-sync/sync";
@@ -83,5 +84,14 @@ describe("Inngest function policies", () => {
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
+  });
+
+  it("registers billing sync only on hosted Cloud", () => {
+    const inngest = new Inngest({ id: "registration-contract" });
+    const ids = (mode: "hosted" | "self_hosted") =>
+      billingInngestFunctions(inngest, mode).map(({ opts }) => opts.id);
+
+    expect(ids("hosted")).toEqual(["sync-organization-billing-state", "schedule-nightly-billing-reconcile"]);
+    expect(ids("self_hosted")).toEqual([]);
   });
 });

@@ -26,6 +26,12 @@ export async function requireOrganization(context: RouteDataContext, organizatio
   if (organization.activeOrganization?.slug !== organizationSlug) throw notFound();
 }
 
+/** Billing exists only on Ployz-hosted Cloud. */
+export async function requireBilling(context: RouteDataContext, organizationSlug: string) {
+  const organization = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
+  if (!organization.billingEnabled) throw notFound();
+}
+
 export async function requireWorkspace(context: RouteDataContext, organizationSlug: string) {
   return readWorkspace(await preloadWorkspace(organizationSlug, scopeOf(context)));
 }

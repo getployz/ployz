@@ -52,6 +52,8 @@ interface DashboardSectionDefinition {
   icon: LucideIcon;
   allPath?: RegisteredPath;
   environmentPath?: RegisteredPath;
+  /** Only Ployz-hosted Cloud has billing. */
+  requiresBilling?: true;
 }
 
 const sectionDefinitions = {
@@ -94,6 +96,7 @@ const sectionDefinitions = {
     label: "Billing",
     icon: CreditCardIcon,
     allPath: "/cloud/$organizationSlug/~/billing",
+    requiresBilling: true,
   },
 } satisfies Record<DashboardSection, DashboardSectionDefinition>;
 
@@ -137,13 +140,15 @@ export function getDashboardSectionLabel(
 
 export function createDashboardNavItems(
   scope: DashboardScope,
+  { billingEnabled = false }: { billingEnabled?: boolean } = {},
 ): DashboardNavItem[] {
   return sectionOrder.flatMap((section) => {
     const definition = sectionDefinitions[section];
 
-    const available = scope.kind === "all"
+    const available = (scope.kind === "all"
       ? "allPath" in definition
-      : "environmentPath" in definition;
+      : "environmentPath" in definition) &&
+      (billingEnabled || !("requiresBilling" in definition));
 
     return !available
       ? []

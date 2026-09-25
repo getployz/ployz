@@ -1,89 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { Option, Schema } from "effect";
-import {
-  BillingPlan,
-  normalizeStoredBillingPlan,
-  previewProration,
-  selectManagedSubscriptionSnapshot,
-} from "#/modules/billing/billing";
+import { selectManagedSubscriptionSnapshot } from "#/modules/billing/billing";
 
-const period = {
-  currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
-  currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
-};
+const productId = "product-pro";
 
 describe("billing policy", () => {
-  it("decodes only current billing plans and normalizes stored aliases", () => {
+  it("is inactive without a subscription to the configured product", () => {
     expect(
-      Option.isSome(Schema.decodeUnknownOption(BillingPlan)("teams")),
-    ).toBe(true);
-    expect(
-      Option.isNone(Schema.decodeUnknownOption(BillingPlan)("pro")),
-    ).toBe(true);
-    expect(normalizeStoredBillingPlan("hobby")).toBe("solo");
-    expect(normalizeStoredBillingPlan("pro")).toBe("teams");
-  });
-
-  it("selects the highest known active plan and records unknown products", () => {
-    const snapshot = selectManagedSubscriptionSnapshot(
-      [
-        {
-          id: "sub-free",
-          productId: "product-free",
-          amount: 0,
-          currency: "usd",
-          ...period,
-        },
-        {
-          id: "sub-unknown",
-          productId: "product-unknown",
-          amount: 4900,
-          currency: "usd",
-          ...period,
-        },
-        {
-          id: "sub-teams",
-          productId: "product-teams",
-          amount: 2900,
-          currency: "usd",
-          ...period,
-        },
-        {
-          id: "sub-solo",
-          productId: "product-solo",
-          amount: 900,
-          currency: "usd",
-          ...period,
-        },
-      ],
-      {
-        free: "product-free",
-        solo: "product-solo",
-        teams: "product-teams",
-      },
-    );
-
-    expect(snapshot).toEqual({
-      activeSubscriptionId: "sub-teams",
-      currentPlan: "teams",
-      productId: "product-teams",
-      amount: 2900,
-      currency: "usd",
-      ...period,
-      hasActiveSubscription: true,
-      hasUnknownActiveProduct: true,
+      selectManagedSubscriptionSnapshot(
+        [
+          {
+            id: "sub-retired-teams",
+            productId: "product-teams",
+            currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+          },
+        ],
+        productId,
+      ),
+    ).toEqual({
+      activeSubscriptionId: null,
+      currentPeriodEnd: null,
+      hasActiveSubscription: false,
     });
   });
 
-  it("clamps proration to the cached period and rounds the amount delta", () => {
+  it("selects the configured product's subscription that runs longest", () => {
+    const later = new Date("2026-05-01T00:00:00.000Z");
     expect(
-      previewProration({
-        currentAmount: 900,
-        targetAmount: 2900,
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
-        currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
-        now: new Date("2026-03-16T12:00:00.000Z"),
-      }),
-    ).toEqual({ estimatedDelta: 1000, remainingRatio: 0.5 });
+      selectManagedSubscriptionSnapshot(
+        [
+          {
+            id: "sub-earlier",
+            productId,
+            currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+          },
+          { id: "sub-later", productId, currentPeriodEnd: later },
+        ],
+        productId,
+      ),
+    ).toEqual({
+      activeSubscriptionId: "sub-later",
+      currentPeriodEnd: later,
+      hasActiveSubscription: true,
+    });
   });
 });

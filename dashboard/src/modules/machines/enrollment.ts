@@ -205,27 +205,26 @@ export function enrollmentExpiry(now: Date) {
 }
 
 const DEFAULT_CLOUD_URL_HOST = "ployz.dev";
+/** The installer is shared Ployz infrastructure, also for Self-hosted Cloud. */
+const INSTALLER_URL = "https://ployz.sh/";
 
 export function buildMachineJoinCommand(input: {
-  installerUrl: string;
   token: string;
   origin: string;
 }) {
   const host = new URL(input.origin).hostname;
   const cloudUrlFlag =
     host === DEFAULT_CLOUD_URL_HOST ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${input.installerUrl} | sh && sudo ployz cloud enroll '${input.token}'${cloudUrlFlag}`;
+  return `curl -fsSL ${INSTALLER_URL} | sh && sudo ployz cloud enroll '${input.token}'${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {
-  installerUrl: string;
   origin: string;
   token: string;
   expiresAt: Date;
 }): MintedMachineEnrollment {
   return {
     command: buildMachineJoinCommand({
-      installerUrl: input.installerUrl,
       token: input.token,
       origin: input.origin,
     }),

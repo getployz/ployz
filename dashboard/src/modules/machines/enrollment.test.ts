@@ -17,7 +17,6 @@ const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
 describe("machine enrollment command", () => {
   it("pastes ployz cloud enroll with the token", () => {
     const minted = mintedEnrollment({
-      installerUrl: "https://ployz.sh/",
       origin: "https://ployz.dev",
       token: "pmet_secret",
       expiresAt: new Date("2026-08-19T00:00:00.000Z"),
@@ -32,7 +31,6 @@ describe("machine enrollment command", () => {
   it("adds --cloud-url for self-hosted Cloud", () => {
     expect(
       buildMachineJoinCommand({
-        installerUrl: "https://ployz.sh/",
         token: "pmet_secret",
         origin: "https://cloud.example",
       }),

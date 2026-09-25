@@ -15,12 +15,7 @@ function makeSdk(items: readonly PolarSubscription[]) {
     },
   }));
   const sdk = {
-    subscriptions: {
-      list,
-      create: vi.fn(),
-      update: vi.fn(),
-    },
-    products: { get: vi.fn() },
+    subscriptions: { list },
     checkouts: { create: vi.fn() },
   } as const;
   return { list, sdk: asTestDouble<PolarSdk>()(sdk) };
@@ -31,11 +26,7 @@ const hosted = {
   accessToken: Redacted.make("polar-token"),
   webhookSecret: Redacted.make("polar-webhook-secret"),
   server: "sandbox" as const,
-  productIds: {
-    free: "00000000-0000-4000-8000-000000000001",
-    solo: "00000000-0000-4000-8000-000000000002",
-    teams: "00000000-0000-4000-8000-000000000003",
-  },
+  productId: "00000000-0000-4000-8000-000000000002",
 };
 
 describe("Polar provider boundary", () => {
@@ -51,11 +42,8 @@ describe("Polar provider boundary", () => {
   it("decodes active subscriptions into the billing protocol", async () => {
     const { sdk } = makeSdk([
       {
-        id: "sub-teams",
-        productId: hosted.productIds.teams,
-        amount: 2900,
-        currency: "usd",
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
+        id: "sub-pro",
+        productId: hosted.productId,
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
       },
     ]);
@@ -67,11 +55,8 @@ describe("Polar provider boundary", () => {
       Effect.runPromise(provider.listActiveSubscriptions("org-1")),
     ).resolves.toEqual([
       {
-        id: "sub-teams",
-        productId: hosted.productIds.teams,
-        amount: 2900,
-        currency: "usd",
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
+        id: "sub-pro",
+        productId: hosted.productId,
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
       },
     ]);
@@ -79,14 +64,11 @@ describe("Polar provider boundary", () => {
 
   it("classifies invalid provider payloads without exposing their body", async () => {
     const { sdk } = makeSdk([
-      {
+      asTestDouble<PolarSubscription>()({
         id: "sub-invalid",
-        productId: hosted.productIds.solo,
-        amount: Number.POSITIVE_INFINITY,
-        currency: "usd",
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
-        currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
-      },
+        productId: hosted.productId,
+        currentPeriodEnd: "not-a-date",
+      }),
     ]);
 
     const provider = makePolarService(hosted, sdk);

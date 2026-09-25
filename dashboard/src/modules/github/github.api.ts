@@ -154,7 +154,7 @@ function* (
 ){
   const config = yield* AppConfig;
   const secret = config.github.appWebhookSecret;
-  if (!signature || !secret) return false;
+  if (!signature) return false;
   const expected = crypto
     .createHmac("sha256", Redacted.value(secret))
     .update(body)

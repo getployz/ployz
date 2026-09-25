@@ -3,16 +3,25 @@ import { createServer } from "node:http";
 import { connect, ConnectionState, type WorkerConnection } from "inngest/connect";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { createInngestFunctions } from "#/modules/inngest/index";
-import { AppConfig } from "#/server/config.server";
+import { billingInngestFunctions } from "#/modules/billing/inngest-sync/sync";
+import { AppConfig, type PolarConfiguration } from "#/server/config.server";
 import { AppRuntime } from "#/server/runtime.server";
 
 class InngestConnectionError extends Data.TaggedError("InngestConnectionError")<{
   readonly cause: unknown;
 }> {}
 
-const connectWorker = Effect.fn("Inngest.connectWorker")((client: PloyzInngest) =>
+const connectWorker = Effect.fn("Inngest.connectWorker")((
+  client: PloyzInngest,
+  billingMode: PolarConfiguration["mode"],
+) =>
   Effect.tryPromise({
-    try: () => connect({ apps: [{ client, functions: createInngestFunctions(client) }] }),
+    try: () => connect({
+      apps: [{
+        client,
+        functions: [...createInngestFunctions(client), ...billingInngestFunctions(client, billingMode)],
+      }],
+    }),
     catch: (cause) => new InngestConnectionError({ cause }),
   }),
 );
@@ -32,7 +41,7 @@ export async function runWorker() {
       health.listen(config.app.port, "0.0.0.0", resolve);
     });
     const client = await AppRuntime.runPromise(InngestClient);
-    connection = await AppRuntime.runPromise(connectWorker(client));
+    connection = await AppRuntime.runPromise(connectWorker(client, config.polar.mode));
     console.info("Inngest worker ready.");
     await connection.closed;
     console.info("Inngest worker drained.");

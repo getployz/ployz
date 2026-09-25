@@ -1,9 +1,5 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import {
-  createScheduleNightlyBillingReconcile,
-  createSyncOrganizationBillingStateFunction,
-} from "#/modules/billing/inngest-sync/sync";
-import {
   createProcessGithubCheckSuiteReceived,
   createProcessGithubPushReceived,
 } from "#/modules/github/inngest-ingestion/process";
@@ -43,8 +39,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createMarkCancelledRowBackedWorkflow(inngest),
     createProcessEnvironmentDeployment(inngest),
     createScheduleGithubRepositorySync(inngest),
-    createSyncOrganizationBillingStateFunction(inngest),
-    createScheduleNightlyBillingReconcile(inngest),
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createProcessVolumeRemove(inngest),

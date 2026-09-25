@@ -49,7 +49,6 @@ describe("billing sync Inngest adapter", () => {
     expect(output.result).toEqual({
       organizationId: null,
       hasActiveSubscription: false,
-      currentPlan: null,
       skipped: true,
     });
     expect(output.ctx.step.run).toHaveBeenCalledTimes(1);

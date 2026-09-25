@@ -3,11 +3,7 @@ import { Polar as PolarSdk } from "@polar-sh/sdk";
 import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
 import type { PolarConfiguration } from "#/server/config.server";
 import { AppConfig } from "#/server/config.server";
-import {
-  PolarSubscription,
-  type BillingPlan,
-  type ProductIds,
-} from "#/modules/billing/billing";
+import { PolarSubscription } from "#/modules/billing/billing";
 
 export class PolarFailure extends Data.TaggedError("PolarFailure")<{
   readonly operation: string;
@@ -17,41 +13,23 @@ export class PolarFailure extends Data.TaggedError("PolarFailure")<{
   readonly cause: unknown;
 }> {}
 
-export type PolarPrice =
-  | { readonly kind: "free"; readonly currency: string }
-  | { readonly kind: "fixed"; readonly currency: string; readonly amount: number }
-  | { readonly kind: "unsupported"; readonly currency: string };
-
 export type CreatePolarCheckout = {
-  readonly productId: string;
   readonly successUrl: string;
   readonly embedOrigin: string;
   readonly externalCustomerId: string;
   readonly customerEmail: string;
   readonly customerName: string;
   readonly referenceId: string;
-  readonly subscriptionId?: string;
 };
 
 export type PolarService =
   | { readonly mode: "self_hosted" }
   | {
       readonly mode: "hosted";
-      readonly productIds: ProductIds;
+      readonly productId: string;
       readonly listActiveSubscriptions: (
         organizationId: string,
       ) => Effect.Effect<readonly PolarSubscription[], PolarFailure>;
-      readonly createFreeSubscription: (input: {
-        readonly organizationId: string;
-        readonly userId: string;
-      }) => Effect.Effect<PolarSubscription, PolarFailure>;
-      readonly getProductPrices: (
-        productId: string,
-      ) => Effect.Effect<readonly PolarPrice[], PolarFailure>;
-      readonly updateSubscriptionPlan: (input: {
-        readonly subscriptionId: string;
-        readonly plan: BillingPlan;
-      }) => Effect.Effect<PolarSubscription, PolarFailure>;
       readonly createCheckout: (
         input: CreatePolarCheckout,
       ) => Effect.Effect<{ readonly url: string }, PolarFailure>;
@@ -61,16 +39,7 @@ export class Polar extends Context.Service<Polar, PolarService>()(
   "ployz/Polar",
 ) {}
 
-const ProviderPrice = Schema.Struct({
-  isArchived: Schema.Boolean,
-  priceCurrency: Schema.String,
-  amountType: Schema.String,
-  priceAmount: Schema.optionalKey(Schema.Finite),
-});
 const Checkout = Schema.Struct({ url: Schema.String });
-const Product = Schema.Struct({
-  prices: Schema.Array(ProviderPrice),
-});
 const ProviderErrorEvidence = Schema.Struct({
   status: Schema.optionalKey(Schema.Finite),
   statusCode: Schema.optionalKey(Schema.Finite),
@@ -120,11 +89,9 @@ export function makePolarService(
       accessToken: Redacted.value(config.accessToken),
       server: config.server,
     });
-  const productIds = config.productIds;
-
   return {
     mode: "hosted",
-    productIds,
+    productId: config.productId,
     listActiveSubscriptions: (organizationId) =>
       call(
         "list active subscriptions",
@@ -142,65 +109,18 @@ export function makePolarService(
         },
         Schema.Array(PolarSubscription),
       ),
-    createFreeSubscription: (input) =>
-      call(
-        "create free subscription",
-        () =>
-          client.subscriptions.create({
-            externalCustomerId: input.userId,
-            productId: productIds.free,
-            metadata: { referenceId: input.organizationId },
-          }),
-        PolarSubscription,
-      ),
-    getProductPrices: (productId) =>
-      call("get product prices", () => client.products.get({ id: productId }), Product).pipe(
-        Effect.map((product) =>
-          product.prices.flatMap((price): PolarPrice[] => {
-            if (price.isArchived) return [];
-            if (price.amountType === "free") {
-              return [{ kind: "free", currency: price.priceCurrency }];
-            }
-            if (
-              price.amountType === "fixed" &&
-              price.priceAmount !== undefined
-            ) {
-              return [{
-                kind: "fixed",
-                currency: price.priceCurrency,
-                amount: price.priceAmount,
-              }];
-            }
-            return [{ kind: "unsupported", currency: price.priceCurrency }];
-          }),
-        ),
-      ),
-    updateSubscriptionPlan: (input) =>
-      call(
-        "update subscription",
-        () =>
-          client.subscriptions.update({
-            id: input.subscriptionId,
-            subscriptionUpdate: {
-              productId: productIds[input.plan],
-              prorationBehavior: "invoice",
-            },
-          }),
-        PolarSubscription,
-      ),
     createCheckout: (input) =>
       call(
         "create checkout",
         () =>
           client.checkouts.create({
-            products: [input.productId],
+            products: [config.productId],
             successUrl: input.successUrl,
             embedOrigin: input.embedOrigin,
             externalCustomerId: input.externalCustomerId,
             customerEmail: input.customerEmail,
             customerName: input.customerName,
             metadata: { referenceId: input.referenceId },
-            subscriptionId: input.subscriptionId,
           }),
         Checkout,
       ),

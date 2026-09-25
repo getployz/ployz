@@ -1,13 +1,8 @@
 export function getGitRepoSelectorState(input: {
-  configured: boolean;
   hasInstallations: boolean;
   repoCount: number;
   filteredRepoCount: number;
 }) {
-  if (!input.configured) {
-    return "not-configured" as const;
-  }
-
   if (!input.hasInstallations) {
     return "no-installations" as const;
   }

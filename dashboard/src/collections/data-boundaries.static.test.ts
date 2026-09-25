@@ -40,9 +40,8 @@ const SPINNER_FILES = {
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/-components/BillingPlanCard.tsx": "checkout in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/-components/BillingPlanChangeDialog.tsx": "plan change in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
@@ -56,7 +55,6 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "gather data-loss evidence before confirming teardown",
-  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "preview a plan change before confirming it",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "gather data-loss evidence before confirming removal",
 };
@@ -93,7 +91,7 @@ const COMMAND_FILES = {
   "components/deployment-row.tsx": "deploy and retry start runtime work",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
-  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "plan changes and checkout involve money",
+  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "removing a machine is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",

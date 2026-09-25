@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
@@ -110,14 +111,10 @@ function enrollmentTestClient(
 ) {
   const provider = ConfigProvider.fromEnv({
     env: {
+      ...testConfigEnvironment(),
       NODE_ENV: "test",
       DATABASE_URL: "postgres://unused",
       APP_URL: "https://cloud.example.test",
-      BETTER_AUTH_SECRET: "better-auth-secret",
-      GITHUB_CLIENT_ID: "github-client-id",
-      GITHUB_CLIENT_SECRET: "github-client-secret",
-      APP_ENCRYPTION_SECRET:
-        "app-encryption-secret-at-least-32-characters",
     },
   });
   const config = AppConfig.layer.pipe(
@@ -210,14 +207,10 @@ describe("organization enrollment coordinator", () => {
   it("uses Actor and the managed database for enrollment commands", async () => {
     const provider = ConfigProvider.fromEnv({
       env: {
+        ...testConfigEnvironment(),
         NODE_ENV: "test",
         DATABASE_URL: harness.databaseUrl,
         APP_URL: "https://cloud.example.test",
-        BETTER_AUTH_SECRET: "better-auth-secret",
-        GITHUB_CLIENT_ID: "github-client-id",
-        GITHUB_CLIENT_SECRET: "github-client-secret",
-        APP_ENCRYPTION_SECRET:
-          "app-encryption-secret-at-least-32-characters",
       },
     });
     const config = AppConfig.layer.pipe(

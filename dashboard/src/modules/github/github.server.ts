@@ -37,18 +37,6 @@ export class GithubAccountNotLinked extends Data.TaggedError(
   readonly retriable = false as const;
 }
 
-function isGithubAppConfigured(config: {
-  readonly github: {
-    readonly appId: string | undefined;
-    readonly appPrivateKey: unknown | undefined;
-    readonly appSlug: string | undefined;
-  };
-}) {
-  return config.github.appId !== undefined &&
-    config.github.appPrivateKey !== undefined &&
-    config.github.appSlug !== undefined;
-}
-
 export function getGithubAppInstallUrl(input: { readonly slug: string }) {
   return `https://github.com/apps/${input.slug}/installations/new`;
 }
@@ -171,46 +159,22 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
 export const getGithubRepoAccessState = Effect.fn(
   "Github.getRepoAccessState",
 )(function* (actor: Actor) {
-  const config = yield* AppConfig;
-  if (!isGithubAppConfigured(config)) {
-    return { hasInstallations: false, configured: false as const };
-  }
   const installations = yield* listGithubInstallationsForUser(actor.userId);
-  return {
-    hasInstallations: installations.length > 0,
-    configured: true as const,
-  };
+  return { hasInstallations: installations.length > 0 };
 });
 
 export const getGithubInstallUrl = Effect.fn("Github.getInstallUrl")(
   function* () {
     const config = yield* AppConfig;
-    const appSlug = config.github.appSlug;
-    if (!isGithubAppConfigured(config) || appSlug === undefined) {
-      return { url: null, configured: false as const };
-    }
-    const url = getGithubAppInstallUrl({ slug: appSlug });
-    return { url, configured: true as const };
+    return { url: getGithubAppInstallUrl({ slug: config.github.appSlug }) };
   },
 );
 
 export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
   function* (actor: Actor) {
-    const config = yield* AppConfig;
-    if (!isGithubAppConfigured(config)) {
-      return {
-        requestedInstallationCount: 0,
-        hasInstallations: false,
-        configured: false as const,
-      };
-    }
     const installations = yield* listGithubInstallationsForUser(actor.userId);
     if (installations.length === 0) {
-      return {
-        requestedInstallationCount: 0,
-        hasInstallations: false,
-        configured: true as const,
-      };
+      return { requestedInstallationCount: 0, hasInstallations: false };
     }
     yield* sendInngestEvent(
       installations.map((installation) =>
@@ -223,7 +187,6 @@ export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
     return {
       requestedInstallationCount: installations.length,
       hasInstallations: true,
-      configured: true as const,
     };
   },
 );

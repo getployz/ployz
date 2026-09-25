@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -19,14 +20,9 @@ it.live(
       yield* migrateTestDatabase(container.url);
       const provider = ConfigProvider.fromEnv({
         env: {
+          ...testConfigEnvironment(),
           NODE_ENV: "test",
           DATABASE_URL: container.url.href,
-          APP_URL: "http://localhost:3000",
-          BETTER_AUTH_SECRET: "better-auth-secret",
-          GITHUB_CLIENT_ID: "github-client-id",
-          GITHUB_CLIENT_SECRET: "github-client-secret",
-          APP_ENCRYPTION_SECRET:
-            "app-encryption-secret-at-least-32-characters",
         },
       });
       const configLayer = AppConfig.layer.pipe(

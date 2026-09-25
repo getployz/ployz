@@ -18,7 +18,7 @@ describe("dashboard navigation model", () => {
     const items = createDashboardNavItems({
       kind: "all",
       organizationSlug: "acme",
-    });
+    }, { billingEnabled: true });
 
     expect(items.map((item) => item.label)).toEqual([
       "Projects",
@@ -161,5 +161,10 @@ describe("dashboard navigation model", () => {
         "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
       ),
     ).toBe("overview");
+  });
+
+  it("drops Billing on Self-hosted Cloud", () => {
+    const items = createDashboardNavItems({ kind: "all", organizationSlug: "acme" });
+    expect(items.map((item) => item.section)).not.toContain("billing");
   });
 });

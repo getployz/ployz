@@ -23,6 +23,7 @@ import {
   upsertUserProjectPreference,
 } from "./workspace-repository.server";
 import { requireOrganizationForActor } from "./authoring-repository.server";
+import { Polar } from "#/modules/billing/polar-provider.server";
 
 function generateEmptyProjectName() {
   return uniqueNamesGenerator({
@@ -50,7 +51,9 @@ export const getOrganizationState = Effect.fn(
   "EnvironmentDesign.getOrganizationState",
 )(function* (actor: Actor, organizationSlug?: string) {
   const organizations = yield* listOrganizationsForActor(actor);
+  const polar = yield* Polar;
   return {
+    billingEnabled: polar.mode === "hosted",
     activeOrganization:
       organizations.find((organization) => organization.slug === organizationSlug) ??
       organizations[0] ??
