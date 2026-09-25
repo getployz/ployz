@@ -112,3 +112,25 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
 
   return envByServiceId;
 });
+
+// A NUL cannot appear in an environment variable, so no plain value contains it.
+const SEALED_MARKER = "\0sealed\0";
+const sealedMarking: SecretEncryptionService = {
+  decrypt: () => SEALED_MARKER,
+  encrypt: () => { throw new Error("Sealed marking never encrypts."); },
+  sealedFingerprint: () => { throw new Error("Sealed marking never fingerprints."); },
+};
+
+/**
+ * The same resolution without decrypting: each sealed value becomes a marker, and any value
+ * that is or resolves from a sealed value comes back as null. Plain values resolve exactly.
+ */
+export const getDisplayedDeployEnvBySnapshotConfig = (
+  snapshots: Parameters<typeof getResolvedDeployEnvBySnapshotConfig>[1],
+  frozenProducers: EnvironmentSnapshotVariableProducer[] | null,
+  clusterDomain: string | null,
+) => getResolvedDeployEnvBySnapshotConfig(sealedMarking, snapshots, frozenProducers, clusterDomain).pipe(
+  Effect.map((envByServiceId) => new Map([...envByServiceId].map(([serviceId, env]) => [serviceId,
+    Object.fromEntries(Object.entries(env).map(([key, value]) => [key, value.includes(SEALED_MARKER) ? null : value])),
+  ]))),
+);

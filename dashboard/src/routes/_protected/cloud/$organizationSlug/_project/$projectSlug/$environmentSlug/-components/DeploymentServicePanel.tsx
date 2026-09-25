@@ -16,6 +16,7 @@ import {
   DEPLOYMENT_SERVICE_PAGES, deploymentServicePageSchema, type DeploymentServicePage,
 } from "../services/$serviceId/-components/service-pages";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
+import { DeployedVariables } from "./DeployedVariables";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
 /** The tab that matters for the node: the build or rollout that failed or is running, otherwise Details. */
@@ -75,7 +76,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
             })}
           </TabsList>
           <TabsContent value="details" className="mt-4 overflow-y-auto">
-            <DeploymentServiceDetails view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
+            <DeploymentServiceDetails organizationSlug={params.organizationSlug} deployment={deployment} serviceId={serviceId} view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
           </TabsContent>
           <TabsContent value="build-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={config.privateDns} />
@@ -116,9 +117,15 @@ function Fields({ title, fields }: { title: string; fields: [label: string, valu
   );
 }
 
-function DeploymentServiceDetails({ view, config, commitSha }: { view: DeploymentNodeView; config: ServiceConfig; commitSha: string | null }) {
+function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, view, config, commitSha }: {
+  organizationSlug: string;
+  deployment: DeploymentAttempt["deployment"];
+  serviceId: string;
+  view: DeploymentNodeView;
+  config: ServiceConfig;
+  commitSha: string | null;
+}) {
   const { source, build, healthcheck } = config;
-  const variables = Object.entries(config.env).sort(([a], [b]) => a.localeCompare(b));
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
       {view.failure ? (
@@ -132,15 +139,7 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
       ) : (
         <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
       )}
-      <details>
-        <summary className="cursor-pointer font-medium">{variables.length} {variables.length === 1 ? "variable" : "variables"} (as deployed)</summary>
-        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 font-mono text-xs">
-          {variables.flatMap(([key, value]) => [
-            <dt key={`${key}:dt`}>{key}</dt>,
-            <dd key={`${key}:dd`} className="min-w-0 break-all text-muted-foreground">{value.kind === "secret" ? "••••••••" : value.value}</dd>,
-          ])}
-        </dl>
-      </details>
+      <DeployedVariables organizationSlug={organizationSlug} deploymentId={deployment.id} environmentId={deployment.environmentId} serviceId={serviceId} env={config.env} />
       <Fields title="Source" fields={source.type === "image" ? [["Image", source.image]]
         : source.type === "git" ? [
           ["Repository", source.repository],

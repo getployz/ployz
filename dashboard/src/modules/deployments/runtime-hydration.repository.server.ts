@@ -13,6 +13,7 @@ import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
 } from "#/modules/runtime/tables";
 import {
+  getDisplayedDeployEnvBySnapshotConfig,
   getResolvedDeployEnvBySnapshotConfig,
 } from "#/modules/deployments/deploy-environment.server";
 import {
@@ -141,6 +142,18 @@ export const loadDeploymentContext = Effect.fn(
       })),
     } satisfies DeploymentContext;
   }));
+
+/** Whether the attempt's env reads the Organization's Cluster Domain: a service has a managed hostname. */
+export const needsClusterDomain = (context: DeploymentContext) =>
+  context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
+
+/** The attempt's env as deployed, with every value that is or resolves from a sealed value as null. Never decrypts. */
+export const loadDisplayedDeployEnv = (context: DeploymentContext, clusterDomain: string | null) =>
+  getDisplayedDeployEnvBySnapshotConfig(
+    context.snapshots.map(({ serviceId, config }) => ({ serviceId, config })),
+    context.deployment.variableProducers ?? null,
+    clusterDomain,
+  );
 
 export const loadResolvedDeployEnv = Effect.fn(
   "Deployments.loadResolvedDeployEnv",

@@ -79,6 +79,7 @@ const DOCUMENT_COMMAND_FILES = {
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
   deploymentBuildLogQueryOptions: "warmed when the user reaches for a deployment's logs",
+  deploymentServiceVariablesQueryOptions: "read when the user opens a deployed service's variables",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",

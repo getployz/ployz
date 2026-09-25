@@ -31,4 +31,5 @@ export const dataSources = {
   "modules/runtime/volume-removal.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
   "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes; a finished log is never refetched" },
   "modules/deployments/deployment-build-log.queries.ts": { kind: "remote", freshness: "fresh on mount; polls until the build finishes" },
+  "modules/deployments/deployment-variables.queries.ts": { kind: "remote", freshness: "never refetched: recomputed from the attempt's frozen inputs, which never change" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;

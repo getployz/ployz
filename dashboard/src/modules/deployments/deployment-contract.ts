@@ -110,6 +110,12 @@ export const deploymentBuildTailQuerySchema = Schema.Struct({
   deploymentId: Uuid,
 });
 
+export const deploymentServiceVariablesQuerySchema = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  deploymentId: Uuid,
+  serviceId: Uuid,
+});
+
 export const environmentDeploymentSummarySchema = Schema.Struct({
   id: Uuid,
   environmentId: Uuid,
@@ -200,6 +206,7 @@ export type DispatchQueuedEnvironmentDeploymentInput =
 export type DeploymentOperationEvidencePageQueryInput =
   typeof deploymentOperationEvidencePageQuerySchema.Type;
 export type DeploymentBuildTailQueryInput = typeof deploymentBuildTailQuerySchema.Type;
+export type DeploymentServiceVariablesQueryInput = typeof deploymentServiceVariablesQuerySchema.Type;
 export type EnvironmentDeploymentSummary = Omit<
   typeof environmentDeploymentSummarySchema.Type,
   "deployPreview"

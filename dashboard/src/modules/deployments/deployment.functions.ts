@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import {
   cancelEnvironmentDeploymentSchema,
   deploymentBuildTailQuerySchema,
+  deploymentServiceVariablesQuerySchema,
   reviewedPublicationSchema,
   deploymentOperationEvidencePageQuerySchema,
   dispatchQueuedEnvironmentDeploymentSchema,
@@ -15,6 +16,7 @@ import {
 import {
   listDeploymentBuildLog,
   listDeploymentBuildTail,
+  getDeploymentServiceVariables,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
 } from "#/modules/deployments/deployment-operations.server";
@@ -101,6 +103,11 @@ export const listDeploymentBuildTailServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)
   .validator(strictValidator(deploymentBuildTailQuerySchema))
   .handler(({ context, data }) => runActor(context, listDeploymentBuildTail(context.actor, data)));
+
+export const getDeploymentServiceVariablesServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(deploymentServiceVariablesQuerySchema))
+  .handler(({ context, data }) => runActor(context, getDeploymentServiceVariables(context.actor, data)));
 
 export const listDeploymentProgressLogsServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)

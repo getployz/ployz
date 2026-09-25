@@ -4,6 +4,7 @@ export {
 export {
   loadDeploymentContext,
   loadResolvedDeployEnv,
+  needsClusterDomain,
 } from "./runtime-hydration.repository.server";
 export {
   beginEnvironmentDeploymentPlanning,

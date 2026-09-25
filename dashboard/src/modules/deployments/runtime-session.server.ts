@@ -6,7 +6,7 @@ import { expandManagedHostnames } from "#/modules/environment-design/managed-hos
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { compileSdkPreparationInput } from "./runtime-preview";
-import { loadResolvedDeployEnv, type DeploymentContext } from "./runtime-repository.server";
+import { loadResolvedDeployEnv, needsClusterDomain, type DeploymentContext } from "./runtime-repository.server";
 
 /** What a deploy and an Image Build both need from the Organization's runtime: a session and the compiled target. */
 
@@ -47,8 +47,7 @@ const requireClusterDomain = (organizationId: string) =>
 /** The attempt's whole frozen target; an Image Build compiles the same so its fingerprint matches deploy's. */
 export function compileRuntimeIntent(context: DeploymentContext) {
   return Effect.gen(function* () {
-    const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
-    const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
+    const clusterDomain = needsClusterDomain(context) ? yield* requireClusterDomain(context.organization.id) : null;
     const resolvedEnv = yield* loadResolvedDeployEnv(context, clusterDomain);
     // requireClusterDomain already refused a deploy with managed hostnames and no Cluster Domain.
     const snapshots = context.snapshots.map((snapshot) => ({
