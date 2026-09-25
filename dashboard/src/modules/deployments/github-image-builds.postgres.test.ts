@@ -14,7 +14,7 @@ import { GithubApi, GithubObservationError, type GithubJsonRequest } from "#/mod
 import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { makeOrganizationRuntimeLayer, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import { makePloyzLayer, ployzVersion } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database, ReportingDatabase } from "#/server/database.server";
@@ -271,7 +271,7 @@ describe("Image Builds on GitHub Actions", () => {
     expect(dispatched).toEqual({
       operation: "dispatch_workflow",
       url: "https://api.github.com/repos/owner/repo/actions/workflows/ployz-build.yml/dispatches",
-      body: { ref: "main", return_run_details: true, inputs: { build: await imageBuildId(), cloud: "http://localhost:3000", ployz_version: expect.stringMatching(/^\d+\.\d+\.\d+/), runner: "ubuntu-latest" } },
+      body: { ref: "main", return_run_details: true, inputs: { build: await imageBuildId(), cloud: "http://localhost:3000", runner: "ubuntu-latest" } },
     });
     expect(await row()).toMatchObject({
       status: "building", builder: "github",
@@ -294,6 +294,8 @@ describe("Image Builds on GitHub Actions", () => {
     const accepted = await checkIn(oidcToken());
     expect(accepted).toMatchObject({ grant: "ployzgrant1:secret", commit, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(accepted).toHaveProperty("deployment.snapshots.0.config.privateDns", "api");
+    // The runner installs this version, so it must be the SDK that computed the fingerprint.
+    expect(accepted).toHaveProperty("ployzVersion", ployzVersion());
     expect(fake.minted).toEqual(["ployz-build/api"]);
     expect(await rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
     expect(fake.minted).toHaveLength(1);

@@ -82,7 +82,7 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   const config = yield* AppConfig;
   const run = yield* dispatchGithubBuildWorkflow({
     installationId: source.installationId, fullName: workflow.fullName, defaultBranch: workflow.defaultBranch,
-    inputs: { build: build.id, cloud: config.app.url.origin, ployz_version: ployzVersion(), runner },
+    inputs: { build: build.id, cloud: config.app.url.origin, runner },
   });
   const claim = yield* claimForGithub(build, run.runId, {
     runUrl: run.runUrl, fullName: workflow.fullName, workflowRef: run.workflowRef, reason: candidate.reason, grant: null, report: null,
@@ -167,7 +167,7 @@ const authorizeRunner = Effect.fn("Deployments.authorizeGithubRunner")(function*
 /**
  * The runner's one check-in: the build starts. Accepted once, while GitHub still holds the build.
  * Mints a Build Grant on the Machine Cloud deploys through and returns it with the commit, the
- * expected fingerprint, and the frozen deployment whose `resolvedEnv` carries the build secrets.
+ * expected fingerprint, the ployz version that computed it, and the frozen deployment whose `resolvedEnv` carries the build secrets.
  * Nothing secret is ever a workflow input.
  */
 export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(function* (request: Request, imageBuildId: string) {
@@ -201,7 +201,8 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
     );
     return yield* refused;
   }
-  return { grant: minted.grant, commit, fingerprint, deployment };
+  // The runner installs this version: the process that computed the fingerprint names it, even mid-rollout.
+  return { grant: minted.grant, commit, fingerprint, ployzVersion: ployzVersion(), deployment };
 });
 
 const buildStepSchema = Schema.Struct({

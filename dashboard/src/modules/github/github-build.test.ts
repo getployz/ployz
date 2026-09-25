@@ -7,7 +7,7 @@ import { GithubApi, GithubObservationError, type GithubObservationErrorCode } fr
 describe("GitHub build workflow", () => {
   it("calls getployz/build@v1 with every input Cloud dispatches", () => {
     expect(GITHUB_BUILD_WORKFLOW).toContain("uses: getployz/build@v1");
-    for (const input of ["build", "cloud", "ployz_version"]) {
+    for (const input of ["build", "cloud"]) {
       expect(GITHUB_BUILD_WORKFLOW).toContain(`${input}: \${{ inputs.${input} }}`);
     }
   });

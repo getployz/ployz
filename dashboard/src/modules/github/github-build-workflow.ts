@@ -3,7 +3,7 @@ export const GITHUB_BUILD_WORKFLOW_FILE = "ployz-build.yml";
 
 /**
  * The workflow `getployz/build@v1` expects, byte for byte `ployz-build.yml` in https://github.com/getployz/build.
- * Cloud dispatches `build`, `cloud`, `ployz_version` (Cloud's SDK version) and `runner`.
+ * Cloud dispatches `build`, `cloud` and `runner`. The check-in names the ployz version to install.
  */
 export const GITHUB_BUILD_WORKFLOW = `name: Ployz build
 on:
@@ -11,7 +11,6 @@ on:
     inputs:
       build: { required: true, type: string }
       cloud: { required: true, type: string }
-      ployz_version: { required: true, type: string }
       runner: { required: false, type: string, default: ubuntu-latest }
 permissions:
   contents: read
@@ -24,7 +23,6 @@ jobs:
         with:
           build: \${{ inputs.build }}
           cloud: \${{ inputs.cloud }}
-          ployz_version: \${{ inputs.ployz_version }}
 `;
 
 /**

@@ -68,7 +68,7 @@ const dispatchedRunSchema = Schema.Struct({ workflow_run_id: githubIdSchema, htm
  */
 export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkflow")(function* (input: {
   installationId: number; fullName: string; defaultBranch: string;
-  inputs: { build: string; cloud: string; ployz_version: string; runner: string };
+  inputs: { build: string; cloud: string; runner: string };
 }) {
   const api = yield* GithubApi;
   const run = yield* api.json({
