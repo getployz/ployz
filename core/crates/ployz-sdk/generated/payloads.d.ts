@@ -21,7 +21,7 @@ export type CertificateAvailability = "available" | "pending" | "failure" | "unk
 
 export type CertificateBackoff = { failure_kind: CertificateFailureKind, next_attempt_at: string, failures: number, };
 
-export type CertificateFailureKind = "does_not_resolve" | "resolves_elsewhere" | "authority" | string;
+export type CertificateFailureKind = "does_not_resolve" | "unreachable" | "redirects_to_https" | "reaches_elsewhere" | "authority" | string;
 
 export type CertificateHost = string;
 
@@ -29,7 +29,11 @@ export type CertificateMaterialChange = { "action": "set", certificate_chain_pem
 
 export type CertificateMaterialPublished = Record<symbol, never>;
 
-export type CertificateObservation = { hostname: CertificateHost, status: CertificateAvailability, last_error: string | null, backoff: CertificateBackoff | null, };
+export type CertificateObservation = { hostname: CertificateHost, status: CertificateAvailability, last_error: string | null, backoff: CertificateBackoff | null,
+/**
+ * The issued certificate was ordered through a proxy in front of this Cluster.
+ */
+via_proxy: boolean, };
 
 export type ChangeKind = "add" | "update" | "remove";
 

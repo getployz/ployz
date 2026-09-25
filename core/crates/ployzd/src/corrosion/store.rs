@@ -14,8 +14,9 @@ use std::{
 use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ContainerId, ContainerObservation,
-    DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
+    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
+    IssuanceClock, Machine, MachineId,
 };
 use serde_json::json;
 
@@ -489,15 +490,16 @@ impl ReplicatedStore {
         &self,
         hostname: &IngressHost,
         material: &CertificateMaterial,
+        route: ClusterRoute,
     ) -> Result<(), Error> {
         let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
-        if latest.material() == Some(material) && latest.challenge().is_none() {
+        let issued = CertificateRow::issued(material.clone(), route);
+        if latest == issued {
             return Ok(());
         }
-        self.upsert_certificate(&key, &CertificateRow::issued(material.clone()))
-            .await
+        self.upsert_certificate(&key, &issued).await
     }
 
     /// Hold published material for `hostname`; ACME leaves the row alone from now on.

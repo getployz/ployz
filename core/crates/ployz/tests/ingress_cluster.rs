@@ -6,9 +6,9 @@ use std::{
 use ployz::deploy::plan_deploy;
 use ployz_core::{
     CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest,
-    INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId, MachineTarget,
-    MembershipObservation, ProjectName, RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
-    StartContainerRequest, StopContainerRequest, op,
+    HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId,
+    MachineTarget, MembershipObservation, ProjectName, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceId, StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -124,12 +124,12 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
                 .machine_shell(
                     index,
                     &format!(
-                        "curl -fsS -H 'Host: example.test' http://127.0.0.1{INGRESS_VERIFY_PATH}"
+                        "curl -fsS -H 'Host: example.test' http://127.0.0.1{HOSTNAME_VERIFY_PATH}"
                     ),
                 )
                 .unwrap()
                 .trim(),
-            "ok"
+            machine.id.as_str()
         );
         cluster
             .machine_shell(index, "test ! -e /var/lib/ployz/ingress/caddy/caddy.json")

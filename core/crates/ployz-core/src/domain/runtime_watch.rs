@@ -6,8 +6,8 @@ use ts_rs::TS;
 
 use crate::{
     CertificateHost, CodecError, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
-    MachineId, MachineObservation, OpaquePayload, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    ServiceObservation, derive_services,
+    IssuanceFailure, MachineId, MachineObservation, OpaquePayload,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Refusal, ServiceObservation, derive_services,
 };
 
 crate::value::open_string_enum!(CertificateAvailability, Unrecognized {
@@ -19,9 +19,38 @@ crate::value::open_string_enum!(CertificateAvailability, Unrecognized {
 
 crate::value::open_string_enum!(CertificateFailureKind, Unrecognized {
     DoesNotResolve => "does_not_resolve",
-    ResolvesElsewhere => "resolves_elsewhere",
+    Unreachable => "unreachable",
+    RedirectsToHttps => "redirects_to_https",
+    ReachesElsewhere => "reaches_elsewhere",
     Authority => "authority",
 });
+
+impl From<IssuanceFailure> for CertificateFailureKind {
+    fn from(failure: IssuanceFailure) -> Self {
+        match failure {
+            IssuanceFailure::Refused(Refusal::DoesNotResolve) => Self::DoesNotResolve,
+            IssuanceFailure::Refused(Refusal::Unreachable) => Self::Unreachable,
+            IssuanceFailure::Refused(Refusal::RedirectsToHttps) => Self::RedirectsToHttps,
+            IssuanceFailure::Refused(Refusal::ReachesElsewhere) => Self::ReachesElsewhere,
+            IssuanceFailure::Authority => Self::Authority,
+        }
+    }
+}
+
+impl CertificateFailureKind {
+    /// The failure this kind names. `None` for a spelling this reader does not know.
+    #[must_use]
+    pub fn issuance_failure(&self) -> Option<IssuanceFailure> {
+        Some(match self {
+            Self::DoesNotResolve => IssuanceFailure::Refused(Refusal::DoesNotResolve),
+            Self::Unreachable => IssuanceFailure::Refused(Refusal::Unreachable),
+            Self::RedirectsToHttps => IssuanceFailure::Refused(Refusal::RedirectsToHttps),
+            Self::ReachesElsewhere => IssuanceFailure::Refused(Refusal::ReachesElsewhere),
+            Self::Authority => IssuanceFailure::Authority,
+            Self::Unrecognized(_) => return None,
+        })
+    }
+}
 
 /// Shared backoff clock after a refusal or an authority failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -42,6 +71,9 @@ pub struct CertificateObservation {
     pub last_error: Option<String>,
     #[serde(default)]
     pub backoff: Option<CertificateBackoff>,
+    /// The issued certificate was ordered through a proxy in front of this Cluster.
+    #[serde(default)]
+    pub via_proxy: bool,
 }
 
 /// Typed incomplete replicated IDs. An incomplete row is not a delete.

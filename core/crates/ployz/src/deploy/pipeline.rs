@@ -483,8 +483,10 @@ async fn hostname_warnings(
     preview: &DeployPreview,
     machines: &[MachineObservation],
 ) -> Vec<DeployWarning> {
+    let machine_ids: Vec<_> = machines.iter().map(|machine| machine.machine.id).collect();
     resolve_ingress_dns_warnings_for_ports(
         preview_ports(preview),
+        &machine_ids,
         &machine_public_addresses(machines),
     )
     .await

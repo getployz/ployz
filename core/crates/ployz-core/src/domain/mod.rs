@@ -1,8 +1,8 @@
 mod certificate_policy;
-mod cluster_dns;
 mod data_loss;
 mod deploy;
 mod hostname;
+mod hostname_verdict;
 mod image_cleanup;
 mod ingress;
 mod issuance;
@@ -18,10 +18,10 @@ mod spec;
 mod volume;
 
 pub use certificate_policy::*;
-pub use cluster_dns::*;
 pub use data_loss::*;
 pub use deploy::*;
 pub use hostname::*;
+pub use hostname_verdict::*;
 pub use image_cleanup::*;
 pub use ingress::*;
 pub use issuance::*;

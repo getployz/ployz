@@ -1,18 +1,13 @@
 //! Whether to contact the certificate authority for one Ingress Hostname.
 
-use std::{
-    net::IpAddr,
-    time::{Duration, SystemTime},
-};
+use std::time::{Duration, SystemTime};
 
-use super::ClusterDnsVerdict;
-use crate::IngressHost;
+use super::{ClusterRoute, HostnameVerdict, Refusal};
 
 /// Which failure earned the shared backoff clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceFailure {
-    DoesNotResolve,
-    ResolvesElsewhere,
+    Refused(Refusal),
     Authority,
 }
 
@@ -54,49 +49,51 @@ impl IssuanceClock {
     }
 }
 
-/// Whether DNS and the shared clock allow contacting the certificate authority.
+/// Whether the Hostname Verdict and the shared clock allow contacting the certificate authority.
 ///
 /// Distinct from the daemon's rank / due-time `IssuanceAction` (`Order` / `Renew`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceGate {
     Nothing,
-    Refuse(IssuanceClock),
-    Order,
+    Refuse {
+        refusal: Refusal,
+        clock: IssuanceClock,
+    },
+    Order(ClusterRoute),
 }
 
-/// Decide whether to wait, refuse, or proceed. A resolve-verdict change drops resolve backoff.
+/// Decide whether to wait, refuse, or proceed. A verdict change drops refusal backoff.
 ///
 /// Call this before every certificate-authority contact, including renewal.
 #[must_use]
 pub fn issuance_gate(
     clock: Option<IssuanceClock>,
-    verdict: ClusterDnsVerdict,
+    verdict: HostnameVerdict,
     now: SystemTime,
     backoff_base: Duration,
     backoff_cap: Duration,
 ) -> IssuanceGate {
     let waiting = clock.is_some_and(|clock| clock.next_attempt_at() > now);
-    let last_resolve = clock.and_then(|clock| match clock.last_failure() {
-        IssuanceFailure::DoesNotResolve => Some(ClusterDnsVerdict::DoesNotResolve),
-        IssuanceFailure::ResolvesElsewhere => Some(ClusterDnsVerdict::ResolvesElsewhere),
-        IssuanceFailure::Authority => None,
+    let verdict_changed = clock.is_some_and(|clock| {
+        matches!(clock.last_failure(), IssuanceFailure::Refused(last)
+            if verdict != HostnameVerdict::Refused(last))
     });
-    let resolve_cleared = last_resolve.is_some_and(|last| last != verdict);
-    if waiting && !resolve_cleared {
+    if waiting && !verdict_changed {
         return IssuanceGate::Nothing;
     }
-    let last_failure = match verdict {
-        ClusterDnsVerdict::PointsAtCluster => return IssuanceGate::Order,
-        ClusterDnsVerdict::DoesNotResolve => IssuanceFailure::DoesNotResolve,
-        ClusterDnsVerdict::ResolvesElsewhere => IssuanceFailure::ResolvesElsewhere,
-    };
-    IssuanceGate::Refuse(issuance_failure_clock(
-        clock,
-        last_failure,
-        now,
-        backoff_base,
-        backoff_cap,
-    ))
+    match verdict {
+        HostnameVerdict::ReachesCluster(route) => IssuanceGate::Order(route),
+        HostnameVerdict::Refused(refusal) => IssuanceGate::Refuse {
+            refusal,
+            clock: issuance_failure_clock(
+                clock,
+                IssuanceFailure::Refused(refusal),
+                now,
+                backoff_base,
+                backoff_cap,
+            ),
+        },
+    }
 }
 
 /// Delay after `failures` recorded attempts. `failures == 0` uses the base delay.
@@ -127,68 +124,57 @@ pub fn issuance_failure_clock(
     )
 }
 
-/// Why a hostname that misses this Cluster has no certificate.
-#[must_use]
-pub fn issuance_refusal_reason(
-    hostname: &IngressHost,
-    resolved: &[IpAddr],
-    cluster_addresses: &[IpAddr],
-) -> String {
-    if resolved.is_empty() {
-        format!(
-            "Ingress Hostname {hostname} does not resolve; it should resolve to {}.",
-            join_addresses(cluster_addresses)
-        )
-    } else {
-        format!(
-            "Ingress Hostname {hostname} resolves to {}; it should resolve to {}.",
-            join_addresses(resolved),
-            join_addresses(cluster_addresses)
-        )
-    }
-}
-
-fn join_addresses(addresses: &[IpAddr]) -> String {
-    if addresses.is_empty() {
-        return "this Cluster's Machine addresses (none are published)".into();
-    }
-    addresses
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::IpAddr,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
         IssuanceClock, IssuanceFailure, IssuanceGate, issuance_backoff, issuance_failure_clock,
-        issuance_gate, issuance_refusal_reason,
+        issuance_gate,
     };
-    use crate::{ClusterDnsVerdict, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, IngressHost};
+    use crate::{
+        ClusterRoute, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, HostnameVerdict, Refusal,
+    };
 
     #[test]
-    fn empty_row_orders_when_dns_points_at_the_cluster() {
-        assert_eq!(
-            decide(None, ClusterDnsVerdict::PointsAtCluster, now()),
-            IssuanceGate::Order
-        );
+    fn empty_row_orders_when_the_hostname_reaches_the_cluster() {
+        for route in [ClusterRoute::Direct, ClusterRoute::ViaProxy] {
+            assert_eq!(
+                decide(None, HostnameVerdict::ReachesCluster(route), now()),
+                IssuanceGate::Order(route)
+            );
+        }
     }
 
     #[test]
-    fn empty_row_refuses_when_dns_misses_the_cluster() {
+    fn empty_row_refuses_when_the_hostname_misses_the_cluster() {
         assert_eq!(
-            decide(None, ClusterDnsVerdict::DoesNotResolve, now()),
-            refuse(IssuanceFailure::DoesNotResolve, 1)
+            decide(None, HostnameVerdict::Refused(Refusal::Unreachable), now()),
+            refuse(Refusal::Unreachable, 1)
         );
         assert_eq!(
-            decide(None, ClusterDnsVerdict::ResolvesElsewhere, now()),
-            refuse(IssuanceFailure::ResolvesElsewhere, 1)
+            decide(
+                None,
+                HostnameVerdict::Refused(Refusal::RedirectsToHttps),
+                now()
+            ),
+            refuse(Refusal::RedirectsToHttps, 1)
+        );
+        assert_eq!(
+            decide(
+                None,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
+            refuse(Refusal::DoesNotResolve, 1)
+        );
+        assert_eq!(
+            decide(
+                None,
+                HostnameVerdict::Refused(Refusal::ReachesElsewhere),
+                now()
+            ),
+            refuse(Refusal::ReachesElsewhere, 1)
         );
     }
 
@@ -200,11 +186,19 @@ mod tests {
             now() + Duration::from_secs(3600),
         ));
         assert_eq!(
-            decide(clock, ClusterDnsVerdict::PointsAtCluster, now()),
+            decide(
+                clock,
+                HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
+                now()
+            ),
             IssuanceGate::Nothing
         );
         assert_eq!(
-            decide(clock, ClusterDnsVerdict::DoesNotResolve, now()),
+            decide(
+                clock,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
             IssuanceGate::Nothing
         );
     }
@@ -214,11 +208,11 @@ mod tests {
         assert_eq!(
             decide(
                 Some(clock(
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
                     1,
                     now() + Duration::from_secs(3600),
                 )),
-                ClusterDnsVerdict::DoesNotResolve,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 now(),
             ),
             IssuanceGate::Nothing
@@ -230,19 +224,27 @@ mod tests {
         let later = now() + Duration::from_secs(6 * 60 * 60);
         assert_eq!(
             decide(
-                Some(clock(IssuanceFailure::DoesNotResolve, 1, later)),
-                ClusterDnsVerdict::PointsAtCluster,
+                Some(clock(
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                    1,
+                    later
+                )),
+                HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
                 now(),
             ),
-            IssuanceGate::Order
+            IssuanceGate::Order(ClusterRoute::Direct)
         );
         assert_eq!(
             decide(
-                Some(clock(IssuanceFailure::ResolvesElsewhere, 1, later)),
-                ClusterDnsVerdict::PointsAtCluster,
+                Some(clock(
+                    IssuanceFailure::Refused(Refusal::ReachesElsewhere),
+                    1,
+                    later
+                )),
+                HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
                 now(),
             ),
-            IssuanceGate::Order
+            IssuanceGate::Order(ClusterRoute::Direct)
         );
     }
 
@@ -251,14 +253,14 @@ mod tests {
         assert_eq!(
             decide(
                 Some(clock(
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
                     1,
                     now() + Duration::from_secs(6 * 60 * 60),
                 )),
-                ClusterDnsVerdict::ResolvesElsewhere,
+                HostnameVerdict::Refused(Refusal::ReachesElsewhere),
                 now(),
             ),
-            refuse(IssuanceFailure::ResolvesElsewhere, 1)
+            refuse(Refusal::ReachesElsewhere, 1)
         );
     }
 
@@ -271,22 +273,22 @@ mod tests {
                     1,
                     now() - Duration::from_secs(1),
                 )),
-                ClusterDnsVerdict::PointsAtCluster,
+                HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
                 now(),
             ),
-            IssuanceGate::Order
+            IssuanceGate::Order(ClusterRoute::Direct)
         );
         assert_eq!(
             decide(
                 Some(clock(
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
                     4,
                     now() - Duration::from_secs(1),
                 )),
-                ClusterDnsVerdict::DoesNotResolve,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 now(),
             ),
-            refuse(IssuanceFailure::DoesNotResolve, 5)
+            refuse(Refusal::DoesNotResolve, 5)
         );
     }
 
@@ -308,15 +310,31 @@ mod tests {
 
     #[test]
     fn failure_clock_resets_resolve_and_keeps_authority() {
-        let resolve = clock(IssuanceFailure::DoesNotResolve, 4, now());
-        let elsewhere = IssuanceFailure::ResolvesElsewhere;
+        let resolve = clock(IssuanceFailure::Refused(Refusal::DoesNotResolve), 4, now());
+        let elsewhere = IssuanceFailure::Refused(Refusal::ReachesElsewhere);
         assert_eq!(
-            next_clock(None, IssuanceFailure::DoesNotResolve, now()),
-            clock(IssuanceFailure::DoesNotResolve, 1, now() + delay(1))
+            next_clock(
+                None,
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
+            clock(
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                1,
+                now() + delay(1)
+            )
         );
         assert_eq!(
-            next_clock(Some(resolve), IssuanceFailure::DoesNotResolve, now()),
-            clock(IssuanceFailure::DoesNotResolve, 5, now() + delay(5))
+            next_clock(
+                Some(resolve),
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
+            clock(
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                5,
+                now() + delay(5)
+            )
         );
         assert_eq!(
             next_clock(Some(resolve), elsewhere, now()),
@@ -336,29 +354,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn refusal_reason_names_the_hostname_and_addresses() {
-        let hostname = IngressHost::parse("app.example.com").unwrap();
-        let cluster = addrs(["192.0.2.1", "192.0.2.2"]);
-        let elsewhere = addrs(["198.51.100.10"]);
-
-        assert_eq!(
-            issuance_refusal_reason(&hostname, &[], &cluster),
-            "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1, 192.0.2.2."
-        );
-        assert_eq!(
-            issuance_refusal_reason(&hostname, &elsewhere, &cluster),
-            "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2."
-        );
-        assert_eq!(
-            issuance_refusal_reason(&hostname, &elsewhere, &[]),
-            "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to this Cluster's Machine addresses (none are published)."
-        );
-    }
-
     fn decide(
         clock: Option<IssuanceClock>,
-        verdict: ClusterDnsVerdict,
+        verdict: HostnameVerdict,
         now: SystemTime,
     ) -> IssuanceGate {
         issuance_gate(
@@ -388,8 +386,15 @@ mod tests {
         issuance_backoff(failures, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP)
     }
 
-    fn refuse(last_failure: IssuanceFailure, failures: u32) -> IssuanceGate {
-        IssuanceGate::Refuse(clock(last_failure, failures, now() + delay(failures)))
+    fn refuse(refusal: Refusal, failures: u32) -> IssuanceGate {
+        IssuanceGate::Refuse {
+            refusal,
+            clock: clock(
+                IssuanceFailure::Refused(refusal),
+                failures,
+                now() + delay(failures),
+            ),
+        }
     }
 
     fn clock(
@@ -402,12 +407,5 @@ mod tests {
 
     fn now() -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(1_700_000_000)
-    }
-
-    fn addrs<const N: usize>(values: [&str; N]) -> Vec<IpAddr> {
-        values
-            .into_iter()
-            .map(|value| value.parse().unwrap())
-            .collect()
     }
 }

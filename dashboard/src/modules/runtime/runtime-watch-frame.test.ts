@@ -29,6 +29,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
         next_attempt_at: "2026-08-18T00:02:00.000Z",
         failures: 2,
       },
+      via_proxy: true,
     });
 
     const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
@@ -117,6 +118,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
             nextAttemptAt: "2026-08-18T00:02:00.000Z",
             failures: 2,
           },
+          viaProxy: true,
         },
       ],
       incompleteIds: {

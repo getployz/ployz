@@ -14,9 +14,9 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, contacts_authority,
-    directory_from_env, ingress_challenge_ips, issuance_action, machine_jitter, machine_rank,
-    material_validity, order_certificate, poll_wait, renewal_window, wait_for_http01,
+    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, directory_from_env,
+    ingress_challenge_ips, issuance_action, machine_jitter, machine_rank, material_validity,
+    order_certificate, poll_wait, probe_client, renewal_window, verify_answers, wait_for_http01,
     wanted_certificate_hosts,
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
@@ -121,7 +121,7 @@ fn published_material_and_published_wildcards_are_not_wanted() {
         ),
         (
             certificate_host("acme.example.com"),
-            CertificateRow::issued(acme),
+            CertificateRow::issued(acme, ployz_core::ClusterRoute::Direct),
         ),
     ]);
     assert_eq!(
@@ -189,35 +189,6 @@ fn only_rank_zero_orders_immediately() {
         ),
         IssuanceAction::Nothing
     );
-}
-
-#[test]
-fn renew_does_not_contact_the_authority_when_dns_refuses() {
-    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::ResolvesElsewhere);
-    assert!(!contacts_authority(
-        IssuanceAction::Renew,
-        IssuanceGate::Refuse(clock)
-    ));
-    assert!(!contacts_authority(
-        IssuanceAction::Order,
-        IssuanceGate::Refuse(clock)
-    ));
-    assert!(!contacts_authority(
-        IssuanceAction::Renew,
-        IssuanceGate::Nothing
-    ));
-    assert!(contacts_authority(
-        IssuanceAction::Renew,
-        IssuanceGate::Order
-    ));
-    assert!(contacts_authority(
-        IssuanceAction::Order,
-        IssuanceGate::Order
-    ));
-    assert!(!contacts_authority(
-        IssuanceAction::Nothing,
-        IssuanceGate::Order
-    ));
 }
 
 #[test]
@@ -408,18 +379,32 @@ fn poll_wait_follows_each_certificate_lifetime() {
 }
 
 #[test]
-fn probe_addresses_are_the_ingress_intersection() {
+fn probe_addresses_are_the_ingress_intersection_or_every_proxy_address() {
     let ingress_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
+    let direct = ployz_core::ClusterRoute::Direct;
+    let proxy = ployz_core::ClusterRoute::ViaProxy;
     assert_eq!(
-        challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &ingress_ips),
+        challenge_probe_addresses(
+            &[ip("192.0.2.2"), ip("198.51.100.10")],
+            &ingress_ips,
+            direct
+        ),
         vec![socket("192.0.2.2")]
     );
     assert_eq!(
-        challenge_probe_addresses(&[ip("198.51.100.10")], &ingress_ips),
+        challenge_probe_addresses(&[ip("198.51.100.10")], &ingress_ips, direct),
         Vec::<SocketAddr>::new()
     );
     assert_eq!(
-        challenge_probe_addresses(&[], &ingress_ips),
+        challenge_probe_addresses(
+            &[ip("198.51.100.10"), ip("198.51.100.11")],
+            &ingress_ips,
+            proxy
+        ),
+        vec![socket("198.51.100.10"), socket("198.51.100.11")]
+    );
+    assert_eq!(
+        challenge_probe_addresses(&[], &ingress_ips, proxy),
         Vec::<SocketAddr>::new()
     );
 }
@@ -476,11 +461,106 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
             SocketAddr::from(([127, 0, 0, 1], first_port)),
             SocketAddr::from(([127, 0, 0, 1], second_port)),
         ],
+        ployz_core::ClusterRoute::Direct,
         CHALLENGE_WAIT,
     )
     .await
     .unwrap();
     drop((first_stop, second_stop));
+}
+
+#[tokio::test]
+async fn a_proxied_challenge_needs_one_serving_address_and_a_direct_one_needs_all() {
+    let token = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+    let response = format!("{token}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    let challenge = CertificateChallenge::parse(token, &response).unwrap();
+    let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::from([(
+        token.to_owned(),
+        response.clone(),
+    )])));
+    let (serving, port) = ployz_testkit::fake_acme::serve_http01(answers);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let addresses = [SocketAddr::from(([127, 0, 0, 1], port)), closed];
+    let hostname = host("app.example.com");
+    let probe = |route| {
+        wait_for_http01(
+            &hostname,
+            &challenge,
+            &addresses,
+            route,
+            Duration::from_millis(300),
+        )
+    };
+
+    assert!(probe(ployz_core::ClusterRoute::ViaProxy).await.is_ok());
+    assert!(matches!(
+        probe(ployz_core::ClusterRoute::Direct).await,
+        Err(super::Error::ChallengeNotServed)
+    ));
+    drop(serving);
+}
+
+#[tokio::test]
+async fn verify_answers_report_status_location_and_body_or_no_answer() {
+    let body = serve_once("200 OK", "", "0123456789abcdef0123456789abcdef");
+    let redirect = serve_once(
+        "301 Moved Permanently",
+        "Location: https://app.example.com/.ployz-verify\r\n",
+        "",
+    );
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let client = probe_client(Duration::from_secs(2)).unwrap();
+
+    let answers =
+        verify_answers(&client, &host("app.example.com"), &[body, redirect, closed]).await;
+
+    let loopback = ip("127.0.0.1");
+    assert_eq!(
+        answers,
+        vec![
+            (
+                loopback,
+                ployz_core::VerifyAnswer::Answered {
+                    status: 200,
+                    location: String::new(),
+                    body: "0123456789abcdef0123456789abcdef".into(),
+                }
+            ),
+            (
+                loopback,
+                ployz_core::VerifyAnswer::Answered {
+                    status: 301,
+                    location: "https://app.example.com/.ployz-verify".into(),
+                    body: String::new(),
+                }
+            ),
+            (loopback, ployz_core::VerifyAnswer::NoAnswer),
+        ]
+    );
+}
+
+/// One canned HTTP/1.1 response on a fresh loopback port.
+fn serve_once(status: &'static str, headers: &'static str, body: &'static str) -> SocketAddr {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+    address
 }
 
 #[tokio::test]
@@ -493,7 +573,13 @@ async fn empty_probe_addresses_fail_without_waiting() {
     .unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
-        wait_for_http01(&hostname, &challenge, &[], CHALLENGE_WAIT),
+        wait_for_http01(
+            &hostname,
+            &challenge,
+            &[],
+            ployz_core::ClusterRoute::ViaProxy,
+            CHALLENGE_WAIT,
+        ),
     )
     .await
     .unwrap()
@@ -675,7 +761,7 @@ fn row_with_lifetime(not_before: SystemTime, not_after: SystemTime) -> Certifica
     let (certificate, private_key) =
         ployz_testkit::fake_acme::self_signed_material("app.example.com", not_before, not_after);
     let material = CertificateMaterial::parse(certificate, private_key).unwrap();
-    CertificateRow::from_parts(Some(material), None)
+    CertificateRow::from_parts(Some((material, ployz_core::ClusterRoute::Direct)), None)
 }
 
 fn host(name: &str) -> IngressHost {

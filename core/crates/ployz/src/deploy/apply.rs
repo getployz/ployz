@@ -409,8 +409,12 @@ mod tests {
         let preview = DeployPreview::new(
             Vec::new(),
             ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
-                "app.example.com" => vec!["198.51.100.10".parse().unwrap()],
-                "plain.example.com" => Vec::new(),
+                "app.example.com" => {
+                    ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::ReachesElsewhere)
+                }
+                "plain.example.com" => {
+                    ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::DoesNotResolve)
+                }
                 other => panic!("unexpected {other}"),
             })
             .into_iter()
@@ -425,8 +429,8 @@ mod tests {
                 .map(|warning| format!("WARNING: {warning}"))
                 .collect::<Vec<_>>(),
             [
-                "WARNING: Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster.",
-                "WARNING: Ingress Hostname plain.example.com does not resolve; it should resolve to 192.0.2.1.",
+                "WARNING: app.example.com answers from another server. Point it at 192.0.2.1. A certificate cannot be issued until then.",
+                "WARNING: plain.example.com does not resolve. Add a DNS record pointing at 192.0.2.1.",
             ]
         );
         assert!(

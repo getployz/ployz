@@ -269,14 +269,16 @@ fn deploy_warning_display_is_the_cli_line_body() {
     }))
     .unwrap();
     let warning =
-        crate::dns::ingress_dns_warnings([&spec], &["192.0.2.1".parse().unwrap()], |_| Vec::new())
-            .into_iter()
-            .map(DeployWarning::from)
-            .next()
-            .expect("unresolved Ingress Hostname warns");
+        crate::dns::ingress_dns_warnings([&spec], &["192.0.2.1".parse().unwrap()], |_| {
+            ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::DoesNotResolve)
+        })
+        .into_iter()
+        .map(DeployWarning::from)
+        .next()
+        .expect("unresolved Ingress Hostname warns");
     assert_eq!(
         warning.to_string(),
-        "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
+        "app.example.com does not resolve. Add a DNS record pointing at 192.0.2.1. A certificate cannot be issued until then."
     );
     assert_eq!(
         DeployWarning::ObservationOmitted {

@@ -79,6 +79,8 @@ export function ServiceNetworkingSection({
     if (!certificate && !incomplete) return null;
     return {
       status: certificate?.status ?? null,
+      failureKind: certificate?.backoff?.failureKind ?? null,
+      viaProxy: certificate?.viaProxy ?? false,
       lastObserved: !runtimeIsCurrent,
       incomplete,
     };

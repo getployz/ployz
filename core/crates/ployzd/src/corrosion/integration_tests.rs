@@ -252,7 +252,7 @@ async fn certificates_round_trip_and_notify_on_change() {
     let mut changes = store.subscribe_certificate_changes().await.unwrap();
 
     store
-        .publish_certificate(&hostname, &material)
+        .publish_certificate(&hostname, &material, ployz_core::ClusterRoute::Direct)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), changes.changed())
@@ -269,7 +269,7 @@ async fn certificates_round_trip_and_notify_on_change() {
     );
 
     store
-        .publish_certificate(&hostname, &material)
+        .publish_certificate(&hostname, &material, ployz_core::ClusterRoute::Direct)
         .await
         .unwrap();
     let updated = {
@@ -277,7 +277,7 @@ async fn certificates_round_trip_and_notify_on_change() {
         CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
     };
     store
-        .publish_certificate(&hostname, &updated)
+        .publish_certificate(&hostname, &updated, ployz_core::ClusterRoute::Direct)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), changes.changed())

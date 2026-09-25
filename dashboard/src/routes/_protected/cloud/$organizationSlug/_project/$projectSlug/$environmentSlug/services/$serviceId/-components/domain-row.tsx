@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { GlobeIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { FieldDescription } from "#/components/ui/field";
 import { cn } from "#/lib/utils";
@@ -8,9 +9,22 @@ import type { ServiceRoute } from "#/modules/environment-design/tables";
 
 export type DomainCertificateEvidence = {
   status: string | null;
+  failureKind: string | null;
+  viaProxy: boolean;
   lastObserved: boolean;
   incomplete: boolean;
 } | null;
+
+// Failures the user fixes in their own DNS or proxy: one line each.
+const USER_FIXES = {
+  does_not_resolve: "No DNS record yet.",
+  unreachable: "Port 80 is closed.",
+  // TODO: DOCS PAGE NEEDED on custom domains behind a proxy (see refusal_reason in
+  // core/crates/ployz-core/src/domain/hostname_verdict.rs); link it from this line.
+  redirects_to_https:
+    "Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects.",
+  reaches_elsewhere: "Points to another server.",
+} satisfies Record<string, string>;
 
 export function DomainTitle({
   hostname,
@@ -58,6 +72,14 @@ export function CertificateEvidence({
   evidence: DomainCertificateEvidence;
 }) {
   if (!evidence) return null;
+  // SAFETY: Object.hasOwn proves failureKind is a USER_FIXES key before the cast.
+  const fix =
+    evidence.status === "failure" &&
+    evidence.failureKind &&
+    Object.hasOwn(USER_FIXES, evidence.failureKind)
+      ? USER_FIXES[evidence.failureKind as keyof typeof USER_FIXES]
+      : undefined;
+  if (fix) return <FieldDescription>{fix}</FieldDescription>;
   return (
     <FieldDescription>
       {evidence.status
@@ -68,6 +90,11 @@ export function CertificateEvidence({
       {evidence.incomplete
         ? " This observation also lists this certificate as incomplete."
         : null}
+      {evidence.viaProxy ? (
+        <Badge variant="secondary" className="ml-2">
+          via proxy
+        </Badge>
+      ) : null}
     </FieldDescription>
   );
 }

@@ -3,7 +3,10 @@
 use std::{collections::BTreeMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::{CertificateHost, IngressHost, IssuanceClock, IssuanceFailure};
+use ployz_core::{
+    CertificateFailureKind, CertificateHost, ClusterRoute, IngressHost, IssuanceClock,
+    IssuanceFailure,
+};
 use serde::{Deserialize, Serialize};
 
 use super::Error;
@@ -220,7 +223,8 @@ pub struct RecordedRefusal {
 pub enum CertificateRow {
     /// Material, pending challenge and refusal that ACME owns.
     Acme {
-        material: Option<CertificateMaterial>,
+        /// Issued material and the route its order validated along.
+        material: Option<(CertificateMaterial, ClusterRoute)>,
         challenge: Option<CertificateChallenge>,
         refusal: Option<RecordedRefusal>,
     },
@@ -238,7 +242,7 @@ impl CertificateRow {
     /// ACME-owned snapshot for one hostname.
     #[must_use]
     pub fn from_parts(
-        material: Option<CertificateMaterial>,
+        material: Option<(CertificateMaterial, ClusterRoute)>,
         challenge: Option<CertificateChallenge>,
     ) -> Self {
         Self::Acme {
@@ -248,10 +252,19 @@ impl CertificateRow {
         }
     }
 
-    /// ACME row that holds newly issued material and no challenge.
+    /// ACME row that holds material newly issued along `route`, and no challenge.
     #[must_use]
-    pub fn issued(material: CertificateMaterial) -> Self {
-        Self::from_parts(Some(material), None)
+    pub fn issued(material: CertificateMaterial, route: ClusterRoute) -> Self {
+        Self::from_parts(Some((material, route)), None)
+    }
+
+    /// The route ACME-issued material validated along. `None` without ACME material.
+    #[must_use]
+    pub fn route(&self) -> Option<ClusterRoute> {
+        match self {
+            Self::Acme { material, .. } => material.as_ref().map(|(_, route)| *route),
+            Self::Published(_) => None,
+        }
     }
 
     /// Published material, if this row holds it.
@@ -281,7 +294,7 @@ impl CertificateRow {
     #[must_use]
     pub fn material(&self) -> Option<&CertificateMaterial> {
         match self {
-            Self::Acme { material, .. } => material.as_ref(),
+            Self::Acme { material, .. } => material.as_ref().map(|(material, _)| material),
             Self::Published(material) => Some(material),
         }
     }
@@ -318,7 +331,7 @@ impl CertificateRow {
     #[must_use]
     pub fn into_material(self) -> Option<CertificateMaterial> {
         match self {
-            Self::Acme { material, .. } => material,
+            Self::Acme { material, .. } => material.map(|(material, _)| material),
             Self::Published(material) => Some(material),
         }
     }
@@ -395,8 +408,9 @@ impl CertificateRow {
                 Error::Protocol("published certificate row has no valid material".into())
             });
         }
+        let route = body.route.unwrap_or(ClusterRoute::Direct);
         Ok(Self::Acme {
-            material,
+            material: material.map(|material| (material, route)),
             challenge,
             refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
                 reason: last_error,
@@ -429,8 +443,9 @@ impl CertificateRow {
                 .map(|clock| encode_attempt(clock.next_attempt_at()))
                 .unwrap_or_default(),
             failures: clock.map_or(0, |clock| clock.failures()),
-            last_failure: encode_failure(clock.map(|clock| clock.last_failure())).into(),
+            last_failure: encode_failure(clock.map(|clock| clock.last_failure())),
             published: self.published().is_some(),
+            route: self.route(),
         })?)
     }
 }
@@ -464,6 +479,8 @@ struct CertificateBody {
     failures: u32,
     last_failure: String,
     published: bool,
+    /// The route ACME material validated along; absent without ACME material.
+    route: Option<ClusterRoute>,
 }
 
 fn encode_attempt(time: SystemTime) -> String {
@@ -485,29 +502,21 @@ fn decode_clock(next_attempt_at: &str, failures: u32, last_failure: &str) -> Opt
     Some(IssuanceClock::new(failures, next_attempt_at, last_failure))
 }
 
-fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
-    match failure {
-        Some(IssuanceFailure::DoesNotResolve) => "does_not_resolve",
-        Some(IssuanceFailure::ResolvesElsewhere) => "resolves_elsewhere",
-        Some(IssuanceFailure::Authority) => "authority",
-        None => "",
-    }
+fn encode_failure(failure: Option<IssuanceFailure>) -> String {
+    failure
+        .map(|failure| CertificateFailureKind::from(failure).as_str().to_owned())
+        .unwrap_or_default()
 }
 
 fn decode_failure(text: &str) -> Option<IssuanceFailure> {
-    match text {
-        "does_not_resolve" => Some(IssuanceFailure::DoesNotResolve),
-        "resolves_elsewhere" => Some(IssuanceFailure::ResolvesElsewhere),
-        "authority" => Some(IssuanceFailure::Authority),
-        _ => None,
-    }
+    CertificateFailureKind::from(text).issuance_failure()
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use ployz_core::{IssuanceClock, IssuanceFailure};
+    use ployz_core::{ClusterRoute, IssuanceClock, IssuanceFailure};
 
     use super::{
         CertificateChallenge, CertificateChallengeError, CertificateMaterial,
@@ -684,6 +693,20 @@ mod tests {
     }
 
     #[test]
+    fn issued_route_round_trips_and_needs_material() {
+        for route in [ClusterRoute::Direct, ClusterRoute::ViaProxy] {
+            let row = CertificateRow::issued(issued_material(), route);
+            assert_eq!(
+                CertificateRow::decode(&row.encode().unwrap())
+                    .unwrap()
+                    .route(),
+                Some(route)
+            );
+        }
+        assert_eq!(CertificateRow::default().route(), None);
+    }
+
+    #[test]
     fn invalid_certificate_body_is_an_error() {
         assert!(decode_material("{").is_err());
         assert!(decode_material("null").is_err());
@@ -757,7 +780,11 @@ mod tests {
     #[test]
     fn certificate_row_round_trips_refusal_clock() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let clock = IssuanceClock::new(3, at, IssuanceFailure::DoesNotResolve);
+        let clock = IssuanceClock::new(
+            3,
+            at,
+            IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
+        );
         let row = CertificateRow::from_parts(None, None).with_backoff(
             "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
             clock,
@@ -768,12 +795,12 @@ mod tests {
         assert_eq!(decoded.clock(), Some(clock));
         assert_eq!(
             CertificateRow::decode(
-                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_failure":"resolves_elsewhere"}"#
+                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_failure":"reaches_elsewhere"}"#
             )
             .unwrap()
             .clock()
             .map(|clock| clock.last_failure()),
-            Some(IssuanceFailure::ResolvesElsewhere)
+            Some(IssuanceFailure::Refused(ployz_core::Refusal::ReachesElsewhere))
         );
         assert_eq!(
             CertificateRow::decode(r#"{"last_failure":"authority"}"#)
@@ -786,7 +813,10 @@ mod tests {
     #[test]
     fn challenge_write_keeps_issued_material() {
         let issued = issued_material();
-        let latest = CertificateRow::from_parts(Some(issued.clone()), None);
+        let latest = CertificateRow::from_parts(
+            Some((issued.clone(), ployz_core::ClusterRoute::Direct)),
+            None,
+        );
         let challenge = CertificateChallenge::parse("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0", "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
         let row = latest.with_challenge(challenge.clone());
         assert_eq!(row.material(), Some(&issued));
@@ -799,9 +829,10 @@ mod tests {
         let clock = IssuanceClock::new(
             3,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-            IssuanceFailure::DoesNotResolve,
+            IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
         );
-        let row = CertificateRow::issued(material.clone()).with_backoff("authority refused", clock);
+        let row = CertificateRow::issued(material.clone(), ployz_core::ClusterRoute::Direct)
+            .with_backoff("authority refused", clock);
         let mut body: serde_json::Value = serde_json::from_str(&row.encode().unwrap()).unwrap();
         let fields = body.as_object_mut().unwrap();
         fields.insert("challenge_token".to_owned(), "../escape".into());
@@ -819,7 +850,8 @@ mod tests {
     #[test]
     fn error_write_keeps_issued_material() {
         let issued = issued_material();
-        let row = CertificateRow::issued(issued.clone()).with_error("refused");
+        let row = CertificateRow::issued(issued.clone(), ployz_core::ClusterRoute::Direct)
+            .with_error("refused");
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.last_error(), Some("refused"));
         assert_eq!(row.clock(), None);
@@ -828,7 +860,11 @@ mod tests {
     #[test]
     fn error_write_clears_a_previous_clock() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let clock = IssuanceClock::new(3, at, IssuanceFailure::DoesNotResolve);
+        let clock = IssuanceClock::new(
+            3,
+            at,
+            IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
+        );
         let row = CertificateRow::from_parts(None, None)
             .with_backoff("does not resolve", clock)
             .with_error("policy refused");

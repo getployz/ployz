@@ -1,7 +1,9 @@
 //! Deterministic Caddy configuration rendering and application.
 
 use chrono::{SecondsFormat, Utc};
-use ployz_core::{HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, Machine};
+use ployz_core::{
+    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, Machine, MachineId,
+};
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
 use std::{
@@ -176,13 +178,13 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     );
     // Caddy never issues certificates. The daemon pins material when it has any.
     output.push_str("{\n\tauto_https off\n}\n\n");
+    let ingress_verify = verify_handle(INGRESS_VERIFY_PATH, local_machine);
+    let hostname_verify = verify_handle(HOSTNAME_VERIFY_PATH, local_machine);
     let _ = write!(
         output,
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-\thandle {INGRESS_VERIFY_PATH} {{\n\
-\t\trespond \"{local_machine}\" 200\n\
-\t}}\n\
+{ingress_verify}{hostname_verify}\
 \trespond \"Not Found\" 404\n\
 \tlog\n\
 }}\n\
@@ -204,12 +206,13 @@ http:// {{\n\
     for site in &projection.sites {
         let http = site.route(HttpProtocol::Http);
         if http.is_some() || site.challenge().is_some() {
+            // The hostname's own site shadows the catch-all, so it answers the verify probe too.
             write_site(
                 &mut output,
                 "http",
                 &site.hostname,
                 http.unwrap_or_default(),
-                "",
+                &hostname_verify,
                 site.challenge(),
             );
         }
@@ -226,6 +229,11 @@ http:// {{\n\
     }
     write_certificate_errors(&mut output, &projection.sites);
     output
+}
+
+/// A site handle that answers `path` with this Machine's id.
+fn verify_handle(path: &str, machine: &MachineId) -> String {
+    format!("\thandle {path} {{\n\t\trespond \"{machine}\" 200\n\t}}\n")
 }
 
 fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
@@ -257,7 +265,7 @@ fn write_site(
     protocol: &str,
     hostname: &IngressHost,
     endpoints: &[IngressEndpoint],
-    tls: &str,
+    directives: &str,
     challenge: Option<&CertificateChallenge>,
 ) {
     let handle = challenge
@@ -284,7 +292,7 @@ fn write_site(
     };
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{tls}{handle}{proxy}\tlog\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{proxy}\tlog\n}}\n"
     );
 }
 

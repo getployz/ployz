@@ -329,6 +329,15 @@ macro_rules! open_string_enum {
                 }
             }
         }
+
+        impl From<&str> for $name {
+            fn from(value: &str) -> Self {
+                match value {
+                    $($wire => Self::$variant,)+
+                    other => Self::$fallback(other.to_owned()),
+                }
+            }
+        }
     };
 }
 

@@ -106,6 +106,7 @@ export const runtimeCertificateRecordSchema = Schema.Struct({
       failures: NonnegativeInt,
     }),
   ),
+  viaProxy: Schema.Boolean,
 });
 
 export type RuntimeCertificateRecord =

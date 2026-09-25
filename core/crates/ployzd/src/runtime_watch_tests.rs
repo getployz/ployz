@@ -9,8 +9,8 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, CertificateAvailability, CertificateBackoff,
-    CertificateFailureKind, CertificateHost, CertificateObservation, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
+    CertificateFailureKind, CertificateHost, CertificateObservation, ClusterRoute, ContainerId,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, HealthObservation, IssuanceClock, IssuanceFailure, Machine, MachineId,
     MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
@@ -66,7 +66,10 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             certificates: ReplicatedObservations {
                 observations: vec![(
                     CertificateHost::parse("ok.example.com").unwrap(),
-                    CertificateRow::issued(crate::ingress::tests::test_material()),
+                    CertificateRow::issued(
+                        crate::ingress::tests::test_material(),
+                        ployz_core::ClusterRoute::Direct,
+                    ),
                 )],
                 incomplete_ids: Vec::new(),
             },
@@ -100,6 +103,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             status: CertificateAvailability::Available,
             last_error: None,
             backoff: None,
+            via_proxy: false,
         }]
     );
     assert_eq!(frame.observed_at, OBSERVED_AT);
@@ -135,7 +139,10 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
             certificates: ReplicatedObservations {
                 observations: vec![(
                     CertificateHost::parse("ok.example.com").unwrap(),
-                    CertificateRow::issued(crate::ingress::tests::test_material()),
+                    CertificateRow::issued(
+                        crate::ingress::tests::test_material(),
+                        ployz_core::ClusterRoute::Direct,
+                    ),
                 )],
                 incomplete_ids: vec![incomplete_cert.clone()],
             },
@@ -168,7 +175,11 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
 fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
     let entry = machine("edge", ENTRY_ID, 1);
     let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_704_067_200);
-    let clock = IssuanceClock::new(2, at, IssuanceFailure::DoesNotResolve);
+    let clock = IssuanceClock::new(
+        2,
+        at,
+        IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
+    );
     let pending = CertificateRow::from_parts(None, None)
         .with_challenge(CertificateChallenge::parse(CHALLENGE_TOKEN, CHALLENGE_RESPONSE).unwrap());
     let failed = CertificateRow::from_parts(None, None).with_backoff(
@@ -184,7 +195,10 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 observations: vec![
                     (
                         CertificateHost::parse("ok.example.com").unwrap(),
-                        CertificateRow::issued(crate::ingress::tests::test_material()),
+                        CertificateRow::issued(
+                            crate::ingress::tests::test_material(),
+                            ClusterRoute::ViaProxy,
+                        ),
                     ),
                     (CertificateHost::parse("new.example.com").unwrap(), pending),
                     (CertificateHost::parse("app.example.com").unwrap(), failed),
@@ -209,12 +223,14 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 status: CertificateAvailability::Available,
                 last_error: None,
                 backoff: None,
+                via_proxy: true,
             },
             CertificateObservation {
                 hostname: CertificateHost::parse("new.example.com").unwrap(),
                 status: CertificateAvailability::Pending,
                 last_error: None,
                 backoff: None,
+                via_proxy: false,
             },
             CertificateObservation {
                 hostname: CertificateHost::parse("app.example.com").unwrap(),
@@ -228,12 +244,14 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                     next_attempt_at: "2024-01-01T00:00:00Z".into(),
                     failures: 2,
                 }),
+                via_proxy: false,
             },
             CertificateObservation {
                 hostname: CertificateHost::parse("maybe.example.com").unwrap(),
                 status: CertificateAvailability::Unknown,
                 last_error: None,
                 backoff: None,
+                via_proxy: false,
             },
         ]
     );

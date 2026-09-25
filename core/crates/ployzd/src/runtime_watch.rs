@@ -11,10 +11,10 @@ use std::{
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{Stream, StreamExt};
 use ployz_core::{
-    CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateHost,
-    CertificateObservation, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
-    IssuanceClock, IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
-    OpaquePayload, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
+    CertificateAvailability, CertificateBackoff, CertificateHost, CertificateObservation,
+    ClusterRoute, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IssuanceClock,
+    Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
     encode_runtime_watch_frame,
 };
 use tokio::sync::{Mutex, mpsc, watch};
@@ -410,16 +410,13 @@ fn redact_certificate(hostname: CertificateHost, row: &CertificateRow) -> Certif
         status,
         last_error: row.last_error().map(str::to_owned),
         backoff,
+        via_proxy: row.route() == Some(ClusterRoute::ViaProxy),
     }
 }
 
 fn certificate_backoff(clock: IssuanceClock) -> CertificateBackoff {
     CertificateBackoff {
-        failure_kind: match clock.last_failure() {
-            IssuanceFailure::DoesNotResolve => CertificateFailureKind::DoesNotResolve,
-            IssuanceFailure::ResolvesElsewhere => CertificateFailureKind::ResolvesElsewhere,
-            IssuanceFailure::Authority => CertificateFailureKind::Authority,
-        },
+        failure_kind: clock.last_failure().into(),
         next_attempt_at: rfc3339(clock.next_attempt_at()),
         failures: clock.failures(),
     }
