@@ -82,7 +82,7 @@ export type CanvasNodeType = (typeof CANVAS_NODE_TYPES)[number];
 export type {
   ServiceGitBranch, ServiceImageCredentials,
   ServiceSource, ServiceHealthcheck, ServiceRestartPolicy, ServiceRoute,
-  ServiceManagedHostname, ServiceBuilder, ServiceBuildConfig,
+  ServiceManagedHostname, BuildMethod, ServiceBuildConfig,
 } from "@ployz/sdk/config";
 
 export type ServiceDeployEnvValue =

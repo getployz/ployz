@@ -11,6 +11,8 @@ export type BindRecursive = "disabled" | "writable" | "readonly";
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
+export type BuildMethod = "dockerfile" | "railpack";
+
 export type ByteQuantity = number;
 
 export type CapabilityName = string;
@@ -714,13 +716,11 @@ export type ServiceAttempt = {
  */
 name: ServiceName, };
 
-export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null,
+export type ServiceBuildConfig = { buildMethod: BuildMethod, dockerfilePath: string | null,
 /**
  * Override Railpack’s build command; None preserves detection. Ignored for Dockerfiles.
  */
 command: string | null, };
-
-export type ServiceBuilder = "dockerfile" | "railpack";
 
 export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 

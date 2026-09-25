@@ -31,11 +31,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function show(source: ServiceSource, builder: "dockerfile" | "railpack" = "dockerfile") {
+async function show(source: ServiceSource, buildMethod: "dockerfile" | "railpack" = "dockerfile") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
   const update = vi.fn((_id: string, _apply: (draft: ServiceDrawerState["service"]) => void) => ({ isPersisted: { promise: Promise.resolve() } }));
-  const build = { builder, dockerfilePath: "docker/Dockerfile", command: null, } as const;
+  const build = { buildMethod, dockerfilePath: "docker/Dockerfile", command: null, } as const;
   const state = asTestDouble<ServiceDrawerState>()({
     organizationSlug: "acme",
     environmentSlug: "production",

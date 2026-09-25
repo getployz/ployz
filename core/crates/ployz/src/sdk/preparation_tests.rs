@@ -35,14 +35,14 @@ fn fixture() -> (PathBuf, DeployService, Arc<BuildFixture>) {
 }
 
 /// One Git-sourced Cloud snapshot.
-fn git(name: &str, builder: &str) -> Value {
+fn git(name: &str, build_method: &str) -> Value {
     json!({"config": {
         "version": 2, "privateDns": name, "healthcheck": {"type": "none"},
         "restartPolicy": "on-failure",
         "source": {"version": 2, "type": "git", "repository": format!("acme/{name}"),
             "repositoryId": 42, "access": {"type": "public"}, "rootDir": "/",
             "branch": {"type": "connected", "name": "main"}},
-        "build": {"builder": builder, "dockerfilePath": "Dockerfile", "command": null}
+        "build": {"buildMethod": build_method, "dockerfilePath": "Dockerfile", "command": null}
     }})
 }
 
@@ -860,7 +860,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
             {"config": {"version": 2, "privateDns": "one", "source": {
                 "version": 2, "type": "git", "repository": "acme/one", "repositoryId": 42,
                 "access": {"type": "public"}, "rootDir": "/", "branch": {"type": "connected", "name": "main"}
-            }, "build": {"builder": "dockerfile", "dockerfilePath": "Dockerfile", "command": null},
+            }, "build": {"buildMethod": "dockerfile", "dockerfilePath": "Dockerfile", "command": null},
             "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"}},
             {"config": {"version": 2, "privateDns": "other", "source": {
                 "version": 1, "type": "image", "image": "redis:7", "credentials": {"type": "none"}

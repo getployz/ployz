@@ -24,7 +24,7 @@ export const acquireDeploymentSources = Effect.fn("Deployments.acquireSources")(
       yield* persistDeploymentSourcePin({ ...identity, environmentDeploymentId: context.deployment.id, inngestRunId: context.deployment.inngestRunId, serviceId: snapshot.serviceId, commitSha: sha });
     }
     const capture: Parameters<typeof materializeGithubSource>[0] = { ...identity, sha, rootDir: source.rootDir };
-    if (snapshot.config.build.builder === "dockerfile") capture.dockerfilePath = snapshot.config.build.dockerfilePath ?? "Dockerfile";
+    if (snapshot.config.build.buildMethod === "dockerfile") capture.dockerfilePath = snapshot.config.build.dockerfilePath ?? "Dockerfile";
     const checkout = yield* materializeGithubSource(capture);
     sources[snapshot.config.privateDns] = checkout.repositoryDirectory;
     source_commits[snapshot.config.privateDns] = sha;

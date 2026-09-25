@@ -25,7 +25,7 @@ export const SERVICE_DEPLOYMENT_DIFF_PATHS = {
   privateDns: "privateDns",
   routes: "routes",
   managedHostnames: "managedHostnames",
-  buildBuilder: "build.builder",
+  buildMethod: "build.buildMethod",
   buildCommand: "build.command",
   buildDockerfilePath: "build.dockerfilePath",
 } as const;
@@ -40,7 +40,7 @@ const labels = new Map(Object.entries({
   maxRetries: "Max retries", replicas: "Replicas",
   cpuLimit: "CPU limit", memLimit: "Memory limit", privateDns: "Private DNS",
   "build.command": "Build command",
-  managedHostnames: "Managed domains", "build.builder": "Builder", "build.dockerfilePath": "Dockerfile path",
+  managedHostnames: "Managed domains", "build.buildMethod": "Build method", "build.dockerfilePath": "Dockerfile path",
 }));
 
 function displaySetting(path: string, value: ServiceSettingChange["before"]): string {
@@ -58,7 +58,7 @@ function displaySetting(path: string, value: ServiceSettingChange["before"]): st
     case "managedHostnames": return Array.isArray(value) && value.length
       ? value.map((item) => { const row = asRecord(item); return `${asString(row?.["prefix"])} (port ${asFiniteNumber(row?.["targetPort"]) ?? "PORT"})`; }).join(", ")
       : "None";
-    case "build.builder": return value === "dockerfile" ? "Dockerfile" : "Railpack";
+    case "build.buildMethod": return value === "dockerfile" ? "Dockerfile" : "Railpack";
     case "cpuLimit": return `${asFiniteNumber(value)} vCPU`;
     case "memLimit": return `${asFiniteNumber(value)} GB`;
     default: {

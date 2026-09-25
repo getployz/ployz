@@ -199,7 +199,7 @@ One command restoring a field, node, or the whole Environment to the Environment
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Cloud Deployment Stage**:
-The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Source acquisition, builder selection, building, and image delivery are progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
+The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start at admission and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
 
 **Deploy Preview**:
@@ -207,7 +207,7 @@ The read-only Core projection Cloud persists after preparation and image deliver
 _Avoid_: Deploy Plan, reservation, dry run
 
 **Build Receipt**:
-Private evidence retained from a completed image preparation so a later Cloud Deployment Attempt can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
+Private evidence retained from a completed Image Build so deployment in the same or a later Cloud Deployment Attempt can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
 _Avoid_: Applied image, deployment success
 
 **Build Platform Requirement**:
@@ -220,8 +220,20 @@ The user-facing output for a Cloud Deployment Attempt: its lifecycle events toge
 _Avoid_: Deploy Progress alone, Build Logs
 
 **Image Build**:
-The build of one Service image within a Cloud Deployment Attempt, with its own Build Steps, output, and outcome. An attempt's Image Builds share one builder Server and run one at a time; shared steps show as cached in later Image Builds.
+The build of one Service image within a Cloud Deployment Attempt, with its own Build Steps, output, and outcome. An attempt's Image Builds may run on different Builders at the same time; when one fails, the others still finish and leave Build Receipts before the attempt fails.
 _Avoid_: Build batch, combined build log, Bake run
+
+**Builder**:
+A place that runs Image Builds: the Organization Cluster, which chooses one of its Servers, or GitHub Actions in the Service's own repository.
+_Avoid_: Build host, build runner, builder Server; Builder for Dockerfile or Railpack
+
+**Build Order**:
+The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service may replace it with one Builder. A build that has started never moves.
+_Avoid_: Build pool, build preference, fallback builder
+
+**Build Method**:
+How a Service's image is described for building: a Dockerfile or Railpack.
+_Avoid_: Builder, builder type
 
 **Build Step**:
 One unit of an Image Build as the Engine reports it: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload or image delivery. A Build Step is keyed stably within its attempt, changes state until it completes, and owns the output attributed to it. Build Steps are retained with the attempt, separately from lifecycle history.

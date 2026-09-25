@@ -197,21 +197,21 @@ pub struct ServiceManagedHostname {
     pub target_port: Option<u16>,
 }
 
-/// The build implementation selected for a repository source.
+/// How a repository source's image is described for building.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-pub enum ServiceBuilder {
+pub enum BuildMethod {
     Dockerfile,
     #[default]
     #[serde(alias = "auto")]
     Railpack,
 }
 
-/// Build policy supplied to the selected builder.
+/// Build settings for the selected Build Method.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceBuildConfig {
-    pub builder: ServiceBuilder,
+    pub build_method: BuildMethod,
     pub dockerfile_path: Option<String>,
     /// Override Railpack’s build command; None preserves detection. Ignored for Dockerfiles.
     pub command: Option<String>,

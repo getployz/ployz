@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::{
     DeployIntent, Machine, MachineObservation, MembershipObservation, RequestedServiceSpec,
-    ServicePlacementEligibility, config::ServiceBuilder,
+    ServicePlacementEligibility, config::BuildMethod,
 };
 
 use super::{CapturedBuild, Error, invalid};
@@ -30,7 +30,7 @@ impl CapturedBuild {
         for captured in self
             .targets
             .iter_mut()
-            .filter(|captured| captured.builder == ServiceBuilder::Railpack)
+            .filter(|captured| captured.build_method == BuildMethod::Railpack)
         {
             let Some(spec) = intent
                 .target

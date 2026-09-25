@@ -11,7 +11,7 @@ use ployz_build::{
     remote::{Definition, Outcome},
 };
 use ployz_core::{
-    DeployIntent, MachineId, Placement, RequestedServiceSpec, ServiceName, config::ServiceBuilder,
+    DeployIntent, MachineId, Placement, RequestedServiceSpec, ServiceName, config::BuildMethod,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -114,7 +114,7 @@ struct CapturedTarget {
     image: String,
     placement: Placement,
     target: ployz_build::Target,
-    builder: ServiceBuilder,
+    build_method: BuildMethod,
     retained_tag: String,
     inputs: BuildInputs,
 }
@@ -162,7 +162,7 @@ fn capture_target(
     );
     let mut args = service.container.environment.clone();
     let name = service.name.to_string();
-    let (builder, context, dockerfile) = match spec.recipe {
+    let (build_method, context, dockerfile) = match spec.recipe {
         Recipe::Railpack { command } => {
             if let Some(command) = command {
                 args.insert("RAILPACK_BUILD_CMD".into(), command);
@@ -176,7 +176,7 @@ fn capture_target(
                 variables: std::mem::take(&mut args),
                 refresh_cache: false,
             })?;
-            (ServiceBuilder::Railpack, context, None)
+            (BuildMethod::Railpack, context, None)
         }
         Recipe::Dockerfile(dockerfile) => {
             let context = inputs.context(&spec.context, &dockerfile)?;
@@ -184,7 +184,7 @@ fn capture_target(
             // Both context and recipe live directly beneath source/.
             let dockerfile = Path::new("..").join(file.file_name().expect("captured recipe"));
             (
-                ServiceBuilder::Dockerfile,
+                BuildMethod::Dockerfile,
                 inputs.relative(&context),
                 Some(dockerfile),
             )
@@ -219,7 +219,7 @@ fn capture_target(
         name: service.name.clone(),
         image,
         placement: service.placement.clone(),
-        builder,
+        build_method,
         retained_tag,
         inputs,
     })
@@ -559,7 +559,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(captured.builder, ServiceBuilder::Railpack);
+        assert_eq!(captured.build_method, BuildMethod::Railpack);
         let recipe = recipe(&captured);
         let build = &recipe["services"]["api"]["build"];
         assert!(build.get("args").is_none());

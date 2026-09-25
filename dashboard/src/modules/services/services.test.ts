@@ -178,7 +178,7 @@ describe("service schemas", () => {
       routes: [],
       managedHostnames: [],
       build: {
-        builder: "railpack",
+        buildMethod: "railpack",
         dockerfilePath: null, command: null,
       },
     });

@@ -150,7 +150,7 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
         ]
         : [["Source", "None"]]} />
       {source.type === "git" ? <Fields title="Build" fields={[
-        ["Builder", build.builder === "dockerfile" ? "Dockerfile" : "Railpack"],
+        ["Build method", build.buildMethod === "dockerfile" ? "Dockerfile" : "Railpack"],
         ["Dockerfile", build.dockerfilePath],
       ]} /> : null}
       <Fields title="Deploy" fields={[

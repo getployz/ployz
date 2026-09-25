@@ -64,7 +64,7 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
 #[test]
 fn compound_settings_compare_and_restore_the_edited_field() {
     let mut input = config();
-    input["build"] = json!({"builder":"dockerfile", "dockerfilePath":"Dockerfile"});
+    input["build"] = json!({"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile"});
     input["healthcheck"] = json!({"type":"http", "path":"/up", "timeoutSeconds":30});
     let baseline = parse_service_config(input.clone()).unwrap();
     input["build"]["dockerfilePath"] = json!("deploy/Dockerfile");
@@ -193,7 +193,7 @@ fn git_access_is_explicit_and_changes_with_repository_identity() {
 fn build_command_is_validated_compared_and_restored() {
     let baseline = parse_service_config(config()).unwrap();
     let mut input = config();
-    input["build"] = json!({"builder":"railpack", "command":"  cd dashboard && pnpm build  "});
+    input["build"] = json!({"buildMethod":"railpack", "command":"  cd dashboard && pnpm build  "});
     let current = parse_service_config(input.clone()).unwrap();
     assert_eq!(
         current.settings.build.command.as_deref(),

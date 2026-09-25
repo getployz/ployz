@@ -145,12 +145,12 @@ async fn session(cluster: &Cluster) -> Session {
 
 /// One Git Service `app` in Project `build`, as Cloud freezes it. `MESSAGE`
 /// reaches the Build as a variable.
-fn git_deployment(builder: &str, message: &str) -> Value {
+fn git_deployment(build_method: &str, message: &str) -> Value {
     json!({"projectName": "build", "snapshots": [{
         "config": {"version": 2, "privateDns": "app", "source": {
             "version": 2, "type": "git", "repository": "acme/app", "repositoryId": 42,
             "access": {"type": "public"}, "rootDir": "/", "branch": {"type": "connected", "name": "main"}
-        }, "build": {"builder": builder, "dockerfilePath": "Dockerfile", "command": null},
+        }, "build": {"buildMethod": build_method, "dockerfilePath": "Dockerfile", "command": null},
         "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"},
         "resolvedEnv": {"MESSAGE": message}
     }]})

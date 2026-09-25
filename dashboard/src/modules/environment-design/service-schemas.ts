@@ -116,10 +116,9 @@ export const serviceRouteSchema = Schema.Struct({
 export const serviceRoutesSchema = serviceFieldSchema("routes");
 export const serviceManagedHostnamePrefixSchema = serviceFieldSchema("managedHostnamePrefix");
 export const serviceManagedHostnameSchema = serviceFieldSchema("managedHostnameValue");
-export const serviceBuilderSchema = Schema.Literals(["dockerfile", "railpack"]);
 export const serviceBuildConfigSchema = serviceFieldSchema("build");
 export const DEFAULT_SERVICE_BUILD_CONFIG: ServiceBuildConfig = {
-  builder: "railpack", dockerfilePath: null, command: null,
+  buildMethod: "railpack", dockerfilePath: null, command: null,
 };
 export const serviceSourceSchema = serviceFieldSchema("source");
 

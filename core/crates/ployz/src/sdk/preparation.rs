@@ -7,7 +7,7 @@ use std::{
 use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
     DeployIntent, RpcError, RpcErrorCode, ServiceName,
-    config::{ServiceBuilder, ServiceSource},
+    config::{BuildMethod, ServiceSource},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -123,8 +123,8 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             if !context.is_dir() {
                 return Err(invalid("source root must be a directory"));
             }
-            let recipe = match config.settings.build.builder {
-                ServiceBuilder::Dockerfile => {
+            let recipe = match config.settings.build.build_method {
+                BuildMethod::Dockerfile => {
                     let dockerfile = config
                         .settings
                         .build
@@ -137,7 +137,7 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
                     }
                     Recipe::Dockerfile(dockerfile)
                 }
-                ServiceBuilder::Railpack => Recipe::Railpack {
+                BuildMethod::Railpack => Recipe::Railpack {
                     command: config.settings.build.command.clone(),
                 },
             };
@@ -268,7 +268,7 @@ mod tests {
                 "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
                 "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
                     "access":{"type":"public"}, "rootDir":"/", "branch":{"type":"connected", "name":"main"}},
-                "build":{"builder":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+                "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
             }}]},
             "sources":{"web":root.path()}, "source_commits":{"web":"a".repeat(40)}
         });

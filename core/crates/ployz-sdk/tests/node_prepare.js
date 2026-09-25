@@ -24,7 +24,7 @@ const sdk = require(dir);
             version: 2, privateDns: "api",
             source: { version: 2, type: "git", repository: "acme/api", repositoryId: 42,
               access: { type: "github-installation", installationId: 7 }, rootDir: "/apps/api", branch: { type: "connected", name: "main" } },
-            build: { builder: "dockerfile", dockerfilePath: "../../Dockerfile", command: null },
+            build: { buildMethod: "dockerfile", dockerfilePath: "../../Dockerfile", command: null },
             preDeployCommand: null, startCommand: null,
             healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
           },

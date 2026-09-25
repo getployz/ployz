@@ -131,7 +131,7 @@ A bounded operation that makes an image held by one Machine, such as a Build res
 _Avoid_: Unregistry, image ingest as a product term
 
 **Image Cleanup**:
-Removing superseded images that Direct Image Transfer left on the Machines a Deploy delivered to. It runs after the Deploy Outcome, keeps recent unused images for rollback, never touches an image a Container uses, and never changes the Outcome.
+Removing superseded images that a Deploy delivered to Machines, or that a Build Grant pushed into one. It runs after the Deploy Outcome, keeps recent unused images for rollback, never touches an image a Container uses, and never changes the Outcome.
 _Avoid_: Image prune, garbage collection
 
 **Build**:
@@ -145,6 +145,10 @@ _Avoid_: Applied State, cached deployment
 **Build Attempt**:
 One execution of a Build, which may succeed, fail, or stop before producing an image.
 _Avoid_: Build as an execution identity, Deploy Attempt
+
+**Build Grant**:
+A Machine-minted permission to push one Build's image into that Machine and nothing else. It ends when that Build finishes or is cancelled, and it grants no Machine RPC access.
+_Avoid_: CI credential, push token, Management Capability
 
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.

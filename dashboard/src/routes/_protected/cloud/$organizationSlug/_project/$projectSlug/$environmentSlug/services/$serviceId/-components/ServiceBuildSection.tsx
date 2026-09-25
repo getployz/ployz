@@ -67,7 +67,7 @@ export function ServiceBuildSection({
   state: ServiceDrawerState;
 }) {
   const { service, collection, diff } = state;
-  const builderDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildBuilder);
+  const buildMethodDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildMethod);
   const dockerfileDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildDockerfilePath);
   const commandDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.buildCommand);
   const build = service.build;
@@ -100,26 +100,26 @@ export function ServiceBuildSection({
   return (
     <FieldGroup>
       <Field>
-        <FieldLabel>Builder</FieldLabel>
+        <FieldLabel>Build method</FieldLabel>
         <FieldDescription>
           Build with Railpack or use your own Dockerfile.
         </FieldDescription>
         <ToggleGroup
           variant="outline"
-          value={[build.builder]}
+          value={[build.buildMethod]}
           onValueChange={(value) => {
             const [next] = value;
             if (next === "railpack" || next === "dockerfile") {
-              updateBuild({ builder: next });
+              updateBuild({ buildMethod: next });
             }
           }}
         >
-          <ToggleGroupItem data-changed={builderDiff.changed || undefined} value="railpack">Railpack</ToggleGroupItem>
-          <ToggleGroupItem data-changed={builderDiff.changed || undefined} value="dockerfile">Dockerfile</ToggleGroupItem>
+          <ToggleGroupItem data-changed={buildMethodDiff.changed || undefined} value="railpack">Railpack</ToggleGroupItem>
+          <ToggleGroupItem data-changed={buildMethodDiff.changed || undefined} value="dockerfile">Dockerfile</ToggleGroupItem>
         </ToggleGroup>
       </Field>
 
-      {build.builder === "railpack" ? (
+      {build.buildMethod === "railpack" ? (
         <ServiceCommandField
           label="Build command"
           description="Override the detected build command. Leave empty to use Railpack’s default."
@@ -135,7 +135,7 @@ export function ServiceBuildSection({
         />
       ) : null}
 
-      {build.builder === "dockerfile" ? (
+      {build.buildMethod === "dockerfile" ? (
         <Field>
           <FieldLabel>Dockerfile path</FieldLabel>
           <FieldDescription>
