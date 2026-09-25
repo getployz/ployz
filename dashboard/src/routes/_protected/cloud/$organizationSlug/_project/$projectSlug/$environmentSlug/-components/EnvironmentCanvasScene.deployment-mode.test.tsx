@@ -205,6 +205,22 @@ describe("deployment mode on the environment canvas", () => {
     expect(card("api")?.textContent).toBe("apiUnchanged");
   });
 
+  it("opens the panel from a desktop canvas node, which takes pointer events", async () => {
+    const router = await openCanvas();
+    await enterDeploymentMode(router, replaceFailedId);
+    const node = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${api}"]`);
+      if (!found) throw new Error("Missing React Flow node");
+      return found;
+    });
+    // React Flow sets pointer-events: none on a node with no click handler, so a real click falls through to the pane.
+    expect(node.style.pointerEvents).not.toBe("none");
+    const link = node.querySelector("a");
+    if (!link) throw new Error("Missing node link");
+    await act(async () => { fireEvent.click(link); });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Deploy logs" }).getAttribute("aria-selected")).toBe("true"));
+  });
+
   it("opens a node's read-only panel on the tab its outcome calls for, with the tab in the URL", async () => {
     const router = await openCanvas();
     await enterDeploymentMode(router, replaceFailedId);
@@ -445,15 +461,17 @@ describe("the apply zone", () => {
     expect(dispatch).toHaveBeenCalledWith({ data: { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" } });
   });
 
-  it("uses fewer words on mobile and keeps Details and Discard under ⋮", async () => {
+  it("uses fewer words on mobile: the count opens Details and ⋮ keeps Discard", async () => {
     vi.stubGlobal("innerWidth", 375);
     await openCanvas({ changeStates: [pending] });
-    expect(await bar().findByText("Apply 1")).toBeTruthy();
-    expect(bar().queryByRole("button", { name: "Details" })).toBeNull();
+    const count = await bar().findByRole("button", { name: "Details, Apply 1" });
+    expect(count.textContent).toBe("Apply 1");
     expect(bar().getByRole("button", { name: /^Deploy(⇧\+Enter)?$/ }).textContent).toBe("Deploy");
     await click(bar().getByRole("button", { name: "More change actions" }));
     expect(await screen.findByRole("menuitem", { name: "Discard all changes" })).toBeTruthy();
-    await click(screen.getByRole("menuitem", { name: "Details" }));
+    expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+    await act(async () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" }); });
+    await click(count);
     expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
   });
 });

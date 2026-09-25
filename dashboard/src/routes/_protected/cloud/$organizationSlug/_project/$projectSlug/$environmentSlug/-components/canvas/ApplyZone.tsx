@@ -49,6 +49,7 @@ export function ApplyZone({
   const wasOpen = useRef(false);
   const hasChanges = totalChanges > 0 || canSaveWithoutDeploying;
   const deployable = canDeploy && totalChanges > 0;
+  const count = totalChanges > 0 ? `Apply ${totalChanges}` : "Unpublished";
 
   function deploy() {
     setOpen(false);
@@ -84,11 +85,13 @@ export function ApplyZone({
     <>
       {hasChanges && slot ? createPortal(
         <div className="apply-zone">
-          <span className="px-1.5 text-xs font-medium text-changed tabular-nums">
-            {totalChanges > 0 ? `Apply ${totalChanges}` : "Unpublished"}
-            {isMobile ? null : totalChanges === 1 ? " change" : " changes"}
-          </span>
-          {isMobile ? null : <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openDetails}>Details</Button>}
+          {/* On a phone the count is the Details trigger, so the bar fits 375px. */}
+          {isMobile ? (
+            <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} aria-label={`Details, ${count}`} onClick={openDetails}>{count}</Button>
+          ) : <>
+            <span className="px-1.5 text-xs font-medium text-changed-deep tabular-nums">{count} {totalChanges === 1 ? "change" : "changes"}</span>
+            <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openDetails}>Details</Button>
+          </>}
           <Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
             Deploy{isMobile ? null : <Kbd>⇧+Enter</Kbd>}
           </Button>
@@ -97,7 +100,6 @@ export function ApplyZone({
               <MoreVerticalIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" side="top" className="w-auto">
-              {isMobile ? <DropdownMenuItem onClick={openDetails}>Details</DropdownMenuItem> : null}
               <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={() => void onDiscardAll()}>
                 Discard all changes
               </DropdownMenuItem>

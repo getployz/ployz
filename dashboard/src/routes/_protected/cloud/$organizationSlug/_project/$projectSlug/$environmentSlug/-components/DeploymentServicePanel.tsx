@@ -9,6 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
@@ -50,8 +51,10 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
       <CanvasInspectorHeader params={params}>
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-medium">{named[0]?.name ?? config.privateDns}</span>
-          <span aria-hidden className="text-muted-foreground">/</span>
-          <span className="font-mono text-muted-foreground">{shortDeploymentId(deployment.id)}</span>
+          {/* The bar already names the deployment; a phone keeps the width for the service name. */}
+          <span className="whitespace-nowrap text-muted-foreground max-[860px]:hidden">
+            <span aria-hidden>/ </span><span className="font-mono">{shortDeploymentId(deployment.id)}</span>
+          </span>
           <Badge variant={outcomeBadges[view.outcome]}>{nodeOutcomeLabels[view.outcome]}</Badge>
         </div>
       </CanvasInspectorHeader>
@@ -79,7 +82,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}
-            <ServiceDeployLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} serviceId={serviceId} />
+            <ServiceDeployLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} serviceId={serviceId} finished={!isActiveDeployment(deployment.status)} />
           </TabsContent>
         </Tabs>
       </div>
@@ -127,7 +130,7 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
           </AlertDescription>
         </Alert>
       ) : (
-<p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
+        <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
       )}
       <details>
         <summary className="cursor-pointer font-medium">{variables.length} {variables.length === 1 ? "variable" : "variables"} (as deployed)</summary>

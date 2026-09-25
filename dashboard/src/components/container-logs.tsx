@@ -10,13 +10,14 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectI
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
-export function ContainerLogs({ selection, lifecycle = [] }: { selection: ContainerLogSelection; lifecycle?: readonly ContainerLogRow[] }) {
+/** `finished`: the selection's output is complete (an ended deployment), so there is no connection state to show. */
+export function ContainerLogs({ selection, lifecycle = [], finished = false }: { selection: ContainerLogSelection; lifecycle?: readonly ContainerLogRow[]; finished?: boolean }) {
   const scope = useCollectionScope();
   const key = JSON.stringify([scope.sessionId, scope.userId, selection]);
-  return <LogViewer key={key} selection={selection} lifecycle={lifecycle} />;
+  return <LogViewer key={key} selection={selection} lifecycle={lifecycle} finished={finished} />;
 }
 
-function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection; lifecycle: readonly ContainerLogRow[] }) {
+function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLogSelection; lifecycle: readonly ContainerLogRow[]; finished: boolean }) {
   const scope = useCollectionScope();
   const stream = getContainerLogStream(selection, scope);
   const { collection, refresh } = stream;
@@ -45,12 +46,12 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   return <div className="flex min-h-0 flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
       <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
-      <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} />
+      {selection.serviceId ? null : <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} />}
       <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} />
     </div>
     <div className="flex items-center justify-between gap-2">
-      <span role="status" className="text-xs text-muted-foreground">{status}</span>
-      {status === "Disconnected" ? <Button variant="ghost" size="sm" onClick={refresh}>Reconnect</Button> : null}
+      {finished ? <span /> : <span role="status" className="text-xs text-muted-foreground">{status}</span>}
+      {status === "Disconnected" && !finished ? <Button variant="ghost" size="sm" onClick={refresh}>Reconnect</Button> : null}
       {!virtual.isAtEnd() ? <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button> : null}
     </div>
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}

@@ -43,7 +43,7 @@ export function getKindTextClassName(kind: ServiceDeploymentDiffKind) {
     return "text-destructive";
   }
 
-  return "text-changed";
+  return "text-changed-deep";
 }
 
 function getServiceIcon(type: ServiceRecord["source"]["type"]) {

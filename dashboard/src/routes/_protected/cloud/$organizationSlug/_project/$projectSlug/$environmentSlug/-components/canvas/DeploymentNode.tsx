@@ -46,7 +46,7 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
   const dimmed = view.outcome === "unchanged" || view.outcome === "not_attempted";
   const badge = outcomeBadges[view.outcome];
   return (
-    <Card size="node" state={badge === "secondary" ? undefined : badge}
+    <Card size="node" state={badge === "destructive" || badge === "info" ? badge : undefined}
       data-canvas-node={node.nodeId} data-dimmed={dimmed} className={cn("justify-between", dimmed && "opacity-40", className)}>
       <CardHeader>
         <div className="flex items-start gap-3">

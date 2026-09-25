@@ -19,7 +19,7 @@ import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
-import { useCanvasNavigation } from "./useCanvasNavigation";
+import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
@@ -97,7 +97,7 @@ export function CanvasFlow({
     canvasNodes,
     selectedNodeId,
   });
-  const { onNodeClick, getViewportCenter } = useCanvasNavigation(
+  const { getViewportCenter } = useCanvasNavigation(
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
@@ -169,7 +169,7 @@ export function CanvasFlow({
               minZoom={0.4}
               maxZoom={1.35}
               onInit={() => setFlowReady(true)}
-              onNodeClick={onNodeClick}
+              onNodeClick={blurClickedNodeLink}
               onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDrag}
               onPaneContextMenu={(event) => {

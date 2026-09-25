@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
@@ -11,6 +12,8 @@ import { BackToLive } from "../deployment-mode";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
 import { DeploymentNodeCard, DeploymentNodeLink } from "./DeploymentNode";
+import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
+import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { CanvasDeploymentNode } from "./types";
 
 const UNPLACED_GAP = 48;
@@ -22,6 +25,7 @@ const UNPLACED_GAP = 48;
 export function DeploymentCanvas({ attempt, environmentId }: { attempt: DeploymentAttempt; environmentId: string }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
+  const [flowReady, setFlowReady] = useState(false);
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const services = getRawServicesCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -72,12 +76,15 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
             nodesConnectable={false}
             elementsSelectable={false}
             nodesFocusable={false}
+            onNodeClick={blurClickedNodeLink}
+            onInit={() => setFlowReady(true)}
             fitView
             proOptions={{ hideAttribution: true }}
             minZoom={0.4}
             maxZoom={1.35}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+            <CenterSelectedNode flowReady={flowReady} />
           </ReactFlow>
         </ReactFlowProvider>
       </div>
@@ -89,4 +96,10 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
       <BackToLive className="absolute top-4 right-4 z-10 min-[861px]:hidden" />
     </div>
   );
+}
+
+/** Like the live canvas, the open node pans clear of the panel. */
+function CenterSelectedNode({ flowReady }: { flowReady: boolean }) {
+  useCanvasNavigation(useCanvasInspectorSelection().selectedServiceId, null, flowReady);
+  return null;
 }

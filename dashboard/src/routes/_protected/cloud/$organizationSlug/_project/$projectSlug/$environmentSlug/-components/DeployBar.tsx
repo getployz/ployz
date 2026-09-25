@@ -52,7 +52,6 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   const active = attempts.filter(({ deployment }) => isActiveDeployment(deployment.status));
   const running = active.at(-1);
   const queued = active.length > 1 ? active[0] : undefined;
-  const latest = attempts[0];
 
   function setListOpen(open: boolean) {
     void navigate({ to: ".", search: (previous) => ({ ...previous, deploymentList: open || undefined }), replace: true });
@@ -75,9 +74,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
     <Button size="sm" variant={viewed ? "outline" : "ghost"} data-active={viewed !== null}
       aria-label={viewed ? `Deployment ${shortDeploymentId(viewed.deployment.id)}, all deployments` : "Deployments"}>
       {viewed ? <><StatusIcon view={viewed.view} /><span className="font-mono">{shortDeploymentId(viewed.deployment.id)}</span></>
-        : <>Deployments{latest ? <span className="font-normal text-muted-foreground max-[860px]:hidden">
-          · {latest.view.status} {formatRelativeTime(latest.deployment.finishedAt ?? latest.deployment.createdAt, undefined, "narrow")}
-        </span> : null}</>}
+        : "Deployments"}
       <ChevronDownIcon />
     </Button>
   );
@@ -108,9 +105,9 @@ export function DeployBar({ children }: { children?: ReactNode }) {
         {openRunning}
         {openQueued}
         {isMobile ? (
-          <Drawer open={listOpen} onOpenChange={setListOpen}>
+          <Drawer open={listOpen} onOpenChange={setListOpen} showSwipeHandle>
             {openRunning ? null : <DrawerTrigger render={listTrigger} />}
-            <DrawerContent><DrawerTitle className="sr-only">Deployments</DrawerTitle>{list}</DrawerContent>
+            <DrawerContent><DrawerTitle className="sr-only">Deployments</DrawerTitle><div className="p-4">{list}</div></DrawerContent>
           </Drawer>
         ) : (
           <Popover open={listOpen} onOpenChange={setListOpen}>
@@ -170,7 +167,7 @@ function ListRow({ current, search, icon, title, detail }: {
       render={<Link to="." search={(previous) => ({ ...previous, ...search, deploymentList: undefined })} />}>
       <ItemMedia variant="icon">{icon}</ItemMedia>
       <ItemContent className="min-w-0">
-        <ItemTitle className="w-full truncate">{title}</ItemTitle>
+        <ItemTitle><span>{title}</span></ItemTitle>
         <ItemDescription className="truncate">{detail}</ItemDescription>
       </ItemContent>
     </Item>

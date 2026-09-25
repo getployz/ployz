@@ -24,7 +24,7 @@ export function ApplyChangeValueCell({
               ? "bg-success-soft text-success"
               : null,
             tone === "new" && kind !== "add" && kind !== "remove"
-              ? "bg-changed-soft text-changed"
+              ? "bg-changed-soft text-changed-deep"
               : null,
           )}
         >

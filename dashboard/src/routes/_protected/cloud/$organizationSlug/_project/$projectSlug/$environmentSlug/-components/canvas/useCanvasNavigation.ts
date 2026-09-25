@@ -159,6 +159,17 @@ function centerOnNode(
   return true;
 }
 
+/**
+ * Both canvases pass this as `onNodeClick`: React Flow gives a node pointer events only when it has a click handler
+ * (or is selectable or draggable), so without it clicks fall through to the pane and the node's link never opens.
+ * Mouse navigation must not leave a focus outline after the inspector closes.
+ */
+export function blurClickedNodeLink(event: Pick<MouseEvent, "detail" | "target">) {
+  if (event.detail > 0 && event.target instanceof Element) {
+    event.target.closest("a")?.blur();
+  }
+}
+
 export function useCanvasNavigation(
   selectedNodeId: string | null,
   selectedNodePositionKey: string | null,
@@ -174,13 +185,6 @@ export function useCanvasNavigation(
   const previousCanvasInspectorGeometryVersion = useRef(
     canvasInspectorGeometryVersion,
   );
-
-  function onNodeClick(event: Pick<MouseEvent, "detail" | "target">) {
-    // Mouse navigation must not leave a focus outline after the inspector closes.
-    if (event.detail > 0 && event.target instanceof Element) {
-      event.target.closest("a")?.blur();
-    }
-  }
 
   useEffect(() => {
     if (!flowReady) {
@@ -293,5 +297,5 @@ export function useCanvasNavigation(
     };
   }
 
-  return { onNodeClick, getViewportCenter };
+  return { getViewportCenter };
 }

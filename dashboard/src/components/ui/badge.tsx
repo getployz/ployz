@@ -19,7 +19,7 @@ const badgeVariants = cva(
         info:
           "border-info-border bg-info-soft text-info [a]:hover:bg-info-soft/80",
         changed:
-          "border-changed-border bg-changed-soft text-changed [a]:hover:bg-changed-soft/80",
+          "border-changed-border bg-changed-soft text-changed-deep [a]:hover:bg-changed-soft/80",
         destructive:
           "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
         outline:

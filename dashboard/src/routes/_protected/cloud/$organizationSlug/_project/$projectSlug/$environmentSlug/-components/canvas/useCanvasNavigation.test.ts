@@ -1,19 +1,14 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import { renderHook, cleanup } from "@testing-library/react";
-import { ReactFlowProvider } from "@xyflow/react";
 import {
+  blurClickedNodeLink,
   getNodePanDelta,
   shouldCenterSelectedNode,
-  useCanvasNavigation,
 } from "./useCanvasNavigation";
 import type { CanvasServiceNode } from "./types";
 
 it("clears mouse focus without stealing keyboard focus", () => {
-  const { result } = renderHook(() => useCanvasNavigation(null, null, false), {
-    wrapper: ReactFlowProvider,
-  });
   const link = document.createElement("a");
   link.href = "#service";
   const title = document.createElement("span");
@@ -21,7 +16,7 @@ it("clears mouse focus without stealing keyboard focus", () => {
   document.body.append(link);
   link.addEventListener("click", (event) => {
     event.preventDefault();
-    result.current.onNodeClick(event);
+    blurClickedNodeLink(event);
   });
   try {
     link.focus();
@@ -33,7 +28,6 @@ it("clears mouse focus without stealing keyboard focus", () => {
     expect(document.activeElement).toBe(link);
   } finally {
     link.remove();
-    cleanup();
   }
 });
 

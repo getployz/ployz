@@ -13,7 +13,7 @@ import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../../../-
 function Summary({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
   return (
     <ItemContent className="min-w-0">
-      <ItemTitle className="w-full truncate"><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</ItemTitle>
+      <ItemTitle><span><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</span></ItemTitle>
       <ItemDescription>{formatRelativeTime(deployment.createdAt)}</ItemDescription>
     </ItemContent>
   );
@@ -38,16 +38,16 @@ export function ServiceDeploymentsTab({ organizationSlug, serviceId }: { organiz
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
         {running ? (
           // The card is one link (links cannot nest), so it goes where its "View logs" label says.
-          <Item state="success" render={open(running.deployment, "deploy-logs")}>
+          <Item variant="outline" render={open(running.deployment, "deploy-logs")}>
             <Badge variant="success">Running</Badge>
             <Summary deployment={running.deployment} />
             <ItemActions><span className={buttonVariants({ variant: "outline", size: "sm" })}>View logs</span></ItemActions>
           </Item>
         ) : (
-          <p className="text-sm text-muted-foreground">No deployment is serving this service yet.</p>
+          <p className="text-muted-foreground">No deployment is serving this service yet.</p>
         )}
         <section className="flex flex-col gap-2">
-          <h3 className="flex justify-between text-xs text-muted-foreground uppercase">History<span className="normal-case">Hiding unchanged</span></h3>
+          <h3 className="flex justify-between font-medium">History<span className="font-normal text-muted-foreground">Hiding unchanged</span></h3>
           {history.length > 0 ? (
             <ItemGroup className="gap-2">
               {history.map(({ deployment, node }) => (
@@ -58,7 +58,7 @@ export function ServiceDeploymentsTab({ organizationSlug, serviceId }: { organiz
               ))}
             </ItemGroup>
           ) : (
-            <p className="text-sm text-muted-foreground">No other deployments changed this service.</p>
+            <p className="text-muted-foreground">No other deployments changed this service.</p>
           )}
         </section>
       </div>

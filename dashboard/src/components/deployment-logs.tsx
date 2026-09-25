@@ -131,12 +131,12 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
 }
 
 /** One service's Deploy logs in an attempt: its rollout steps interleaved with the attempt's container output. */
-export function ServiceDeployLogs({ organizationSlug, deploymentId, serviceId }: { organizationSlug: string; deploymentId: string; serviceId: string }) {
+export function ServiceDeployLogs({ organizationSlug, deploymentId, serviceId, finished }: { organizationSlug: string; deploymentId: string; serviceId: string; finished: boolean }) {
   const collection = getDeploymentLogsCollection(organizationSlug, deploymentId, useCollectionScope());
   const { data: events = [] } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
   const request = useDeploymentLogsReadState(collection);
   return <>
     {request.isError ? <p role="alert">Could not load deployment logs. <Button variant="ghost" size="sm" disabled={request.isFetching} onClick={() => void collection.utils.refetch()}>Retry</Button></p> : null}
-    <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={lifecycleLogs(events, serviceId)} />
+    <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={lifecycleLogs(events, serviceId)} finished={finished} />
   </>;
 }
