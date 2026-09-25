@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { environmentDeployment } from "./tables";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
+import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
 import { deploymentSourcePinsSchema, validateDeploymentSourcePins } from "./source-pins";
 
 /** Resolve outside this transaction, then persist before source download. Existing pins never rotate. */
@@ -23,7 +24,8 @@ export const persistDeploymentSourcePin = Effect.fn("Deployments.persistSourcePi
         eq(environmentDeployment.id, input.environmentDeploymentId),
         eq(environmentDeployment.organizationId, input.organizationId),
         eq(environmentDeployment.inngestRunId, input.inngestRunId),
-        eq(environmentDeployment.status, "deploying"),
+        // Image Builds run before deploying, so any active status the run owns may pin.
+        inArray(environmentDeployment.status, [...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES]),
         isNull(environmentDeployment.cancellationRequestedAt),
       )).for("update");
       if (!attempt) return yield* new Conflict({ message: "Deployment no longer owns source acquisition." });

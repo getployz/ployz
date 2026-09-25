@@ -30,6 +30,7 @@ import type { SkipReason } from "./image-build";
 import { planImageBuildWalk } from "./build-order.server";
 import { builtOn, builtOnLine } from "./deployment-view";
 import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps } from "./github-image-builds.server";
+import { persistDeploymentSourcePin } from "./source-pins.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
 const userId = "00000000-0000-4000-8000-000000000802";
@@ -118,6 +119,7 @@ function githubApi(fake: Fake) {
     ["dispatch_workflow", { workflow_run_id: githubRunId, html_url: "https://github.com/owner/repo/actions/runs/9001" }],
     ["cancel_run", {}],
     ["fetch_run", { status: fake.runStatus }],
+    ["resolve_branch_head", { ref: "refs/heads/main", object: { type: "commit", sha: commit } }],
   ]);
   return {
     json: <S extends Schema.ConstraintDecoder<unknown>>(request: GithubJsonRequest<S>) => {
@@ -351,6 +353,32 @@ describe("Image Builds on GitHub Actions", () => {
       expect(fake.reuses).toHaveLength(1);
       expect(fake.github.map(({ operation }) => operation)).toContain("dispatch_workflow");
       expect(await current()).toMatchObject({ status: "building", builder: "github", githubRunId });
+    });
+  });
+
+  describe("a manual deploy with no source pins", () => {
+    const attempt = () => harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, deploymentId)).then(([found]) => found);
+    const pin = (inngestRunId: string) => harness.runEffect(Effect.flip(persistDeploymentSourcePin({
+      organizationId, environmentDeploymentId: deploymentId, inngestRunId, serviceId, commitSha: commit,
+    })));
+    beforeEach(async () => {
+      await harness.db.update(schema.environmentDeployment).set({ sourcePins: {} }).where(eq(schema.environmentDeployment.id, deploymentId));
+    });
+
+    it("pins the branch head before deploying and dispatches the build", async () => {
+      await dispatch();
+      expect((await attempt())?.status).not.toBe("deploying");
+      expect((await attempt())?.sourcePins).toEqual({ [serviceId]: { commitSha: commit } });
+      expect(fake.github.map(({ operation }) => operation)).toContain("dispatch_workflow");
+      expect(await row()).toMatchObject({ status: "building", builder: "github", githubRunId });
+    });
+
+    it("refuses a pin from another run or once cancellation is requested", async () => {
+      await harness.db.update(schema.environmentDeployment).set({ status: "queued", inngestRunId: runId }).where(eq(schema.environmentDeployment.id, deploymentId));
+      expect(await pin("another-run")).toMatchObject({ _tag: "Conflict", message: "Deployment no longer owns source acquisition." });
+      await harness.db.update(schema.environmentDeployment).set({ cancellationRequestedAt: new Date() }).where(eq(schema.environmentDeployment.id, deploymentId));
+      expect(await pin(runId)).toMatchObject({ _tag: "Conflict", message: "Deployment no longer owns source acquisition." });
+      expect((await attempt())?.sourcePins).toEqual({});
     });
   });
 
