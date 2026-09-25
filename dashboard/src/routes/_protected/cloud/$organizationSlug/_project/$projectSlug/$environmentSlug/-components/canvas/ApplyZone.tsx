@@ -85,13 +85,9 @@ export function ApplyZone({
     <>
       {hasChanges && slot ? createPortal(
         <div className="apply-zone">
-          {/* On a phone the count is the Details trigger, so the bar fits 375px. */}
-          {isMobile ? (
-            <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} aria-label={`Details, ${count}`} onClick={openDetails}>{count}</Button>
-          ) : <>
-            <span className="px-1.5 text-xs font-medium text-changed-deep tabular-nums">{count} {totalChanges === 1 ? "change" : "changes"}</span>
-            <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openDetails}>Details</Button>
-          </>}
+          {/* A phone drops the word "changes" so the bar fits 375px. */}
+          <span className="px-1.5 text-xs font-medium text-changed-deep tabular-nums">{count}{isMobile ? null : totalChanges === 1 ? " change" : " changes"}</span>
+          <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openDetails}>Details</Button>
           <Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
             Deploy{isMobile ? null : <Kbd>⇧+Enter</Kbd>}
           </Button>

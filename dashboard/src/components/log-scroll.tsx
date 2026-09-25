@@ -22,7 +22,7 @@ export function BuildLogViewer({ children }: { children: ReactNode }) {
   const { element, virtual } = useLogScroll({ count: 1, getItemKey: () => "build-output" });
   return <>
     {!virtual.isAtEnd() ? <div className="flex justify-end"><Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button></div> : null}
-    <div ref={element} className="max-h-80 overflow-auto break-words font-mono text-xs leading-6" tabIndex={0} aria-label="Build logs">
+    <div ref={element} className="min-h-0 flex-1 overflow-auto break-words font-mono text-xs leading-6" tabIndex={0} aria-label="Build logs">
       <div ref={virtual.measureElement} data-index={0}>{children}</div>
     </div>
   </>;

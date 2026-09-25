@@ -77,7 +77,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
           <TabsContent value="details" className="mt-4 overflow-y-auto">
             <DeploymentServiceDetails view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
           </TabsContent>
-          <TabsContent value="build-logs" className="mt-4 overflow-y-auto">
+          <TabsContent value="build-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={config.privateDns} />
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">

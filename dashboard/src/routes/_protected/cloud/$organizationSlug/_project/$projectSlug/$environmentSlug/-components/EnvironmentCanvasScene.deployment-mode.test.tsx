@@ -309,8 +309,14 @@ describe("the deploy bar", () => {
 
     await click(bar().getByRole("button", { name: /Deployment d0000000/ }));
     await click(within(await screen.findByRole("navigation", { name: "Deployments" })).getByRole("link", { name: /c0000000/ }));
-    expect(await bar().findByRole("button", { name: "Retry" })).toBeTruthy();
     expect(bar().queryByRole("button", { name: "Cancel" })).toBeNull();
+
+    // Retry follows the new attempt.
+    const retried = "e0000000-0000-4000-8000-000000000000";
+    vi.spyOn(deploymentFunctions, "retryEnvironmentDeploymentServerFn").mockResolvedValue({ data: {
+      environmentDeploymentId: retried, status: "queued", createdAt, serviceCount: 1, retryOfDeploymentId: failedId } });
+    await click(await bar().findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ deployment: retried }));
   });
 
   it("remembers leaving your own running attempt and reopening it", async () => {
@@ -461,17 +467,17 @@ describe("the apply zone", () => {
     expect(dispatch).toHaveBeenCalledWith({ data: { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" } });
   });
 
-  it("uses fewer words on mobile: the count opens Details and ⋮ keeps Discard", async () => {
+  it("uses fewer words on mobile: Apply N · Details · Deploy, and ⋮ keeps Discard", async () => {
     vi.stubGlobal("innerWidth", 375);
     await openCanvas({ changeStates: [pending] });
-    const count = await bar().findByRole("button", { name: "Details, Apply 1" });
-    expect(count.textContent).toBe("Apply 1");
+    expect(await bar().findByText("Apply 1")).toBeTruthy();
+    const details = bar().getByRole("button", { name: "Details" });
     expect(bar().getByRole("button", { name: /^Deploy(⇧\+Enter)?$/ }).textContent).toBe("Deploy");
     await click(bar().getByRole("button", { name: "More change actions" }));
     expect(await screen.findByRole("menuitem", { name: "Discard all changes" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
     await act(async () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" }); });
-    await click(count);
+    await click(details);
     expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
   });
 });

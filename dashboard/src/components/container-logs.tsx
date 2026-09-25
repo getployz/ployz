@@ -43,7 +43,7 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
   });
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
   const services = [...new Set(loaded.map(row => row.serviceName))];
-  return <div className="flex min-h-0 flex-col gap-3">
+  return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
       <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
       {selection.serviceId ? null : <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} />}
@@ -55,7 +55,7 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
       {!virtual.isAtEnd() ? <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button> : null}
     </div>
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
-    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="h-80 overflow-auto font-mono text-xs"
+    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="h-80 grow overflow-auto font-mono text-xs"
       onPointerDown={() => { dragging.current = true; }}
       onPointerUp={() => { dragging.current = false; }}
       onPointerLeave={() => { dragging.current = false; }}
