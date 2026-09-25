@@ -30,8 +30,11 @@ const RuntimeLive = OrganizationRuntimeLive.pipe(
 
 // Effect spans go through the OpenTelemetry SDK the start command registers,
 // so they nest under the HTTP server span and share its exporter. Without the
-// SDK the global provider is a no-op and this costs nothing.
-const TracingLive = OtelTracer.layerGlobal.pipe(Layer.provide(Resource.layerEmpty));
+// SDK the global provider is a no-op and this costs nothing. The Resource only
+// names the tracer; an unnamed instrumentation scope crashes the OTLP exporter.
+const TracingLive = OtelTracer.layerGlobal.pipe(
+  Layer.provide(Resource.layer({ serviceName: "ployz-cloud" })),
+);
 
 export const AppLive = AuthLive.pipe(
   Layer.provideMerge(InfrastructureLive),
