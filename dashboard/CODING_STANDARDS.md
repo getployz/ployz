@@ -16,11 +16,11 @@ Apply these rules whenever you read data, write a route loader, or add pending U
 
 Pick the kind with one question each:
 
-1. A Cloud-owned row with a bounded count per organization? **Org Store.**
+1. A Cloud-owned row with a bounded count per organization? **Org Store.** Bounded means it grows only with things the user creates and keeps (projects, environments, services, volumes, servers). Rows that grow when the user clicks Deploy or Save, or simply with time, are history. A fixed slice of history (the latest N per environment) is bounded; the rest is not.
 2. Core runtime state? **Runtime.**
 3. Anything else: third-party APIs, unbounded history, logs, on-demand searches? **Remote Read.**
 
-Ask the question of what a view derives from, not just what it shows. A bounded view (a deployment list's status, each volume's latest config) that joins an unbounded table pulls that whole table into the Org Store. Compute such facts on the server instead, as a column or a server projection. The node config snapshots feeding deployment summaries, the Deployments list and volume resources break this today; that redesign is pending.
+Ask the question of what a view derives from, not just what it shows. A bounded view (a deployment list's status, each volume's latest config) that joins an unbounded table pulls that whole table into the Org Store. Compute such facts on the server instead, as a column or a server projection.
 
 File names say where a source lives, not its kind: a Query file that projects org rows on the server (`environment-change-state.queries.ts`) is still Org Store. The registry records each file's kind.
 
