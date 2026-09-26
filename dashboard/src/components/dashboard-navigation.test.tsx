@@ -44,7 +44,7 @@ function NavigationHarness() {
 async function showNavigation() {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
-  for (const table of ["project", "environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt"]) {
+  for (const table of ["project", "environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position"]) {
     client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed([]));
   }
   const root = createRootRoute({ component: Outlet });

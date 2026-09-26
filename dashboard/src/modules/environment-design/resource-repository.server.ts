@@ -1,7 +1,6 @@
-import { environmentNodeConfigSnapshot, volumeRemoveAttempt } from "#/modules/runtime/tables";
 import { volumeDocumentRecord } from "./resource-document";
 import "@tanstack/react-start/server-only";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentCanvasNodePosition, environmentResource, resourceLineage } from "./tables";
 import { project } from "#/modules/project/tables";
@@ -43,19 +42,7 @@ export const getVolumeResource = Effect.fn("EnvironmentDesign.getVolumeResource"
   function* (environmentId: string, resourceId: string) {
     const row = yield* loadResourceRecord(environmentId, resourceId);
     if (!row || row.resource.implementationType !== "volume") return null;
-    const { drizzle } = yield* Database;
-    const [snapshots, removals] = yield* Effect.all([
-      drizzle.select({ config: environmentNodeConfigSnapshot.config, createdAt: environmentNodeConfigSnapshot.createdAt })
-        .from(environmentNodeConfigSnapshot).where(and(eq(environmentNodeConfigSnapshot.environmentId, environmentId), eq(environmentNodeConfigSnapshot.nodeType, "volume"), eq(environmentNodeConfigSnapshot.nodeId, resourceId), isNotNull(environmentNodeConfigSnapshot.config)))
-        .orderBy(desc(environmentNodeConfigSnapshot.createdAt)).limit(1),
-      drizzle.select({ terminalAt: volumeRemoveAttempt.terminalAt }).from(volumeRemoveAttempt)
-        .where(and(eq(volumeRemoveAttempt.environmentId, environmentId), eq(volumeRemoveAttempt.environmentResourceId, resourceId), eq(volumeRemoveAttempt.status, "completed")))
-        .orderBy(desc(volumeRemoveAttempt.terminalAt)).limit(1),
-    ]);
-    const dates = removals.flatMap((removal) =>
-      removal.terminalAt ? [removal.terminalAt.getTime()] : [],
-    );
-    return volumeDocumentRecord(row, { snapshot: snapshots[0] ?? null, removedAt: dates.length ? new Date(Math.max(...dates)) : null });
+    return volumeDocumentRecord(row);
   },
 );
 

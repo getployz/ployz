@@ -1,5 +1,4 @@
 import { testConfigEnvironment } from "#/test/config-environment";
-import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { collectionReadInput } from "./read.contract";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
@@ -159,19 +158,6 @@ it.live(
         const summaries = yield* Effect.promise(() => summaryResponse.json());
         assert.strictEqual(summaries.length, 2);
         for (const row of summaries) assert.ok(!("intent" in row));
-        const environments = yield* database.drizzle.select().from(environment);
-        const savedRows = yield* database.drizzle.insert(environmentSavedStateSnapshot).values(environments.map((row) => ({
-          organizationId: row.organizationId, environmentId: row.id, actorId: userId,
-          message: "Private revision message", intent: { private: "snapshot-content" },
-          volumeDeletionAuthorizations: [{ private: "admission-evidence" }],
-        }))).returning();
-        const snapshotResponse = yield* execute(request, { table: "environment_saved_state_snapshot", userId,
-          organizationSlug: "acme-table-sync" });
-        assert.strictEqual(snapshotResponse.status, 200);
-        assert.deepStrictEqual(yield* Effect.promise(() => snapshotResponse.json()),
-          savedRows.filter((row) => row.organizationId === organizationId).map((row) => ({
-            id: row.id, organizationId, environmentId: row.environmentId,
-          })));
         for (const table of ["project", "environment"]) {
           const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync" });
           const rows = yield* Effect.promise(() => response.json());

@@ -1,38 +1,30 @@
 import { reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
-import {
-  collectionOptions, liveQueryCollectionOptions,
-  eq,
-  toArray,
-  useLiveSuspenseQuery,
-} from "@tanstack/react-db";
+import { collectionOptions, eq, liveQueryCollectionOptions, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { useQuery, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { attemptTarget, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { viewTargetNodes, deploymentView, type TargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
-  getEnvironmentSavedStateRevisionsCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
-  getVolumeRemoveAttemptsCollection,
 } from "#/collections/collections";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import {
   environmentDeploymentSummarySchema,
   type EnvironmentDeploymentSummary,
 } from "#/modules/deployments/deployment-contract";
-import { parseServiceConfig } from "@ployz/sdk/config";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 import { useBuildTail } from "#/modules/deployments/deployment-build-log.queries";
+import {
+  deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions, type DeploymentHistoryRow,
+} from "#/modules/deployments/deployment-history.queries";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
   const client = getDbClient(scope.queryClient);
   const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   const projects = getProjectsCollection(organizationSlug, scope);
-  const nodeSnapshots =
-    getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
-  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
   const rows = client.collection(collectionOptions(liveQueryCollectionOptions({
     id: `${deployments.id}:deployment-relationships`,
@@ -48,20 +40,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
         deployment,
         projectSlug: project.slug,
         environmentSlug: environment.namespace,
-        nodeSnapshots: toArray(
-          q
-            .from({ snapshot: nodeSnapshots })
-            .where(({ snapshot }) =>
-              eq(snapshot.environmentDeploymentId, deployment.id),
-            ),
-        ),
-        volumeRemoveAttempts: toArray(
-          q
-            .from({ volumeRemoveAttempt: volumeRemoveAttempts })
-            .where(({ volumeRemoveAttempt }) =>
-              eq(volumeRemoveAttempt.environmentDeploymentId, deployment.id),
-            ),
-        ),
       })),
   })));
 
@@ -69,136 +47,103 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
     client.collection(collectionOptions(liveQueryCollectionOptions({
         id: `${deployments.id}:deployment-summaries`,
     query: (q) =>
-      q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
-        const deployment = deploymentRelationships.deployment;
-        const snapshots = deploymentRelationships.nodeSnapshots ?? [];
-        const volumeAttempts = deploymentRelationships.volumeRemoveAttempts ?? [];
-        const decoded = decodeStrict(
-          environmentDeploymentSummarySchema,
-          {
-            id: deployment.id,
-            environmentId: deployment.environmentId,
-            triggerOrigin: deployment.triggerOrigin,
-            status: deployment.status,
-            message: deployment.message,
-            failureMessage: deployment.failureMessage,
-            inngestRunId: deployment.inngestRunId,
-            coreDeployId: deployment.coreDeployId,
-            deployPreview: deployment.deployPreview,
-            runtimeProgress: deployment.runtimeProgress,
-            sourcePins: deployment.sourcePins,
-            buildServiceIds: snapshots.filter((snapshot) => snapshot.nodeType === "service" && parseServiceConfig(snapshot.config).source.type === "git").map((snapshot) => snapshot.nodeId),
-            canRetry:
-              deployment.status === "failed" &&
-              volumeAttempts.length === 0,
-            failureCode: deployment.failureCode,
-            dispatchRequestedAt: deployment.dispatchRequestedAt,
-            startedAt: deployment.startedAt,
-            finishedAt: deployment.finishedAt,
-            cancellationRequestedAt: deployment.cancellationRequestedAt,
-            createdAt: deployment.createdAt,
-            updatedAt: deployment.updatedAt,
-            serviceCount: snapshots.filter(
-              (snapshot) => snapshot.nodeType === "service",
-            ).length,
-            projectSlug: deploymentRelationships.projectSlug,
-            environmentSlug: deploymentRelationships.environmentSlug,
-            volumeRemoveAttempts:
-              volumeAttempts.map((attempt) => ({
-                id: attempt.id,
-                environmentDeploymentId: attempt.environmentDeploymentId,
-                environmentResourceId: attempt.environmentResourceId,
-                retryOfAttemptId: attempt.retryOfAttemptId,
-                volumes: attempt.volumes,
-                status: attempt.status,
-                inngestRunId: attempt.inngestRunId,
-                outcome: attempt.outcome,
-                failureMessage: attempt.failureMessage,
-                startedAt: attempt.startedAt,
-                terminalAt: attempt.terminalAt,
-                createdAt: attempt.createdAt,
-                updatedAt: attempt.updatedAt,
-              })),
-          },
-        );
-        return {
-          ...decoded,
-          deployPreview:
-            deployment.deployPreview === null
-              ? null
-              : parseSdkDeployPreview(deployment.deployPreview),
-        } satisfies EnvironmentDeploymentSummary;
-      }),
+      q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => deploymentSummary({
+        ...deploymentRelationships.deployment,
+        projectSlug: deploymentRelationships.projectSlug,
+        environmentSlug: deploymentRelationships.environmentSlug,
+      })),
         getKey: (item) => item.id,
       })));
 
   return collection;
 });
 
-/** Admission and Saved State commands can also replace a queued attempt's history. */
-export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
-  await Promise.all([
-    reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
-    reconcileCollection(getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope)),
-    reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
-    reconcileCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
-  ]);
+/** Maps a deployment row, from the Org Store or a history read, to the summary every view reads. */
+function deploymentSummary(deployment: DeploymentHistoryRow): EnvironmentDeploymentSummary {
+  const decoded = decodeStrict(environmentDeploymentSummarySchema, {
+    id: deployment.id,
+    environmentId: deployment.environmentId,
+    triggerOrigin: deployment.triggerOrigin,
+    status: deployment.status,
+    message: deployment.message,
+    failureMessage: deployment.failureMessage,
+    inngestRunId: deployment.inngestRunId,
+    coreDeployId: deployment.coreDeployId,
+    deployPreview: deployment.deployPreview,
+    runtimeProgress: deployment.runtimeProgress,
+    sourcePins: deployment.sourcePins,
+    targetNodes: deployment.targetNodes,
+    canRetry: deployment.canRetry,
+    failureCode: deployment.failureCode,
+    dispatchRequestedAt: deployment.dispatchRequestedAt,
+    startedAt: deployment.startedAt,
+    finishedAt: deployment.finishedAt,
+    cancellationRequestedAt: deployment.cancellationRequestedAt,
+    createdAt: deployment.createdAt,
+    updatedAt: deployment.updatedAt,
+    projectSlug: deployment.projectSlug,
+    environmentSlug: deployment.environmentSlug,
+  });
+  return { ...decoded, deployPreview: deployment.deployPreview === null ? null : parseSdkDeployPreview(deployment.deployPreview) };
 }
 
-/** `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
-export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView; buildPending: boolean };
+/** Admission and Saved State commands can also replace a queued attempt's history. */
+export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
+  await reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope));
+}
 
-/** An environment's attempts newest first, with the attempt rows and node snapshots `attemptTarget` reads besides the attempt itself. */
-function useEnvironmentAttemptInputs(organizationSlug: string, environmentId: string) {
-  const scope = useCollectionScope();
-  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
-  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
-  const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
-  const { data: attempts } = useLiveSuspenseQuery({
+export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: TargetNode[]; view: DeploymentView };
+/** The attempt Deployment Mode shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
+export type ViewedAttempt = DeploymentAttempt & { buildPending: boolean };
+
+/** An environment's attempts in the Org Store, newest first. */
+function useStoredAttempts(organizationSlug: string, environmentId: string) {
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, useCollectionScope());
+  const { data } = useLiveSuspenseQuery({
     queryKey: ["environment-deployment-attempts", summaries.id, environmentId],
     query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
       .orderBy(({ deployment }) => deployment.createdAt, "desc"),
   });
-  const { data: history } = useLiveSuspenseQuery({
-    queryKey: ["deployment-attempt-history", deployments.id, environmentId],
-    query: (q) => q.from({ deployment: deployments }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
-      .select(({ deployment }) => ({ id: deployment.id, status: deployment.status, createdAt: deployment.createdAt })),
-  });
-  const { data: snapshotRows } = useLiveSuspenseQuery({
-    queryKey: ["deployment-attempt-snapshots", snapshots.id, environmentId],
-    query: (q) => q.from({ snapshot: snapshots }).where(({ snapshot }) => eq(snapshot.environmentId, environmentId))
-      .select(({ snapshot }) => ({ environmentDeploymentId: snapshot.environmentDeploymentId, nodeType: snapshot.nodeType, nodeId: snapshot.nodeId, config: snapshot.config })),
-  });
-  const project = (deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt => {
-    const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
-    return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog }), buildPending: false };
-  };
-  return { attempts, project };
+  return data;
+}
+
+/** One attempt through the deployment view projection. */
+function viewAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt {
+  const { nodes, progress } = viewTargetNodes(deployment.targetNodes, deployment.runtimeProgress);
+  const view = deploymentView({ deployment: { ...deployment, planned: deployment.deployPreview !== null }, progress, nodes, buildLog });
+  return { deployment, nodes, view };
 }
 
 /**
- * One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt.
- * `buildLog` also reads the attempt's Build Steps and output tails (polled until it finishes) for per-image build stages and tails.
+ * The attempt Deployment Mode shows, through the deployment view projection; null when the environment has no such attempt.
+ * An attempt the Org Store holds needs no read; one outside it comes from its per-attempt Remote Read, `pending` until it
+ * arrives. `buildLog` also reads the attempt's Build Steps and output tails (polled until it finishes) for per-image build
+ * stages and tails.
  */
-export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}): DeploymentAttempt | null {
-  const { attempts, project } = useEnvironmentAttemptInputs(organizationSlug, environmentId);
-  const deployment = attempts.find((candidate) => candidate.id === deploymentId);
-  const tailId = buildLog && deployment?.buildServiceIds.length ? deployment.id : null;
+export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}) {
+  const stored = useStoredAttempts(organizationSlug, environmentId).find((candidate) => candidate.id === deploymentId);
+  // useQuery, not useSuspenseQuery: the header, deploy bar and inspector read this attempt too and must stay mounted while
+  // it loads, so only the canvas nodes wait (on `pending`). A failed read (not a missing attempt) still fails the route.
+  const { data: read, isPending } = useQuery({ ...deploymentAttemptQueryOptions(organizationSlug, stored ? null : deploymentId), throwOnError: true });
+  const deployment = stored ?? (read?.row.environmentId === environmentId ? deploymentSummary(read.row) : undefined);
+  const tailId = buildLog && deployment?.targetNodes.nodes.some((node) => node.needsBuild) ? deployment.id : null;
   const tail = useBuildTail(organizationSlug, tailId);
-  return deployment ? { ...project(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
+  const attempt: ViewedAttempt | null = deployment ? { ...viewAttempt(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
+  return { attempt, pending: !deployment && isPending };
 }
 
-/** Every Cloud Deployment Attempt of an environment through the deployment view projection, newest first. */
-// ponytail: projects every attempt on each change; page the history if environments grow long ones.
+/** The attempts of an environment the Org Store holds (active ones plus the latest) through the deployment view projection, newest first. */
 export function useEnvironmentDeployments(organizationSlug: string, environmentId: string): DeploymentAttempt[] {
-  const { attempts, project } = useEnvironmentAttemptInputs(organizationSlug, environmentId);
-  return attempts.map((deployment) => project(deployment));
+  return useStoredAttempts(organizationSlug, environmentId).map((deployment) => viewAttempt(deployment));
 }
 
-/** The environment's attempts whose target holds this node, newest first, each with the node's view. */
-export function useNodeDeployments(organizationSlug: string, environmentId: string, nodeId: string) {
-  return useEnvironmentDeployments(organizationSlug, environmentId).flatMap(({ deployment, view }) => {
-    const node = view.nodes.find((candidate) => candidate.nodeId === nodeId);
-    return node ? [{ deployment, node }] : [];
-  });
+/**
+ * The environment's deployment list, a server page at a time, newest first. A row the Org Store holds shows its live status.
+ * Suspends until the first page arrives.
+ */
+export function useDeploymentList(organizationSlug: string, environmentId: string) {
+  const stored = new Map(useStoredAttempts(organizationSlug, environmentId).map((deployment) => [deployment.id, deployment]));
+  const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = useSuspenseInfiniteQuery(environmentDeploymentsQueryOptions(organizationSlug, environmentId));
+  const attempts = data.pages.flatMap((page) => page.items).map((row) => viewAttempt(stored.get(row.id) ?? deploymentSummary(row)));
+  return { attempts, hasMore: hasNextPage, loadingMore: isFetchingNextPage, showMore: () => void fetchNextPage() };
 }

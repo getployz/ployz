@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { changeNameSources } from "#/collections/change-sources";
+import { collectionNames } from "#/collections/read.contract";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import {
   type PostgresTestHarness,
@@ -85,7 +86,7 @@ it("keys every source feeding a collection by its key table's key", async () => 
   `);
   const references = new Set(foreignKeys.rows.map((row) => `${row.source}(${row.columns.join(", ")}) -> ${row.target}(${row.target_columns.join(", ")})`));
   // A change to any source names the collection rows it affects only if it logs their key.
-  const required = Object.values(changeNameSources).flatMap(([keyTable, ...others]) =>
+  const required = collectionNames.map((name) => changeNameSources[name]).flatMap(([keyTable, ...others]) =>
     others.map((source) => `${source}(${changeSources[source].key.join(", ")}) -> ${keyTable}(${changeSources[keyTable].key.join(", ")})`));
   expect(required.length).toBeGreaterThan(0);
   expect(required.filter((reference) => !references.has(reference))).toEqual([]);

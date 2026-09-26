@@ -1,6 +1,6 @@
 import { deploymentSourcePinsSchema, validateDeploymentSourcePins, type DeploymentSourcePins } from "./source-pins";
 import { serviceRegistryCredential, service as serviceIdentity } from "#/modules/environment-design/tables";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { parseResourceConfig, parseServiceConfig } from "@ployz/sdk/config";
 import "@tanstack/react-start/server-only";
 
 import { randomUUID } from "node:crypto";
@@ -58,6 +58,8 @@ import {
   type DeploymentTriggerOrigin as DeploymentTriggerOriginType,
 } from "./deployment";
 import { Database } from "#/server/database.server";
+import { writeTargetNodeList } from "./attempt-target.server";
+import { loadAppliedNodeConfigs } from "./environment-state.repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 export type PreparedEnvironmentNodeSnapshot = Pick<
@@ -192,6 +194,13 @@ function insertNodeSnapshots(input: {
     yield* drizzle
       .insert(schemaEnvironmentNodeConfigSnapshot)
       .values(snapshots.map(({ configSnapshot }) => configSnapshot));
+    yield* Effect.forEach(
+      input.nodeSnapshots.filter(({ nodeType }) => nodeType === "volume"),
+      (snapshot) => drizzle.update(schemaEnvironmentResource)
+        .set({ deployedName: parseResourceConfig("volume", snapshot.config).name, removedAt: null })
+        .where(and(eq(schemaEnvironmentResource.environmentId, input.environmentId), eq(schemaEnvironmentResource.id, snapshot.nodeId))),
+      { discard: true },
+    );
     const secrets = snapshots.flatMap((snapshot) =>
       snapshot.encryptedRegistryUsername || snapshot.encryptedRegistrySecret
         ? [
@@ -430,6 +439,8 @@ function writeQueuedSavedTarget(
       nodeSnapshots: target.nodeSnapshots,
       retryOfDeploymentId: input.retryOfDeploymentId,
     });
+    // Provisional: the attempt's start rewrites it against the whole of Applied State.
+    yield* writeTargetNodeList(deployment.id, yield* loadAppliedNodeConfigs(input.environmentId));
     const authorizations = yield* actionableVolumeDeletionAuthorizations(
       input.environmentId,
       target.volumeDeletionAuthorizations,

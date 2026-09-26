@@ -4,8 +4,11 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import {
   cancelEnvironmentDeploymentSchema,
+  deploymentAttemptQuerySchema,
   deploymentBuildTailQuerySchema,
+  environmentDeploymentsQuerySchema,
   deploymentServiceVariablesQuerySchema,
+  nodeDeploymentsQuerySchema,
   reviewedPublicationSchema,
   deploymentOperationEvidencePageQuerySchema,
   dispatchQueuedEnvironmentDeploymentSchema,
@@ -14,11 +17,14 @@ import {
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
+  getDeploymentAttempt,
   listDeploymentBuildLog,
+  listEnvironmentDeployments,
   listDeploymentBuildTail,
   getDeploymentServiceVariables,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
+  listNodeDeployments,
 } from "#/modules/deployments/deployment-operations.server";
 import {
   actorMiddleware,
@@ -113,3 +119,18 @@ export const listDeploymentProgressLogsServerFn = createServerFn({ method: "GET"
   .middleware(deploymentMiddleware)
   .validator(strictValidator(deploymentOperationEvidencePageQuerySchema))
   .handler(({ context, data }) => runActor(context, listDeploymentProgressLogs(context.actor, data)));
+
+export const listNodeDeploymentsServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(nodeDeploymentsQuerySchema))
+  .handler(({ context, data }) => runActor(context, listNodeDeployments(context.actor, data)));
+
+export const listEnvironmentDeploymentsServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(environmentDeploymentsQuerySchema))
+  .handler(({ context, data }) => runActor(context, listEnvironmentDeployments(context.actor, data)));
+
+export const getDeploymentAttemptServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(deploymentAttemptQuerySchema))
+  .handler(({ context, data }) => runActor(context, getDeploymentAttempt(context.actor, data)));

@@ -5,7 +5,8 @@ import { openStartedDeploymentsChange, setOpenStartedDeployments } from "#/auth/
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Button } from "#/components/ui/button";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
-import { useDeploymentAttempt, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { useDeploymentAttempt, type ViewedAttempt } from "#/modules/deployments/deployment.collection";
+import { Uuid } from "#/modules/environment-design/schema";
 import { DEPLOYMENT_SEARCH_KEY, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 export const CANVAS_ROUTE_ID =
@@ -25,25 +26,36 @@ export const canvasRouteSearch = {
   search: { middlewares: [retainSearchParams<{ deployment?: string }>([DEPLOYMENT_SEARCH_KEY])] },
 };
 
-const DeploymentModeContext = createContext<DeploymentAttempt | null>(null);
+/** A malformed id is no attempt: the canvas stays in Editor Mode. */
+export const viewedDeploymentId = (search: { deployment?: string }) =>
+  search.deployment !== undefined && Schema.is(Uuid)(search.deployment) ? search.deployment : null;
 
-/** The attempt the canvas shows in Deployment Mode, or null in Editor Mode. Everything in Deployment Mode is read-only. */
+/** `attempt` is null in Editor Mode; `pendingId` names an attempt whose read is still on its way. */
+type DeploymentMode = { attempt: ViewedAttempt | null; pendingId: string | null };
+const DeploymentModeContext = createContext<DeploymentMode>({ attempt: null, pendingId: null });
+
+/** The attempt the canvas shows in Deployment Mode, or null in Editor Mode (and while it loads). Everything in Deployment Mode is read-only. */
 export function useDeploymentMode() {
-  return use(DeploymentModeContext);
+  return use(DeploymentModeContext).attempt;
 }
 
-// ponytail: an unknown or other-environment id falls back to Editor Mode with the param still in the URL.
+/** The attempt Deployment Mode is opening: its read (outside the Org Store) is on its way, so only the canvas nodes wait. */
+export function usePendingDeploymentId() {
+  return use(DeploymentModeContext).pendingId;
+}
+
+// ponytail: a malformed, unknown or other-environment id falls back to Editor Mode with the param still in the URL.
 export function DeploymentModeProvider({ children }: { children: ReactNode }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const deploymentId = useSearch({ from: CANVAS_ROUTE_ID, select: (search) => search.deployment ?? null });
-  const attempt = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
+  const deploymentId = useSearch({ from: CANVAS_ROUTE_ID, select: viewedDeploymentId });
+  const { attempt, pending } = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
   useOpenStartedDeploymentsSync(attempt, deploymentId);
-  return <DeploymentModeContext value={attempt}>{children}</DeploymentModeContext>;
+  return <DeploymentModeContext value={{ attempt, pendingId: pending ? deploymentId : null }}>{children}</DeploymentModeContext>;
 }
 
 /** Keeps "open deployments I start" in step with how the user watches their own running attempts. */
-function useOpenStartedDeploymentsSync(attempt: DeploymentAttempt | null, deploymentId: string | null) {
+function useOpenStartedDeploymentsSync(attempt: ViewedAttempt | null, deploymentId: string | null) {
   const { userId } = useCollectionScope();
   const origin = attempt?.deployment.triggerOrigin;
   const shownNow = attempt && isActiveDeployment(attempt.deployment.status)

@@ -5,10 +5,7 @@ import type { BuildOrderRow } from "#/modules/deployments/build-order";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
-import {
-  environmentDeployment as schemaEnvironmentDeployment,
-  environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
-} from "#/modules/deployments/tables";
+import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import {
   service as schemaService,
   environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
@@ -20,9 +17,7 @@ import {
   environment as schemaEnvironment,
 } from "#/modules/project/tables";
 import {
-  environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
-  volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 
 type ProjectRow = typeof schemaProject.$inferSelect;
@@ -31,16 +26,9 @@ type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
 type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
-type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy">;
-type EnvironmentSavedStateRevisionRow = Pick<
-  typeof schemaEnvironmentSavedStateSnapshot.$inferSelect,
-  "id" | "organizationId" | "environmentId"
->;
-type EnvironmentNodeConfigSnapshotRow =
-  typeof schemaEnvironmentNodeConfigSnapshot.$inferSelect;
+type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy"> & { canRetry: boolean };
 type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
-type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
 /** Every Org Store collection is fed by the Organization change log: a refetch reads only rows changed `since` its cursor. */
 function changeCollection<Row extends object>(table: CollectionName, getKey: (row: Row) => string) {
@@ -63,13 +51,8 @@ export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
 export const getResourceLineagesCollection = changeCollection<ResourceLineageRow>("resource_lineage", (row) => row.id);
 export const getRawEnvironmentResourcesCollection = changeCollection<EnvironmentResourceRow>("environment_resource", (row) => row.id);
 export const getEnvironmentDeploymentsCollection = changeCollection<EnvironmentDeploymentRow>("environment_deployment", (row) => row.id);
-export const getEnvironmentSavedStateRevisionsCollection = changeCollection<EnvironmentSavedStateRevisionRow>(
-  "environment_saved_state_snapshot", (row) => row.id);
-export const getEnvironmentNodeConfigSnapshotsCollection = changeCollection<EnvironmentNodeConfigSnapshotRow>(
-  "environment_node_config_snapshot", (row) => row.id);
 export const getEnvironmentNodeIntroductionsCollection = changeCollection<EnvironmentNodeIntroductionRow>(
   "environment_node_introduction", (row) => `${row.nodeType}:${row.nodeId}`);
-export const getVolumeRemoveAttemptsCollection = changeCollection<VolumeRemoveAttemptRow>("volume_remove_attempt", (row) => row.id);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
 export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
 export const getBuildOrderCollection = changeCollection<BuildOrderRow>("organization_build_order", (row) => row.id);
@@ -98,10 +81,7 @@ export const orgStoreTables = {
   environment_resource: getRawEnvironmentResourcesCollection,
   environment_canvas_node_position: getCanvasPositionsCollection,
   environment_deployment: getEnvironmentDeploymentsCollection,
-  environment_saved_state_snapshot: getEnvironmentSavedStateRevisionsCollection,
-  environment_node_config_snapshot: getEnvironmentNodeConfigSnapshotsCollection,
   environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
-  volume_remove_attempt: getVolumeRemoveAttemptsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,
   organization_build_order: getBuildOrderCollection,

@@ -178,6 +178,10 @@ _Avoid_: Deployment page, deployment detail screen, Live Mode (for Editor Mode)
 The immutable complete runtime target frozen when a queued deployment request starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.
 _Avoid_: Saved state, deploy preview, mutable queued request
 
+**Target Node List**:
+The Environment Nodes a Cloud Deployment Attempt covers, each marked changed, removed or needing a build against Applied State. It is provisional while the attempt is queued and freezes with the Attempt Target when the attempt starts.
+_Avoid_: Attempt nodes, deployment diff, queued node preview
+
 **Deployment Requirement**:
 The caller-selected failure policy for updating one Service in an Attempt Target: required or opportunistic; manual Deploy makes every included Service update required. An opportunistic failure preserves or attempts to restore the prior working version and allows deployment work to continue only when that version is retained or recovery succeeds; a required failure or failed recovery cancels later phases.
 _Avoid_: Healthcheck policy, application version constraint, optional service, independent deployment

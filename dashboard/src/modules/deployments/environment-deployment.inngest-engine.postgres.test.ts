@@ -5,7 +5,7 @@ import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createGitServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -53,6 +53,16 @@ const emptySavedIntent = {
 
 describe("deployment Inngest durable smoke", () => {
   let harness: PostgresTestHarness;
+  /**
+   * Every effect an Inngest run started, with its after-commit dispatches. A test can end while a replayed step still runs;
+   * its transaction would then hold locks the next test's truncate waits on.
+   */
+  const inFlight = new Set<Promise<unknown>>();
+  function tracked<A>(run: Promise<A>) {
+    inFlight.add(run);
+    void run.then(() => inFlight.delete(run), () => inFlight.delete(run));
+    return run;
+  }
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
@@ -60,6 +70,10 @@ describe("deployment Inngest durable smoke", () => {
 
   afterAll(async () => {
     await harness?.stop();
+  });
+
+  afterEach(async () => {
+    while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
   });
 
   beforeEach(async () => {
@@ -112,9 +126,9 @@ describe("deployment Inngest durable smoke", () => {
   it("settles cancellation between planning and runtime execution in PostgreSQL", async () => {
     const runEffect = makeInngestEffectRunner(
       <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption>) =>
-        harness.runEffect(
+        tracked(harness.runEffect(
           operation.pipe(Effect.provideService(SecretEncryption, encryption)),
-        ),
+        )),
     ) as typeof runInngestEffect;
     const inngest = new Inngest({ id: "durable-smoke" });
     await harness.db.update(schema.environmentDeployment).set({ status: "applied", finishedAt: new Date() })
@@ -260,7 +274,7 @@ describe("deployment Inngest durable smoke", () => {
     function runner(fake: Fake) {
       const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
         .pipe(Layer.provide(makePloyzLayer({ connect: async () => fakeClient(fake) })));
-      return makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, never>) => harness.runEffect(operation.pipe(
+      return makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, never>) => tracked(harness.runEffect(operation.pipe(
         Effect.provide(runtime),
         Effect.provideService(GithubApi, {
           json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo", private: false }).pipe(Effect.orDie),
@@ -268,7 +282,7 @@ describe("deployment Inngest durable smoke", () => {
         }),
         Effect.provideService(InngestClient, client),
         Effect.provideService(SecretEncryption, encryption),
-      ))) as typeof runInngestEffect;
+      )))) as typeof runInngestEffect;
     }
     function engine(fake: Fake, deploymentId: string, runId: string) {
       return new InngestTestEngine({

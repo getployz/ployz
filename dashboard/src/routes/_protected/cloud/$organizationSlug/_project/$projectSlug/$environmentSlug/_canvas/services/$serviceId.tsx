@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchRemote } from "#/collections/route-data";
+import { prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
 import { deploymentBuildLogQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
+import { deploymentAttemptQueryOptions, nodeDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
+import { viewedDeploymentId } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -14,10 +16,15 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
 )({
   validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema),
-  loaderDeps: ({ search }) => ({ deployment: search.deployment, tab: search.tab }),
-  // Deployment Mode's Build logs tab reads the whole log; SSR renders it, and hovering a node warms it.
+  // Switching tabs navigates, so the open tab's read starts as it opens: the Deployments tab's first page, or in Deployment
+  // Mode the configs the attempt deployed (Details) or the whole build log (Build logs). SSR renders them; hovering a node warms logs.
+  loaderDeps: ({ search }) => ({ deployment: viewedDeploymentId(search), tab: search.tab }),
   loader: async ({ params, context, deps }) => {
-    if (deps.deployment && deps.tab === "build-logs") await prefetchRemote(context, deploymentBuildLogQueryOptions(params.organizationSlug, deps.deployment));
+    if (deps.deployment !== null && deps.tab === "details") await prefetchRemote(context, deploymentAttemptQueryOptions(params.organizationSlug, deps.deployment));
+    if (deps.deployment !== null && deps.tab === "build-logs") await prefetchRemote(context, deploymentBuildLogQueryOptions(params.organizationSlug, deps.deployment));
+    if (deps.tab !== "deployments") return;
+    const environment = await requireEnvironment(context, params);
+    await prefetchRemotePages(context, nodeDeploymentsQueryOptions(params.organizationSlug, environment.id, params.serviceId));
   },
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Service" />,

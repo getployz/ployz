@@ -146,6 +146,24 @@ describe("Saved deployment admission", () => {
     );
   });
 
+  it("writes a volume's deployed name in the transaction that writes its snapshot", async () => {
+    await harness.db.insert(schema.resourceLineage).values({
+      id: firstLineageId, organizationId, projectId, canonicalName: "First", canonicalSlug: "first",
+    });
+    await harness.db.insert(schema.environmentResource).values({
+      id: firstVolumeId, organizationId, projectId, environmentId, lineageId: firstLineageId,
+      implementationType: "volume", removedAt: new Date("2026-09-01T00:00:00Z"),
+    });
+    const queued = await admit((await publish("first", null)).savedStateSnapshotId);
+    const written = await harness.pool.query(
+      `select r.deployed_name, r.removed_at, r.xmin::text = s.xmin::text as same_transaction
+       from environment_resource r join environment_node_config_snapshot s on s.node_id = r.id
+       where r.id = $1 and s.environment_deployment_id = $2`,
+      [firstVolumeId, queued.id],
+    );
+    expect(written.rows).toEqual([{ deployed_name: "First", removed_at: null, same_transaction: true }]);
+  });
+
   it("replaces the pending target and allows a new attempt once started", async () => {
     const first = await publish("first", null);
     const queued = await admit(first.savedStateSnapshotId);

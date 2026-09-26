@@ -19,8 +19,8 @@ export const orgStoreViews = [
 export const orgStoreProjections = [preloadOrganizationEnvironmentChangeStateProjections];
 
 /**
- * The Org Store's single readiness signal. Tables load together; derived views
- * and the change-state projection start once their raw rows exist.
+ * The Org Store's single readiness signal. Tables and the change-state projection
+ * load together; derived views start once their raw rows exist.
  */
 export function orgStoreOptions(organizationSlug: string, scope: CollectionScope) {
   return queryOptions({
@@ -28,10 +28,9 @@ export function orgStoreOptions(organizationSlug: string, scope: CollectionScope
     // Readiness happens once; each table keeps itself fresh after that.
     staleTime: Infinity,
     queryFn: async () => {
-      await Promise.all(Object.values(orgStoreTables).map((get) => preloadCollection(get(organizationSlug, scope))));
+      const tables = Promise.all(Object.values(orgStoreTables).map((get) => preloadCollection(get(organizationSlug, scope))));
       await Promise.all([
-        ...orgStoreViews.map((get) => get(organizationSlug, scope).preload()),
-        // ponytail: change state waits on deployment metadata to stamp its version; parallel once the server returns the version.
+        tables.then(() => Promise.all(orgStoreViews.map((get) => get(organizationSlug, scope).preload()))),
         ...orgStoreProjections.map((preload) => preload(scope, organizationSlug)),
       ]);
       return true;

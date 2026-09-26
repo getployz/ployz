@@ -240,10 +240,16 @@ describe("direct volume removal durable state", () => {
     await harness.runEffect(reconcileVolumeRemoveTombstoneActivity(completed));
 
     const resource = await harness.pool.query(
-      "select id from environment_resource where id = $1",
+      "select id, removed_at from environment_resource where id = $1",
       [resourceId],
     );
-    expect(resource.rows).toEqual([{ id: resourceId }]);
+    expect(resource.rows).toEqual([{ id: resourceId, removed_at: new Date("2026-09-04T03:03:00Z") }]);
+    // The volume node reads `removed_at`, so it is written in the transaction that completes the attempt.
+    const written = await harness.pool.query(
+      "select (select xmin::text from environment_resource where id = $1) = (select xmin::text from volume_remove_attempt where id = $2) as same",
+      [resourceId, attempt.id],
+    );
+    expect(written.rows).toEqual([{ same: true }]);
   });
 
   it("marks a repeated submission as unknown instead of replaying it", async () => {

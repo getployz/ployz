@@ -219,6 +219,24 @@ function loadAppliedDeploymentHeads(scope: SnapshotScope) {
   });
 }
 
+/**
+ * Applied State's node configs as the environment's latest applied attempt left them, by node key. Credential-free: it
+ * leaves out services a later failed attempt confirmed, which only that attempt's encrypted runtime outcome records, so it
+ * matches Applied State only when no failed attempt followed. `loadEnvironmentSnapshotProjection` counts them.
+ */
+export function loadAppliedNodeConfigs(environmentId: string) {
+  return Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [head] = yield* loadAppliedDeploymentHeads({ kind: "environment", environmentId });
+    const nodes = head ? yield* drizzle.select({
+      nodeType: schemaEnvironmentNodeConfigSnapshot.nodeType,
+      nodeId: schemaEnvironmentNodeConfigSnapshot.nodeId,
+      config: schemaEnvironmentNodeConfigSnapshot.config,
+    }).from(schemaEnvironmentNodeConfigSnapshot).where(eq(schemaEnvironmentNodeConfigSnapshot.environmentDeploymentId, head.id)) : [];
+    return new Map(nodes.map((node) => [nodeKey(node.nodeType, node.nodeId), node]));
+  });
+}
+
 function loadPartialDeploymentHeads(scope: SnapshotScope) {
   return loadDeploymentHeads(scope, {
     statuses: ["failed", "cancelled"],

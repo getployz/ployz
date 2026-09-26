@@ -92,7 +92,7 @@ async function show(ssr = false, orgStore: "ready" | "pending" | "failed" = "rea
     client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed(table === "environment" ? [environmentData] : []));
   }
   const storeScope = { queryClient: client, sessionId: "test-session", userId: "test-user" };
-  client.setQueryData(environmentChangeStateOptions("acme", storeScope).queryKey, { version: "", states: [] });
+  client.setQueryData(environmentChangeStateOptions("acme", storeScope).queryKey, []);
   const store = orgStoreOptions("acme", storeScope);
   let resolveOrgStore = (_ready: boolean) => {};
   if (orgStore === "ready") client.setQueryData(store.queryKey, true);

@@ -9,6 +9,7 @@ import {
 } from "#/test/postgres";
 import { Database } from "#/server/database.server";
 import { InngestClient } from "#/modules/inngest/client";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import {
   beginEnvironmentDeploymentPlanning,
   ownsDeploymentRun,
@@ -37,11 +38,13 @@ describe("durable deployment activities", () => {
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
   function runEffect<A, E>(
-    operation: Effect.Effect<A, E, Database | InngestClient>,
+    operation: Effect.Effect<A, E, Database | InngestClient | SecretEncryption>,
   ) {
-    return harness.runEffect(
-      operation.pipe(Effect.provideService(InngestClient, inngest)),
-    );
+    return harness.runEffect(operation.pipe(
+      Effect.provideService(InngestClient, inngest),
+      // Starting an attempt reads Applied State, which decrypts failed attempts' runtime outcomes.
+      Effect.provideService(SecretEncryption, makeSecretEncryption("test-encryption-secret")),
+    ));
   }
 
   beforeAll(async () => {

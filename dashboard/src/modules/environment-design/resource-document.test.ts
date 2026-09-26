@@ -11,15 +11,16 @@ it("keeps pending volume removal visible without making history editable", () =>
   const after = new Date("2026-09-03T00:00:00Z");
   const row: ResourceDocumentView = {
     document: { projectId, updatedAt: after, intent: { version: 1, environmentSlug: "production", services: [], volumes: [] } },
-    resource: { id, projectId, environmentId, lineageId, implementationType: "volume", createdAt: before, updatedAt: before },
+    resource: { id, projectId, environmentId, lineageId, implementationType: "volume", deployedName: null, removedAt: null, createdAt: before, updatedAt: before },
     lineage: { id: lineageId, projectId, canonicalName: "Original name", canonicalSlug: "original-name", createdAt: before, updatedAt: before },
     canvasPosition: null, projectSlug: "test", environmentSlug: "production",
   };
-  expect(volumeDocumentRecord(row, { snapshot: null, removedAt: null })).toBeNull();
-  const snapshot = { config: { version: 2, name: "Last deployed name" }, createdAt: before };
-  expect(volumeDocumentRecord(row, { snapshot, removedAt: null })).toMatchObject({ resource: { name: "Last deployed name" }, isAuthored: false });
-  expect(volumeDocumentRecord(row, { snapshot, removedAt: removed })).toBeNull();
-  expect(volumeDocumentRecord(row, { snapshot: { ...snapshot, createdAt: after }, removedAt: removed })).not.toBeNull();
+  const withResource = (resource: Partial<ResourceDocumentView["resource"]>) => ({ ...row, resource: { ...row.resource, ...resource } });
+  expect(volumeDocumentRecord(row)).toBeNull();
+  const deployed = withResource({ deployedName: "Last deployed name" });
+  expect(volumeDocumentRecord(deployed)).toMatchObject({ resource: { name: "Last deployed name" }, isAuthored: false });
+  expect(volumeDocumentRecord(deployed)?.resource).not.toHaveProperty("deployedName");
+  expect(volumeDocumentRecord(withResource({ deployedName: "Last deployed name", removedAt: removed }))).toBeNull();
   row.document.intent.volumes.push({ resourceId: id, resourceLineageId: lineageId, name: "Restored name" });
-  expect(volumeDocumentRecord(row, { snapshot, removedAt: removed })).toMatchObject({ resource: { name: "Restored name" }, isAuthored: true });
+  expect(volumeDocumentRecord(withResource({ deployedName: "Last deployed name", removedAt: removed }))).toMatchObject({ resource: { name: "Restored name" }, isAuthored: true });
 });

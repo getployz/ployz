@@ -14,6 +14,7 @@ import {
   isUniqueViolation,
 } from "#/server/database.server";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
+import { environmentResource as schemaEnvironmentResource } from "#/modules/environment-design/tables";
 import { Conflict } from "#/server/public-error";
 
 export type VolumeRemoveAttempt = typeof schemaVolumeRemoveAttempt.$inferSelect;
@@ -376,6 +377,12 @@ export const completeVolumeRemoveAttempt = Effect.fn(
           return yield* new Conflict({
             message: "Volume remove completion was not persisted.",
           });
+        }
+        if (updated.status === "completed" && updated.environmentResourceId) {
+          yield* transaction.drizzle
+            .update(schemaEnvironmentResource)
+            .set({ removedAt: now })
+            .where(eq(schemaEnvironmentResource.id, updated.environmentResourceId));
         }
         return updated;
       }),

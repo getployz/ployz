@@ -25,6 +25,7 @@ import {
 import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
+import { writeTargetNodeList } from "./attempt-target.server";
 import { coreOperationWatch } from "#/modules/operations/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -383,10 +384,18 @@ export const markDeploymentStatus = Effect.fn(
 export const beginEnvironmentDeploymentPlanning = Effect.fn(
   "Deployments.beginEnvironmentDeploymentPlanning",
 )(function* (input: { readonly environmentDeploymentId: string; readonly expectedInngestRunId?: string }) {
-  const changed = yield* markDeploymentStatus({
-    ...input,
-    status: "planning",
-  }).pipe(
+  const database = yield* Database;
+  const changed = yield* database.transaction(Effect.gen(function* () {
+    const started = yield* markDeploymentStatus({ ...input, status: "planning" });
+    if (!started) return false;
+    // Starting freezes the target node list with the Attempt Target: rediffed against the whole of Applied State now.
+    const environmentId = yield* lockDeploymentEnvironment(input.environmentDeploymentId);
+    if (environmentId) {
+      const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId });
+      yield* writeTargetNodeList(input.environmentDeploymentId, projection.appliedSavedNodeByKey);
+    }
+    return true;
+  })).pipe(
     Effect.catchTag("DeploymentQueueOccupied", () =>
       Effect.succeed("blocked" as const),
     ),

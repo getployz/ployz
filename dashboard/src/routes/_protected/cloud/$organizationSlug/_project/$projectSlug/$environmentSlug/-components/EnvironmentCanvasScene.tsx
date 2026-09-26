@@ -35,7 +35,8 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
 import { ApplyZoneSlot, DeployBar } from "./DeployBar";
-import { BackToLive, DeploymentModeProvider, useDeploymentMode } from "./deployment-mode";
+import { BackToLive, DeploymentModeProvider, useDeploymentMode, usePendingDeploymentId } from "./deployment-mode";
+import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
 import { DeploymentServicePanel } from "./DeploymentServicePanel";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -219,9 +220,12 @@ function CanvasScene() {
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
   const attempt = useDeploymentMode();
+  const pendingId = usePendingDeploymentId();
+  const viewedId = attempt?.deployment.id ?? pendingId;
   const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
-  // Deployment Mode opens only its read-only panel, and only for a service in the Attempt Target; the live panel edits.
-  const inspectedNodeId = !attempt ? selectedNodeId
+  // Deployment Mode opens only its read-only panel, and only for a service in the target node list; the live panel edits.
+  // While the attempt loads, a selected service's panel waits for it.
+  const inspectedNodeId = pendingId ? selectedServiceId : !attempt ? selectedNodeId
     : attempt.nodes.some((node) => node.nodeType === "service" && node.nodeId === selectedServiceId) ? selectedServiceId : null;
 
   return (
@@ -232,21 +236,22 @@ function CanvasScene() {
         nodeId: inspectedNodeId,
       } : null}
       header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }}>
-        {attempt ? <>
-          <span className="ml-auto font-mono text-muted-foreground">{shortDeploymentId(attempt.deployment.id)}</span>
+        {viewedId ? <>
+          <span className="ml-auto font-mono text-muted-foreground">{shortDeploymentId(viewedId)}</span>
           <BackToLive />
         </> : null}
       </DashboardPageHeader>}
       canvas={<>
         <Suspense fallback={<PendingCanvas />}>
-          {attempt
-            ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
+          {pendingId ? <PendingCanvas />
+            : attempt ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
             : <CanvasWithData key={canvasKey} />}
         </Suspense>
         <Suspense fallback={null}><DeployBar><div ref={setApplyZoneSlot} className="contents" /></DeployBar></Suspense>
       </>}
     >
-      {!inspectedNodeId ? null : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
+      {!inspectedNodeId ? null : pendingId ? <CanvasInspectorPending />
+        : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
     </CanvasInspectorOverlay>
     </ApplyZoneSlot.Provider>
   );

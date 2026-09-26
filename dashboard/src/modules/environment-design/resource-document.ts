@@ -1,4 +1,3 @@
-import { parseResourceConfig } from "@ployz/sdk/config";
 import type { environmentResource, resourceLineage } from "./tables";
 import type { SavedEnvironmentIntent } from "./saved-intent";
 import type { ServiceCanvasPositionRecord } from "./services";
@@ -15,23 +14,18 @@ export type ResourceDocumentView = {
   environmentSlug: string;
 };
 
-export type VolumeHistory = {
-  snapshot: { config: unknown; createdAt: Date } | null;
-  removedAt: Date | null;
-};
-
-export function volumeIsVisible(row: ResourceDocumentView, history: VolumeHistory) {
+export function volumeIsVisible(row: ResourceDocumentView) {
   return row.document.intent.volumes.some((node) => node.resourceId === row.resource.id)
-    || (history.snapshot !== null
-      && (history.removedAt === null || history.snapshot.createdAt > history.removedAt));
+    || (row.resource.deployedName !== null && row.resource.removedAt === null);
 }
 
-export function volumeDocumentRecord(row: ResourceDocumentView, history: VolumeHistory) {
+export function volumeDocumentRecord(row: ResourceDocumentView) {
   const resourceId = row.resource.id;
-    const { document, ...view } = row;
-    const node = document.intent.volumes.find((node) => node.resourceId === resourceId);
-    if (!volumeIsVisible(row, history)) return null;
-    const name = node?.name ?? (history.snapshot ? parseResourceConfig("volume", history.snapshot.config).name : row.lineage.canonicalName);
-    const attachments = document.intent.services.flatMap((service) => service.volumeAttachments.filter((mount) => mount.volumeResourceId === resourceId).map((mount) => ({ serviceId: service.id, mountPath: mount.mountPath })));
-    return decodeStrict(volumeResourceRecordSchema, { ...view, resource: { ...view.resource, name, slug: slugifySegment(name) || "volume", deletedAt: node ? null : row.document.updatedAt }, attachments, consumerCount: attachments.length, isAuthored: node !== undefined, runtimeStatus: null });
+  const { document, ...view } = row;
+  const { deployedName, removedAt: _removedAt, ...resource } = view.resource;
+  const node = document.intent.volumes.find((node) => node.resourceId === resourceId);
+  if (!volumeIsVisible(row)) return null;
+  const name = node?.name ?? deployedName ?? row.lineage.canonicalName;
+  const attachments = document.intent.services.flatMap((service) => service.volumeAttachments.filter((mount) => mount.volumeResourceId === resourceId).map((mount) => ({ serviceId: service.id, mountPath: mount.mountPath })));
+  return decodeStrict(volumeResourceRecordSchema, { ...view, resource: { ...resource, name, slug: slugifySegment(name) || "volume", deletedAt: node ? null : row.document.updatedAt }, attachments, consumerCount: attachments.length, isAuthored: node !== undefined, runtimeStatus: null });
 }

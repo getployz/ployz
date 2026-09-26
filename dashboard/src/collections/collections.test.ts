@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { changeNameSources } from "#/collections/change-sources";
 import * as collections from "#/collections/collections";
 import { orgStoreTables, getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getResourceLineagesCollection } from "#/collections/collections";
-import { dataSources } from "#/collections/data-sources";
+import { dataSources, historyTables } from "#/collections/data-sources";
 import { orgStoreProjections, orgStoreViews } from "#/collections/org-store";
 import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
 
@@ -24,6 +24,18 @@ describe("API node collections", () => {
     expect(projections.length).toBeGreaterThan(0);
     expect(new Set<unknown>(orgStoreViews)).toEqual(new Set(views));
     expect(new Set<unknown>(orgStoreProjections)).toEqual(new Set(projections));
+  });
+
+  it("derives Org Store views only from bounded tables", async () => {
+    for (const view of orgStoreViews) {
+      const scope = { queryClient: new QueryClient(), sessionId: "session", userId: "user" };
+      for (const table of orgStoreTableNames) scope.queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
+      await view("acme", scope).preload();
+      // A running view subscribes to every table it reads, directly or through the live queries it derives from.
+      const read = Object.entries(orgStoreTables).filter(([, get]) => get("acme", scope).subscriberCount > 0).map(([table]) => table);
+      expect(read.length).toBeGreaterThan(0);
+      for (const table of read) expect(historyTables, table).not.toContain(table);
+    }
   });
 
   it("isolates node collections by authenticated scope while retaining automatic indexes", () => {

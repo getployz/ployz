@@ -2,7 +2,7 @@ import { getDbClient } from "#/collections/scope";
 import { expect, it, vi } from "vitest";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
-import { createApiCollection, reconcileCollection, preloadCollection } from "#/collections/query-collection";
+import { createApiCollection, reconcileCollection } from "#/collections/query-collection";
 import { createVolumeResourcesCollection } from "./resource.collection";
 import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import type { Collection } from "@tanstack/react-db";
@@ -22,20 +22,16 @@ function createStores() {
   const now = new Date("2026-09-08T00:00:00Z");
   const intent: SavedEnvironmentIntent = { version: 1, environmentSlug: "production", services: [], volumes: [{ resourceId: id, resourceLineageId: lineageId, name: "data" }] };
   const server = {
-    resources: [{ id, environmentId, projectId, organizationId, lineageId, implementationType: "volume", createdAt: now, updatedAt: now }] satisfies Row<"resources">[],
+    resources: [{ id, environmentId, projectId, organizationId, lineageId, implementationType: "volume", deployedName: null, removedAt: null, createdAt: now, updatedAt: now }] satisfies Row<"resources">[],
     lineages: [{ id: lineageId, projectId, organizationId, canonicalName: "data", canonicalSlug: "data", createdAt: now, updatedAt: now }] satisfies Row<"lineages">[],
     documents: [{ id: environmentId, projectId, organizationId, projectSlug: "app", namespace: "production", name: "Production", revision: "00000000-0000-4000-8000-000000000099", createdAt: now, updatedAt: now, intent, compiled: compileSavedEnvironmentIntent({ environmentId, intent }) }] satisfies Row<"documents">[],
     positions: [{ id: "00000000-0000-4000-8000-000000000006", environmentId, organizationId, resourceType: "volume", resourceId: id, x: 10, y: 20, createdAt: now, updatedAt: now }] satisfies Row<"positions">[],
-    snapshots: new Array<Row<"snapshots">>(),
-    removals: new Array<Row<"removals">>(),
   };
   const sources = {
     resources: collection<Row<"resources">>(() => server.resources),
     lineages: collection<Row<"lineages">>(() => server.lineages),
     documents: collection<Row<"documents">>(() => server.documents),
     positions: collection<Row<"positions">>(() => server.positions),
-    snapshots: collection<Row<"snapshots">>(() => server.snapshots),
-    removals: collection<Row<"removals">>(() => server.removals),
   } satisfies Sources;
   return { sources, id, environmentId, client, server };
 }
@@ -91,48 +87,4 @@ it("refreshes joined resources after API creation, optimistic position persisten
   await volumes.cleanup();
   await Promise.all(Object.values(stores.sources).map((collection) => collection.cleanup()));
   stores.client.clear();
-});
-
-it("updates joined volume history from API snapshots and completed removals", async () => {
-  const { sources, id, environmentId, client, server } = createStores();
-  await Promise.all(Object.values(sources).map(preloadCollection));
-  const resource = sources.resources.get(id);
-  if (!resource) throw new Error("Missing fixture resource");
-  const now = resource.createdAt;
-  let snapshots: Row<"snapshots">[] = [{ id: "snapshot", organizationId: resource.organizationId,
-    environmentId, environmentDeploymentId: "deployment", nodeType: "volume", nodeId: id,
-    nodeLineageId: resource.lineageId, configVersion: 1, config: { version: 2, name: "deployed-data" }, createdAt: now, updatedAt: now }];
-  let removals: Row<"removals">[] = [];
-  const snapshotCollection = createApiCollection({ queryClient: client, queryKey: ["history", "snapshots"],
-    queryFn: async () => snapshots, getKey: (row: Row<"snapshots">) => row.id });
-  const removalCollection = createApiCollection({ queryClient: client, queryKey: ["history", "removals"],
-    queryFn: async () => removals, getKey: (row: Row<"removals">) => row.id });
-  await Promise.all([preloadCollection(snapshotCollection), preloadCollection(removalCollection)]);
-  const document = server.documents[0];
-  if (!document) throw new Error("Missing fixture document");
-  document.intent.volumes = [];
-  await reconcileCollection(sources.documents);
-  const volumes = createVolumeResourcesCollection({ client: getDbClient(client),
-    sources: { ...sources, snapshots: snapshotCollection, removals: removalCollection } });
-  try {
-    await volumes.preload();
-    expect(volumes.get(id)).toMatchObject({ isAuthored: false, resource: { name: "deployed-data" } });
-    removals = [{ id: "removal", organizationId: resource.organizationId, requestedByUserId: "user", environmentId,
-      environmentDeploymentId: "deployment", environmentResourceId: id, retryOfAttemptId: null, volumes: [],
-      status: "completed", inngestRunId: null, outcome: null, failureMessage: null, startedAt: now,
-      terminalAt: new Date(now.getTime() + 1), createdAt: now, updatedAt: now }];
-    await removalCollection.utils.refetch({ throwOnError: true });
-    await vi.waitFor(() => expect(volumes.get(id)).toBeUndefined());
-    const previous = snapshots[0];
-    if (!previous) throw new Error("Missing fixture snapshot");
-    snapshots = [{ ...previous, id: "new-snapshot", config: { version: 2, name: "redeployed-data" }, createdAt: new Date(now.getTime() + 2) }];
-    await snapshotCollection.utils.refetch({ throwOnError: true });
-    await vi.waitFor(() => expect(volumes.get(id)?.resource.name).toBe("redeployed-data"));
-  } finally {
-    await volumes.cleanup();
-    await snapshotCollection.cleanup();
-    await removalCollection.cleanup();
-    await Promise.all(Object.values(sources).map((collection) => collection.cleanup()));
-    client.clear();
-  }
 });

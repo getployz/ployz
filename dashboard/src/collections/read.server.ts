@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Data, Effect } from "effect";
@@ -11,6 +11,7 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
+import { deploymentRowColumns, orgStoreDeploymentSlice } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
@@ -48,13 +49,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       keys && inArray(sql.join(keyColumns.map((column) => sql`${table}.${sql.identifier(column)}`), sql` || ':' || `), keys),
     );
     switch (data.table) {
-      case "environment_saved_state_snapshot":
-        return yield* database.drizzle.select({
-          id: tables.environmentSavedStateSnapshot.id,
-          organizationId: tables.environmentSavedStateSnapshot.organizationId,
-          environmentId: tables.environmentSavedStateSnapshot.environmentId,
-        }).from(tables.environmentSavedStateSnapshot)
-          .where(scoped(tables.environmentSavedStateSnapshot));
       case "environment_summary":
         return yield* database.drizzle.select({
           id: tables.environment.id, projectId: tables.environment.projectId, organizationId: tables.environment.organizationId,
@@ -78,28 +72,15 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment_canvas_node_position":
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
           .where(scoped(tables.environmentCanvasNodePosition));
+      // ponytail: an attempt that leaves the slice mid-session (a newer one landed) stays in this browser until the
+      // next full read: a delta read of its key returns no row and no delete. Bounded by what one session does.
       case "environment_deployment":
-        // The plan the runtime executes (manifest, producers, action policy) stays on the server; no view reads it.
-        const { deployManifest: _manifest, variableProducers: _producers, serviceActionPolicy: _policy, ...deploymentColumns } =
-          getTableColumns(tables.environmentDeployment);
-        return yield* database.drizzle.select({
-          ...deploymentColumns,
-          runtimeProgress: sql<typeof tables.environmentDeployment.$inferSelect.runtimeProgress>`coalesce(
-            ${tables.environmentDeployment.runtimeProgress},
-            (select progress from ${tables.environmentDeploymentEvent}
-             where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
-          )`,
-        }).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
+        return yield* database.drizzle.select(deploymentRowColumns).from(tables.environmentDeployment)
+          .where(and(scoped(tables.environmentDeployment), orgStoreDeploymentSlice(organization.id)));
       // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
-      case "environment_node_config_snapshot":
-        return (yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)
-          .where(scoped(tables.environmentNodeConfigSnapshot))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
       case "environment_node_introduction":
         return (yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
           .where(scoped(tables.environmentNodeIntroduction))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
-      case "volume_remove_attempt":
-        return yield* database.drizzle.select().from(tables.volumeRemoveAttempt)
-          .where(scoped(tables.volumeRemoveAttempt));
       case "organization_enrollment": {
         // The pairing row holds the encrypted pairing secret; expose only the derived status.
         const pairings = yield* database.drizzle.select({

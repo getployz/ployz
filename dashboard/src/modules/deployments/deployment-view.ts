@@ -1,9 +1,7 @@
 import type { DeployEvent, DeployOperation, OperationRow } from "@ployz/sdk";
-import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
-import { decodeStrict } from "#/modules/environment-design/schema";
-import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
+import type { TargetNodeList } from "./deployment-contract";
 import { preferredServerUnavailableText, skipReasonText, type SkipReason } from "./image-build";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
@@ -101,10 +99,11 @@ export type DeploymentViewInput = {
   deployment: {
     status: EnvironmentDeploymentStatus;
     failureMessage: string | null;
-    deployPreview: unknown;
+    /** The Engine planned the rollout (the attempt has a deploy preview). */
+    planned: boolean;
   };
   progress: DeploymentProgress | null;
-  nodes: readonly AttemptTargetNode[];
+  nodes: readonly TargetNode[];
   buildLog?: BuildLog | null;
 };
 
@@ -249,9 +248,9 @@ type AttemptFacts = {
 
 function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput, succeeded: boolean, building: boolean): StageState {
   // Prebuilt images only: nothing to build.
-  if (!nodes.some((node) => node.image)) return "none";
+  if (!nodes.some((node) => node.needsBuild)) return "none";
   // Preparation said ready or is delivering images, the Engine planned the rollout, or the attempt succeeded: every image exists.
-  if (progress?.preparation?.phase === "ready" || progress?.preparation?.phase === "transfer" || deployment.deployPreview || succeeded) return "done";
+  if (progress?.preparation?.phase === "ready" || progress?.preparation?.phase === "transfer" || deployment.planned || succeeded) return "done";
   if (deployment.status === "failed") return "failed";
   if (deployment.status === "cancelled") return "skipped";
   // Image Builds report steps from admission, and preparation reports progress once deploy starts; until then the attempt waits.
@@ -260,7 +259,7 @@ function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput,
 
 /** What the rules read about one node: its target entry, its Engine rows and its Image Build. */
 type NodeFacts = {
-  node: AttemptTargetNode;
+  node: TargetNode;
   own: readonly DeploymentProgressRow[];
   failedRow: DeploymentProgressRow | undefined;
   image: ImageBuild | null;
@@ -270,7 +269,7 @@ type NodeFacts = {
 
 function nodeBuildStage({ node, image }: NodeFacts, attempt: AttemptFacts): Stage {
   // A prebuilt image has nothing to build.
-  if (!node.image) return { state: "none" };
+  if (!node.needsBuild) return { state: "none" };
   if (image?.failed) return { state: "failed", durationMs: image.durationMs };
   // A run with no open step is done, and so is every image once the attempt's images are ready.
   if (image && (!image.open || attempt.build === "done")) return { state: "done", durationMs: image.durationMs };
@@ -290,7 +289,7 @@ function nodeBuildStage({ node, image }: NodeFacts, attempt: AttemptFacts): Stag
 function failedBeforeRuntime({ node }: NodeFacts, build: Stage, attempt: AttemptFacts): boolean {
   if (attempt.status !== "failed" || !attempt.noOutcome) return false;
   if (attempt.blamed) return build.state === "failed";
-  return node.image !== null || attempt.ready;
+  return node.needsBuild || attempt.ready;
 }
 
 function nodeDeployStage({ node, own, done }: NodeFacts, preRuntimeFailure: boolean, attempt: AttemptFacts): Stage {
@@ -352,7 +351,7 @@ function attemptStatus(status: EnvironmentDeploymentStatus, ready: boolean, buil
 export function deploymentView(input: DeploymentViewInput): DeploymentView {
   const { deployment, progress, nodes, buildLog } = input;
   const succeeded = progress?.outcome === "success" || deployment.status === "applied";
-  const images = new Map(nodes.map((node) => [node.nodeId, buildLog && node.image ? imageBuild(buildLog, node.image) : null]));
+  const images = new Map(nodes.map((node) => [node.nodeId, buildLog && node.needsBuild ? imageBuild(buildLog, node.name) : null]));
   const building = [...images.values()].some(Boolean);
   const build = attemptBuildStage(input, succeeded, building);
   const attempt: AttemptFacts = {
@@ -375,7 +374,8 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
     return {
       nodeId: node.nodeId, outcome: nodeOutcome(facts, failure, buildStage, deploy, attempt),
       build: buildStage, deploy, failure, tail: nodeTail(facts, failure, buildStage).slice(-TAIL_LINES),
-      builtOn: builtOn(buildLog, node.image),
+      // A built service's Image Build is named by its private DNS name.
+      builtOn: builtOn(buildLog, node.needsBuild ? node.name : null),
     };
   });
 
@@ -388,63 +388,22 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
   };
 }
 
-type AttemptRow = { id: string; status: EnvironmentDeploymentStatus; createdAt: Date };
-type SnapshotRow = { environmentDeploymentId: string; nodeType: "service" | "volume"; nodeId: string; config: unknown };
-type ParsedSnapshot = { row: SnapshotRow } & ({ nodeType: "service"; config: ServiceConfig } | { nodeType: "volume"; config: VolumeConfig });
-/**
- * One Environment Node of the Attempt Target with the configuration it was deployed (or last deployed, when removed) with,
- * parsed once. `image` names its Image Build (a git service's private DNS name); null when nothing is built.
- */
-export type AttemptTargetNode = { nodeId: string; changed: boolean; removed: boolean; image: string | null } & (
-  | { nodeType: "service"; config: ServiceConfig }
-  | { nodeType: "volume"; config: VolumeConfig }
-);
-
-const parseSnapshot = (row: SnapshotRow): ParsedSnapshot => row.nodeType === "volume"
-  ? { row, nodeType: "volume", config: decodeStrict(persistedVolumeConfigSchema, row.config) }
-  : { row, nodeType: "service", config: parseServiceConfig(row.config) };
-
-function targetNode(snapshot: ParsedSnapshot, changed: boolean, removed: boolean): AttemptTargetNode {
-  const { nodeId } = snapshot.row;
-  if (snapshot.nodeType === "volume") return { nodeId, nodeType: "volume", config: snapshot.config, image: null, changed, removed };
-  const { config } = snapshot;
-  // A removed service builds nothing.
-  return { nodeId, nodeType: "service", config, image: config.source.type === "git" && !removed ? config.privateDns : null, changed, removed };
-}
+/** One Environment Node of the attempt's Target Node List. */
+export type TargetNode = TargetNodeList["nodes"][number];
 
 /**
- * The Attempt Target's full node set, read from deployment snapshots: every node the attempt froze,
- * plus the nodes the last applied attempt before it had and this one dropped (Removed).
- * Once the Engine reports rows, a service is changed only if it has operations; before that,
- * a node is changed when it is built or its snapshot differs from that applied attempt's.
- * Rows for removed services carry no serviceId from the record side, so they are resolved here by name.
+ * The attempt's nodes from its Target Node List. Once the Engine reports rows, an unremoved service is changed only if it
+ * has operations. Rows for removed services carry no serviceId from the record side, so they are resolved here by name.
  */
-export function attemptTarget({ attempt, progress, history, snapshots }: {
-  attempt: AttemptRow; progress: DeploymentProgress | null;
-  history: readonly AttemptRow[]; snapshots: readonly SnapshotRow[];
-}) {
-  // ponytail: diffs against the last fully applied attempt; a failed attempt in between that deployed some nodes is ignored until rows arrive.
-  const base = history.filter((row) => row.status === "applied" && row.createdAt < attempt.createdAt)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
-  const own = snapshots.filter((row) => row.environmentDeploymentId === attempt.id);
-  const prior = base ? snapshots.filter((row) => row.environmentDeploymentId === base.id) : [];
-  const sameNode = (a: SnapshotRow) => (b: SnapshotRow) => a.nodeType === b.nodeType && a.nodeId === b.nodeId;
-  const removed = prior.filter((row) => !own.some(sameNode(row))).map(parseSnapshot);
-  const kept = own.map(parseSnapshot);
-  const serviceFor = (name: string | null) => [...kept, ...removed]
-    .find((snapshot) => snapshot.nodeType === "service" && snapshot.config.privateDns === name)?.row.nodeId ?? null;
+export function viewTargetNodes(list: TargetNodeList, progress: DeploymentProgress | null) {
+  const serviceFor = (name: string | null) => list.nodes.find((node) => node.nodeType === "service" && node.name === name)?.nodeId ?? null;
   const resolved = progress && { ...progress, rows: progress.rows.map((row) => row.serviceId ? row : { ...row, serviceId: serviceFor(row.serviceName) }) };
   const rows = resolved?.rows ?? [];
-  const changed = (snapshot: ParsedSnapshot) => {
-    if (snapshot.nodeType === "service" && rows.length > 0) return rows.some((r) => r.serviceId === snapshot.row.nodeId);
-    if (snapshot.nodeType === "service" && snapshot.config.source.type === "git") return true;
-    const before = prior.find(sameNode(snapshot.row));
-    return !before || canonicalJson(before.config) !== canonicalJson(snapshot.row.config);
-  };
-  return {
-    nodes: [...kept.map((snapshot) => targetNode(snapshot, changed(snapshot), false)), ...removed.map((snapshot) => targetNode(snapshot, true, true))],
-    progress: resolved,
-  };
+  const nodes = list.nodes.map((node): TargetNode => ({
+    ...node,
+    changed: node.nodeType === "service" && !node.removed && rows.length > 0 ? rows.some((row) => row.serviceId === node.nodeId) : node.changed,
+  }));
+  return { nodes, progress: resolved };
 }
 
 /** User-facing whole-deployment status: "Deployed" or "Failed · 2 of 4 deployed". Never "Partial". */

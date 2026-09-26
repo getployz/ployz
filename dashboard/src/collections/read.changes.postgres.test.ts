@@ -272,8 +272,6 @@ describe("every Org Store collection reads its changes from the Organization cha
       [organizationId, deploymentId, environmentId, lineageId]);
     await sql("insert into environment_node_introduction (organization_id, environment_id, node_type, node_id, node_lineage_id, config) values ($1, $2, 'volume', $3, $3, '{}')",
       [organizationId, environmentId, lineageId]);
-    await sql("insert into volume_remove_attempt (organization_id, requested_by_user_id, environment_id, volumes) values ($1, $2, $3, '[{}]')",
-      [organizationId, userId, environmentId]);
     await sql("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_public_key) values ($1, '{}', $2, 'key')",
       [organizationId, "0".repeat(32)]);
     await sql("insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at) values ($1, 'https://dns.example.test/', 'acme.ployz.test', '{}', now(), now())",
@@ -312,6 +310,16 @@ describe("every Org Store collection reads its changes from the Organization cha
     });
   });
 
+  it("lets a failed deployment retry only while it staged no volume removal", async () => {
+    const canRetry = async () => (await read("environment_deployment")).rows.find((row) => "id" in row && row.id === deploymentId);
+    expect(await canRetry()).toMatchObject({ canRetry: false });
+    await sql("update environment_deployment set status = 'failed', finished_at = now() where id = $1", [deploymentId]);
+    expect(await canRetry()).toMatchObject({ canRetry: true });
+    await sql("insert into volume_remove_attempt (organization_id, requested_by_user_id, environment_id, environment_deployment_id, volumes) values ($1, $2, $3, $4, '[{}]')",
+      [organizationId, userId, environmentId, deploymentId]);
+    expect(await canRetry()).toMatchObject({ canRetry: false });
+  });
+
   it("keeps this member's project preference when another member's for the same project is deleted", async () => {
     const since = (await read("project_preference")).cursor;
     await sql("delete from user_project_preference where user_id = $1", [otherUserId]);
@@ -326,5 +334,19 @@ describe("every Org Store collection reads its changes from the Organization cha
     await sql("update organization set name = 'Renamed' where id = $1", [organizationId]);
     const window = await harness.runEffect(readChangeWindow({ organizationId, since }));
     expect(collectionsOf(window.sourceTables)).toEqual(["organization"]);
+  });
+
+  it("names the change-state projection on Save and deployment status, never on progress", async () => {
+    const names = async (text: string, values: unknown[]) => {
+      const { cursor: since } = await harness.runEffect(readChangeWindow({ organizationId, since: undefined }));
+      await sql(text, values);
+      return collectionsOf((await harness.runEffect(readChangeWindow({ organizationId, since }))).sourceTables);
+    };
+    expect(await names("insert into environment_saved_state_snapshot (organization_id, environment_id, actor_id, intent, volume_deletion_authorizations) values ($1, $2, $3, '{}', '[]')",
+      [organizationId, environmentId, userId])).toContain("environment_change_state");
+    expect(await names("update environment_deployment set status = 'planning' where id = $1", [deploymentId]))
+      .toContain("environment_change_state");
+    expect(await names("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"building\"}')",
+      [organizationId, deploymentId])).not.toContain("environment_change_state");
   });
 });

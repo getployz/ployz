@@ -17,8 +17,6 @@ import {
   getRawServicesCollection,
   getRawEnvironmentResourcesCollection,
   getResourceLineagesCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
-  getVolumeRemoveAttemptsCollection,
 } from "#/collections/collections";
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
 import {
@@ -149,11 +147,7 @@ export const getVolumeResourcesCollection = cachedByCollectionScope(
   (organizationSlug, scope) =>
     createVolumeResourcesCollection({
       client: getDbClient(scope.queryClient),
-      sources: {
-        ...resourceSources(organizationSlug, scope),
-        snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope),
-        removals: getVolumeRemoveAttemptsCollection(organizationSlug, scope),
-      },
+      sources: resourceSources(organizationSlug, scope),
     }),
 );
 

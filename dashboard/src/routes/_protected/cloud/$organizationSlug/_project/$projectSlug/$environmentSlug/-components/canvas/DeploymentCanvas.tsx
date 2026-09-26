@@ -6,7 +6,7 @@ import { useParams } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getCanvasPositionsCollection, getRawServicesCollection } from "#/collections/collections";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import type { AttemptTargetNode } from "#/modules/deployments/deployment-view";
+import type { TargetNode } from "#/modules/deployments/deployment-view";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { BackToLive } from "../deployment-mode";
 import { canvasNodeTypes } from "./canvas-node-types";
@@ -38,7 +38,7 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.environmentId, environmentId))
       .select(({ service }) => ({ id: service.id, name: service.name })),
   });
-  const positionOf = (node: AttemptTargetNode) => {
+  const positionOf = (node: TargetNode) => {
     const row = positionRows.find((candidate) => candidate.resourceType === node.nodeType && candidate.resourceId === node.nodeId);
     return row ? { x: row.x, y: row.y } : undefined;
   };
@@ -50,8 +50,7 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     if (!view) return [];
     const position = positionOf(node) ?? { x: unplaced.indexOf(node) * (SERVICE_NODE_WIDTH + UNPLACED_GAP), y: belowAll };
     // A service's name outlives it on its identity row; without one, its private DNS name is its name.
-    const name = node.nodeType === "volume" ? node.config.name
-      : serviceRows.find((row) => row.id === node.nodeId)?.name ?? node.config.privateDns;
+    const name = node.nodeType === "volume" ? node.name : serviceRows.find((row) => row.id === node.nodeId)?.name ?? node.name;
     return [{
       id: node.nodeId, type: "deployment", position,
       width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, draggable: false,
@@ -59,10 +58,9 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     }];
   });
 
-  // Mount edges come straight from the snapshots; reference edges need the live services' slugs, so the mode leaves them out.
-  const edges = attempt.nodes.flatMap((node) => node.nodeType !== "service" ? [] : node.config.mounts.flatMap(({ volumeResourceId }) =>
-    nodes.some((candidate) => candidate.id === volumeResourceId)
-      ? [{ id: `mount:${volumeResourceId}:${node.nodeId}`, source: volumeResourceId, target: node.nodeId }] : []));
+  // Mount edges come straight from the target node list; reference edges need the live services' slugs, so the mode leaves them out.
+  const edges = attempt.nodes.flatMap((node) => node.mounts.flatMap((volumeId) =>
+    nodes.some((candidate) => candidate.id === volumeId) ? [{ id: `mount:${volumeId}:${node.nodeId}`, source: volumeId, target: node.nodeId }] : []));
 
   return (
     <div className="canvas-graph" data-deployment-canvas>

@@ -10,7 +10,7 @@ import { Schema } from "effect";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as preference from "#/auth/open-started-deployments";
-import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
+import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { orgStoreOptions } from "#/collections/org-store";
 import { preloadCollection } from "#/collections/query-collection";
 import { getDbClient } from "#/collections/scope";
@@ -48,11 +48,16 @@ const intentService = (id: string, slug: string) => {
 };
 const service = (id: string, name: string) => ({ id, organizationId, projectId, environmentId, lineageId: id, name, policy: defaultServicePolicy,
   hasRegistryCredential: false, firstDeployedAt: createdAt, createdAt, updatedAt: createdAt });
-const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null, status = "applied") => ({
+type TargetNode = { nodeId: string; nodeType: "service"; name: string; changed: boolean; removed: boolean; needsBuild: boolean;
+  source: { kind: "image"; label: string }; mounts: string[] };
+/** A service in an attempt's target node list, running nginx:1 as its snapshot does. */
+const target = (nodeId: string, name: string, { changed = true, removed = false } = {}): TargetNode =>
+  ({ nodeId, nodeType: "service", name, changed, removed, needsBuild: false, source: { kind: "image", label: "nginx:1" }, mounts: [] });
+const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null, status = "applied", nodes: TargetNode[] = []) => ({
   id, organizationId, environmentId, triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: id, serviceActionPolicy: null,
   status, inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
-  deployPreview: null, runtimeProgress, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
-  startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt,
+  deployPreview: null, runtimeProgress, targetNodes: { version: 1, nodes }, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
+  startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt, canRetry: status === "failed",
 });
 const snapshot = (deploymentId: string, nodeId: string, privateDns: string) => ({ id: `${deploymentId}:${nodeId}`, organizationId, environmentId,
   environmentDeploymentId: deploymentId, nodeType: "service", nodeId, nodeLineageId: nodeId, configVersion: 1, config: config(privateDns), createdAt, updatedAt: createdAt });
@@ -71,24 +76,49 @@ const rows = new Map<string, unknown[]>(Object.entries({
     intent: { version: 1, environmentSlug: "production", services: [intentService(api, "api"), intentService(web, "web"), intentService(worker, "worker")], volumes: [] } }],
   environment_summary: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt }],
   service: [service(api, "api"), service(old, "old"), service(web, "web"), service(worker, "worker")],
-  environment_deployment: [deployment(previous, 1, null),
-    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed"),
-    deployment(replaceFailedId, 3, { completed: 0, total: 1, outcome: "failed", rows: [failedReplace], compensation: [] }, "failed")],
+  environment_deployment: [deployment(previous, 1, null, "applied", [target(api, "api"), target(old, "old"), target(web, "web")]),
+    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed",
+      [target(api, "api", { changed: false }), target(web, "web"), target(old, "old", { removed: true })]),
+    deployment(replaceFailedId, 3, { completed: 0, total: 1, outcome: "failed", rows: [failedReplace], compensation: [] }, "failed",
+      [target(api, "api"), target(old, "old", { removed: true }), target(web, "web", { removed: true })])],
   environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(previous, web, "web"),
     snapshot(attemptId, api, "api"), snapshot(attemptId, web, "web"), snapshot(replaceFailedId, api, "api")],
 }));
+const runningTarget = [target(api, "api", { changed: false }), target(worker, "worker"), target(old, "old", { removed: true }), target(web, "web", { removed: true })];
 const card = (name: string) => screen.getAllByText(name)[0]?.closest("[data-canvas-node]");
 
-async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", changeStates = [] }: {
-  extra?: Record<string, unknown[]>; path?: string; changeStates?: EnvironmentChangeStateProjection[];
+/**
+ * Serves the deployment history reads from the seeded rows plus `remote`, rows only the server holds (outside the Org Store).
+ * `attemptArrives` holds the per-attempt read back until it resolves.
+ */
+function serveDeploymentHistory(tables: Record<string, unknown[]>, attemptArrives: Promise<void>) {
+  const deployments = (tables["environment_deployment"] as Array<{ id: string; createdAt: Date }>)
+    .map((row) => ({ ...row, projectSlug: "shop", environmentSlug: "production" }))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const snapshots = tables["environment_node_config_snapshot"] as Array<{ environmentDeploymentId: string; nodeId: string; config: unknown }>;
+  vi.spyOn(deploymentFunctions, "listEnvironmentDeploymentsServerFn").mockImplementation(async () =>
+    asTestDouble<Awaited<ReturnType<typeof deploymentFunctions.listEnvironmentDeploymentsServerFn>>>()({ items: deployments, next: null }));
+  vi.spyOn(deploymentFunctions, "getDeploymentAttemptServerFn").mockImplementation(async ({ data }) => {
+    await attemptArrives;
+    const row = deployments.find((candidate) => candidate.id === data.deploymentId);
+    return asTestDouble<Awaited<ReturnType<typeof deploymentFunctions.getDeploymentAttemptServerFn>>>()(row ? { row, serviceConfigs: snapshots
+      .filter((snapshot) => snapshot.environmentDeploymentId === row.id).map(({ nodeId, config }) => ({ nodeId, config })) } : null);
+  });
+}
+
+async function openCanvas({ extra = {}, remote = {}, attemptArrives = Promise.resolve(), path = "/cloud/acme/shop/production", changeStates = [] }: {
+  extra?: Record<string, unknown[]>; remote?: Record<string, unknown[]>; attemptArrives?: Promise<void>; path?: string;
+  changeStates?: EnvironmentChangeStateProjection[];
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([...rows.get(table) ?? [], ...extra[table] ?? []]));
+  const tables = (name: string) => [...rows.get(name) ?? [], ...extra[name] ?? [], ...remote[name] ?? []];
+  serveDeploymentHistory({ environment_deployment: tables("environment_deployment"), environment_node_config_snapshot: tables("environment_node_config_snapshot") }, attemptArrives);
   // The failed attempt's event log is finished and empty, so Deploy logs reads it from cache.
   queryClient.setQueryData(["collections", "session", "user", "acme", "deployment_logs", replaceFailedId], { events: [], finished: true });
   // The change-state projection stamps its version from these tables, then reads the given states (none by default).
-  await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
+  await preloadCollection(getEnvironmentDeploymentsCollection("acme", scope));
   await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => changeStates));
   await queryClient.ensureQueryData(orgStoreOptions("acme", scope));
 
@@ -173,7 +203,7 @@ describe("deployment mode on the environment canvas", () => {
     const gone = "00000000-0000-4000-8000-000000000025";
     const goneAttempt = "f0000000-0000-4000-8000-000000000016";
     const router = await openCanvas({ extra: {
-      environment_deployment: [deployment(goneAttempt, 4, null)],
+      environment_deployment: [deployment(goneAttempt, 4, null, "applied", [target(api, "api", { changed: false }), target(gone, "billing")])],
       environment_node_config_snapshot: [snapshot(goneAttempt, api, "api"), snapshot(goneAttempt, gone, "billing")],
       environment_canvas_node_position: [{ id: "00000000-0000-4000-8000-000000000031", organizationId, environmentId, resourceType: "service", resourceId: api, x: 0, y: 0, createdAt, updatedAt: createdAt }],
     } });
@@ -241,7 +271,8 @@ describe("deployment mode on the environment canvas", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ deployment: replaceFailedId, tab: "details" }));
-    expect(screen.getByText("Health check timed out after 60s")).toBeTruthy();
+    // Details reads the configs the attempt deployed only now, as the panel opens.
+    expect(await screen.findByText("Health check timed out after 60s")).toBeTruthy();
     expect(screen.getByText("c0ffee")).toBeTruthy();
     expect(screen.getByText("0 variables (as deployed)")).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "Resource inspector" })).getByText("nginx:1")).toBeTruthy();
@@ -259,6 +290,38 @@ describe("deployment mode on the environment canvas", () => {
     await act(() => router.navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: api }, search: { deployment: undefined, tab: undefined } }));
     expect(await screen.findByText("Live service panel")).toBeTruthy();
     expect(screen.queryAllByRole("tab")).toEqual([]);
+  });
+
+  it("opens an attempt outside the Org Store with only its nodes behind a skeleton, never a wrong outcome", async () => {
+    let arrive = () => {};
+    const attemptArrives = new Promise<void>((resolve) => { arrive = resolve; });
+    const older = "90000000-0000-4000-8000-000000000017";
+    const router = await openCanvas({ attemptArrives, remote: {
+      environment_deployment: [deployment(older, 0, null, "applied", [target(api, "api"), target(web, "web", { changed: false })])],
+      environment_node_config_snapshot: [snapshot(older, api, "api"), snapshot(older, web, "web")],
+    } });
+
+    await enterDeploymentMode(router, older);
+    // The header, the deploy bar and the mode stay; only the nodes wait.
+    expect(screen.queryByText("Loading canvas")).toBeNull();
+    expect(screen.getAllByText("Back to editor").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("group", { name: "Deploy bar" })).getByRole("button", { name: /Deployment 90000000/ })).toBeTruthy();
+    expect(document.querySelector('[data-id="loading-placeholder"]')).toBeTruthy();
+    expect(screen.queryByText("Deployed")).toBeNull();
+    expect(screen.queryByText("Unchanged")).toBeNull();
+
+    await act(async () => { arrive(); });
+    await waitFor(() => expect(card("api")?.textContent).toContain("Deployed"));
+    expect(card("web")?.textContent).toContain("Unchanged");
+    expect(screen.queryAllByText("worker")).toEqual([]);
+  });
+
+  it("stays in Editor Mode on a malformed deployment id", async () => {
+    const router = await openCanvas();
+    await enterDeploymentMode(router, "not-a-uuid");
+    expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Back to editor")).toBeNull();
+    expect(deploymentFunctions.getDeploymentAttemptServerFn).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ deploymentId: "not-a-uuid" }) }));
   });
 
   it("leaves the mode on browser Back", async () => {
@@ -297,9 +360,28 @@ describe("the deploy bar", () => {
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
   });
 
+  it("shows more deployments a page at a time", async () => {
+    await openCanvas();
+    const [newest, ...older] = [...rows.get("environment_deployment") as Array<{ id: string }>].reverse()
+      .map((row) => asTestDouble<Awaited<ReturnType<typeof deploymentFunctions.listEnvironmentDeploymentsServerFn>>["items"][number]>()(
+        { ...row, projectSlug: "shop", environmentSlug: "production" }));
+    vi.spyOn(deploymentFunctions, "listEnvironmentDeploymentsServerFn").mockImplementation(async ({ data }) =>
+      data.before === undefined ? { items: newest ? [newest] : [], next: newest?.id ?? null } : { items: older, next: null });
+    await click(bar().getByRole("button", { name: "Deployments" }));
+    const list = within(await screen.findByRole("navigation", { name: "Deployments" }));
+    await list.findByRole("link", { name: /e0000000/ });
+    expect(list.getAllByRole("link")).toHaveLength(2);
+
+    await click(list.getByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(list.getAllByRole("link").map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Editor"), expect.stringContaining("e0000000"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
+    ]));
+    expect(list.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
   it("opens a running attempt directly and offers Cancel, and Retry on a failed one", async () => {
     const router = await openCanvas({ extra: {
-      environment_deployment: [deployment(failedId, 3, null, "failed"), deployment(runningId, 4, null, "deploying")],
+      environment_deployment: [deployment(failedId, 3, null, "failed"), deployment(runningId, 4, null, "deploying", runningTarget)],
       environment_node_config_snapshot: [snapshot(runningId, api, "api"), snapshot(runningId, worker, "worker")],
     } });
     await click(bar().getByRole("link", { name: /Deploying 0\/3/ }));
@@ -319,9 +401,25 @@ describe("the deploy bar", () => {
     await waitFor(() => expect(router.state.location.search).toEqual({ deployment: retried }));
   });
 
+  it("draws the deploy bar and opens the running attempt from the Org Store alone", async () => {
+    vi.clearAllMocks();
+    const router = await openCanvas({ extra: {
+      environment_deployment: [deployment(runningId, 4, null, "deploying", runningTarget)],
+      environment_node_config_snapshot: [snapshot(runningId, api, "api"), snapshot(runningId, worker, "worker")],
+    } });
+    const attemptRead = vi.mocked(deploymentFunctions.getDeploymentAttemptServerFn);
+    await click(bar().getByRole("link", { name: /Deploying 0\/3/ }));
+    expect(router.state.location.search).toEqual({ deployment: runningId });
+    expect((await screen.findAllByText("Back to editor")).length).toBeGreaterThan(0);
+    expect(deploymentFunctions.listEnvironmentDeploymentsServerFn).not.toHaveBeenCalled();
+    // The row, its outcomes and its card details all come from the Org Store: no extra request.
+    expect(attemptRead).not.toHaveBeenCalled();
+    expect(card("api")?.textContent).toContain("Unchanged");
+  });
+
   it("remembers leaving your own running attempt and reopening it", async () => {
     const router = await openCanvas({ extra: {
-      environment_deployment: [deployment(runningId, 4, null, "deploying")],
+      environment_deployment: [deployment(runningId, 4, null, "deploying", runningTarget)],
       environment_node_config_snapshot: [snapshot(runningId, api, "api")],
     } });
     expect(setOpenStarted()).not.toHaveBeenCalled();
@@ -339,7 +437,7 @@ describe("the deploy bar", () => {
 
   it("never opens a Git-triggered attempt or counts it as yours", async () => {
     await openCanvas({ extra: {
-      environment_deployment: [{ ...deployment(runningId, 4, null, "deploying"), triggerOrigin: {
+      environment_deployment: [{ ...deployment(runningId, 4, null, "deploying", runningTarget), triggerOrigin: {
         origin: "github", deliveryId: "delivery", branchEvaluationRevision: 1, installationId: 1, repositoryId: 1,
       } }],
       environment_node_config_snapshot: [snapshot(runningId, api, "api")],
@@ -444,7 +542,7 @@ describe("the apply zone", () => {
   });
 
   it("keeps the changes during a Git-triggered deployment and shows a Deploy behind it as Queued", async () => {
-    const fromPush = { ...deployment(runningId, 4, null, "deploying"),
+    const fromPush = { ...deployment(runningId, 4, null, "deploying", runningTarget),
       triggerOrigin: { origin: "github", deliveryId: "delivery", branchEvaluationRevision: 1, installationId: 1, repositoryId: 1 } };
     // The pushed run deploys Saved State, which is Applied State here, so the canvas edit stays pending.
     const running: EnvironmentChangeStateProjection = { ...pending, deploymentEvidence: {

@@ -266,6 +266,10 @@ export const environmentResource = pgTable(
     implementationType: text("implementation_type")
       .notNull()
       .$type<EnvironmentResourceType>(),
+    /** Volume name in the latest admitted snapshot; a new snapshot clears `removedAt`. */
+    deployedName: text("deployed_name"),
+    /** When the latest volume removal completed. */
+    removedAt: timestamp("removed_at", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,
   },

@@ -1,5 +1,3 @@
-import { getVolumeRemoveAttemptsCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
@@ -209,7 +207,6 @@ type VolumeRemoveAttemptSummary = {
 
 function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   const resourceId = state.resource.resource.id;
-  const collectionScope = useCollectionScope();
   const loadDataLoss = useServerFn(loadVolumeRemoveDataLossServerFn);
   const confirmRemove = useServerFn(confirmVolumeRemoveServerFn);
   const retryRemove = useServerFn(retryVolumeRemoveServerFn);
@@ -230,7 +227,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
     if (!attempt || retrying) return;
     setRetrying(true);
     try {
-      const committed = await rememberLatestVolumeRemoveAttempt(
+      await rememberLatestVolumeRemoveAttempt(
         queryClient,
         latestQuery.queryKey,
         () =>
@@ -241,7 +238,6 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
             },
           }),
       );
-      await getVolumeRemoveAttemptsCollection(state.organizationSlug, collectionScope).writeCommitted(committed);
       toast.success("Volume remove retry started.");
     } catch (error) {
       toast.error(
@@ -305,7 +301,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
         callbacks={{
           load: () => loadDataLoss({ data: input }),
           confirm: async (identities) => {
-            const committed = await rememberLatestVolumeRemoveAttempt(
+            await rememberLatestVolumeRemoveAttempt(
               queryClient,
               latestQuery.queryKey,
               () =>
@@ -313,7 +309,6 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
                   data: { ...input, identities },
                 }),
             );
-            await getVolumeRemoveAttemptsCollection(state.organizationSlug, collectionScope).writeCommitted(committed);
             toast.success("Volume remove started.");
           },
         }}

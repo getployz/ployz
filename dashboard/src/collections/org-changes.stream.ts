@@ -7,6 +7,8 @@ import { changeNameSchema, type ChangeName } from "./read.contract";
 import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/environment-design/workspace.queries";
+import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
+import { invalidateDeploymentHistory } from "#/modules/deployments/deployment-history.queries";
 
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
 const decodeOrgChangesEvent = Schema.decodeUnknownOption(Schema.fromJsonString(orgChangesEventSchema));
@@ -18,10 +20,17 @@ function buildOrgChangesUrl(organizationSlug: string) {
 
 type Refetch = (organizationSlug: string, scope: CollectionScope) => void;
 
-/** What each change stream name refetches: its collection since its cursor, or the organization state (its name). */
+/**
+ * What each change stream name refetches: its collection since its cursor, the organization state, or the change-state
+ * projection. Deployment rows (not their progress events) also refetch the deployment history reads.
+ */
 const refetches = {
   ...EffectRecord.map(orgStoreTables, (get): Refetch => (organizationSlug, scope) => void get(organizationSlug, scope).utils.refetch()),
   organization: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
+  environment_change_state: (organizationSlug: string, scope: CollectionScope) => {
+    refetchEnvironmentChangeStates(organizationSlug, scope);
+    invalidateDeploymentHistory(organizationSlug, scope);
+  },
 } satisfies Record<ChangeName, Refetch>;
 
 export function applyOrganizationChanges(names: readonly ChangeName[], organizationSlug: string, scope: CollectionScope) {

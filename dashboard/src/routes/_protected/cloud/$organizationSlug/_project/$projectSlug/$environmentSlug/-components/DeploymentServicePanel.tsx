@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Schema } from "effect";
@@ -7,8 +8,10 @@ import { getRawServicesCollection } from "#/collections/collections";
 import { ServiceBuildLogs, ServiceDeployLogs } from "#/components/deployment-logs";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
@@ -38,7 +41,6 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
   const node = attempt.nodes.find((candidate) => candidate.nodeId === serviceId);
   const view = attempt.view.nodes.find((candidate) => candidate.nodeId === serviceId);
   if (node?.nodeType !== "service" || !view) return null;
-  const { config } = node;
   const built = view.build.state !== "none";
   const requested = Schema.is(deploymentServicePageSchema)(tab) && (built || tab !== "build-logs") ? tab : null;
   const current = requested ?? defaultDeploymentTab(view);
@@ -50,7 +52,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
       {requested ? null : <Navigate {...destination} search={(previous) => ({ ...previous, tab: current })} replace />}
       <CanvasInspectorHeader params={params}>
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium">{named[0]?.name ?? config.privateDns}</span>
+          <span className="truncate font-medium">{named[0]?.name ?? node.name}</span>
           {/* The bar already names the deployment; a phone keeps the width for the service name. */}
           <span className="whitespace-nowrap text-muted-foreground max-[860px]:hidden">
             <span aria-hidden>/ </span><span className="font-mono">{shortDeploymentId(deployment.id)}</span>
@@ -75,10 +77,13 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
             })}
           </TabsList>
           <TabsContent value="details" className="mt-4 overflow-y-auto">
-            <DeploymentServiceDetails organizationSlug={params.organizationSlug} deployment={deployment} serviceId={serviceId} view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
+            {/* The configs the attempt deployed are read only when a panel opens; the rest of the panel never waits for them. */}
+            <Suspense fallback={<DetailsSkeleton />}>
+              <DeploymentServiceDetails organizationSlug={params.organizationSlug} deployment={deployment} serviceId={serviceId} view={view} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
+            </Suspense>
           </TabsContent>
           <TabsContent value="build-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
-            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={config.privateDns} />
+            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={node.name} />
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}
@@ -116,28 +121,35 @@ function Fields({ title, fields }: { title: string; fields: [label: string, valu
   );
 }
 
-function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, view, config, commitSha }: {
+function DetailsSkeleton() {
+  return <div aria-hidden className="mx-auto flex w-full max-w-2xl flex-col gap-3"><Skeleton className="h-4 w-48" /><Skeleton className="h-24 w-full" /></div>;
+}
+
+function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, view, commitSha }: {
   organizationSlug: string;
   deployment: DeploymentAttempt["deployment"];
   serviceId: string;
   view: DeploymentNodeView;
-  config: ServiceConfig;
   commitSha: string | null;
 }) {
+  // None for a removed service: the attempt holds no snapshot of it.
+  const config = useAttemptServiceConfigs(organizationSlug, deployment.id).get(serviceId) ?? null;
+  const outcome = view.failure ? (
+    <Alert variant="destructive">
+      <AlertTitle>Failed</AlertTitle>
+      <AlertDescription>
+        <pre className="whitespace-pre-wrap break-words font-mono">{view.failure.message}</pre>
+        {view.failure.containerId ? <p>Container <span className="font-mono">{view.failure.containerId}</span></p> : null}
+      </AlertDescription>
+    </Alert>
+  ) : (
+    <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
+  );
+  if (!config) return <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">{outcome}</div>;
   const { source, build, healthcheck } = config;
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      {view.failure ? (
-        <Alert variant="destructive">
-          <AlertTitle>Failed</AlertTitle>
-          <AlertDescription>
-            <pre className="whitespace-pre-wrap break-words font-mono">{view.failure.message}</pre>
-            {view.failure.containerId ? <p>Container <span className="font-mono">{view.failure.containerId}</span></p> : null}
-          </AlertDescription>
-        </Alert>
-      ) : (
-        <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
-      )}
+      {outcome}
       <DeployedVariables organizationSlug={organizationSlug} deploymentId={deployment.id} environmentId={deployment.environmentId} serviceId={serviceId} env={config.env} />
       <Fields title="Source" fields={source.type === "image" ? [["Image", source.image]]
         : source.type === "git" ? [
