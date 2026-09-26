@@ -197,6 +197,24 @@ fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
 }
 
 #[test]
+fn setup_retry_waits_for_an_answer_but_not_past_one() {
+    let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
+    for (status, retry) in [
+        // The client made this status: the daemon never answered.
+        (tonic::Status::from_error(Box::new(dropped)), true),
+        // The daemon answered with this status.
+        (
+            tonic::Status::unknown("upgrade record is unreadable"),
+            false,
+        ),
+    ] {
+        let error = ConnectError::from(status);
+        assert_eq!(error.is_setup_retryable(), retry, "{error}");
+        assert!(!error.is_retryable(), "{error}");
+    }
+}
+
+#[test]
 fn deadline_exceeded_is_retryable_not_unreachable() {
     let error = ConnectError::Rpc(TransportError::from(tonic::Status::deadline_exceeded(
         "timed out",

@@ -15,6 +15,9 @@ use super::super::{Error, leaf_matches, string_values, with_client};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+// The daemon restarts itself mid-upgrade; its socket vanishing is expected.
+const RESTART: crate::setup_retry::Expected =
+    crate::setup_retry::Expected("Waiting for ployzd to restart…");
 
 trait UpgradeRequests {
     async fn request_upgrade(
@@ -39,7 +42,7 @@ impl UpgradeRequests for Client {
         target: &MachineTarget,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::RequestMachineUpgrade>(request, Some(target), wait)
+        self.call_repeatable_for::<op::RequestMachineUpgrade>(request, Some(target), None, wait)
             .await
     }
 
@@ -49,8 +52,13 @@ impl UpgradeRequests for Client {
         target: &MachineTarget,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::InspectMachineUpgrade>(request, Some(target), wait)
-            .await
+        self.call_repeatable_for::<op::InspectMachineUpgrade>(
+            request,
+            Some(target),
+            Some(RESTART),
+            wait,
+        )
+        .await
     }
 }
 
@@ -383,6 +391,137 @@ mod tests {
         assert!(error.contains(attempt_id.as_str()), "{error}");
         assert!(error.contains("machine upgrade inspect"), "{error}");
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
+    }
+
+    /// A ployzd generation that accepts upgrades. The first inspect with `hang`
+    /// signals and never answers. An absent `inspect` outcome answers with an
+    /// Unknown gRPC status.
+    fn daemon(
+        path: &std::path::Path,
+        inspect: Option<MachineUpgradeOutcome>,
+        hang: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> tokio::runtime::Runtime {
+        use ployz_core::{RpcRequestBody, RpcResponse};
+        let hang = std::sync::Arc::new(std::sync::Mutex::new(hang));
+        let target = ployz_core::MachineVersion::parse("1.2.3").unwrap();
+        crate::connect::test_support::unix_daemon(path, move |body| {
+            let (hang, inspect, target) = (hang.clone(), inspect.clone(), target.clone());
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "this fixture serves only upgrade RPCs"
+                )]
+                let (attempt_id, outcome) = match body {
+                    RpcRequestBody::RequestMachineUpgrade(request) => {
+                        (request.attempt_id, MachineUpgradeOutcome::Accepted)
+                    }
+                    RpcRequestBody::InspectMachineUpgrade(request) => {
+                        let hang = hang.lock().unwrap().take();
+                        if let Some(hang) = hang {
+                            hang.send(()).unwrap();
+                            std::future::pending::<()>().await;
+                        }
+                        let Some(outcome) = inspect else {
+                            return Err(tonic::Status::unknown("upgrade record is unreadable"));
+                        };
+                        (request.attempt_id.unwrap(), outcome)
+                    }
+                    body => panic!("unexpected request: {body:?}"),
+                };
+                Ok(RpcResponse::from(MachineUpgradeAttempt {
+                    attempt_id,
+                    target,
+                    outcome,
+                }))
+            }
+        })
+    }
+
+    #[test]
+    fn daemon_restart_during_the_upgrade_is_waited_out() {
+        // libtest captures eprintln!, so observe the notice from a child run.
+        const CHILD: &str = "PLOYZ_UPGRADE_RESTART_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            return tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(restart_during_upgrade());
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "handlers::machine::upgrade::tests::daemon_restart_during_the_upgrade_is_waited_out",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("Waiting for ployzd to restart…"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("firewall"), "{stderr}");
+    }
+
+    async fn restart_during_upgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ployz.sock");
+        let (hung, restarting) = tokio::sync::oneshot::channel();
+        let old = daemon(&path, Some(MachineUpgradeOutcome::Accepted), Some(hung));
+        let mut client = crate::connect::test_support::unix_client(&path).await;
+        let machine = machine('e', 5);
+        let restart = async {
+            restarting.await.unwrap();
+            // The old process exits with the inspect read in flight.
+            old.shutdown_background();
+            std::fs::remove_file(&path).unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            daemon(
+                &path,
+                Some(MachineUpgradeOutcome::Succeeded {
+                    version: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
+                }),
+                None,
+            )
+        };
+        let (attempt, new) = tokio::join!(
+            run_one(
+                &mut client,
+                &machine,
+                MachineRelease::parse("1.2.3").unwrap(),
+                MachineUpgradeAttemptId::random(),
+            ),
+            restart
+        );
+        new.shutdown_background();
+        let attempt = attempt.unwrap();
+        assert!(
+            matches!(attempt.outcome, MachineUpgradeOutcome::Succeeded { .. }),
+            "{attempt:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_error_answer_fails_the_upgrade_without_retrying() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ployz.sock");
+        let daemon = daemon(&path, None, None);
+        let mut client = crate::connect::test_support::unix_client(&path).await;
+        let started = Instant::now();
+        let error = run_one(
+            &mut client,
+            &machine('f', 6),
+            MachineRelease::parse("1.2.3").unwrap(),
+            MachineUpgradeAttemptId::random(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        daemon.shutdown_background();
+        assert!(error.contains("upgrade record is unreadable"), "{error}");
+        // One poll interval, no retry budget spent.
+        assert!(started.elapsed() < Duration::from_secs(3), "{error}");
     }
 
     #[test]

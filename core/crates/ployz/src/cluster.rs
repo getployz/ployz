@@ -155,7 +155,7 @@ impl Client {
         request: T::Request,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        self.call_repeatable_for::<T>(request, target, crate::setup_retry::WAIT)
+        self.call_repeatable_for::<T>(request, target, None, crate::setup_retry::WAIT)
             .await
             .map_err(|error| match error {
                 crate::setup_retry::Error::Permanent(error) => error,
@@ -166,10 +166,12 @@ impl Client {
     }
 
     /// Retry a read or stable-identity request for the caller's remaining time budget.
+    /// `expected` announces an anticipated outage in place of the connectivity warning.
     pub(crate) async fn call_repeatable_for<T: Rpc>(
         &mut self,
         request: T::Request,
         target: Option<&MachineTarget>,
+        expected: Option<crate::setup_retry::Expected>,
         wait: Duration,
     ) -> Result<T::Response, crate::setup_retry::Error<ConnectError>> {
         let payload = T::into_request(request)
@@ -183,9 +185,10 @@ impl Client {
             |target| format!("{} via {}", target.as_str().escape_debug(), self.connection),
         );
         let progress = format!("{operation} on {destination}");
-        crate::setup_retry::run(
+        crate::setup_retry::run_expecting(
             self,
             &progress,
+            expected,
             wait,
             ConnectError::is_setup_retryable,
             async |client| {

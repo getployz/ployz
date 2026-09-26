@@ -77,3 +77,70 @@ where
     );
     (client, server)
 }
+
+/// One daemon generation on a real Unix socket. Its runtime stands in for the
+/// process: shutting it down drops every connection without an answer.
+/// Connection confirmation is answered here; `rpc` serves every other request.
+pub(crate) fn unix_daemon<F, Fut>(path: &std::path::Path, rpc: F) -> tokio::runtime::Runtime
+where
+    F: Fn(ployz_core::RpcRequestBody) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<ployz_core::RpcResponse, Status>> + Send + 'static,
+{
+    use ployz_core::{RpcRequestBody, RpcResponse};
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = {
+        let _entered = runtime.enter();
+        tokio::net::UnixListener::bind(path).unwrap()
+    };
+    let rpc = tower::service_fn(move |request: Request<OpaquePayload>| {
+        let rpc = rpc.clone();
+        async move {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "the fixture answers confirmation and forwards every other request"
+            )]
+            let response = match request.into_inner().decode_request().unwrap().body {
+                RpcRequestBody::DescribeContract(_) => {
+                    RpcResponse::from(ployz_core::ContractDescription {
+                        machine_id: ployz_core::MachineId::random(),
+                        protocol_major: ployz_core::PROTOCOL_MAJOR,
+                        daemon_version: "fixture".into(),
+                        capabilities: Default::default(),
+                    })
+                }
+                body => rpc(body).await?,
+            };
+            Ok::<_, Status>(Response::new(response.encode().unwrap()))
+        }
+    });
+    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
+        let rpc = rpc.clone();
+        async move {
+            Ok::<_, Infallible>(
+                tonic::server::Grpc::new(ProstCodec::default())
+                    .unary(rpc, request)
+                    .await,
+            )
+        }
+    });
+    runtime.spawn(Server::builder().serve_with_incoming(
+        service,
+        tokio_stream::wrappers::UnixListenerStream::new(listener),
+    ));
+    runtime
+}
+
+/// A client confirmed against the daemon at `path`.
+pub(crate) async fn unix_client(path: &std::path::Path) -> Client {
+    let selected = crate::context::SelectedConnections {
+        source: ConnectionSource::Direct,
+        connections: vec![Connection::unix(path).unwrap()],
+    };
+    super::connect_selected_with(selected, Arc::new(super::SystemConnector::default()))
+        .await
+        .unwrap()
+}

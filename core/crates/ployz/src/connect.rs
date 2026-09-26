@@ -724,10 +724,11 @@ impl ConnectError {
         }
     }
 
-    /// Setup retries must not spend a minute retrying missing credentials or keys.
+    /// Repeatable reads retry until the daemon answers; an answer is final.
+    /// They must not spend a minute retrying missing credentials or keys.
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "setup overrides SSH, IO and aggregate errors; other variants use the exhaustive transport classifier"
+        reason = "setup overrides SSH, IO, RPC and aggregate errors; other variants use the exhaustive transport classifier"
     )]
     pub(crate) fn is_setup_retryable(&self) -> bool {
         match self {
@@ -736,6 +737,8 @@ impl ConnectError {
             } => *setup_retryable,
             // A socket-activated daemon accepts before it serves; setup waits it out.
             Self::EntryNotReady => true,
+            // A restarting daemon drops the connection without answering.
+            Self::Rpc(error) => error.is_retryable() || error.unanswered,
             Self::SshProbe { detail, .. } => [
                 "Connection timed out",
                 "Operation timed out",
@@ -755,6 +758,8 @@ impl ConnectError {
                         io::ErrorKind::ConnectionRefused
                             | io::ErrorKind::ConnectionReset
                             | io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::BrokenPipe
+                            | io::ErrorKind::NotFound
                             | io::ErrorKind::TimedOut
                             | io::ErrorKind::NotConnected
                             | io::ErrorKind::UnexpectedEof
@@ -785,16 +790,14 @@ pub struct TransportError {
     code: tonic::Code,
     message: String,
     details: Value,
+    /// The client produced this status: the daemon never answered.
+    unanswered: bool,
 }
 
 impl TransportError {
     pub(crate) fn from_stream_status(status: tonic::Status) -> Self {
-        // Remote statuses cross the wire without a source. Tonic attaches one
-        // only when the client stream itself fails.
-        let interrupted =
-            status.code() == tonic::Code::Cancelled || std::error::Error::source(&status).is_some();
         let mut error = Self::from(status);
-        if interrupted {
+        if error.unanswered {
             error.code = tonic::Code::Unavailable;
         }
         error
@@ -835,7 +838,12 @@ impl TransportError {
 
 impl From<tonic::Status> for TransportError {
     fn from(status: tonic::Status) -> Self {
+        // Remote statuses cross the wire without a source. Tonic attaches one
+        // only when the client connection or stream itself fails.
+        let unanswered =
+            status.code() == tonic::Code::Cancelled || std::error::Error::source(&status).is_some();
         Self {
+            unanswered,
             code: status.code(),
             message: status.message().to_owned(),
             details: if status.details().is_empty() {

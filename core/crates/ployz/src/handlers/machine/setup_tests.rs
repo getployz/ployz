@@ -181,3 +181,46 @@ async fn lost_creation_replies_refuse_an_observed_policy_mismatch() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn reset_lost_to_a_daemon_restart_is_observed_not_resent() {
+    use crate::connect::test_support::{unix_client, unix_daemon};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ployz.sock");
+    let (reset, restarting) = tokio::sync::oneshot::channel();
+    let reset = Arc::new(std::sync::Mutex::new(Some(reset)));
+    let old = unix_daemon(&path, move |body| {
+        let reset = reset.lock().unwrap().take();
+        async move {
+            assert!(matches!(body, RpcRequestBody::Reset(_)), "{body:?}");
+            reset.unwrap().send(()).unwrap();
+            std::future::pending().await
+        }
+    });
+    let mut client = unix_client(&path).await;
+    let restart = async {
+        restarting.await.unwrap();
+        // The daemon exits with the Reset reply in flight.
+        old.shutdown_background();
+        std::fs::remove_file(&path).unwrap();
+        // A resent Reset would fail this assertion instead of being observed.
+        unix_daemon(&path, |body| async move {
+            assert!(matches!(body, RpcRequestBody::Inspect(_)), "{body:?}");
+            Ok(RpcResponse::from(MachineDetails {
+                id: MachineId::random(),
+                phase: LocalMachinePhase::Uninitialized,
+                public_key: WireGuardPublicKey([3; 32]),
+                advertised_endpoints: Vec::new(),
+                machine: None,
+                store_version: Default::default(),
+                rtts: Vec::new(),
+                management_clients: Vec::new(),
+                telemetry: None,
+                storage: None,
+            }))
+        })
+    };
+    let (result, new) = tokio::join!(super::reset(&mut client), restart);
+    new.shutdown_background();
+    result.unwrap();
+}
