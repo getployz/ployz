@@ -25,7 +25,7 @@ export default defineConfig({
           include: ["src/**/*.test.{ts,tsx}"],
           exclude: ["**/*.postgres.test.ts", "**/*.static.test.ts"],
           maxWorkers: 4,
-          sequence: { groupOrder: 0 },
+          isolate: false,
         },
       },
       {
@@ -33,10 +33,9 @@ export default defineConfig({
           ...sharedTestConfig,
           name: "postgres",
           include: ["src/**/*.postgres.test.ts"],
-          maxWorkers: 2,
-          // Removing a test container under load can outlast the default 10s hook timeout.
-          hookTimeout: 60_000,
-          sequence: { groupOrder: 1 },
+          // One server for the run; each file gets its own copy of the migrated database.
+          globalSetup: ["./src/test/postgres.global-setup.ts"],
+          maxWorkers: 4,
         },
       },
       {
@@ -46,7 +45,6 @@ export default defineConfig({
           include: ["src/**/*.static.test.ts"],
           maxWorkers: 1,
           testTimeout: 120_000,
-          sequence: { groupOrder: 2 },
         },
       },
     ],

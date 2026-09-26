@@ -16,8 +16,7 @@ import { Database, DatabaseLive } from "#/server/database.server";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { githubInstallationReceivedEvent } from "#/modules/inngest/events";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 
 function createStepTools() {
@@ -42,8 +41,7 @@ it.live(
   "persists decoded repository pages and schedules sync with stable Inngest ABI",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(
         Layer.provide(
           ConfigProvider.layer(
@@ -51,7 +49,7 @@ it.live(
               env: {
                 ...process.env,
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
               },
             }),
           ),

@@ -11,8 +11,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 import {
   attachServiceVolume,
@@ -30,15 +29,14 @@ it.live(
   "keeps resource lifecycle and service-owned mounts authorized and atomic",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
               },
             }),
           ),

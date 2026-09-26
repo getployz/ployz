@@ -15,8 +15,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 import { createService } from "./service-operations.server";
 import { createImageServiceSource } from "./services";
@@ -30,15 +29,14 @@ it.live(
   "authorizes variable writes, redacts secrets, and commits related rows atomically",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
               },
             }),
           ),

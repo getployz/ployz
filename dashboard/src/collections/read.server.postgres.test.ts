@@ -17,8 +17,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { publicErrorResponse, Validation } from "#/server/public-error";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 
 const privateHeaders = { "cache-control": "private, no-store" } as const;
@@ -40,13 +39,12 @@ it.live(
   "authenticates and isolates allowlisted collection snapshots",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const provider = ConfigProvider.fromEnv({
         env: {
           ...testConfigEnvironment(),
           NODE_ENV: "test",
-          DATABASE_URL: container.url.href,
+          DATABASE_URL: testDatabase.url.href,
         },
       });
       const configLayer = AppConfig.layer.pipe(

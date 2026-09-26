@@ -165,6 +165,11 @@ jobs:
     needs: sdk
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # The suite is CPU-bound on a 4-vCPU runner; shards keep each job's tests under a minute.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -177,11 +182,11 @@ jobs:
       - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
-        run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
+        run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cloud-test-results
+          name: cloud-test-results-${{ matrix.shard }}
           path: dashboard/test-results
           retention-days: 7
           if-no-files-found: ignore

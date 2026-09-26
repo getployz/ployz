@@ -16,8 +16,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 import { vi } from "vitest";
 
@@ -50,15 +49,14 @@ it.live(
   "persists decoded Polar state and schedules reconciliation with stable Inngest ABI",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
               },
             }),
           ),

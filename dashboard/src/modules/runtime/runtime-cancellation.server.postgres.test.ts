@@ -19,7 +19,7 @@ import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret
 const settle = () => sleep(2 * Duration.toMillis(PAIRING_CHANGE_POLL) + 250);
 
 it("closes every Cloud worker's session through the change log only after commit and preserves replacement pairings", async () => {
-  const harness = await startPostgresTestHarness();
+  const harness = await startPostgresTestHarness({ ownServer: true });
   const organizationId = "00000000-0000-4000-8000-000000000881";
   const machineId = "00000000000000000000000000000001";
   const encryption = makeSecretEncryption("runtime-cancellation-test-encryption");

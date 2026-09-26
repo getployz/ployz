@@ -8,21 +8,19 @@ import { DatabaseLive } from "#/server/database.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 
 it.live(
   "resolves one Better Auth session into an explicit Actor",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const provider = ConfigProvider.fromEnv({
         env: {
           ...testConfigEnvironment(),
           NODE_ENV: "test",
-          DATABASE_URL: container.url.href,
+          DATABASE_URL: testDatabase.url.href,
         },
       });
       const configLayer = AppConfig.layer.pipe(

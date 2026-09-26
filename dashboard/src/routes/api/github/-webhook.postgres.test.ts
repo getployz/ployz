@@ -9,7 +9,7 @@ import type { JsonValue } from "#/db/schema";
 import { InngestClient } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { migrateTestDatabase, postgresTestContainer } from "#/test/postgres";
+import { postgresTestDatabase } from "#/test/postgres";
 import { handleGithubWebhookRequest } from "./-webhook.handler";
 
 const webhookSecret = "github-webhook-secret";
@@ -32,8 +32,7 @@ it.live(
   "authenticates, decodes, dispatches, and durably rejects GitHub ingress",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const sent: unknown[] = [];
       const inngest = new Inngest({ id: "github-webhook-contract" });
       inngest.send = async (input) => {
@@ -46,7 +45,7 @@ it.live(
             ConfigProvider.fromEnv({
               env: {
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
                 GITHUB_APP_WEBHOOK_SECRET: webhookSecret,
               },
             }),

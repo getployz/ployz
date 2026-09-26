@@ -21,8 +21,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 import {
   clearServiceRegistryCredential,
@@ -38,15 +37,14 @@ it.live(
   "keeps service, credential, and canvas authoring authorized and atomic",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
               },
             }),
           ),
@@ -221,11 +219,10 @@ it.live(
   "links custom domains on self-hosted or with an active hosted subscription",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {
         ...testConfigEnvironment(),
-        DATABASE_URL: container.url.href,
+        DATABASE_URL: testDatabase.url.href,
       } }))));
       const layer = (polar: PolarService) => Layer.mergeAll(DatabaseLive.pipe(Layer.provide(config)),
         Layer.succeed(Polar, polar), SecretEncryptionLive.pipe(Layer.provide(config)));

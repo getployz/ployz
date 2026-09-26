@@ -13,7 +13,7 @@ import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { migrateTestDatabase, postgresTestContainer } from "#/test/postgres";
+import { postgresTestDatabase } from "#/test/postgres";
 import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
 const configFile = fileURLToPath(new URL("../../vite.config.ts", import.meta.url));
@@ -37,13 +37,12 @@ it(
   "round-trips strict validation, Actor, redacted errors, and cancellation through TanStack",
   () =>
     Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const provider = ConfigProvider.fromEnv({
         env: {
           ...testConfigEnvironment(),
           NODE_ENV: "test",
-          DATABASE_URL: container.url.href,
+          DATABASE_URL: testDatabase.url.href,
         },
       });
       const configLayer = AppConfig.layer.pipe(
@@ -82,7 +81,7 @@ it(
       }).pipe(Effect.provide(authLayer));
 
       const organizationSlug = yield* Effect.promise(async () => {
-        const database = new Client({ connectionString: container.url.href });
+        const database = new Client({ connectionString: testDatabase.url.href });
         await database.connect();
         try {
           const result = await database.query<{ id: string; slug: string }>("select id, slug from organization");
@@ -106,7 +105,7 @@ it(
         const previousDatabaseUrl = process.env["DATABASE_URL"];
         const previousAuthSecret = process.env["BETTER_AUTH_SECRET"];
         const previousServerFnBase = process.env["TSS_SERVER_FN_BASE"];
-        process.env["DATABASE_URL"] = container.url.href;
+        process.env["DATABASE_URL"] = testDatabase.url.href;
         process.env["BETTER_AUTH_SECRET"] = "better-auth-secret";
         process.env["TSS_SERVER_FN_BASE"] = "/_serverFn/";
 

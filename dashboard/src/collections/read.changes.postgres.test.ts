@@ -59,7 +59,7 @@ describe("incremental Service reads from the Organization change log", () => {
   }
 
   beforeAll(async () => {
-    harness = await startPostgresTestHarness();
+    harness = await startPostgresTestHarness({ ownServer: true });
     alpha = await createOrganization(`alpha-${randomUUID().slice(0, 8)}`);
     beta = await createOrganization(`beta-${randomUUID().slice(0, 8)}`);
   }, 60_000);
@@ -233,7 +233,7 @@ describe("every Org Store collection reads its changes from the Organization cha
   const serialized = (rows: object[]) => rows.map((row) => JSON.stringify(row)).sort();
 
   beforeAll(async () => {
-    harness = await startPostgresTestHarness();
+    harness = await startPostgresTestHarness({ ownServer: true });
     const lineageId = randomUUID();
     const snapshotId = randomUUID();
     await sql("insert into organization (id, name, slug) values ($1, $2, $2)", [organizationId, slug]);

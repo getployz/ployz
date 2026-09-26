@@ -6,8 +6,7 @@ import { member, organization, user } from "#/db/schema";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { AppConfig } from "#/server/config.server";
 import {
-  migrateTestDatabase,
-  postgresTestContainer,
+  postgresTestDatabase,
 } from "#/test/postgres";
 import {
   createEmptyProject,
@@ -17,15 +16,14 @@ it.live(
   "authorizes workspace writes and returns the PostgreSQL transaction that committed every created row",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
-      yield* migrateTestDatabase(container.url);
+      const testDatabase = yield* postgresTestDatabase;
       const config = AppConfig.layer.pipe(
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
                 ...testConfigEnvironment(),
-                DATABASE_URL: container.url.href,
+                DATABASE_URL: testDatabase.url.href,
               },
             }),
           ),

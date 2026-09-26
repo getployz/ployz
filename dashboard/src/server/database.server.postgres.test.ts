@@ -16,7 +16,7 @@ import {
   DatabasePostCommitFailure,
   afterDatabaseCommit,
 } from "#/server/database.server";
-import { postgresTestContainer } from "#/test/postgres";
+import { postgresTestDatabase } from "#/test/postgres";
 
 class Rollback extends Data.TaggedError("Rollback") {}
 
@@ -31,11 +31,11 @@ it.live(
   "shares one pool with Better Auth and keeps nested operations in the transaction",
   () =>
     Effect.gen(function* () {
-      const container = yield* postgresTestContainer;
+      const testDatabase = yield* postgresTestDatabase;
       const provider = ConfigProvider.fromEnv({
         env: {
           ...testConfigEnvironment(),
-          DATABASE_URL: container.url.href,
+          DATABASE_URL: testDatabase.url.href,
         },
       });
       const configLayer = AppConfig.layer.pipe(
