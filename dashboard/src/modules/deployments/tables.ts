@@ -285,7 +285,7 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   builder: text("builder").notNull().default("server").$type<ImageBuilder>(),
   /** GitHub's dispatched run: the check-in and the start-limit skip race on it. */
   githubRunId: bigint("github_run_id", { mode: "number" }),
-  /** The runner checked in: the build started on GitHub and never moves. */
+  /** The runner checked in: the build started on GitHub, and moves on only when GitHub fails it for infrastructure reasons. */
   checkedInAt: timestamp("checked_in_at", { mode: "date", withTimezone: true }),
   /** GitHub's run details, grant and Build Steps; present exactly while GitHub is the Builder. */
   github: jsonb("github").$type<GithubImageBuild>(),

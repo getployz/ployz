@@ -28,7 +28,7 @@ it("renders started steps as rows, tails the running step, and opens only the fa
   expect(html).toContain("&lt;script&gt;");
   expect(html).not.toContain("<script>");
   expect(html.match(/<details>/g)).toHaveLength(2);
-  expect(html.match(/<details open="">/g)).toHaveLength(1);
+  expect(html.match(/<details open="" class="cursor-pointer">/g)).toHaveLength(1);
   // The running step shows only its last line beneath a collapsed row, colour codes stripped.
   expect(html).toContain(">   Compiling ployz</pre>");
   expect(html).not.toContain("[32m");

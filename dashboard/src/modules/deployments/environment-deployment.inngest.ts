@@ -41,7 +41,7 @@ import {
   cancelGithubImageBuilds,
   checkGithubImageBuild,
   GITHUB_CHECK_INTERVAL,
-  settledGithubImageBuild,
+  settleOrMoveReportedGithubBuild,
   startGithubImageBuild,
 } from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
@@ -167,7 +167,7 @@ const walkGithub: Builder = async (build, candidate, { key, last, step, runEffec
   if (started.kind !== "dispatched") return started;
   const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
   for (let check = 0; ; check += 1) {
-    const before = await step.run(`settled-github-build-${key}-${check}`, () => runEffect(settledGithubImageBuild(build)));
+    const before = await step.run(`settled-github-build-${key}-${check}`, () => runEffect(settleOrMoveReportedGithubBuild(build)));
     if (before) return before;
     const startLimit = check === 0 && !last;
     const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });
@@ -181,8 +181,8 @@ const BUILDERS = { servers: walkServers, github: walkGithub } satisfies Record<B
 /**
  * One Image Build walks its Builders in turn: its Service's Preferred Builder, then the Build Order.
  * Each but the last has "start within" to start it, else the next gets it; the last waits. A Builder
- * that can't take it is skipped at once. A build that started never moves. Every skip lands on the
- * Image Build's trail.
+ * that can't take it is skipped at once. A build that started moves on only when GitHub fails it for
+ * infrastructure reasons, never for a failed Build Step. Every skip lands on the Image Build's trail.
  *
  *   candidates ─▶ [servers | github] ─ skipped ─▶ next ─ … ─▶ none left: failed
  *                        └─ settled (built / failed / cancelled) ─▶ done

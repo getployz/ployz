@@ -232,7 +232,7 @@ A place that runs Image Builds: the Organization Cluster, which chooses one of i
 _Avoid_: Build host, build runner, builder Server; Builder for Dockerfile or Railpack
 
 **Build Order**:
-The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service's Preferred Builder is tried before it. A build that has started never moves. Until the Organization chooses one, its Build Order is its servers only, then GitHub first once any repository its Services build from has the Build Workflow.
+The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service's Preferred Builder is tried before it. A build that has started moves on only when GitHub fails it for infrastructure reasons (the runner stopped before its final report, the run pushed nothing without a failed Build Step, the runner couldn't install ployz, or the run ran out of time); a failed Build Step is final, and the last Builder has nowhere to move, so the build fails with that reason. Until the Organization chooses one, its Build Order is its servers only, then GitHub first once any repository its Services build from has the Build Workflow.
 _Avoid_: Build pool, build preference, fallback builder
 
 **Preferred Builder**:

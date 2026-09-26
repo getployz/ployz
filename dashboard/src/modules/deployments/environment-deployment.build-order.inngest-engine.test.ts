@@ -80,7 +80,7 @@ vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation((_build,
   return fake.githubStart ?? { kind: "dispatched", runId: RUN_ID };
 }));
 // Nothing settles a build between two waits here; the Postgres tests cover a report that did.
-vi.spyOn(githubImageBuilds, "settledGithubImageBuild").mockImplementation(() => Effect.succeed(null));
+vi.spyOn(githubImageBuilds, "settleOrMoveReportedGithubBuild").mockImplementation(() => Effect.succeed(null));
 vi.spyOn(githubImageBuilds, "checkGithubImageBuild").mockImplementation((_build, seen) => Effect.sync(() => {
   fake.seen.push(seen);
   return fake.checks.shift() ?? (seen.ended ? settled("built") : { kind: "waiting" });
@@ -191,7 +191,15 @@ describe("walking the Build Order", () => {
     expect(fake.serverLimits.length).toBeGreaterThan(0);
   });
 
-  it("keeps a GitHub run that checked in before the limit, and never moves it when it fails", async () => {
+  it("moves a started GitHub run that failed for infrastructure reasons on to the servers", async () => {
+    fake.candidates = imageBuildWalk("github-then-servers", undefined);
+    fake.runCompletes = [false, true];
+    fake.checks = [{ kind: "waiting" }, skipped({ builder: "github", kind: "runner_stopped" })];
+    expect(await outcome()).toMatchObject({ deployed: true });
+    expect(fake.serverLimits.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a GitHub run that checked in before the limit, and never moves it when a build step fails", async () => {
     fake.candidates = imageBuildWalk("github-then-servers", undefined);
     fake.runCompletes = [false, true];
     fake.checks = [{ kind: "waiting" }, settled("failed")];

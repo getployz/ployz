@@ -17,6 +17,13 @@ export const skipReasonSchema = Schema.Union([
   Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("multi_platform"), platforms: Schema.Array(Schema.String) }),
   Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("dispatch_failed"), message: Schema.String }),
   Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("ended_before_start") }),
+  /**
+   * A started run failed for GitHub's reasons, not the build's: it ended without a final report
+   * (`runner_stopped`), reported no failed Build Step but pushed nothing (`no_push`), or used up its
+   * budget (`out_of_time`). A failed Build Step is final and never a skip.
+   */
+  Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literals(["runner_stopped", "no_push", "out_of_time"]) }),
+  Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("install_failed"), version: Schema.String }),
   /** The Service's Preferred Server is gone (`name` null) or no longer accepts builds: the walk went back to Auto. */
   Schema.Struct({ builder: Schema.Literal("servers"), kind: Schema.Literal("preferred_unavailable"), machineId: rustMachineIdSchema, name: Schema.NullOr(Schema.String) }),
   /** It hadn't started the build within its "start within" limit. */
@@ -41,12 +48,19 @@ export function skipReasonText(reason: SkipReason): string {
     case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
     case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
     case "ended_before_start": return `${builder}: the run ended before it started`;
+    case "runner_stopped": return `${builder}: the runner stopped before finishing`;
+    case "no_push": return `${builder}: the run didn't push an image`;
+    case "out_of_time": return `${builder}: ran out of time`;
+    case "install_failed": return `${builder}: couldn't install ployz ${reason.version}`;
     case "preferred_unavailable": return preferredServerUnavailableText(reason.name);
     case "not_started": return reason.builder === "github"
       ? `${builder}: no runner in ${reason.minutes} min`
       : `${builder}: none started it in ${reason.minutes} min`;
   }
 }
+
+/** The ployz version a runner couldn't install, as it reports it. */
+export const installFailedSchema = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z.+-]{1,64}$/u));
 
 /** Mirrors core's `BuildGrantId` (ployz-core `value.rs`): 64 lowercase hex, its key's public half. */
 const buildGrantIdSchema = Schema.declare<BuildGrantId>(
@@ -68,11 +82,26 @@ export const githubImageBuildSchema = Schema.Struct({
   reason: Schema.Literals(CANDIDATE_REASONS),
   /** The Build Grant minted at check-in, and the fingerprint the runner was told to build. */
   grant: Schema.NullOr(Schema.Struct({ id: buildGrantIdSchema, fingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)) })),
-  /** The runner's Build Steps so far; `platforms` once it reported its end (empty: it failed). */
+  /**
+   * The runner's Build Steps so far; `platforms` once it reported its end (empty: it failed), and
+   * `installFailed`, the ployz version it couldn't install, when it failed before building.
+   */
   report: Schema.NullOr(Schema.Struct({
     received: Schema.Number,
     collector: collectorCheckpointSchema,
     platforms: Schema.NullOr(Schema.Array(Schema.String)),
+    installFailed: Schema.optionalKey(installFailedSchema),
   })),
 });
 export type GithubImageBuild = typeof githubImageBuildSchema.Type;
+
+/**
+ * Why GitHub moves on a started build that ended without an image: it failed for GitHub's reasons,
+ * not the build's. Null when a Build Step failed, in any batch: that is final.
+ */
+export function githubSkipReason(report: GithubImageBuild["report"], timedOut: boolean): SkipReason | null {
+  if (report?.collector.stepFailed) return null;
+  if (report?.installFailed !== undefined) return { builder: "github", kind: "install_failed", version: report.installFailed };
+  if (timedOut) return { builder: "github", kind: "out_of_time" };
+  return report?.platforms ? { builder: "github", kind: "no_push" } : { builder: "github", kind: "runner_stopped" };
+}

@@ -93,8 +93,8 @@ function StepRow({ step, lines, now, open: toggledOpen, onToggle }: {
   return <li className={cn(failed && "border-l-2 border-destructive")}>
     <details open={open} onToggle={(event) => onToggle(event.currentTarget.open)}
       // Clicking anywhere in an open row closes it; the summary toggles natively, and a text selection is not a click.
-      onClick={(event) => { if (open && !(event.target as Element).closest("summary") && !window.getSelection()?.toString()) onToggle(false); }}
-      className={cn(open && "cursor-pointer")}>
+      onClick={(event) => { if (open && event.target instanceof Element && !event.target.closest("summary") && !window.getSelection()?.toString()) onToggle(false); }}
+      className={open ? "cursor-pointer" : undefined}>
       <summary className={cn(row, "cursor-pointer list-none hover:bg-muted/40 [&::-webkit-details-marker]:hidden")}>{summary}</summary>
       {lines.length ? <pre className="whitespace-pre-wrap break-words pl-24">{lines.map((line) => <span key={line.id} className={line.stderr ? "text-foreground" : "text-muted-foreground"}>{stripAnsi(line.text)}</span>)}</pre> : null}
       {step.error ? <p className="whitespace-pre-wrap break-words pl-24 text-destructive">{step.error}</p> : null}
