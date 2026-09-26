@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { BuildReceipt, MachineId } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Effect, type Types } from "effect";
+import type { SkipReason } from "./image-build";
 import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { PloyzPreparationError } from "#/modules/runtime/ployz.server";
 import { Database, ReportingDatabase } from "#/server/database.server";
@@ -11,16 +12,13 @@ import {
   imageBuildWanted, loadBuildReceipts, recordServerChoice, settleImageBuild, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildTarget,
 } from "./image-builds.server";
-import { preparationProgressCollector, type BuildStepWrite } from "./preparation-progress";
+import { ployzStep, preparationProgressCollector, type BuildStepWrite } from "./preparation-progress";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import { connectedRuntime, oneServiceDeployment, watchDeploymentCancellation } from "./runtime-session.server";
 import { acquireDeploymentSources } from "./runtime-sources.server";
 
 /** A build that reused an image still leaves this one Build Step as its evidence. */
-export const reusedImageStep = (): BuildStepWrite => {
-  const now = new Date();
-  return { build: 0, key: "stage:Reused", name: "Reused image", startedAt: now, completedAt: now, cached: true, error: null };
-};
+export const reusedImageStep = (): BuildStepWrite => ({ ...ployzStep("stage:Reused", "Reused image"), cached: true });
 
 /** How one go on the Cluster ended, before the Image Build records it. */
 type ClusterBuild =
@@ -36,16 +34,17 @@ type ClusterBuild =
  * row on every exit. It stops when its attempt ends or is cancelled.
  */
 export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* (
-  build: ImageBuildTarget, candidate: Pick<BuildCandidate, "machineId">, startWithinMs?: number,
+  build: ImageBuildTarget, candidate: Pick<BuildCandidate, "machineId" | "attempt">, startWithinMs?: number,
 ) {
   const cancellation = new AbortController();
   const collector = preparationProgressCollector();
   const reporting = deploymentReporting();
   let machineId: MachineId | null = null;
+  let machineName: string | undefined;
   let logged = false;
   const log = (writes: { steps: BuildStepWrite[]; output: { build: number; step: string; stderr: boolean; text: string }[] }) => {
     logged ||= writes.steps.length > 0;
-    return reporting.write(persistBuildLog(build.deploymentId, writes, build.image));
+    return reporting.write(persistBuildLog(build.deploymentId, writes, { image: build.image, attempt: candidate.attempt }));
   };
   const outcome: ClusterBuild = yield* Effect.gen(function* () {
     const context = yield* loadDeploymentContext(build.deploymentId);
@@ -63,6 +62,7 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
       if (event !== "Transfer" && "Selected" in event) {
         const { machine, reason } = event.Selected;
         machineId = machine.id;
+        machineName = machine.name;
         await Effect.runPromiseWith(progressContext)(recordServerChoice(build.id, machine.id, { machineName: machine.name, reason }));
       }
       const writes = collector.event(event);
@@ -88,7 +88,10 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
   yield* log({ steps, output: [] });
   switch (outcome.kind) {
     case "queued": {
-      return yield* skipUnstarted(build, { builder: "servers", kind: "not_started", minutes: START_WITHIN_MINUTES });
+      // The Server's name leaves the row with the skip; the skip keeps it for the log's heading.
+      const reason: Types.Mutable<SkipReason> = { builder: "servers", kind: "not_started", minutes: START_WITHIN_MINUTES };
+      if (machineName !== undefined) reason.machineName = machineName;
+      return yield* skipUnstarted(build, reason);
     }
     case "built": return yield* settleImageBuild(build, { status: "built", receipt: outcome.receipt });
     case "failed": return yield* settleImageBuild(build, { status: "failed", message: outcome.message, machineId });

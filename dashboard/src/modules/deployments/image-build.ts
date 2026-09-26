@@ -27,7 +27,9 @@ export const skipReasonSchema = Schema.Union([
   /** The Service's Preferred Server is gone (`name` null) or no longer accepts builds: the walk went back to Auto. */
   Schema.Struct({ builder: Schema.Literal("servers"), kind: Schema.Literal("preferred_unavailable"), machineId: rustMachineIdSchema, name: Schema.NullOr(Schema.String) }),
   /** It hadn't started the build within its "start within" limit. */
-  Schema.Struct({ builder: Schema.Literals(["github", "servers"]), kind: Schema.Literal("not_started"), minutes: Schema.Number }),
+  Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("not_started"), minutes: Schema.Number }),
+  /** No Server started it in time; `machineName` is the Server it waited on, once the Engine chose one. */
+  Schema.Struct({ builder: Schema.Literal("servers"), kind: Schema.Literal("not_started"), minutes: Schema.Number, machineName: Schema.optionalKey(Schema.String) }),
 ]);
 export type SkipReason = typeof skipReasonSchema.Type;
 
@@ -36,26 +38,28 @@ export type SkipReason = typeof skipReasonSchema.Type;
  * Engine did when choosing (its reason): the same words either way. `name` is null once it left the Cluster.
  */
 export const preferredServerUnavailableText = (name: string | null) =>
-  name === null ? "Preferred server: no longer in the Cluster" : `Preferred server ${name}: offline or no longer builds`;
+  name === null ? "Your preferred server left the Cluster." : `Your preferred server ${name} is offline or no longer builds.`;
 
-/** Why a Builder didn't take an Image Build, as the canvas, the build log and a failed build say it. */
+/**
+ * Why a Builder didn't take an Image Build, as one plain sentence: the build log says it before
+ * "Building on <next> instead.", and a build no Builder took fails with it.
+ */
 export function skipReasonText(reason: SkipReason): string {
-  const builder = reason.builder === "github" ? "GitHub" : "Your servers";
   switch (reason.kind) {
-    case "not_connected": return `${builder}: the repository isn't connected through the GitHub App`;
-    case "no_permission": return `${builder}: no permission in ${reason.repository}`;
-    case "no_workflow": return `${builder}: no workflow in ${reason.repository}`;
-    case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
-    case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
-    case "ended_before_start": return `${builder}: the run ended before it started`;
-    case "runner_stopped": return `${builder}: the runner stopped before finishing`;
-    case "no_push": return `${builder}: the run didn't push an image`;
-    case "out_of_time": return `${builder}: ran out of time`;
-    case "install_failed": return `${builder}: couldn't install ployz ${reason.version}`;
+    case "not_connected": return "GitHub can't reach this repository: it isn't connected through the GitHub App.";
+    case "no_permission": return `GitHub has no permission in ${reason.repository}.`;
+    case "no_workflow": return `${reason.repository} has no Ployz build workflow.`;
+    case "multi_platform": return `GitHub builds one platform, and this image needs ${reason.platforms.join(" and ")}.`;
+    case "dispatch_failed": return `GitHub couldn't start the build (${reason.message}).`;
+    case "ended_before_start": return "The GitHub run ended before the build started.";
+    case "runner_stopped": return "GitHub couldn't finish this build: its runner stopped.";
+    case "no_push": return "GitHub couldn't finish this build: it pushed no image.";
+    case "out_of_time": return "GitHub couldn't finish this build in time.";
+    case "install_failed": return `GitHub couldn't install ployz ${reason.version}.`;
     case "preferred_unavailable": return preferredServerUnavailableText(reason.name);
     case "not_started": return reason.builder === "github"
-      ? `${builder}: no runner in ${reason.minutes} min`
-      : `${builder}: none started it in ${reason.minutes} min`;
+      ? `No GitHub runner started within ${reason.minutes} min.`
+      : `No server started the build within ${reason.minutes} min.`;
   }
 }
 
@@ -100,8 +104,9 @@ export type GithubImageBuild = typeof githubImageBuildSchema.Type;
  * not the build's. Null when a Build Step failed, in any batch: that is final.
  */
 export function githubSkipReason(report: GithubImageBuild["report"], timedOut: boolean): SkipReason | null {
-  if (report?.collector.stepFailed) return null;
+  // Before any Build Step ran: its failed "Installing ployz" step is GitHub's, not the build's.
   if (report?.installFailed !== undefined) return { builder: "github", kind: "install_failed", version: report.installFailed };
+  if (report?.collector.stepFailed) return null;
   if (timedOut) return { builder: "github", kind: "out_of_time" };
   return report?.platforms ? { builder: "github", kind: "no_push" } : { builder: "github", kind: "runner_stopped" };
 }

@@ -131,7 +131,8 @@ export const executeEnvironmentDeployment = Effect.fn(
     const progressContext = yield* Effect.context<Database | ReportingDatabase>();
     const runReport = Effect.runPromiseWith(progressContext);
     const persistProgress = <A, E>(program: Effect.Effect<A, E, Database>) => runReport(reporting.write(program));
-    const collector = preparationProgressCollector();
+    const collector = preparationProgressCollector(undefined, undefined,
+      (name) => context.snapshots.find((snapshot) => snapshot.config.privateDns === name)?.serviceId ?? null);
     const cancelled = Effect.callback<never>((resume) => {
       const abort = () => resume(Effect.interrupt);
       if (cancellation.signal.aborted) abort();

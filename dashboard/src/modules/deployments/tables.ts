@@ -228,6 +228,11 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
   /** The Image Build that reported the step, by image name; null for the deploy step's own preparation. */
   image: text("image"),
+  /**
+   * Which Builder's go at the Image Build the step belongs to: the length of its skip trail then.
+   * Each is a section of the build log. 0 for the deploy step's own preparation.
+   */
+  attempt: integer("attempt").notNull().default(0),
   /** Which BuildKit run of the Image Build the step belongs to; 0 before the first. One build may run several (per platform). */
   build: integer("build").notNull().default(0),
   /** BuildKit digest or `stage:<Stage>`; stable across repeated reports within one run. */
@@ -239,7 +244,7 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   error: text("error"),
   createdAt,
   updatedAt,
-}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.image, table.build, table.key).nullsNotDistinct()]);
+}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.image, table.attempt, table.build, table.key).nullsNotDistinct()]);
 
 /** Append-only output attributed to one build step. */
 export const environmentDeploymentBuildOutput = pgTable("environment_deployment_build_output", {

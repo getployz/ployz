@@ -8,6 +8,7 @@ import type { MachineId } from "@ployz/sdk";
 import { imageBuildWalk, type BuildCandidate } from "#/modules/deployments/build-order";
 import type { SkipReason } from "#/modules/deployments/image-build";
 import * as buildOrder from "#/modules/deployments/build-order.server";
+import * as deploymentEvents from "#/modules/deployments/deployment-events.server";
 import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
 import * as imageBuilds from "#/modules/deployments/image-builds.server";
 import type { ImageBuildAttempt, ImageBuildOutcome, ImageBuildTarget } from "#/modules/deployments/image-builds.server";
@@ -85,6 +86,8 @@ vi.spyOn(githubImageBuilds, "checkGithubImageBuild").mockImplementation((_build,
   fake.seen.push(seen);
   return fake.checks.shift() ?? (seen.ended ? settled("built") : { kind: "waiting" });
 }));
+// The build log is the Postgres tests' concern.
+vi.spyOn(deploymentEvents, "persistBuildLog").mockImplementation(() => Effect.void);
 vi.spyOn(imageBuilds, "settleImageBuild").mockImplementation((build, outcome: ImageBuildOutcome) => Effect.sync(() => {
   if (outcome.status === "failed") fake.failed.push(outcome.message);
   return imageBuilds.settled(build, outcome.status);
@@ -133,7 +136,7 @@ describe("walking the Build Order", () => {
 
   it("tells GitHub why it is in the walk, so it records the reason when it takes the build", async () => {
     fake.candidates = imageBuildWalk("servers-then-github", "github");
-    expect(fake.candidates).toEqual([{ builder: "github", reason: "preferred" }, { builder: "servers", reason: "first_in_build_order" }]);
+    expect(fake.candidates).toEqual([{ builder: "github", reason: "preferred", attempt: 0 }, { builder: "servers", reason: "first_in_build_order", attempt: 1 }]);
     fake.runCompletes = [true];
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(fake.githubReasons).toEqual(["preferred"]);
@@ -232,6 +235,6 @@ describe("walking the Build Order", () => {
     fake.candidates = imageBuildWalk("github-only", undefined);
     fake.githubStart = skipped({ builder: "github", kind: "no_workflow", repository: "acme/api" });
     expect(await outcome()).toMatchObject({ deployed: false, error: expect.objectContaining({ message: "Image Build failed: api." }) });
-    expect(fake.failed).toContain("GitHub: no workflow in acme/api");
+    expect(fake.failed).toContain("acme/api has no Ployz build workflow.");
   });
 });

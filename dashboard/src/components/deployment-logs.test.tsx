@@ -10,7 +10,7 @@ const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
 const organizationId = "6c0b2f4e-7a1d-4f3e-9b8a-2d5c1e0f9a7b";
 const at = (seconds: number) => new Date(Date.UTC(2026, 8, 22, 21, 9, seconds));
 const step = (id: number, name: string, extra: Partial<BuildStepRow> = {}): BuildStepRow => ({
-  id, organizationId, deploymentId, image: null, build: 1, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
+  id, organizationId, deploymentId, image: null, attempt: 0, build: 1, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
 });
 const line = (id: number, stepId: number, text: string, stderr = false): BuildOutputRow => ({ id, organizationId, deploymentId, stepId, stderr, text, createdAt: at(id) });
 
@@ -91,6 +91,23 @@ it("keeps one Image Build's runs, not other images or the attempt-wide cleanup a
   expect(imageBuildSteps(steps, "worker").map((row) => row.id)).toEqual([4, 5]);
   // A shared pre-build failure stopped every image.
   expect(imageBuildSteps([step(1, "Uploading source", { build: 0, key: "stage:Upload", error: "upload failed" }), ...steps.slice(1)], "worker").map((row) => row.id)).toEqual([1, 4, 5]);
+});
+
+it("tells each Builder's go as a plain line above its steps", () => {
+  const html = renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC",
+    finished: false, output: [], now: at(9).getTime(),
+    steps: [
+      step(2, "Waiting for a runner", { image: "web", key: "runner", completedAt: at(4) }),
+      step(6, "Uploading source", { image: "web", attempt: 1, key: "stage:Upload" }),
+    ],
+    evidence: { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } }, github: null, skips: [{ builder: "github", kind: "not_started", minutes: 3 }] },
+  }));
+  expect(html).toContain("Building on GitHub Actions");
+  expect(html).toContain("No GitHub runner started within 3 min. Building on hel-1 instead.");
+  // Routine choices ("spread") never show; the moved-on run's link is gone with it.
+  expect(html).not.toContain("spread");
+  expect(html).not.toContain("View run");
+  expect(html.indexOf("Waiting for a runner")).toBeLessThan(html.indexOf("Building on hel-1"));
 });
 
 it("splits BuildKit step names, rounds durations like Railway, and strips terminal sequences", () => {

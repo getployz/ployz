@@ -52,6 +52,7 @@ impl OutputBudget {
             | Progress::Platforms(_)
             | Progress::Selected(_)
             | Progress::Transfer
+            | Progress::Sending { .. }
             | Progress::Delivered { .. } => 0,
         };
         buffered.fetch_add(size, Ordering::Relaxed);

@@ -4,12 +4,11 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getDeploymentLogsCollection, useDeploymentLogsReadState } from "#/modules/deployments/deployment-log.collection";
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
-import { Item, ItemActions, ItemContent, ItemDescription } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-progress";
-import { builtOn, builtOnLine, imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
+import { buildLogSections, imageBuildSteps, stripAnsi, type ImageBuildEvidence } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer, LOG_TIME_COLUMN, LogEmpty, LogSkeleton } from "./log-scroll";
@@ -44,13 +43,15 @@ const lastLine = (rows: readonly BuildOutputRow[]) => {
   return lines.at(-1) ?? null;
 };
 
-export function BuildLogs({ steps, output, finished, timeZone, now = Date.now() }: {
-  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; timeZone: string; now?: number;
+/** One Image Build's log: a section per Builder's go, each a plain line and then its steps. */
+export function BuildLogs({ steps, output, finished, evidence, timeZone, now = Date.now() }: {
+  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; evidence?: ImageBuildEvidence; timeZone: string; now?: number;
 }) {
   // Rows the user toggled; failed rows open by default until toggled.
   const [toggled, setToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
+  const sections = buildLogSections(steps, evidence);
   const started = steps.filter((step) => step.startedAt !== null);
-  if (!started.length) {
+  if (!sections.some((section) => section.title !== null) && !started.length) {
     return finished ? <LogEmpty title="No build output">This image's build output is no longer kept.</LogEmpty> : <LogEmpty title="Waiting for the build to start" />;
   }
   const outputByStep = new Map<number, BuildOutputRow[]>();
@@ -62,12 +63,21 @@ export function BuildLogs({ steps, output, finished, timeZone, now = Date.now() 
   const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
   const failedRuns = new Set(steps.filter((step) => step.error !== null).map((step) => step.build));
   const time = clock(timeZone);
-  const shown = started.filter((step) => step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
+  const shown = (section: readonly BuildStepRow[]) => section.filter((step) => step.startedAt !== null
+    && (step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build)))));
+  const heading = "mt-2 flex items-center gap-3 px-1 font-medium";
   return <ol>
-    {shown.map((step) => step.key === BUILDING_KEY && step.error === null
-      ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className={cn("shrink-0", LOG_TIME_COLUMN.build)} /><span className="w-4 shrink-0" />Building {step.name}</li>
-      : <StepRow key={step.id} step={step} time={time.format(step.startedAt ?? step.createdAt)} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
-          onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />)}
+    {sections.flatMap((section, index) => [
+      section.title === null ? [] : [<li key={`section:${index}`} className={heading}>
+        <span className={cn("shrink-0", LOG_TIME_COLUMN.build)} /><span className="w-4 shrink-0" />
+        <span className="min-w-0 flex-1">{section.title}</span>
+        {section.runUrl ? <Button variant="link" size="xs" nativeButton={false} render={<a href={section.runUrl} target="_blank" rel="noreferrer" />}>View run ↗</Button> : null}
+      </li>],
+      shown(section.steps).map((step) => step.key === BUILDING_KEY && step.error === null
+        ? <li key={step.id} className={heading}><span className={cn("shrink-0", LOG_TIME_COLUMN.build)} /><span className="w-4 shrink-0" />Building {step.name}</li>
+        : <StepRow key={step.id} step={step} time={time.format(step.startedAt ?? step.createdAt)} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
+            onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />),
+    ].flat())}
   </ol>;
 }
 
@@ -108,6 +118,7 @@ function StepRow({ step, time, lines, now, open: toggledOpen, onToggle }: {
 function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress: DeploymentProgress }[], serviceId: string): ContainerLogRow[] {
   const previous = new Map<number, string>();
   const logs: ContainerLogRow[] = [];
+  let sending: string | null = null;
   for (const event of events) {
     for (const row of event.progress.rows) {
       if (row.serviceId !== serviceId && row.serviceId !== null) continue;
@@ -116,6 +127,12 @@ function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress:
       if (previous.get(row.index) === label) continue;
       previous.set(row.index, label);
       logs.push({ id: `lifecycle:${event.id}:${row.index}`, timestamp: String(BigInt(event.createdAt.getTime()) * 1_000_000n), channel: "lifecycle", machineId: row.machineId, machineName: row.machineName ?? row.machineId, containerId: row.target ?? "", serviceName: row.serviceName ?? "Environment", message: label });
+    }
+    // Sending the image to the Machines that run it happens at deploy time, so it reads here.
+    const preparation = event.progress.preparation;
+    if (preparation?.phase === "transfer" && preparation.serviceId === serviceId && preparation.message && sending !== preparation.message) {
+      sending = preparation.message;
+      logs.push({ id: `lifecycle:${event.id}:transfer`, timestamp: String(BigInt(event.createdAt.getTime()) * 1_000_000n), channel: "lifecycle", machineId: "", machineName: "", containerId: "", serviceName: "Deployment", message: preparation.message });
     }
     event.progress.compensation.forEach((message, i) => logs.push({ id: `lifecycle:${event.id}:recovery:${i}`, timestamp: String(BigInt(event.createdAt.getTime()) * 1_000_000n), channel: "lifecycle", machineId: "", machineName: "", containerId: "", serviceName: "Deployment", message }));
   }
@@ -129,17 +146,11 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));
-  const server = builtOn(build.data, image);
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
-    {server ? <Item size="xs">
-      <ItemContent><ItemDescription>{builtOnLine(server)}</ItemDescription></ItemContent>
-      {server.server !== null && server.runUrl ? <ItemActions>
-        <Button variant="link" size="xs" nativeButton={false} render={<a href={server.runUrl} target="_blank" rel="noreferrer" />}>View run ↗</Button>
-      </ItemActions> : null}
-    </Item> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
-      {build.isPending ? <LogSkeleton label="Loading build logs" time={LOG_TIME_COLUMN.build} /> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} timeZone={timeZone} now={now} />}
+      {build.isPending ? <LogSkeleton label="Loading build logs" time={LOG_TIME_COLUMN.build} /> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))}
+        finished={build.data?.finished ?? true} evidence={build.data?.imageBuilds.find((row) => row.image === image)} timeZone={timeZone} now={now} />}
     </BuildLogViewer>
   </>;
 }

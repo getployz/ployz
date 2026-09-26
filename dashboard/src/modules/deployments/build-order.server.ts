@@ -64,14 +64,16 @@ export const planImageBuildWalk = Effect.fn("Deployments.planImageBuildWalk")(fu
     yield* Effect.logWarning("A Service's policy does not decode; its build follows the Build Order.", { serviceId: build.serviceId });
   }
   let preferred = Option.isSome(policy) ? policy.value.preferredBuilder : undefined;
+  let skipped = 0;
   if (preferred !== undefined && preferred !== "github") {
     const unavailable = yield* preferredServerUnavailable(row.organizationId, preferred);
     if (unavailable) {
       yield* skipUnstarted(build, unavailable);
       preferred = undefined;
+      skipped = 1;
     }
   }
-  return imageBuildWalk(yield* loadBuildOrder(row.organizationId), preferred);
+  return imageBuildWalk(yield* loadBuildOrder(row.organizationId), preferred, skipped);
 });
 
 export const setBuildOrder = Effect.fn("Deployments.setBuildOrder")(function* (

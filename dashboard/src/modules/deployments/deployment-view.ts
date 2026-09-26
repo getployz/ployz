@@ -4,7 +4,7 @@ import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
-import { preferredServerUnavailableText, skipReasonText, type CandidateReason, type SkipReason } from "./image-build";
+import { preferredServerUnavailableText, skipReasonText, type SkipReason } from "./image-build";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
@@ -26,13 +26,9 @@ export type DeploymentNodeView = {
   deploy: Stage;
   failure: { message: string; containerId: string | null } | null;
   tail: string[];
-  /** The Server the Engine chose for this image and why, once it chose. */
-  builtOn: BuiltOn | null;
+  /** The Builder that holds this image's build: "GitHub Actions" or a Server, once one took it. */
+  builtOn: string | null;
 };
-/** `runUrl` links a build that ran on GitHub Actions; `skipped` is its skip trail, in order. */
-export type BuiltOn =
-  | { server: string; reason: string; runUrl?: string; skipped: readonly string[] }
-  | { server: null; reason: null; skipped: readonly string[] };
 export type DeploymentViewStatus = "queued" | "building" | "deploying" | "deployed" | "failed" | "cancelled";
 export type DeploymentView = {
   status: DeploymentViewStatus;
@@ -40,12 +36,12 @@ export type DeploymentView = {
   nodes: DeploymentNodeView[];
 };
 /** The attempt's Build Steps and their output, as the build log read returns them. `image` is null for the deploy step's own. */
-type BuildStep = { id: number; image: string | null; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
+type BuildStep = { id: number; image: string | null; attempt: number; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
 /** What an Image Build recorded about its Builders: the Server choice or GitHub run, and the skip trail. */
 export type ImageBuildEvidence = {
   image: string;
   serverChoice: ServerChoice | null;
-  github: { runUrl: string; reason: CandidateReason } | null;
+  github: { runUrl: string } | null;
   skips: readonly SkipReason[];
 };
 export type BuildLog = {
@@ -54,43 +50,53 @@ export type BuildLog = {
   imageBuilds?: readonly ImageBuildEvidence[];
 };
 
-/** Why GitHub Actions took an Image Build, as recorded when it did. */
-const githubReasonText = {
-  preferred: "preferred builder",
-  first_in_build_order: "first in the build order",
-  next_in_build_order: "next in the build order",
-} satisfies Record<CandidateReason, string>;
-
-/** Why the Engine chose a Server: recorded evidence, never a prediction. */
-function builderReason(reason: ServerChoice["reason"]): string {
-  switch (reason.kind) {
-    case "preferred": return "preferred builder";
-    case "had_cache": return "had this Service's build cache";
-    case "spread": return "spread across Servers";
-    case "cache_holder_unavailable": return `${reason.name ?? "the Server with the cache"} has the cache but is offline or no longer builds`;
-    case "preferred_unavailable": return preferredServerUnavailableText(reason.name);
-    case "reused": return "reused the build of this commit";
-  }
+/**
+ * The Builder that holds an image's build now, from what its Image Build recorded. Why it was
+ * chosen stays in the data: routine choices are nothing the user acts on.
+ */
+export function builtOn(log: Pick<BuildLog, "imageBuilds"> | null | undefined, image: string | null): string | null {
+  const row = image ? log?.imageBuilds?.find((candidate) => candidate.image === image) : undefined;
+  if (row?.github) return "GitHub Actions";
+  return row?.serverChoice?.machineName ?? null;
 }
+
+/** Who took one go at an Image Build: the Builder its skip names, or the one that holds the build now. Null for a reused image. */
+function goBuilder(skipped: SkipReason | undefined, evidence: ImageBuildEvidence | undefined): string | null {
+  if (skipped?.builder === "github") return "GitHub Actions";
+  if (skipped) return skipped.kind === "not_started" && skipped.machineName !== undefined ? skipped.machineName : "your servers";
+  if (evidence?.github) return "GitHub Actions";
+  const choice = evidence?.serverChoice;
+  return choice && choice.reason.kind !== "reused" ? choice.machineName : null;
+}
+
+/** One Builder's go at an Image Build, as its log tells it: one plain line, then its steps. */
+export type BuildLogSection<Step> = { title: string | null; runUrl: string | null; steps: Step[] };
 
 /**
- * Where an image builds and why, from what its Image Build recorded: the Server choice or GitHub
- * run, and the Builders it skipped on the way. Before a Builder takes it, only the skips are known.
+ * An Image Build's log as one timeline: a section per Builder's go, in order. The first says where it
+ * builds; each later one first says, from the skip trail, why the build moved: "GitHub couldn't
+ * finish this build: its runner stopped. Building on hel-1 instead." A go's Builder is the one its
+ * skip names, or the current holder for the last. A Builder skipped before it wrote a step leaves only that sentence. The deploy step's own
+ * rows happened after every go, so they join the last.
  */
-export function builtOn(log: Pick<BuildLog, "imageBuilds"> | null | undefined, image: string | null): BuiltOn | null {
-  const row = image ? log?.imageBuilds?.find((candidate) => candidate.image === image) : undefined;
-  const skipped = (row?.skips ?? []).map(skipReasonText);
-  if (row?.github) return { server: "GitHub Actions", reason: githubReasonText[row.github.reason], runUrl: row.github.runUrl, skipped };
-  if (row?.serverChoice) return { server: row.serverChoice.machineName, reason: builderReason(row.serverChoice.reason), skipped };
-  return skipped.length ? { server: null, reason: null, skipped } : null;
+export function buildLogSections<Step extends BuildStep>(steps: readonly Step[], evidence: ImageBuildEvidence | undefined): BuildLogSection<Step>[] {
+  const skips = evidence?.skips ?? [];
+  const last = Math.max(skips.length, ...steps.map((step) => step.image === null ? 0 : step.attempt));
+  const sections = Array.from({ length: last + 1 }, (_, attempt): BuildLogSection<Step> => {
+    const own = steps.filter((step) => (step.image === null ? last : step.attempt) === attempt);
+    const builder = own.length ? goBuilder(attempt < skips.length ? skips[attempt] : undefined, evidence) : null;
+    const skipped = attempt > 0 ? skips[attempt - 1] : undefined;
+    const lead = skipped ? [skipReasonText(skipped)] : [];
+    const choice = attempt === last ? evidence?.serverChoice?.reason : undefined;
+    // The Engine found the Preferred Server unavailable itself: the same move, one step later.
+    if (choice?.kind === "preferred_unavailable") lead.push(preferredServerUnavailableText(choice.name));
+    const moved = lead.join(" ");
+    const title = builder === null ? moved || null : moved ? `${moved} Building on ${builder} instead.` : `Building on ${builder}`;
+    return { title, runUrl: attempt === last ? evidence?.github?.runUrl ?? null : null, steps: own };
+  });
+  return sections.filter((section) => section.title !== null || section.steps.length > 0);
 }
 
-/** "Built on <Server> · <why> · skipped <Builder: why>", as the canvas and build log say it. */
-export function builtOnLine({ server, reason, skipped }: BuiltOn) {
-  const line = [server ? `Built on ${server} · ${reason}` : null, ...skipped.map((skip) => `skipped ${skip}`)]
-    .filter((part) => part !== null).join(" · ");
-  return line.charAt(0).toUpperCase() + line.slice(1);
-}
 export type DeploymentViewInput = {
   deployment: {
     status: EnvironmentDeploymentStatus;
@@ -204,16 +210,19 @@ export function imageBuildSteps<Step extends BuildStep>(steps: readonly Step[], 
 
 type ImageBuild = { failed: boolean; open: boolean; durationMs: number | undefined; lines: string[]; errorLines: string[] };
 
+/** An image's build as a node reads it: its latest Builder's go decides how it stands; an earlier one only moved on. */
 function imageBuild(log: BuildLog, image: string): ImageBuild | null {
   const steps = imageBuildSteps(log.steps, image);
   if (!steps.length) return null;
-  const failed = steps.filter((step) => step.error !== null);
+  const current = buildLogSections(steps, log.imageBuilds?.find((row) => row.image === image)).at(-1)?.steps ?? [];
+  const failed = current.filter((step) => step.error !== null);
   const output = (ids: ReadonlySet<number>) => logLines(log.output.filter((row) => ids.has(row.stepId)).map((row) => row.text).join(""));
   const starts = steps.flatMap((step) => step.startedAt ? [step.startedAt.getTime()] : []);
   const ends = steps.flatMap((step) => step.completedAt ? [step.completedAt.getTime()] : []);
   return {
     failed: failed.length > 0,
-    open: steps.some((step) => step.startedAt && !step.completedAt),
+    // A Builder that took it but reported nothing yet, or the walk between two, is still at it.
+    open: !current.length || current.some((step) => step.startedAt && !step.completedAt),
     durationMs: starts.length && ends.length ? Math.max(...ends) - Math.min(...starts) : undefined,
     lines: output(new Set(steps.map((step) => step.id))),
     errorLines: [...output(new Set(failed.map((step) => step.id))), ...failed.flatMap((step) => logLines(step.error ?? ""))],
@@ -241,8 +250,8 @@ type AttemptFacts = {
 function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput, succeeded: boolean, building: boolean): StageState {
   // Prebuilt images only: nothing to build.
   if (!nodes.some((node) => node.image)) return "none";
-  // Preparation said ready, the Engine planned the rollout, or the attempt succeeded: every image exists.
-  if (progress?.preparation?.phase === "ready" || deployment.deployPreview || succeeded) return "done";
+  // Preparation said ready or is delivering images, the Engine planned the rollout, or the attempt succeeded: every image exists.
+  if (progress?.preparation?.phase === "ready" || progress?.preparation?.phase === "transfer" || deployment.deployPreview || succeeded) return "done";
   if (deployment.status === "failed") return "failed";
   if (deployment.status === "cancelled") return "skipped";
   // Image Builds report steps from admission, and preparation reports progress once deploy starts; until then the attempt waits.

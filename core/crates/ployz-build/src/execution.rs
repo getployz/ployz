@@ -15,6 +15,8 @@ pub enum Stage {
     Building,
     Output,
     Cleanup,
+    /// Pushing the built image out of the host, after the Build itself (`ployz build`).
+    Push,
 }
 
 /// Bounded output and work observations from the execution host.

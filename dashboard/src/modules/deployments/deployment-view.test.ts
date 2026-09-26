@@ -3,7 +3,7 @@ import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@plo
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { parseServiceConfig } from "@ployz/sdk/config";
-import { builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
+import { buildLogSections, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
 
 function row(index: number, operation?: DeployOperation): OperationRow {
   const spec = resolvedServiceSpecFixture();
@@ -14,8 +14,8 @@ function row(index: number, operation?: DeployOperation): OperationRow {
 /** The Engine serializes keys alphabetically, unlike the planned rows. */
 const engineOrdered = <T,>(value: T): T => JSON.parse(canonicalJson(value)) as T;
 const context = { serviceIdFor: (name: string | null) => name };
-const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image: string | null = null) =>
-  ({ id, image, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
+const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image: string | null = null, attempt = 0) =>
+  ({ id, image, attempt, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
   ({ status, failureMessage: null, deployPreview: null, ...extra });
 /** A service in the Attempt Target; `image` makes it a built one. */
@@ -97,43 +97,52 @@ describe("deployment view projection", () => {
     expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 4 deployed");
   });
 
-  it("says which Server each image builds on and why, only once the Engine chose", () => {
+  it("names only the Builder that holds each image's build, never why it was chosen", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail", "cron"].map((image) => node({ nodeId: image, changed: true, image })),
+      nodes: ["api", "site", "worker"].map((image) => node({ nodeId: image, changed: true, image })),
       buildLog: {
         steps: [], output: [],
         imageBuilds: [
-          { image: "site", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/1", reason: "first_in_build_order" }, skips: [] },
+          { image: "site", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/1" }, skips: [] },
           { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } }, github: null, skips: [] },
-          { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } }, github: null, skips: [] },
-          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "c".repeat(32) as MachineId, name: "nuc" } }, github: null, skips: [] },
-          { image: "worker", serverChoice: null, github: null, skips: [] },
-          { image: "blog", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/2", reason: "next_in_build_order" }, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] },
-          { image: "wiki", serverChoice: null, github: null, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }, { builder: "servers", kind: "preferred_unavailable", machineId: "e".repeat(32) as MachineId, name: null }] },
-          { image: "shop", serverChoice: { machineName: "fast", reason: { kind: "preferred" } }, github: null, skips: [] },
-          { image: "mail", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/3", reason: "preferred" }, skips: [] },
-          { image: "cron", serverChoice: { machineName: "hel-1", reason: { kind: "preferred_unavailable", preferred: "d".repeat(32) as MachineId, name: null } }, github: null, skips: [] },
+          { image: "worker", serverChoice: null, github: null, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }] },
         ],
       },
     });
-    expect(view.nodes.map((n) => n.builtOn)).toEqual([
-      { server: "nuc", reason: "had this Service's build cache", skipped: [] },
-      { server: "hel-1", reason: "spread across Servers", skipped: [] },
-      { server: "hel-1", reason: "nuc has the cache but is offline or no longer builds", skipped: [] },
-      null,
-      { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1", skipped: [] },
-      { server: "GitHub Actions", reason: "next in the build order", runUrl: "https://github.com/o/r/actions/runs/2", skipped: ["Your servers: none started it in 3 min"] },
-      { server: null, reason: null, skipped: ["GitHub: no workflow in o/r", "Preferred server: no longer in the Cluster"] },
-      { server: "fast", reason: "preferred builder", skipped: [] },
-      { server: "GitHub Actions", reason: "preferred builder", runUrl: "https://github.com/o/r/actions/runs/3", skipped: [] },
-      { server: "hel-1", reason: "Preferred server: no longer in the Cluster", skipped: [] },
+    expect(view.nodes.map((n) => n.builtOn)).toEqual(["nuc", "GitHub Actions", null]);
+  });
+
+  it("tells one timeline per Image Build: a section per Builder, each move one sentence", () => {
+    const github = [step(2, 0, "runner", "Waiting for a runner", 0, 20, null, "web", 1), step(3, 1, "stage:Building", "web", 20, 60, null, "web", 1)];
+    const servers = [step(5, 1, "stage:Building", "web", 62, null, null, "web", 2)];
+    const steps = [...github, ...servers];
+    const evidence = { image: "web", github: null, serverChoice: { machineName: "hel-1", reason: { kind: "spread" as const } }, skips: [
+      { builder: "servers" as const, kind: "preferred_unavailable" as const, machineId: "e".repeat(32) as MachineId, name: "hel-2" },
+      { builder: "github" as const, kind: "runner_stopped" as const },
+    ] };
+    // Each go's Builder comes from its skip, or the holder for the last; the planning skip wrote no step.
+    expect(buildLogSections(steps, evidence).map(({ title, steps: own }) => [title, own.map((row) => row.id)])).toEqual([
+      ["Your preferred server hel-2 is offline or no longer builds. Building on GitHub Actions instead.", [2, 3]],
+      ["GitHub couldn't finish this build: its runner stopped. Building on hel-1 instead.", [5]],
     ]);
-    // The skip trail reads after the Builder that took the build, or alone before one did.
-    expect(view.nodes.slice(5, 7).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([
-      "Built on GitHub Actions · next in the build order · skipped Your servers: none started it in 3 min",
-      "Skipped GitHub: no workflow in o/r · skipped Preferred server: no longer in the Cluster",
-    ]);
+    // A Builder skipped before it wrote a step leaves its sentence alone; the first section names its Builder plainly.
+    expect(buildLogSections([step(1, 1, "stage:Building", "web", 0, null, null, "web", 1)], { ...evidence, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }] })
+      .map((section) => section.title)).toEqual(["o/r has no Ployz build workflow. Building on hel-1 instead."]);
+    expect(buildLogSections([step(1, 0, "runner", "Waiting for a runner", 0, null, null, "web")], { ...evidence, serverChoice: null, github: { runUrl: "u" }, skips: [] })
+      .map((section) => section.title)).toEqual(["Building on GitHub Actions"]);
+    // A Server go that moved on keeps its Server's name on its skip; before the Engine chose one, it is "your servers".
+    const queued = [step(1, 0, "stage:Queued", "Waiting for a free build slot", 0, 180, null, "web")];
+    expect(buildLogSections(queued, { ...evidence, skips: [{ builder: "servers", kind: "not_started", minutes: 3, machineName: "hel-1" }] })
+      .map((section) => section.title)).toEqual(["Building on hel-1", "No server started the build within 3 min."]);
+    expect(buildLogSections(queued, { ...evidence, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] })
+      .map((section) => section.title)).toEqual(["Building on your servers", "No server started the build within 3 min."]);
+    // Only the last Builder's go decides the node: GitHub's earlier failure moved on, hel-1 still builds.
+    const view = deploymentView({
+      deployment: deployment("queued"), progress: null, nodes: [node({ nodeId: "web", changed: true, image: "web" })],
+      buildLog: { steps: [...github, step(6, 0, "install", "Installing ployz", 1, 2, "no such version", "web", 1), ...servers], output: [], imageBuilds: [evidence] },
+    });
+    expect(view.nodes[0]).toMatchObject({ outcome: "building", build: { state: "running" }, builtOn: "hel-1" });
   });
 
   it("tails the image building now while the next image waits its turn", () => {

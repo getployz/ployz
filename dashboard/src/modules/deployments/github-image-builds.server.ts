@@ -7,19 +7,20 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent } from "#/modules/inngest/events";
 import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
+import { Database } from "#/server/database.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
 import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
-import { persistBuildLog } from "./deployment-events.server";
+import { openBuildStep, persistBuildLog } from "./deployment-events.server";
 import {
-  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, imageBuildNow, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild,
+  awaitsCheckIn, checkInImageBuild, closeOpenSteps, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, imageBuildNow, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild,
   moveStartedGithubBuild, skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
-import { preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
+import { ployzStep, preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
-import { connectedRuntime, oneServiceDeployment } from "./runtime-session.server";
+import { connectedRuntime, DeploymentRuntimeUnavailable, oneServiceDeployment } from "./runtime-session.server";
 import { pinSourceCommit } from "./runtime-sources.server";
 import { reusedImageStep } from "./server-image-builds.server";
 
@@ -69,7 +70,8 @@ const grantRepository = (image: string) => `ployz-build/${image}`;
  * through the GitHub App or lacks permission, has no workflow, needs several platforms, or the
  * dispatch fails.
  */
-export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuild")(function* (build: ImageBuildTarget, candidate: Pick<BuildCandidate, "reason">) {
+export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuild")(function* (build: ImageBuildTarget, candidate: Pick<BuildCandidate, "reason" | "attempt">) {
+  const owner = { image: build.image, attempt: candidate.attempt };
   const context = yield* loadDeploymentContext(build.deploymentId);
   const snapshot = context?.snapshots.find((candidate) => candidate.serviceId === build.serviceId);
   const source = installedSource(snapshot);
@@ -94,7 +96,7 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   }).pipe(Effect.scoped);
   if (outside.kind === "reuse") {
     yield* recordServerChoice(build.id, outside.receipt.machine_id, { machineName: outside.machine_name, reason: { kind: "reused" } });
-    yield* persistBuildLog(build.deploymentId, { steps: [reusedImageStep()], output: [] }, build.image);
+    yield* persistBuildLog(build.deploymentId, { steps: [reusedImageStep()], output: [] }, owner);
     return yield* settleImageBuild(build, { status: "built", receipt: outside.receipt });
   }
   const { platforms } = outside;
@@ -104,6 +106,9 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   // With no visible placement, deploy's coverage check decides, as it does after a server build.
   const runner = platforms[0] === "linux/arm64" ? "ubuntu-24.04-arm" : "ubuntu-latest";
   const config = yield* AppConfig;
+  // Cloud sees both ends of the wait for a runner. It opens before the dispatch, so even the fastest
+  // check-in finds it to close, and only once, so a retried start never reopens a closed wait.
+  yield* openBuildStep(build.deploymentId, owner, ployzStep("runner", "Waiting for a runner", new Date(), null));
   const run = yield* dispatchGithubBuildWorkflow({
     installationId: source.installationId, fullName: workflow.fullName, defaultBranch: workflow.defaultBranch,
     inputs: { build: build.id, cloud: config.app.url.origin, runner },
@@ -114,6 +119,8 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   if (claim.kind === "settled") {
     // Settled (cancelled) while dispatching: the run must not build.
     yield* cancelGithubRun({ installationId: source.installationId, fullName: workflow.fullName, runId: run.runId }).pipe(Effect.ignore);
+    // It settled before the wait opened: nothing else closes it.
+    yield* closeOpenSteps(build.id);
     return claim satisfies GithubBuildStart;
   }
   return { kind: "dispatched", runId: run.runId } satisfies GithubBuildStart;
@@ -231,9 +238,10 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
       Effect.mapError((cause) => new BuildGrantUnavailable({ cause })),
     );
     return { minted, machine };
-  }).pipe(Effect.scoped);
+  }).pipe(Effect.scoped, Effect.tapError((error) => checkInFailed(row, error)));
   const grant = { id: minted.id, fingerprint };
-  if (!(yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant }))) {
+  const checkedIn = yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant });
+  if (!checkedIn) {
     // Lost to a second check-in or to the start-within skip during a slow mint (rare). The grant's
     // secret never left Cloud, so a grant that fails to end is unusable anyway.
     yield* endGrant(row.organizationId, machine.id, minted.id).pipe(
@@ -241,9 +249,27 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
     );
     return yield* refused;
   }
+  // The runner arrived: its wait ends.
+  yield* closeOpenSteps(row.id);
   // The runner installs this version: the process that computed the fingerprint names it, even mid-rollout.
   return { grant: minted.grant, commit, fingerprint, ployzVersion: ployzVersion(), deployment };
 });
+
+/** Why Cloud couldn't start a build its runner checked in for, in the words the log shows. */
+const checkInFailure = (error: Error) => error instanceof BuildGrantUnavailable ? "Your Machine couldn't issue a grant to receive the image."
+  : error instanceof DeploymentRuntimeUnavailable ? "Cloud couldn't reach your Machine to receive the image."
+  : "Cloud couldn't start the build on GitHub.";
+
+/**
+ * A check-in the runner arrived for but Cloud couldn't start: the one internal GitHub step the log
+ * shows, and only failed. Best effort; the run then ends and the walk moves on or fails. While
+ * GitHub holds the build, its go is the skip trail's length.
+ */
+const checkInFailed = (row: GithubRow, error: Error) => Effect.gen(function* () {
+  yield* closeOpenSteps(row.id);
+  yield* persistBuildLog(row.deploymentId, { steps: [{ ...ployzStep("check-in", "Starting the build"), error: checkInFailure(error) }], output: [] },
+    { image: row.image, attempt: row.skips.length });
+}).pipe(Effect.catch((error) => Effect.logWarning("Could not log a failed GitHub check-in.", error)));
 
 const buildStepSchema = Schema.Struct({
   id: Schema.String, name: Schema.String, started: Schema.NullOr(Schema.String), completed: Schema.NullOr(Schema.String),
@@ -300,13 +326,19 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
   const platforms = report.platforms ?? null;
   // A failed Build Step already shows in its row; a build GitHub failed moves on without one.
   if (platforms) steps.push(...collector.finish());
-  yield* persistBuildLog(row.deploymentId, { steps, output }, row.image);
   const taken = Math.max(received, report.from + report.events.length);
   const recorded: Types.Mutable<NonNullable<GithubImageBuild["report"]>> = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
   if (platforms && report.installFailed !== undefined) recorded.installFailed = report.installFailed;
-  if (!(yield* recordGithubReport(row.id, received, recorded))) {
-    return yield* new Conflict({ message: "Another report of this build was taken first." });
-  }
+  // The steps land with the report that takes them, in one transaction: a report that lost to a move
+  // (or another report) files nothing, so none reopens in GitHub's section after the move closed it.
+  // While GitHub holds the build, its go is the skip trail's length.
+  const database = yield* Database;
+  const accepted = yield* database.transaction(Effect.gen(function* () {
+    if (!(yield* recordGithubReport(row.id, received, recorded))) return false;
+    yield* persistBuildLog(row.deploymentId, { steps, output }, { image: row.image, attempt: row.skips.length });
+    return true;
+  }));
+  if (!accepted) return yield* new Conflict({ message: "Another report of this build was taken first." });
   if (platforms) {
     // The runner reports its end once the image is pushed, before its run completes (it still
     // uploads build cache), so the report settles the build and wakes the waiting walk. A build
@@ -334,14 +366,7 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
   }
   const ended = yield* endGithubBuild(build, row, timedOut);
   if (ended.kind !== "move") return ended;
-  const moved = yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
-  const report = row.github.report;
-  if (moved.kind === "skipped" && report && !report.platforms) {
-    // No final report closed the runner's open steps: close them, so they don't dangle beside the
-    // next Builder's. Only once moved: a final report that settled it first keeps its own steps.
-    yield* persistBuildLog(row.deploymentId, { steps: preparationProgressCollector(undefined, report.collector).finish(), output: [] }, row.image);
-  }
-  return moved;
+  return yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
 });
 
 /**

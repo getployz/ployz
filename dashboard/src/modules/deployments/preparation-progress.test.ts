@@ -1,5 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { expect, it } from "vitest";
+import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { preparationProgressCollector } from "./preparation-progress";
 
 const keys = (steps: readonly { build: number; key: string; error: string | null }[]) => steps.map((step) => [step.build, step.key, step.error]);
@@ -28,9 +29,34 @@ it("turns phases and BuildKit steps into one step tree with attributed output", 
   expect(progress.event({ Build: { StepOutput: { step: "sha256:a", stderr: false, text: "cached\n" } } }).output.map((row) => row.build)).toEqual([2]);
   expect(keys(progress.event({ Build: { Stage: "Cleanup" } }).steps)).toEqual([[2, "stage:Building", null], [2, "stage:Cleanup", null]]);
   expect(keys(progress.event("Transfer").steps)).toEqual([[2, "stage:Cleanup", null], [2, "transfer", null]]);
-  expect(progress.event({ Delivered: { image: "web:1", machine_id: "m1" as MachineId } }).output).toEqual([{ build: 2, step: "transfer", stderr: false, text: "Delivered web:1 to m1\n" }]);
+  const delivered = progress.event({ Delivered: { image: "web:1", service: "web", machine_id: "m1" as MachineId } });
+  expect(delivered.output).toEqual([{ build: 2, step: "transfer", stderr: false, text: "Delivered web:1 to m1\n" }]);
   expect(keys(progress.finish())).toEqual([[2, "transfer", null]]);
   expect(progress.finish()).toEqual([]);
+});
+
+it("says a waited-for build slot plainly and files the push's lines under Pushing image", () => {
+  const progress = preparationProgressCollector(() => new Date(5_000));
+  expect(progress.event({ Selected: { machine: runtimeWatchMachineFixture("m1", "hel-1"), reason: { kind: "spread" }, rejections: [] } }).steps).toEqual([]);
+  expect(progress.event({ Build: { Stage: "Queued" } }).steps.map((row) => row.name)).toEqual(["Waiting for a free build slot"]);
+  progress.event({ Build: { Stage: "Building" } });
+  expect(progress.event({ Build: { Stage: "Push" } }).steps.map((row) => row.name)).toEqual(["Building", "Pushing image"]);
+  expect(progress.event({ Build: { Output: Array.from(Buffer.from("5f70bf18a086: Pushed\n")) } })).toMatchObject({
+    steps: [], output: [{ build: 1, step: "stage:Push", text: "5f70bf18a086: Pushed\n" }],
+  });
+});
+
+it("tells the deploy log, not the build, which Machines each image goes to", () => {
+  const progress = preparationProgressCollector(() => new Date(5_000), undefined, (name) => name === "web" ? "service-web" : null);
+  progress.event("Transfer");
+  expect(progress.event({ Sending: { service: "web", machines: ["hel-2", "hel-3"] } })).toMatchObject({
+    steps: [], progress: { phase: "transfer", serviceId: "service-web", message: "Sending image to hel-2, hel-3" },
+  });
+  expect(progress.event({ Delivered: { image: "web:1", service: "web", machine_id: "m1" as MachineId } }).progress).toMatchObject({ serviceId: "service-web", message: "Image sent" });
+  // One line per image, however many Machines received it.
+  expect(progress.event({ Delivered: { image: "web:1", service: "web", machine_id: "m2" as MachineId } }).progress).toBeNull();
+  // The Service stays out of whatever phase comes next.
+  expect(progress.current().serviceId).toBeNull();
 });
 
 it("keeps builder messages in their own row, which fails when the engine blames the build", () => {

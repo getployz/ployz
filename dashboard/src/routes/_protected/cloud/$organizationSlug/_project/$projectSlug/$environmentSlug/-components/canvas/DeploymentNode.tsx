@@ -11,7 +11,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
-import { builtOnLine, nodeOutcomeLabels, type Stage } from "#/modules/deployments/deployment-view";
+import { nodeOutcomeLabels, type Stage } from "#/modules/deployments/deployment-view";
 import { canvasNodeTransition } from "./constants";
 import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
@@ -78,10 +78,10 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
             <StageLabel name="Deploy" stage={view.deploy} />
             {view.builtOn ? (
               <Tooltip>
-                <TooltipTrigger render={<span className="ml-auto inline-flex [&_svg]:size-3.5" aria-label={builtOnLine(view.builtOn)} />}>
+                <TooltipTrigger render={<span className="ml-auto inline-flex [&_svg]:size-3.5" aria-label={`Built on ${view.builtOn}`} />}>
                   <ServerIcon />
                 </TooltipTrigger>
-                <TooltipContent>{builtOnLine(view.builtOn)}</TooltipContent>
+                <TooltipContent>Built on {view.builtOn}</TooltipContent>
               </Tooltip>
             ) : null}
           </div>

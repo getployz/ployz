@@ -27,14 +27,17 @@ export type CollectorCheckpoint = typeof collectorCheckpointSchema.Type;
 export const BUILD_OUTPUT_KEY = "build-output";
 
 const stageNames = new Map([
-  ["Admission", "Waiting for the builder"], ["Queued", "Queued"], ["Upload", "Uploading source"], ["Preparation", "Preparing the builder"],
-  ["Building", "Building"], ["Output", "Loading images"], ["Cleanup", "Cleaning up"],
+  ["Admission", "Starting the build"], ["Queued", "Waiting for a free build slot"], ["Upload", "Uploading source"], ["Preparation", "Preparing the builder"],
+  ["Building", "Building"], ["Output", "Exporting image"], ["Cleanup", "Cleaning up"], ["Push", "Pushing image"],
 ]);
 const stageName = (stage: string) => stageNames.get(stage) ?? stage;
 export const BUILDING_KEY = "stage:Building";
 /** Attempt-wide rows the engine files under the last build run: image cleanup and delivery. */
 export const CLEANUP_KEY = "stage:Cleanup";
 export const TRANSFER_KEY = "transfer";
+/** A Ployz-owned step starting at `at`; it ends at once unless `completedAt` is null (open). */
+export const ployzStep = (key: string, name: string, at = new Date(), completedAt: Date | null = at): BuildStepWrite =>
+  ({ build: 0, key, name, startedAt: at, completedAt, cached: false, error: null });
 
 /**
  * Which step a failed attempt is pinned on: the failed BuildKit step already
@@ -60,7 +63,7 @@ const rowId = (build: number, key: string) => `${build}:${key}`;
  * image, attributing the run's steps and output to that Image Build.
  * Provider errors and rejection dumps are never logs.
  */
-export function preparationProgressCollector(now: () => Date = () => new Date(), resume?: CollectorCheckpoint) {
+export function preparationProgressCollector(now: () => Date = () => new Date(), resume?: CollectorCheckpoint, serviceIdFor: (name: string) => string | null = () => null) {
   // ponytail: a multibyte character split across two resumed batches decodes as replacement characters.
   const decoder = new TextDecoder();
   let current: PreparationProgress = { phase: "selection", serviceId: null, machineId: null, machineName: null, message: null };
@@ -71,6 +74,8 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
   let open: string | null = resume?.open ?? null;
   let build = resume?.build ?? 0;
   let stepFailed = resume?.stepFailed ?? false;
+  /** The Service whose image is on its way; only its own progress names it, never a later phase. */
+  let sending: string | null = null;
   let finished = false;
   const create = (key: string, name: string): BuildStepWrite => {
     const row = { build, key, name, startedAt: now(), completedAt: null, cached: false, error: null };
@@ -110,9 +115,24 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
         current = { ...current, machineId: event.Selected.machine.id, machineName: event.Selected.machine.name, message: "Builder selected" };
         return { progress: current, steps: [], output: [] };
       }
+      // Sending an image is the deploy's, not its build's: it shows in that Service's deploy log.
+      if ("Sending" in event) {
+        const { service, machines } = event.Sending;
+        sending = serviceIdFor(service);
+        current = { ...current, phase: "transfer", message: `Sending image to ${machines.join(", ")}` };
+        return { progress: { ...current, serviceId: sending }, steps: [], output: [] };
+      }
       if ("Delivered" in event) {
         const row = open === null ? undefined : rows.get(open);
-        return { progress: null, steps: [], output: row ? [{ build: row.build, step: row.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [] };
+        const sent = sending !== null && sending === serviceIdFor(event.Delivered.service) ? sending : null;
+        if (sent !== null) {
+          sending = null;
+          current = { ...current, message: "Image sent" };
+        }
+        return {
+          progress: sent === null ? null : { ...current, serviceId: sent }, steps: [],
+          output: row ? [{ build: row.build, step: row.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [],
+        };
       }
       if ("Platforms" in event) return none();
       const build_ = event.Build;
@@ -130,7 +150,12 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
         heading.name = build_.Target.name;
         return { progress: null, steps: [{ ...heading }], output: [] };
       }
-      if ("Output" in build_) return builderLine(decoder.decode(Uint8Array.from(build_.Output), { stream: true }));
+      if ("Output" in build_) {
+        const text = decoder.decode(Uint8Array.from(build_.Output), { stream: true });
+        // The push reports its own lines, outside any BuildKit step.
+        const pushing = open === rowId(build, stageKey("Push")) ? rows.get(open) : undefined;
+        return pushing ? { progress: null, steps: [], output: [{ build, step: pushing.key, stderr: false, text }] } : builderLine(text);
+      }
       if ("Step" in build_) {
         const step = build_.Step;
         stepFailed ||= step.error !== null;

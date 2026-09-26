@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, BuildReceipts, MachineId } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -9,7 +9,7 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { githubImageBuildSchema, type GithubImageBuild, type SkipReason } from "./image-build";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
 import type { DeploymentContext } from "./runtime-repository.contract";
-import { environmentDeployment, environmentDeploymentImageBuild as table, type ImageBuildStatus, type ServerChoice } from "./tables";
+import { environmentDeployment, environmentDeploymentBuildStep, environmentDeploymentImageBuild as table, type ImageBuildStatus, type ServerChoice } from "./tables";
 
 /**
  * Image Build rows and every transition they make. Each transition is one guarded update and
@@ -141,6 +141,20 @@ export const claimForGithub = Effect.fn("Deployments.claimImageBuildForGithub")(
   return claimed ? { kind: "claimed" as const } : settled(build, yield* statusNow(build.id));
 });
 
+/**
+ * Closes the steps a Builder left open when it stopped holding the build (moved on or settled), so
+ * none spins beside the next Builder's or after the build ended. Only the holder's steps can be open:
+ * each go closes its own before the next starts.
+ */
+export const closeOpenSteps = Effect.fn("Deployments.closeOpenBuildSteps")(function* (imageBuildId: string) {
+  const { drizzle } = yield* Database;
+  const steps = environmentDeploymentBuildStep;
+  yield* drizzle.update(steps).set({ completedAt: sql`now()`, updatedAt: new Date() }).where(and(
+    sql`(${steps.deploymentId}, ${steps.image}) = (select ${table.deploymentId}, ${table.image} from ${table} where ${table.id} = ${imageBuildId})`,
+    isNull(steps.completedAt), isNotNull(steps.startedAt),
+  ));
+});
+
 /** Adds `reason` to the skip trail and clears what the Builder left, so the next one starts clean. */
 const skipPatch = (reason: SkipReason) => ({
   skips: sql`${table.skips} || ${JSON.stringify([reason])}::jsonb`,
@@ -155,7 +169,10 @@ export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(functi
   const { drizzle } = yield* Database;
   const [skipped] = yield* drizzle.update(table).set(skipPatch(reason))
     .where(and(eq(table.id, build.id), eq(table.status, "building"), isNull(table.checkedInAt))).returning({ id: table.id });
-  if (skipped) return { kind: "skipped", reason } satisfies ImageBuildAttempt;
+  if (skipped) {
+    yield* closeOpenSteps(build.id);
+    return { kind: "skipped", reason } satisfies ImageBuildAttempt;
+  }
   const status = yield* statusNow(build.id);
   return status === "building" ? { kind: "started" as const } : settled(build, status);
 });
@@ -169,7 +186,10 @@ export const moveStartedGithubBuild = Effect.fn("Deployments.moveStartedGithubBu
   const [moved] = yield* drizzle.update(table).set(skipPatch(reason))
     .where(and(eq(table.id, build.id), eq(table.status, "building"), eq(table.githubRunId, runId))).returning({ id: table.id });
   const skipped = { kind: "skipped", reason } satisfies ImageBuildAttempt;
-  if (moved) return skipped;
+  if (moved) {
+    yield* closeOpenSteps(build.id);
+    return skipped;
+  }
   const status = yield* statusNow(build.id);
   // Still building without this run: a retry of this move already moved it.
   return status === "building" ? skipped : settled(build, status);
@@ -250,6 +270,7 @@ const settleWhere = Effect.fn("Deployments.settleImageBuild")(function* (build: 
     : { status: "cancelled" as const };
   const [updated] = yield* drizzle.update(table).set({ ...patch, finishedAt: now, updatedAt: now })
     .where(and(eq(table.id, build.id), eq(table.status, "building"), holder)).returning({ status: table.status });
+  if (updated) yield* closeOpenSteps(build.id);
   return updated?.status ?? (yield* statusNow(build.id));
 });
 

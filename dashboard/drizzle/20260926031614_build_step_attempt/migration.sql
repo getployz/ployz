@@ -1,0 +1,3 @@
+ALTER TABLE "environment_deployment_build_step" ADD COLUMN "attempt" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_step" DROP CONSTRAINT "environment_deployment_build_step_key_unique";--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_step" ADD CONSTRAINT "environment_deployment_build_step_key_unique" UNIQUE NULLS NOT DISTINCT("deployment_id","image","attempt","build","key");

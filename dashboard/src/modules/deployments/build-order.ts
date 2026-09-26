@@ -28,9 +28,10 @@ export const defaultBuildOrder = (githubSetUp: boolean): BuildOrder => githubSet
 
 /**
  * One Builder an Image Build may try, and why it is in the walk. `machineId` is a Preferred Server:
- * the Cluster's first choice.
+ * the Cluster's first choice. `attempt` is its go's place in the Image Build's log: the skip trail's
+ * length when it starts, as each go before it adds one skip.
  */
-export type BuildCandidate = { builder: "servers" | "github"; reason: CandidateReason; machineId?: MachineId };
+export type BuildCandidate = { builder: "servers" | "github"; reason: CandidateReason; attempt: number; machineId?: MachineId };
 
 /** The Builders a Build Order tries, in turn. */
 const ORDERED_BUILDERS = {
@@ -42,14 +43,16 @@ const ORDERED_BUILDERS = {
 
 /**
  * The Builders one Image Build walks: the Service's Preferred Builder, then the Build Order without
- * that Builder. A Preferred Server stands in for "your servers", with it first.
+ * that Builder. A Preferred Server stands in for "your servers", with it first. `skipped`: skips
+ * already on the trail before the walk starts.
  */
-export const imageBuildWalk = (order: BuildOrder, preferred: "github" | MachineId | undefined): BuildCandidate[] => {
-  const walk: BuildCandidate[] = [];
+export const imageBuildWalk = (order: BuildOrder, preferred: "github" | MachineId | undefined, skipped = 0): BuildCandidate[] => {
+  const walk: Omit<BuildCandidate, "attempt">[] = [];
   if (preferred === "github") walk.push({ builder: "github", reason: "preferred" });
   else if (preferred !== undefined) walk.push({ builder: "servers", reason: "preferred", machineId: preferred });
   const rest = ORDERED_BUILDERS[order].filter((builder) => !walk.some((first) => first.builder === builder));
-  return [...walk, ...rest.map((builder, index): BuildCandidate => ({ builder, reason: index === 0 ? "first_in_build_order" : "next_in_build_order" }))];
+  return [...walk, ...rest.map((builder, index) => ({ builder, reason: index === 0 ? "first_in_build_order" as const : "next_in_build_order" as const }))]
+    .map((candidate, index) => ({ ...candidate, attempt: skipped + index }));
 };
 
 export const buildOrderEditSchema = Schema.Struct({
