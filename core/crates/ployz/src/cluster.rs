@@ -8,12 +8,12 @@ use futures_util::future::join_all;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolume, DockerVolumeName, InspectRequest, InspectVolumeRequest,
-    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
-    LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
-    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
-    MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss,
-    OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    DescribeContractRequest, DockerVolume, DockerVolumeName, EnvironmentValues, InspectRequest,
+    InspectVolumeRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
+    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
+    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
@@ -677,14 +677,25 @@ impl Client {
         }
     }
 
-    pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
+    /// List Containers on every visible Machine and derive the observed Services.
+    ///
+    /// `environment` chooses whether observations carry real environment values
+    /// or redacted ones.
+    ///
+    /// # Errors
+    /// Returns an error when Machines cannot be listed or a listing task fails.
+    pub async fn live_services(
+        &mut self,
+        environment: EnvironmentValues,
+    ) -> Result<LiveServices<RpcError>, ConnectError> {
         let machines = self.machines().await?;
-        self.live_services_from(&machines).await
+        self.live_services_from(&machines, environment).await
     }
 
     pub(crate) async fn live_services_from(
         &self,
         machines: &[MachineObservation],
+        environment: EnvironmentValues,
     ) -> Result<LiveServices<RpcError>, ConnectError> {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
@@ -692,7 +703,11 @@ impl Client {
             // TODO: the entry Machine's observer-relative Membership Observation is the
             // current trust boundary; it can be stale and is not an authority or freshness proof.
             if machine.membership.invites_rpc() {
-                tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
+                tasks.spawn(list_on_machine(
+                    self.clone(),
+                    machine.machine.id,
+                    environment,
+                ));
             } else {
                 omissions.push(machine.machine.id);
             }
@@ -801,7 +816,10 @@ impl Client {
         &mut self,
         machines: Vec<MachineObservation>,
     ) -> Result<DeploySnapshot, ConnectError> {
-        let containers = self.live_services_from(&machines).await?.containers;
+        let containers = self
+            .live_services_from(&machines, EnvironmentValues::Included)
+            .await?
+            .containers;
         let volumes = self.list_volumes(&machines).await;
         let capacity = capacity::observe(self, &machines).await;
         snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
@@ -1126,9 +1144,13 @@ fn validate_volume_inventory(
 async fn list_on_machine(
     mut client: Client,
     machine_id: MachineId,
+    environment: EnvironmentValues,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .read::<op::ListContainers>(ListContainersRequest {}, &MachineTarget::from(&machine_id))
+        .read::<op::ListContainers>(
+            ListContainersRequest { environment },
+            &MachineTarget::from(&machine_id),
+        )
         .await
         .map(|list| MachineSuccess {
             machine_id,

@@ -8,8 +8,8 @@ use clap::ArgMatches;
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogBody, LogEntry,
-    LogOrigin, LogsOptions, QualifiedService, ServiceSelector, select_service,
+    ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame, FanoutSelector,
+    LogBody, LogEntry, LogOrigin, LogsOptions, QualifiedService, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
 
@@ -166,7 +166,7 @@ async fn run_proxy(
             client.connection()
         )));
     }
-    let live = client.live_services().await?;
+    let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();
     let service = select_service(&services, service_selector)?;
     let container = select_proxy_container(service)?.as_observation();

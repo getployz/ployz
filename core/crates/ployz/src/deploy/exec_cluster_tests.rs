@@ -520,7 +520,9 @@ async fn wait_for_service(
 ) -> Vec<ContainerObservation> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await
+            if let Ok(live) = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
                 && let Some(service) = live
                     .services()
                     .into_iter()

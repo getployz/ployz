@@ -244,8 +244,26 @@ pub struct ListMachinesRequest {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeWatchRequest {}
 
+/// Whether listed Container observations carry real environment values.
+///
+/// `Redacted` replaces every Service and pre-deploy hook environment value with
+/// [`REDACTED_ENVIRONMENT_VALUE`](crate::REDACTED_ENVIRONMENT_VALUE), keeping the keys.
+/// Callers that plan, compare, or copy a `resolved_spec` use `Included`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ListContainersRequest {}
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentValues {
+    #[default]
+    Redacted,
+    Included,
+}
+
+/// List this Machine's managed Containers; environment values stay redacted unless the caller requests them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListContainersRequest {
+    /// Real or redacted environment values; see [`EnvironmentValues`].
+    #[serde(default)]
+    pub environment: EnvironmentValues,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InspectContainerRequest {

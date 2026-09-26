@@ -352,7 +352,10 @@ async fn wait_for_dns_observations(
 ) -> Vec<ContainerObservation> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await {
+            if let Ok(live) = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
+            {
                 let services = live.services();
                 if let Ok(service) = select_service(&services, &ServiceSelector::from(service_id))
                     && service.containers.len() == count
@@ -388,7 +391,9 @@ async fn wait_for_health(
 ) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await
+            if let Ok(live) = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
                 && live
                     .containers
                     .successes

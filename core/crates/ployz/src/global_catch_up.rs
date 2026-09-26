@@ -2,8 +2,8 @@
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, InspectRequest, ListContainersRequest, LiveServices, Machine,
-    MachineId, MachineTarget, QualifiedService, RpcError, ServiceObservation,
+    CreateContainerRequest, EnvironmentValues, InspectRequest, ListContainersRequest, LiveServices,
+    Machine, MachineId, MachineTarget, QualifiedService, RpcError, ServiceObservation,
     ServicePlacementEligibility, op, service_containers,
 };
 
@@ -48,7 +48,9 @@ pub(crate) trait CatchUpClient {
 
 impl CatchUpClient for Client {
     async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
-        Client::live_services(self).await.map_err(Into::into)
+        Client::live_services(self, EnvironmentValues::Included)
+            .await
+            .map_err(Into::into)
     }
 
     async fn bridge_capacity(
@@ -102,7 +104,12 @@ impl CatchUpClient for Client {
         if eligibility != ServicePlacementEligibility::Eligible {
             if matches!(eligibility, ServicePlacementEligibility::Ineligible(_)) {
                 let containers = self
-                    .read::<op::ListContainers>(ListContainersRequest {}, &target)
+                    .read::<op::ListContainers>(
+                        ListContainersRequest {
+                            environment: EnvironmentValues::Redacted,
+                        },
+                        &target,
+                    )
                     .await?;
                 for container in containers.containers.into_iter().filter(|container| {
                     container.machine_id == *machine_id
@@ -142,7 +149,12 @@ impl CatchUpClient for Client {
         // Explicit Deploy replacement keys also distinguish the previous Container.
         // Reuse its exact persisted creation when catch-up finds it before Start.
         let containers = self
-            .read::<op::ListContainers>(ListContainersRequest {}, &target)
+            .read::<op::ListContainers>(
+                ListContainersRequest {
+                    environment: EnvironmentValues::Included,
+                },
+                &target,
+            )
             .await?;
         if let Some(existing) = containers.containers.into_iter().find(|container| {
             container.machine_id == *machine_id
@@ -194,10 +206,15 @@ impl CatchUpClient for Client {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Failure> {
-        self.read::<op::ListContainers>(ListContainersRequest {}, &MachineTarget::from(machine_id))
-            .await
-            .map(|list| list.containers)
-            .map_err(Failure::from)
+        self.read::<op::ListContainers>(
+            ListContainersRequest {
+                environment: EnvironmentValues::Included,
+            },
+            &MachineTarget::from(machine_id),
+        )
+        .await
+        .map(|list| list.containers)
+        .map_err(Failure::from)
     }
 }
 

@@ -349,7 +349,10 @@ fn run_cli(direct: &str, args: &[&str]) -> process::Output {
 async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let live = client.live_services().await.unwrap();
+            let live = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
+                .unwrap();
             if let Some(service) = live.services().into_iter().find(|service| {
                 service.containers.first().is_some_and(|container| {
                     container.as_observation().resolved_spec.name.as_str() == name
@@ -496,7 +499,10 @@ async fn deploy(
         .await
         .unwrap()
         .machines;
-    let live = client.live_services().await.unwrap();
+    let live = client
+        .live_services(ployz_core::EnvironmentValues::Included)
+        .await
+        .unwrap();
     let snapshot = ployz::deploy::DeploySnapshot {
         machines,
         containers: live
@@ -626,7 +632,10 @@ async fn wait_running(
 ) -> Vec<ployz_core::ContainerObservation> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        let live = client.live_services().await.unwrap();
+        let live = client
+            .live_services(ployz_core::EnvironmentValues::Redacted)
+            .await
+            .unwrap();
         if let Some(service) = live
             .services()
             .into_iter()

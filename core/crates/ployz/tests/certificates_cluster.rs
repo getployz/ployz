@@ -810,7 +810,10 @@ async fn wait_machine_count(cluster: &Cluster, index: usize, count: usize) {
 async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let live = client.live_services().await.unwrap();
+            let live = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
+                .unwrap();
             if let Some(service) = live.services().into_iter().find(|service| {
                 service.containers.first().is_some_and(|container| {
                     container.as_observation().resolved_spec.name.as_str() == name
@@ -828,7 +831,10 @@ async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: us
 async fn wait_running(client: &mut ployz::connect::Client, service_id: &ServiceId, count: usize) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        let live = client.live_services().await.unwrap();
+        let live = client
+            .live_services(ployz_core::EnvironmentValues::Redacted)
+            .await
+            .unwrap();
         if let Some(service) = live
             .services()
             .into_iter()

@@ -7,6 +7,7 @@ use ployz_core::{
 use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, target};
 use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
+use ployz_core::EnvironmentValues;
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -33,7 +34,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             client.data_loss_if_machine_removed(&selected_target).await
                 .map_err(machine_removal_refusal)?
         };
-        let live = client.live_services_from(&machines).await?;
+        let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
                 return Err(Error::usage(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));

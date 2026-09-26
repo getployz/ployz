@@ -10,6 +10,9 @@ use crate::{
     ContainerAddress, ContainerId, MachineId, ProjectName, QualifiedService, ServiceId, ServiceName,
 };
 
+/// Value that replaces each environment value in a redacted observation.
+pub const REDACTED_ENVIRONMENT_VALUE: &str = "<redacted>";
+
 crate::value::open_string_enum!(HealthObservation, Unrecognized {
     NotConfigured => "not_configured",
     Starting => "starting",
@@ -257,6 +260,20 @@ impl ContainerObservation {
     #[must_use]
     pub fn identity(&self) -> QualifiedService {
         QualifiedService::new(self.project_name.clone(), self.service_name().clone())
+    }
+
+    /// Replace every Service and pre-deploy hook environment value, keeping the keys.
+    pub fn redact_environment(&mut self) {
+        self.try_update(|parts| {
+            let spec = &mut parts.resolved_spec;
+            let hook = spec.pre_deploy.iter_mut().map(|hook| &mut hook.environment);
+            for environment in std::iter::once(&mut spec.container.environment).chain(hook) {
+                environment
+                    .values_mut()
+                    .for_each(|value| *value = REDACTED_ENVIRONMENT_VALUE.into());
+            }
+        })
+        .expect("environment redaction preserves Container identity");
     }
 }
 

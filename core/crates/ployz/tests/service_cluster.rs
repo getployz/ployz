@@ -125,7 +125,10 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     );
 
     cluster.remote_machine_api_rule(0, "--insert").unwrap();
-    let partial = client.live_services().await.unwrap();
+    let partial = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap();
     assert_eq!(partial.containers.successes.len(), 1);
     assert_eq!(partial.containers.failures.len(), 1);
 
@@ -140,7 +143,10 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             .iter()
             .all(|hook| hook.as_observation().container_id != success.value)
     }));
-    let local_after_start = client.live_services().await.unwrap();
+    let local_after_start = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap();
     let local_services = local_after_start.services();
     let local_service =
         select_service(&local_services, &ServiceSelector::from(&service_id)).unwrap();
@@ -181,13 +187,19 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     assert_eq!(removed.failures.len(), 2);
 
     cluster.remote_machine_api_rule(0, "--delete").unwrap();
-    let live = client.live_services().await.unwrap();
+    let live = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap();
     let services = live.services();
     let service = select_service(&services, &ServiceSelector::from(&service_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, Some(10))
         .await;
-    let live = client.live_services().await.unwrap();
+    let live = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap();
     let services = live.services();
     let service = select_service(&services, &ServiceSelector::from(&collision_id)).unwrap();
     client
@@ -196,7 +208,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if client
-                .live_services()
+                .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
                 .is_ok_and(|live| live.services().is_empty())
             {
@@ -452,7 +464,10 @@ async fn wait_for_services(
 ) -> ployz_core::LiveServices<ployz_core::RpcError> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await
+            // Included: callers compare resolved specs that differ only by environment.
+            if let Ok(live) = client
+                .live_services(ployz_core::EnvironmentValues::Included)
+                .await
                 && live.services().len() == service_count
                 && live
                     .containers

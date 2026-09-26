@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
 use crate::connect::{Client, ConnectError, TransportError};
+use ployz_core::EnvironmentValues;
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
     "sh",
@@ -387,7 +388,7 @@ pub async fn open_exec(
     container_selector: Option<&ContainerSelector>,
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
-    let live = client.live_services().await?;
+    let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();
     let service = select_service(&services, service_selector)?;
     let container = select_exec_container(service, container_selector)?.as_observation();
@@ -427,7 +428,7 @@ pub async fn open_service_logs(
         .iter()
         .map(|machine| machine.machine.id)
         .collect::<HashSet<_>>();
-    let live = client.live_services().await?;
+    let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();
     let mut inputs = Vec::new();
     for arg in args {

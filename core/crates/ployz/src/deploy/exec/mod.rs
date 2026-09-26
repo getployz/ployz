@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cluster::ContainerObservationCondition;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
+use ployz_core::{EnvironmentValues, ListContainersRequest};
 
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
@@ -148,7 +149,7 @@ impl MachineOperations for Client {
         let mut client = self.clone();
         let machines = client.machines().await.map_err(RpcError::from)?;
         let listed = client
-            .live_services_from(&machines)
+            .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
             .map_err(RpcError::from)?
             .containers;
@@ -196,7 +197,9 @@ impl MachineOperations for Client {
         {
             self.clone()
                 .read::<op::ListContainers>(
-                    ployz_core::ListContainersRequest {},
+                    ListContainersRequest {
+                        environment: EnvironmentValues::Included,
+                    },
                     &MachineTarget::from(machine_id),
                 )
                 .await?

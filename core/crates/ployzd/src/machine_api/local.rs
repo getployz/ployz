@@ -9,9 +9,10 @@ use std::{
 
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
-    ContainerList, ContainerObservationMap, ContractDescription, IngressProxyConfig,
-    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    ContainerList, ContainerObservation, ContainerObservationMap, ContractDescription,
+    EnvironmentValues, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
+    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -229,16 +230,23 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::ListContainers>(request)?;
+        let request = expect::<op::ListContainers>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
         let machine_id = self.local_record().id();
         match containers.list_managed(&machine_id).await {
-            Ok(observations) => respond(ContainerList {
-                containers: observations,
-            }),
+            Ok(mut observations) => {
+                if request.environment == EnvironmentValues::Redacted {
+                    observations
+                        .iter_mut()
+                        .for_each(ContainerObservation::redact_environment);
+                }
+                respond(ContainerList {
+                    containers: observations,
+                })
+            }
             Err(error) => respond(RpcError::from(&error)),
         }
     }

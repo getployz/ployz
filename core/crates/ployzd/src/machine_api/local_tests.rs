@@ -426,32 +426,10 @@ async fn runtime_watch_without_a_cluster_store_is_unavailable() {
 
 #[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
-    use crate::docker::test_support::{FakeDocker, fake_runtime_with};
-    use ployz_core::{CreateContainerRequest, InitializeRequest, MachineName};
+    use ployz_core::CreateContainerRequest;
     use serde_json::json;
-    let data_dir = std::env::temp_dir().join(format!("ployzd-keyed-{}", MachineId::random()));
-    let mut store = LocalMachineStore::open(&data_dir).unwrap();
-    store
-        .initialize(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("local").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                "192.0.2.1:51820".parse().unwrap(),
-            )],
-            wireguard_mtu: None,
-        })
-        .unwrap();
-    let store = RecordOwner::spawn(store).unwrap();
-    let containers = Arc::new(Mutex::new(BTreeMap::new()));
-    let (runtime, fake) = fake_runtime_with(FakeDocker {
-        named_containers: Some(containers.clone()),
-        ..Default::default()
-    })
-    .await;
-    let service =
-        MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
+    let (data_dir, store, service, fake) = fake_docker_service("ployzd-keyed").await;
+    let containers = fake.named_containers.clone().unwrap();
     let request = CreateContainerRequest {
         deployment_id: None,
         creation_key: Some("retry/1".into()),
@@ -696,4 +674,123 @@ async fn ending_an_unknown_build_grant_is_not_found() {
         .unwrap();
     assert_eq!(code(response.body), RpcErrorCode::NotFound);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn listed_containers_redact_environment_unless_requested() {
+    use ployz_core::{CreateContainerRequest, EnvironmentValues, ListContainersRequest};
+    use serde_json::json;
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-list-env").await;
+    let created = service
+        .create_container(Request::new(
+            op::CreateContainer::into_request(CreateContainerRequest {
+                deployment_id: None,
+                creation_key: None,
+                kind: ContainerKind::ServiceContainer,
+                project_name: ProjectName::parse("app").unwrap(),
+                resolved_spec: serde_json::from_value(json!({
+                    "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
+                    "mode":{"mode":"replicated", "replicas":1},
+                    "container":{
+                        "image":"example.test/api", "pull_policy":"missing",
+                        "environment":{"CADDY_ADMIN":"localhost:2019", "TOKEN":"secret"}
+                    },
+                    "pre_deploy":{"command":["migrate"], "environment":{"DATABASE_URL":"postgres://secret"}}
+                }))
+                .unwrap(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::CreateContainer>()
+        .unwrap();
+    *fake.existing_container.lock().unwrap() = Some(json!({"Id": created.container_id}));
+    let list = |request: ListContainersRequest| {
+        let service = &service;
+        async move {
+            let listed = service
+                .list_containers(Request::new(
+                    op::ListContainers::into_request(request).encode().unwrap(),
+                ))
+                .await
+                .unwrap()
+                .into_inner()
+                .decode_response()
+                .unwrap()
+                .decode::<op::ListContainers>()
+                .unwrap();
+            let [observed] = listed.containers.try_into().unwrap();
+            let spec = observed.resolved_spec.clone();
+            (
+                spec.container.environment,
+                spec.pre_deploy.unwrap().environment,
+            )
+        }
+    };
+
+    assert_eq!(
+        list(ListContainersRequest::default()).await,
+        (
+            BTreeMap::from([
+                ("CADDY_ADMIN".into(), "<redacted>".into()),
+                ("TOKEN".into(), "<redacted>".into()),
+            ]),
+            BTreeMap::from([("DATABASE_URL".into(), "<redacted>".into())]),
+        )
+    );
+    assert_eq!(
+        list(ListContainersRequest {
+            environment: EnvironmentValues::Included,
+        })
+        .await,
+        (
+            BTreeMap::from([
+                ("CADDY_ADMIN".into(), "localhost:2019".into()),
+                ("TOKEN".into(), "secret".into()),
+            ]),
+            BTreeMap::from([("DATABASE_URL".into(), "postgres://secret".into())]),
+        )
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+/// A Machine service on an initialized store, backed by a fake Docker that keeps named Containers.
+async fn fake_docker_service(
+    prefix: &str,
+) -> (
+    std::path::PathBuf,
+    RecordOwner,
+    MachineService,
+    crate::docker::test_support::FakeDocker,
+) {
+    use crate::docker::test_support::{FakeDocker, fake_runtime_with};
+    use ployz_core::{InitializeRequest, MachineName};
+    let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .initialize(InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("local").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                "192.0.2.1:51820".parse().unwrap(),
+            )],
+            wireguard_mtu: None,
+        })
+        .unwrap();
+    let store = RecordOwner::spawn(store).unwrap();
+    let (runtime, fake) = fake_runtime_with(FakeDocker {
+        named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+        ..Default::default()
+    })
+    .await;
+    let service =
+        MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
+    (data_dir, store, service, fake)
 }

@@ -9,6 +9,7 @@ use ployz_core::{
 };
 
 use crate::cluster::ContainerObservationCondition;
+use ployz_core::EnvironmentValues;
 
 use super::{
     Error, cancellation_on_ctrl_c, connect_client, data_loss, leaf_matches, required, runtime,
@@ -29,7 +30,9 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let mut machines = client.machines().await?;
             client.observe_machine_storage(&mut machines).await;
-            let live = client.live_services_from(&machines).await?;
+            let live = client
+                .live_services_from(&machines, EnvironmentValues::Redacted)
+                .await?;
             print_observation_warning(&live);
             let services = live.services();
             if json {
@@ -134,7 +137,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let json = matches.get_one::<String>("output").map(String::as_str) == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services().await?;
+            let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let services = live.services();
             let mut containers = services
@@ -250,7 +253,7 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
     )?;
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services().await?;
+            let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let services = live.services();
             let service = select_service(&services, &selector)?;
@@ -271,7 +274,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let (signal, timeout) = stop_options(leaf, action)?;
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services().await?;
+            let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
@@ -294,7 +297,7 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
     let command = root.clone();
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services().await?;
+            let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;

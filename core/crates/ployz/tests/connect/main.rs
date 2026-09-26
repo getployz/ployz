@@ -910,7 +910,11 @@ async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
     ]);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
-    let result = client.live_services().await.unwrap().containers;
+    let result = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap()
+        .containers;
 
     assert_eq!(
         result
