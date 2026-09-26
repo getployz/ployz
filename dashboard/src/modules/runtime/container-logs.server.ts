@@ -48,6 +48,7 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
   const session = yield* runtime.open(organizationId).pipe(Effect.provideService(Scope.Scope, scope), Effect.onError(() => close));
   if (session.status !== "connected") {
     yield* close;
+    if (search.before === undefined) return { type: "offline" as const };
     return yield* new Validation({ message: "Container logs are unavailable while the server is disconnected." });
   }
   if (search.before !== undefined) {

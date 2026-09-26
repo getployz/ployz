@@ -56,9 +56,12 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await act(async () => { await stream.loadOlder(); });
     expect(fetchHistory).toHaveBeenCalledTimes(1);
     expect(sources).toHaveLength(opened);
+    // Only an offline organization is said; the stream stays open and the lines stay.
+    await act(async () => source.dispatchEvent(new Event("offline")));
+    expect(screen.getByText(/Your servers are offline/)).toBeTruthy();
+    await act(async () => source.dispatchEvent(new Event("live")));
+    expect(screen.queryByText(/Your servers are offline/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
-    await act(async () => source.dispatchEvent(new Event("unavailable")));
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(stream.collection.size).toBe(1);
     expect(sources.filter(source => !source.closed)).toHaveLength(1);
     expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);

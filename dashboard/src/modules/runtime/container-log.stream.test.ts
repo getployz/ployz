@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { getContainerLogStream } from "./container-log.stream";

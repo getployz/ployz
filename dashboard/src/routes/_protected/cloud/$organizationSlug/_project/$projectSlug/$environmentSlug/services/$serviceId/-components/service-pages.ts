@@ -10,8 +10,8 @@ export const SERVICE_PAGES = [
 /** The service panel's tabs in Deployment Mode: read-only, as the attempt deployed the service. */
 export const DEPLOYMENT_SERVICE_PAGES = [
   { id: "details", label: "Details" },
-  { id: "build-logs", label: "Build logs" },
-  { id: "deploy-logs", label: "Deploy logs" },
+  { id: "build-logs", label: "Build" },
+  { id: "deploy-logs", label: "Deploy" },
 ] as const;
 
 export type ServicePage = (typeof SERVICE_PAGES)[number]["id"];

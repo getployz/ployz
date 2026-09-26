@@ -73,7 +73,7 @@ it("hides normal cleanup and shows cleanup failures", () => {
 
 it("names the empty states", () => {
   const render = (finished: boolean) => renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC", steps: [], output: [], finished }));
-  expect(render(true)).toContain("No retained build output");
+  expect(render(true)).toContain("No build output");
   expect(render(false)).toContain("Waiting for the build to start");
 });
 

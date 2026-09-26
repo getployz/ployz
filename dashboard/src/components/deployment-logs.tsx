@@ -12,7 +12,7 @@ import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-pro
 import { builtOn, builtOnLine, imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
-import { BuildLogViewer, LogSkeleton } from "./log-scroll";
+import { BuildLogViewer, LOG_TIME_COLUMN, LogEmpty, LogSkeleton } from "./log-scroll";
 import { cn } from "#/lib/utils";
 import { clock, useTimeZone } from "#/utils/time-zone";
 
@@ -51,7 +51,7 @@ export function BuildLogs({ steps, output, finished, timeZone, now = Date.now() 
   const [toggled, setToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
   const started = steps.filter((step) => step.startedAt !== null);
   if (!started.length) {
-    return <p className="text-muted-foreground">{finished ? "No retained build output for this image." : "Waiting for the build to start"}</p>;
+    return finished ? <LogEmpty title="No build output">This image's build output is no longer kept.</LogEmpty> : <LogEmpty title="Waiting for the build to start" />;
   }
   const outputByStep = new Map<number, BuildOutputRow[]>();
   for (const row of output) {
@@ -65,7 +65,7 @@ export function BuildLogs({ steps, output, finished, timeZone, now = Date.now() 
   const shown = started.filter((step) => step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
   return <ol>
     {shown.map((step) => step.key === BUILDING_KEY && step.error === null
-      ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
+      ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className={cn("shrink-0", LOG_TIME_COLUMN.build)} /><span className="w-4 shrink-0" />Building {step.name}</li>
       : <StepRow key={step.id} step={step} time={time.format(step.startedAt ?? step.createdAt)} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
           onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />)}
   </ol>;
@@ -81,7 +81,7 @@ function StepRow({ step, time, lines, now, open: toggledOpen, onToggle }: {
   const elapsed = step.startedAt ? (step.completedAt?.getTime() ?? now) - step.startedAt.getTime() : 0;
   const tail = running && !open ? lastLine(lines) : null;
   const summary = <>
-    <span className="w-16 shrink-0 text-muted-foreground">{time}</span>
+    <span className={cn("shrink-0 text-muted-foreground", LOG_TIME_COLUMN.build)}>{time}</span>
     <span className="flex w-4 shrink-0 justify-center">
       {failed ? <TriangleAlertIcon className="size-4 text-destructive" aria-label="Failed" /> : running ? <Spinner /> : <CheckIcon className="size-4 text-muted-foreground" aria-label="Completed" />}
     </span>
@@ -98,10 +98,10 @@ function StepRow({ step, time, lines, now, open: toggledOpen, onToggle }: {
       onClick={(event) => { if (open && event.target instanceof Element && !event.target.closest("summary") && !window.getSelection()?.toString()) onToggle(false); }}
       className={open ? "cursor-pointer" : undefined}>
       <summary className={cn(row, "cursor-pointer list-none hover:bg-muted/40 [&::-webkit-details-marker]:hidden")}>{summary}</summary>
-      {lines.length ? <pre className="whitespace-pre-wrap break-words pl-24">{lines.map((line) => <span key={line.id} className={line.stderr ? "text-foreground" : "text-muted-foreground"}>{stripAnsi(line.text)}</span>)}</pre> : null}
-      {step.error ? <p className="whitespace-pre-wrap break-words pl-24 text-destructive">{step.error}</p> : null}
+      {lines.length ? <pre className="whitespace-pre-wrap break-words pl-32">{lines.map((line) => <span key={line.id} className={line.stderr ? "text-foreground" : "text-muted-foreground"}>{stripAnsi(line.text)}</span>)}</pre> : null}
+      {step.error ? <p className="whitespace-pre-wrap break-words pl-32 text-destructive">{step.error}</p> : null}
     </details>
-    {tail ? <pre className="truncate pl-24 text-muted-foreground">{tail}</pre> : null}
+    {tail ? <pre className="truncate pl-32 text-muted-foreground">{tail}</pre> : null}
   </li>;
 }
 
@@ -139,18 +139,18 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
       </ItemActions> : null}
     </Item> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
-      {build.isPending ? <LogSkeleton label="Loading build logs" /> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} timeZone={timeZone} now={now} />}
+      {build.isPending ? <LogSkeleton label="Loading build logs" time={LOG_TIME_COLUMN.build} /> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} timeZone={timeZone} now={now} />}
     </BuildLogViewer>
   </>;
 }
 
 /** One service's Deploy logs in an attempt: its rollout steps interleaved with the attempt's container output. */
-export function ServiceDeployLogs({ organizationSlug, deploymentId, serviceId, finished }: { organizationSlug: string; deploymentId: string; serviceId: string; finished: boolean }) {
+export function ServiceDeployLogs({ organizationSlug, deploymentId, serviceId }: { organizationSlug: string; deploymentId: string; serviceId: string }) {
   const collection = getDeploymentLogsCollection(organizationSlug, deploymentId, useCollectionScope());
   const { data: events = [] } = useLiveQuery({ queryKey: ['deployment-events', collection.id], query: (q) => q.from({ event: collection }).orderBy(({ event }) => event.id, "asc") });
   const request = useDeploymentLogsReadState(collection);
   return <>
     {request.isError ? <p role="alert">Could not load deployment logs. <Button variant="ghost" size="sm" disabled={request.isFetching} onClick={() => void collection.utils.refetch()}>Retry</Button></p> : null}
-    <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={lifecycleLogs(events, serviceId)} finished={finished} />
+    <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={lifecycleLogs(events, serviceId)} />
   </>;
 }

@@ -41,3 +41,16 @@ export const useTimeZone = () => useLoaderData({ from: rootRouteId, select: (dat
 export const clock = (timeZone: string, milliseconds = false) => new Intl.DateTimeFormat('en-GB', {
   hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: milliseconds ? 3 : undefined, timeZone,
 })
+
+/** A log line's full timestamp in the given zone: "2026-09-26 14:03:05.123". */
+export function logTimestamp(timeZone: string) {
+  const date = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
+  const time = clock(timeZone, true)
+  return (value: Date) => `${date.format(value)} ${time.format(value)}`
+}
+
+/** The zone's current offset, for column headers: "GMT+8". */
+export function zoneLabel(timeZone: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'shortOffset' })
+    .formatToParts(new Date()).find((part) => part.type === 'timeZoneName')?.value ?? timeZone
+}

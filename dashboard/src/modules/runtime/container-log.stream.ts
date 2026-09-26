@@ -5,15 +5,21 @@ import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, m
 
 export type ContainerLogSelection = { organizationSlug: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
-type LogStreamState = { status: string; errors: Record<string, string>; historyPending: boolean; historyError: boolean };
+/**
+ * `opened`: the server has answered once, so an empty log means no output rather than not loaded yet.
+ * `offline`: the organization's servers are unreachable, the one state the viewer can act on.
+ */
+type LogStreamState = { opened: boolean; offline: boolean; errors: Record<string, string>; historyPending: boolean; historyError: boolean };
+
+const INITIAL: LogStreamState = { opened: false, offline: false, errors: {}, historyPending: false, historyError: false };
+const MAX_RETRY_MS = 30_000;
 
 function createLogStream(id: string, selection: ContainerLogSelection, scope: CollectionScope) {
-  let snapshot: LogStreamState = { status: "Connecting…", errors: {}, historyPending: false, historyError: false };
+  let snapshot = INITIAL;
   const listeners = new Set<() => void>();
   const publish = (next: typeof snapshot) => { snapshot = next; listeners.forEach(listener => listener()); };
   const exhausted: Record<string, string> = {};
   let controller = new AbortController();
-  let reconnect = () => {};
   const query = new URLSearchParams(Object.entries(selection).filter((entry): entry is [string, string] => entry[1] !== undefined)).toString();
   const options = localOnlyCollectionOptions({ id, getKey: (row: ContainerLogRow) => row.id, initialData: [] });
   const collection = createCollection({
@@ -24,29 +30,35 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       sync(params) {
         const local = options.sync.sync(params);
         let events: EventSource | undefined;
-        const close = () => { events?.close(); controller.abort(); };
-        reconnect = () => {
-          close();
+        let retry: ReturnType<typeof setTimeout> | undefined;
+        let retryMs = 1_000;
+        const close = () => { clearTimeout(retry); events?.close(); controller.abort(); };
+        // The browser retries a dropped stream by itself, quietly; the rows' ids drop the tail it replays.
+        // Only a refused one (an error response) closes for good, so that one retries here, backing off.
+        const connect = () => {
           controller = new AbortController();
-          publish({ ...snapshot, status: "Connecting…", errors: {}, historyPending: false, historyError: false });
           events = new EventSource(`/api/runtime/logs?${query}`);
-          events.onopen = () => publish({ ...snapshot, status: "Live" });
-          const fail = () => { events?.close(); publish({ ...snapshot, status: "Disconnected" }); };
-          events.onerror = fail;
-          events.addEventListener("unavailable", fail);
+          events.addEventListener("live", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: false }); });
+          events.addEventListener("offline", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: true }); });
+          events.onerror = () => {
+            if (events?.readyState !== EventSource.CLOSED) return;
+            close();
+            retry = setTimeout(connect, retryMs);
+            retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
+          };
           events.addEventListener("log", (event: MessageEvent<string>) => {
-            try {
-              const decoded = Schema.decodeUnknownSync(Schema.fromJsonString(containerLogEventSchema))(event.data);
-              if (decoded.type === "record") appendContainerLogs(collection, [decoded.record]);
-              else publish({ ...snapshot, errors: { ...snapshot.errors, [`${decoded.machineId}/${decoded.containerId}`]: decoded.message } });
-            } catch { fail(); }
+            const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
+            if (decoded._tag === "None") return;
+            if (decoded.value.type === "record") appendContainerLogs(collection, [decoded.value.record]);
+            else publish({ ...snapshot, errors: { ...snapshot.errors, [`${decoded.value.machineId}/${decoded.value.containerId}`]: decoded.value.message } });
           });
         };
-        reconnect();
+        // Logs stream only in the browser; SSR renders the loading state.
+        if (!import.meta.env.SSR) connect();
         return () => {
-          close(); reconnect = () => {};
+          close();
           for (const source of Object.keys(exhausted)) delete exhausted[source];
-          publish({ status: "Connecting…", errors: {}, historyPending: false, historyError: false });
+          publish(INITIAL);
           // The library explicitly returns a cleanup function or a cleanup handle.
           // oxlint-disable-next-line anti-slop/no-runtime-typeof
           if (typeof local === "function") local(); else local?.cleanup?.();
@@ -86,7 +98,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   return {
     collection, loadOlder,
     get signal() { return controller.signal; },
-    refresh: () => reconnect(),
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };

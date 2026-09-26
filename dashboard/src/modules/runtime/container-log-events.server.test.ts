@@ -8,16 +8,17 @@ it("streams every record in order and closes its runtime scope", async () => {
   }
   const response = containerLogResponse(new Request("http://localhost/logs"), events(), async () => { closed++; });
   const body = await response.text();
+  expect(body.startsWith("retry: 3000\n\nevent: live\n")).toBe(true);
   expect(body.match(/event: log/g)).toHaveLength(3);
   expect(body.indexOf('"message":"0"')).toBeLessThan(body.indexOf('"message":"2"'));
   expect(closed).toBe(1);
 });
 
-it("reports a stream failure and releases the runtime", async () => {
+it("ends the stream on an upstream failure, for the browser to retry, and releases the runtime", async () => {
   let closed = false;
   const events = { [Symbol.asyncIterator]() { return { next: () => Promise.reject(new Error("private detail")) }; } };
   const response = containerLogResponse(new Request("http://localhost/logs"), events, async () => { closed = true; });
-  expect(await response.text()).toBe('event: unavailable\ndata: {}\n\n');
+  expect(await response.text()).toBe("retry: 3000\n\nevent: live\ndata: {}\n\n");
   expect(closed).toBe(true);
 });
 
@@ -48,6 +49,8 @@ it("releases the runtime once and ends the stream when the request aborts during
   const request = new AbortController();
   const response = containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events, async () => { closed++; });
   const reader = response.body?.getReader();
+  await reader?.read(); // retry
+  await reader?.read(); // live
   const read = reader?.read();
   await new Promise((resolve) => setTimeout(resolve, 10));
   request.abort();

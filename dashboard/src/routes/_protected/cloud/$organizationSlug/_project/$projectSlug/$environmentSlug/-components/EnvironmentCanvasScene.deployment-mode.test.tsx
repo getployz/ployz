@@ -218,7 +218,7 @@ describe("deployment mode on the environment canvas", () => {
     const link = node.querySelector("a");
     if (!link) throw new Error("Missing node link");
     await act(async () => { fireEvent.click(link); });
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Deploy logs" }).getAttribute("aria-selected")).toBe("true"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Deploy" }).getAttribute("aria-selected")).toBe("true"));
   });
 
   it("opens a node's read-only panel on the tab its outcome calls for, with the tab in the URL", async () => {
@@ -227,16 +227,16 @@ describe("deployment mode on the environment canvas", () => {
     await openNode(api);
 
     // A failed rollout lands on Deploy logs; the panel has only the Deployment Mode tabs.
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Deploy logs" }).getAttribute("aria-selected")).toBe("true"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Deploy" }).getAttribute("aria-selected")).toBe("true"));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ deployment: replaceFailedId, tab: "deploy-logs" }));
-    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Details", "Build logs", "Deploy logs"]);
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Details", "Build", "Deploy"]);
     // A prebuilt image built nothing.
-    expect(screen.getByRole("tab", { name: "Build logs" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Build" }).getAttribute("aria-disabled")).toBe("true");
     expect(screen.queryByText("Live service panel")).toBeNull();
     // The header's section picker stands in for the tabs on mobile, so it agrees.
     fireEvent.click(screen.getByRole("button", { name: "Project navigation" }));
     const picker = await screen.findByRole("dialog", { name: "Project navigation" });
-    expect(within(picker).getAllByRole("link", { name: "Build logs" })[0]?.getAttribute("aria-disabled")).toBe("true");
+    expect(within(picker).getAllByRole("link", { name: "Build" })[0]?.getAttribute("aria-disabled")).toBe("true");
     fireEvent.keyDown(picker, { key: "Escape" });
 
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
