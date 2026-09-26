@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import { BuildLogs, clock, formatDuration, splitStepName } from "./deployment-logs";
+import { BuildLogs, formatDuration, splitStepName } from "./deployment-logs";
+import { clock } from "#/utils/time-zone";
 import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import type { BuildOutputRow, BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 
@@ -22,7 +23,7 @@ it("renders started steps as rows, tails the running step, and opens only the fa
     step(5, "[go 1/1] FROM golang", { startedAt: null }),
   ];
   const output = [line(1, 2, "<script>alert(1)</script>\n"), line(2, 3, "\u001b[32mCompiling\u001b[0m ployz-core\n   Compiling ployz\n"), line(3, 4, "npm ERR! missing script\n", true)];
-  const html = renderToStaticMarkup(createElement(BuildLogs, { finished: false, steps, output, now: at(9).getTime() }));
+  const html = renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC", finished: false, steps, output, now: at(9).getTime() }));
   expect(html.match(/<li/g)).toHaveLength(4);
   expect(html).toContain("cached");
   expect(html).toContain("&lt;script&gt;");
@@ -34,7 +35,7 @@ it("renders started steps as rows, tails the running step, and opens only the fa
   expect(html).not.toContain("[32m");
   expect(html).toContain("exit code: 1");
   expect(html).toContain('aria-label="Failed"');
-  expect(html).toContain(clock(at(3)));
+  expect(html).toContain(clock("UTC").format(at(3)));
   expect(html).toContain(">0ms<");
   expect(html).toContain(">1s<");
   expect(html).toContain(">6s<");
@@ -42,16 +43,16 @@ it("renders started steps as rows, tails the running step, and opens only the fa
 
 it("heads each BuildKit run only when the attempt ran more than one", () => {
   const heading = (id: number, build: number, name: string) => step(id, name, { build, key: "stage:Building", completedAt: at(id) });
-  const one = renderToStaticMarkup(createElement(BuildLogs, { finished: true, steps: [heading(1, 1, "web, api"), step(2, "[sdk 1/1] RUN true", { completedAt: at(2) })], output: [] }));
+  const one = renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC", finished: true, steps: [heading(1, 1, "web, api"), step(2, "[sdk 1/1] RUN true", { completedAt: at(2) })], output: [] }));
   expect(one).not.toContain("Building web, api");
-  const two = renderToStaticMarkup(createElement(BuildLogs, { finished: true, steps: [heading(1, 1, "web"), step(2, "[1/1] RUN true", { completedAt: at(2) }), heading(3, 2, "worker"), step(4, "[1/1] RUN true", { build: 2, completedAt: at(4) })], output: [] }));
+  const two = renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC", finished: true, steps: [heading(1, 1, "web"), step(2, "[1/1] RUN true", { completedAt: at(2) }), heading(3, 2, "worker"), step(4, "[1/1] RUN true", { build: 2, completedAt: at(4) })], output: [] }));
   expect(two).toContain("Building web");
   expect(two).toContain("Building worker");
 });
 
 it("keeps the target heading when a single run has a failed vertex", () => {
   const heading = step(1, "web, api", { key: "stage:Building", completedAt: at(2) });
-  const html = renderToStaticMarkup(createElement(BuildLogs, {
+  const html = renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC",
     finished: true, output: [], steps: [heading, step(2, "RUN false", { completedAt: at(2), error: "exit code: 1" })],
   }));
   expect(html).toContain("Building web, api");
@@ -61,7 +62,7 @@ it("keeps the target heading when a single run has a failed vertex", () => {
 it("hides normal cleanup and shows cleanup failures", () => {
   for (const completedAt of [null, at(2)]) {
     const cleanup = step(2, "Cleaning up", { key: "stage:Cleanup", completedAt });
-    const render = (error: string | null) => renderToStaticMarkup(createElement(BuildLogs, {
+    const render = (error: string | null) => renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC",
       finished: completedAt !== null, steps: [step(1, "RUN true"), { ...cleanup, error }], output: [],
     }));
     expect(render(null)).not.toContain("Cleaning up");
@@ -71,7 +72,7 @@ it("hides normal cleanup and shows cleanup failures", () => {
 });
 
 it("names the empty states", () => {
-  const render = (finished: boolean) => renderToStaticMarkup(createElement(BuildLogs, { steps: [], output: [], finished }));
+  const render = (finished: boolean) => renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC", steps: [], output: [], finished }));
   expect(render(true)).toContain("No retained build output");
   expect(render(false)).toContain("Waiting for the build to start");
 });

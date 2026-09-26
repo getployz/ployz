@@ -7,14 +7,14 @@ import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deploym
 import { useNodeDeployments } from "#/modules/deployments/deployment.collection";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { nodeOutcomeLabels, shortDeploymentId } from "#/modules/deployments/deployment-view";
-import { formatRelativeTime } from "#/utils/relative-time";
+import { RelativeTime } from "#/components/relative-time";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../../../-components/environment-route-paths";
 
 function Summary({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
   return (
     <ItemContent className="min-w-0">
       <ItemTitle><span><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</span></ItemTitle>
-      <ItemDescription>{formatRelativeTime(deployment.createdAt)}</ItemDescription>
+      <ItemDescription><RelativeTime date={deployment.createdAt} /></ItemDescription>
     </ItemContent>
   );
 }

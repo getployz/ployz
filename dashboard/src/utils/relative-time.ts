@@ -1,4 +1,5 @@
-const relativeTimeFormat = new Intl.RelativeTimeFormat(undefined, {
+// A fixed locale: the server and the browser must print the same words.
+const relativeTimeFormat = new Intl.RelativeTimeFormat("en-US", {
   numeric: "auto",
 });
 

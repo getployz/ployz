@@ -23,7 +23,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
   });
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
-  const root = createRootRoute();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
   const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
   const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });

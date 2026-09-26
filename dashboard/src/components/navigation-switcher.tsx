@@ -39,6 +39,7 @@ import {
 import { Input } from "#/components/ui/input";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "#/components/ui/command";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
@@ -104,10 +105,12 @@ export function ProjectSwitcher({
         </PopoverTrigger>
         <PopoverContent padding="none" align="start" side={rail ? "right" : "bottom"} className="w-[min(36rem,calc(100vw-2rem))]">
           <PopoverTitle className="sr-only">Choose project and environment</PopoverTitle>
-          {isPending || isError ? (
-            <Button variant="ghost" disabled={isPending} onClick={() => void refetch()}>
-              {isPending ? "Loading projects…" : "Could not load projects. Retry"}
-            </Button>
+          {isPending ? (
+            <div role="status" aria-label="Loading projects" className="flex flex-col gap-2 p-2">
+              <Skeleton className="h-7 w-full" /><Skeleton className="h-7 w-full" /><Skeleton className="h-7 w-full" />
+            </div>
+          ) : isError ? (
+            <Button variant="ghost" onClick={() => void refetch()}>Could not load projects. Retry</Button>
           ) : <div className="grid grid-cols-2">
             <div className="min-w-0 border-r">
               <Command tabIndex={0} label="Projects" value={selectedProject?.slug ?? ""}
@@ -345,10 +348,10 @@ export function NavigationSwitcher({
                       <Building2Icon /><span className="truncate">{organization.name}</span>
                     </CommandItem>
                   ))}
-                  {isPending || isError ? (
-                    <CommandItem disabled={isPending} onSelect={() => void refetch()}>
-                      {isPending ? "Loading organizations…" : "Could not load organizations. Retry"}
-                    </CommandItem>
+                  {isPending ? (
+                    <div role="status" aria-label="Loading organizations" className="p-1"><Skeleton className="h-7 w-full" /></div>
+                  ) : isError ? (
+                    <CommandItem onSelect={() => void refetch()}>Could not load organizations. Retry</CommandItem>
                   ) : null}
                 </CommandGroup>
               </CommandList>

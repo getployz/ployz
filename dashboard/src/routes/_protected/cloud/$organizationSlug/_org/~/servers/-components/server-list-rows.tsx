@@ -43,6 +43,7 @@ import {
   getMachineRemoveAttemptServerFn,
   loadMachineDataLossServerFn,
 } from "#/modules/machines/machine-removal.functions";
+import { useTimeZone } from "#/utils/time-zone";
 
 function waitMs(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -159,6 +160,7 @@ function RuntimeMachineRow({
 }) {
   const address = machine.publicIp ?? machine.id;
   const policy = useServerPolicy(machine, organizationSlug);
+  const timeZone = useTimeZone();
 
   async function copyAddress() {
     if (await copyText(address)) toast.info("Address copied");
@@ -168,7 +170,7 @@ function RuntimeMachineRow({
     machine.publicIp ? `public ${machine.publicIp}` : null,
     ...machine.endpoints,
     `${machine.observedContainerCount} containers observed`,
-    `observed ${new Date(machine.observedAt).toLocaleString()}`,
+    `observed ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "medium", timeZone }).format(new Date(machine.observedAt))}`,
   ]
     .filter(Boolean)
     .join(" · ");

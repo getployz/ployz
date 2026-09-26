@@ -3,7 +3,6 @@ import { useQuery, type Query, type QueryClient } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { preloadCollection } from "#/collections/query-collection";
-import { deploymentBuildLogQueryOptions } from "./deployment-build-log.queries";
 import { listDeploymentProgressLogsServerFn } from "./deployment.functions";
 
 type EventRow = Awaited<ReturnType<typeof listDeploymentProgressLogsServerFn>>["events"][number];
@@ -53,8 +52,7 @@ export function useDeploymentLogsReadState(collection: ReturnType<typeof getDepl
   return useQuery({ ...collection.queryOptions, enabled: false });
 }
 
-/** Warm a deployment's logs when the user reaches for them, so opening the panel shows them at once. */
+/** Warm a deployment's Deploy logs when the user reaches for them; the service route's loader warms its Build logs. */
 export function preloadDeploymentLogs(organizationSlug: string, deploymentId: string, scope: CollectionScope) {
   void preloadCollection(getDeploymentLogsCollection(organizationSlug, deploymentId, scope)).catch(() => {});
-  void scope.queryClient.prefetchQuery(deploymentBuildLogQueryOptions(organizationSlug, deploymentId));
 }

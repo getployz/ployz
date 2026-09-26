@@ -15,9 +15,11 @@ import {
   getServerThemeClassName,
   getTheme,
 } from "../utils/theme";
+import { getTimeZone, writeTimeZone } from "../utils/time-zone";
 import appCss from "../styles.css?url";
 import type { QueryClient } from "@tanstack/react-query";
 import type { DbClient } from "@tanstack/react-db";
+import { useEffect } from "react";
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
   dbClient: DbClient;
@@ -29,6 +31,7 @@ export const Route = createRootRouteWithContext<{
     return {
       theme,
       session,
+      timeZone: getTimeZone(),
     };
   },
   head: () => ({
@@ -66,6 +69,7 @@ export const Route = createRootRouteWithContext<{
 
 function RootComponent() {
   const { theme } = Route.useLoaderData();
+  useEffect(() => writeTimeZone(), []);
   return (
     <ThemeProvider theme={theme}>
       <Outlet />

@@ -16,6 +16,7 @@ import { canvasNodeTransition } from "./constants";
 import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+import { defaultDeploymentTab } from "../DeploymentServicePanel";
 import { useDeploymentMode } from "../deployment-mode";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
@@ -97,7 +98,10 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
   );
 }
 
-/** Service nodes open the read-only Deployment Mode panel; the retained `deployment` param keeps the mode. */
+/**
+ * Service nodes open the read-only Deployment Mode panel; the retained `deployment` param keeps the mode.
+ * The link names the tab that matters, so the route loader (hover preload and SSR) knows what the panel reads.
+ */
 export function DeploymentNodeLink({ data, className, children }: { data: CanvasDeploymentNodeData; className?: string; children: ReactNode }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
@@ -105,8 +109,8 @@ export function DeploymentNodeLink({ data, className, children }: { data: Canvas
   const transition = canvasNodeTransition(data.node.nodeId);
   if (data.node.nodeType !== "service") return <div {...transition} className={className}>{children}</div>;
   const warm = () => { if (attempt) preloadDeploymentLogs(params.organizationSlug, attempt.deployment.id, scope); };
-  return <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: data.node.nodeId }} search={(previous) => ({ ...previous, tab: undefined })}
-    onPointerEnter={warm} onFocus={warm} data-canvas-node={data.node.nodeId} {...transition} draggable={false} className={cn("block", className)}>{children}</Link>;
+  return <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: data.node.nodeId }} search={(previous) => ({ ...previous, tab: defaultDeploymentTab(data.view) })}
+    preload="intent" onPointerEnter={warm} onFocus={warm} data-canvas-node={data.node.nodeId} {...transition} draggable={false} className={cn("block", className)}>{children}</Link>;
 }
 
 export function DeploymentNode({ data }: { data: CanvasDeploymentNodeData }) {

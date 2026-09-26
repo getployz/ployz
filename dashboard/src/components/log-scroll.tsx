@@ -1,4 +1,6 @@
 import { Button } from "./ui/button";
+import { Skeleton } from "./ui/skeleton";
+import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
 
@@ -26,4 +28,16 @@ export function BuildLogViewer({ children }: { children: ReactNode }) {
       <div ref={virtual.measureElement} data-index={0}>{children}</div>
     </div>
   </>;
+}
+
+const LINE_WIDTHS = ["w-2/5", "w-3/5", "w-1/3", "w-1/2"];
+
+/** Log lines' shape (a time, then the message), held until the lines arrive. */
+export function LogSkeleton({ rows = LINE_WIDTHS.length, label }: { rows?: number; label: string }) {
+  return <ol aria-busy aria-label={label}>
+    {LINE_WIDTHS.slice(0, rows).map((width) => <li key={width} className="flex h-6 items-center gap-3 px-1">
+      <Skeleton className="h-3 w-16 shrink-0" />
+      <Skeleton className={cn("h-3", width)} />
+    </li>)}
+  </ol>;
 }

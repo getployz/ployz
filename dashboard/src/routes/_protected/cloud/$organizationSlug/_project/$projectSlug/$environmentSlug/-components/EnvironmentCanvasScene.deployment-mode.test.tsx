@@ -92,7 +92,7 @@ async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", ch
   await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => changeStates));
   await queryClient.ensureQueryData(orgStoreOptions("acme", scope));
 
-  const root = createRootRoute({ component: Outlet });
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }), component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet,
     beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug",

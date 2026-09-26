@@ -33,7 +33,7 @@ export function ServiceDrawerTabs({
       <ServiceDeploymentsTab organizationSlug={state.organizationSlug} serviceId={state.service.id} />
       <ServiceSettingsTab state={state} />
       <ServiceVariablesTab state={state} />
-      <TabsContent value="logs"><ContainerLogs selection={{ organizationSlug: state.organizationSlug, environmentSlug: state.environmentSlug, serviceId: state.service.id }} /></TabsContent>
+      <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col"><ContainerLogs selection={{ organizationSlug: state.organizationSlug, environmentSlug: state.environmentSlug, serviceId: state.service.id }} /></TabsContent>
     </Tabs>
   );
 }

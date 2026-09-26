@@ -9,6 +9,7 @@ import {
   ComboboxTrigger,
 } from "#/components/ui/combobox"
 import { InputGroupButton, InputGroupInput } from "#/components/ui/input-group"
+import { Skeleton } from "#/components/ui/skeleton"
 import {
   ConfirmableInput,
   type ConfirmableInputProps,
@@ -86,7 +87,9 @@ export function SuggestibleConfirmableInput({
         ) : null}
         <ComboboxEmpty>
           {suggestionsLoading ? (
-            "Loading suggestions…"
+            <div role="status" aria-label="Loading suggestions" className="flex flex-col gap-2">
+              <Skeleton className="h-4 w-2/3" /><Skeleton className="h-4 w-1/2" />
+            </div>
           ) : (
             suggestionsMessage ?? "No matches. Enter a custom path."
           )}

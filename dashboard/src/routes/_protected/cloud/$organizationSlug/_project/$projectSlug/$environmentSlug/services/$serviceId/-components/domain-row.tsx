@@ -8,7 +8,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
 import type { DnsRecord, PublicDomainStatus } from "#/modules/services/public-domain-status";
-import { formatRelativeTime } from "#/utils/relative-time";
+import { RelativeTime } from "#/components/relative-time";
 
 export function DomainTitle({
   hostname,
@@ -60,7 +60,7 @@ export function DomainRowShell({
   );
 }
 
-type StatusView = { icon: ReactNode; phrase: string | null; action: "dns" | "server_settings" | null };
+type StatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "server_settings" | null };
 
 /** The icon is the status; one short phrase and at most one link say what's next. */
 function statusView(status: PublicDomainStatus): StatusView {
@@ -89,7 +89,7 @@ function statusView(status: PublicDomainStatus): StatusView {
     case "cert_failed":
       return {
         icon: warning,
-        phrase: status.retryAt ? `Certificate failed · retrying ${formatRelativeTime(status.retryAt)}` : "Certificate failed",
+        phrase: status.retryAt ? <>Certificate failed · retrying <RelativeTime date={status.retryAt} /></> : "Certificate failed",
         action: null,
       };
     case "unreachable":
@@ -176,7 +176,7 @@ export function PublicDomainRow({
         <div className="flex flex-wrap items-center gap-1 text-muted-foreground text-sm">
           <span>
             → {portLabel}
-            {view.phrase ? ` · ${view.phrase}` : null}
+            {view.phrase ? <> · {view.phrase}</> : null}
           </span>
           {action ? <span>·</span> : null}
           {action === "dns" ? (
