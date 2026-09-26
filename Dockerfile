@@ -1,16 +1,34 @@
 # syntax=docker/dockerfile:1
 FROM node:24.18.1-bookworm-slim AS node
 
-FROM rust:1.97.1-bookworm AS sdk
+FROM rust:1.97.1-bookworm AS chef
+# Build tools sit below every source layer, so no commit reinstalls them.
+# ponytail: pins wasm-bindgen-cli here too; a drift only costs build-config-wasm.sh a reinstall.
+RUN cargo install cargo-chef --version 0.1.78 --locked \
+    && cargo install wasm-bindgen-cli --version 0.2.127 --locked \
+    && rustup target add wasm32-unknown-unknown \
+    && rm -rf /usr/local/cargo/registry /usr/local/cargo/git
+WORKDIR /app/core
+
+FROM chef AS planner
+COPY core/ ./
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS sdk
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
-WORKDIR /app
-# Dashboard edits must not invalidate this layer.
-COPY core/ core/
 # Railway requires its literal service ID; BuildKit on Ployz accepts the same cache IDs.
+# Compiled dependencies live in a layer, not a cache mount: the GitHub Actions cache exports
+# layers only, and the recipe ignores workspace versions, so a release bump keeps this layer.
+COPY --from=planner /app/core/recipe.json recipe.json
 RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/app/core/target,target=/app/core/target \
-    bash core/scripts/build-cloud-sdk.sh
+    cargo chef cook --release --locked --recipe-path recipe.json -p ployz-sdk \
+    && cargo chef cook --release --locked --recipe-path recipe.json -p ployz-config-wasm --target wasm32-unknown-unknown
+# Dashboard edits must not invalidate this layer.
+COPY core/ ./
+RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    bash scripts/build-cloud-sdk.sh
 
 FROM node AS dashboard
 RUN npm install --global pnpm@11.7.0
