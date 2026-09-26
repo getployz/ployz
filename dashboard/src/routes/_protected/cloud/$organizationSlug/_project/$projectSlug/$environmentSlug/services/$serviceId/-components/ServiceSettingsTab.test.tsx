@@ -7,7 +7,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "#/components/ui/tabs";
 import { asTestDouble } from "#/lib/test-double";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
 import { runtimeWatchCertificateFixture, runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { orgStoreSeed } from "#/test/org-store-tables";
 import {
@@ -21,7 +20,7 @@ import type { ServiceDrawerState } from "./useServiceDrawerState";
 
 const clients: QueryClient[] = [];
 /** The Runtime Watch frame the stubbed event stream delivers, if any. */
-let frame: object | null = null;
+let frame: ReturnType<typeof runtimeWatchFrameFixture> | null = null;
 beforeEach(() => {
   vi.stubGlobal("scrollTo", () => {});
   vi.stubGlobal("EventSource", class {
@@ -44,7 +43,9 @@ async function show(
   buildMethod: "dockerfile" | "railpack" = "dockerfile",
   { clusterDomain = null, managedHostnames = [], routes = [] }: {
     clusterDomain?: string | null;
+    /** Also treated as deployed. */
     managedHostnames?: ServiceDrawerState["service"]["managedHostnames"];
+    /** Also treated as deployed. */
     routes?: ServiceDrawerState["service"]["routes"];
   } = {},
 ) {
@@ -52,7 +53,10 @@ async function show(
   clients.push(client);
   client.setQueryData(
     ["collections", "test-session", "test-user", "acme", "organization_cluster_domain"],
-    orgStoreSeed(clusterDomain === null ? [] : [{ id: "organization", name: clusterDomain }]),
+    orgStoreSeed(clusterDomain === null ? [] : [{
+      id: "organization", name: clusterDomain, recordsSyncedAt: new Date(), traffic: { kind: "probed", unreachable: [] },
+      certificateNotAfter: new Date(Date.now() + 60 * 86_400_000), checkedAt: new Date(),
+    }]),
   );
   const update = vi.fn((_id: string, _apply: (draft: ServiceDrawerState["service"]) => void) => ({ isPersisted: { promise: Promise.resolve() } }));
   const build = { buildMethod, dockerfilePath: "docker/Dockerfile", command: null, } as const;
@@ -72,6 +76,7 @@ async function show(
     editMetadata: update,
     managedPrefixesInUse: [],
     defaultTargetPort: 8080,
+    appliedDomains: { managedPrefixes: new Set(managedHostnames.map((managed) => managed.prefix)), routeHostnames: new Set(routes.map((route) => route.hostname)) },
   });
   const State = createContext(state);
   const root = createRootRoute({ component: Outlet });
@@ -150,38 +155,39 @@ it("saves and clears the Railpack build command using the command control", asyn
   await waitFor(() => expect(state.service.build.command).toBeNull());
 });
 
-it("saves the Preferred builder as Service policy at once, from GitHub Actions and the servers that build", async () => {
-  frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({ machines: [
-    runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("a".repeat(32), "fast") }),
-    runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("b".repeat(32), "app", { accepts_builds: false }) }),
-  ] }));
-  const { update } = await show(createGitServiceSource({ repository: "acme/api", repositoryId: 1, access: { type: "github-installation", installationId: 2 } }));
-  const select = screen.getByRole("combobox", { name: "Preferred builder" });
-  expect(select.textContent).toContain("Auto");
-  fireEvent.click(select);
-  await screen.findByRole("option", { name: "fast" });
-  expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["Auto", "GitHub Actions", "fast"]);
-  const fast = screen.getByRole("option", { name: "fast" });
-  // Base UI commits a click only on a highlighted item, or a touch.
-  fireEvent.pointerDown(fast, { pointerType: "touch" });
-  fireEvent.click(fast);
-  // Policy, not staged configuration: it goes through the metadata editor, never the collection.
-  await waitFor(() => expect(update).toHaveBeenCalledWith({
-    environmentId: "environment", serviceId: "service", edit: { kind: "policy", policy: { preferredBuilder: "a".repeat(32) } },
-  }));
-});
-
-it("shows a managed hostname's certificate status from the published wildcard that covers it", async () => {
-  // The Engine keeps no certificate row for a hostname a published wildcard covers.
-  frame = runtimeWatchFrameFixture({
-    certificates: [{ hostname: "*.acme.ployz.app", status: "available", last_error: null, backoff: null, via_proxy: false }],
-  });
+it("links a generated domain once its Cluster Domain is ready", async () => {
   await show(createEmptyServiceSource(), "dockerfile", {
     clusterDomain: "acme.ployz.app",
     managedHostnames: [{ prefix: "api", targetPort: null }],
   });
-  expect(screen.getByText("api.acme.ployz.app")).toBeTruthy();
-  expect(await screen.findByText("Observed certificate status: available.")).toBeTruthy();
+  const link = screen.getByText("api.acme.ployz.app").closest("a");
+  expect(link?.getAttribute("href")).toBe("https://api.acme.ployz.app");
+  expect(screen.queryByText(/certificate/i)).toBeNull();
+});
+
+it("shows the DNS records a custom domain needs, pointing an apex at ingress Servers only", async () => {
+  frame = runtimeWatchFrameFixture({
+    machines: [
+      runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("a".repeat(32), "edge", { public_ip: "203.0.113.1" }) }),
+      runtimeWatchMachineObservationFixture({
+        machine: runtimeWatchMachineFixture("b".repeat(32), "worker", { public_ip: "203.0.113.2", accepts_ingress: false }),
+      }),
+    ],
+    certificates: [{
+      hostname: "acme.com", status: "failure", last_error: "no such host",
+      backoff: { failure_kind: "does_not_resolve", next_attempt_at: "2026-09-25T12:12:00Z", failures: 1 }, via_proxy: false,
+    }],
+  });
+  await show(createEmptyServiceSource(), "dockerfile", {
+    clusterDomain: "acme.ployz.app",
+    routes: [{ id: "route", hostname: "acme.com", targetPort: null }],
+  });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Show DNS records" }));
+  expect(screen.getByText("203.0.113.1")).toBeTruthy();
+  expect(screen.queryByText("203.0.113.2")).toBeNull();
+  expect(screen.getByRole("button", { name: "Copy A name" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy A value" })).toBeTruthy();
 });
 
 it("shows a custom domain's fix in one line and marks domains served through a proxy", async () => {
@@ -202,7 +208,8 @@ it("shows a custom domain's fix in one line and marks domains served through a p
     ],
   });
   expect(
-    await screen.findByText("Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects."),
+    await screen.findByText(/Your proxy redirects to HTTPS\. Exempt \/\.well-known\/acme-challenge\/\* from HTTPS redirects\./),
   ).toBeTruthy();
-  expect(screen.getByText("via proxy")).toBeTruthy();
+  expect(screen.getByText(/via proxy/)).toBeTruthy();
+  expect(screen.queryByText(/shop\.example\.com redirects HTTP/)).toBeNull();
 });

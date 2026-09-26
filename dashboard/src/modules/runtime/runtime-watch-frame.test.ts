@@ -87,6 +87,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           id: "machine-a",
           name: "edge-a",
           publicIp: "203.0.113.10",
+          acceptsIngress: true,
           endpoints: ["udp://203.0.113.10:51820"],
           acceptsBuilds: true,
           buildConcurrency: 2,

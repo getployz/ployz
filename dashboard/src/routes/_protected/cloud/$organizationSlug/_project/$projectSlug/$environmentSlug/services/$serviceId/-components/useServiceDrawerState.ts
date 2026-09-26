@@ -49,6 +49,8 @@ export type ServiceDrawerState = {
   managedPrefixesInUse: string[];
   /** Advisory PORT hint. Null means the authored PORT is not a known valid literal. */
   defaultTargetPort: number | null;
+  /** Public domains in the Service's Applied State; empty before its first deploy. */
+  appliedDomains: { managedPrefixes: ReadonlySet<string>; routeHostnames: ReadonlySet<string> };
 };
 
 function resolveDefaultTargetPort(
@@ -186,5 +188,18 @@ export function useServiceDrawerState(
       .filter((item) => item.service.id !== service.id)
       .flatMap((item) => item.service.managedHostnames.map((m) => m.prefix)),
     defaultTargetPort: resolveDefaultTargetPort(service.env),
+    appliedDomains: appliedDomains(environmentChangeState?.applied.nodes ?? [], params.serviceId),
+  };
+}
+
+function appliedDomains(
+  nodes: Array<{ nodeType: string; nodeId: string; config: unknown }>,
+  serviceId: string,
+): ServiceDrawerState["appliedDomains"] {
+  const node = nodes.find((candidate) => candidate.nodeType === "service" && candidate.nodeId === serviceId);
+  const config = node?.config ? parseServiceConfig(node.config) : null;
+  return {
+    managedPrefixes: new Set(config?.managedHostnames.map((managed) => managed.prefix)),
+    routeHostnames: new Set(config?.routes.map((route) => route.hostname)),
   };
 }

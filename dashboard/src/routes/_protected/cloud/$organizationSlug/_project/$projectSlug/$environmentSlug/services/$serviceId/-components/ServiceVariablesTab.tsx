@@ -1,4 +1,4 @@
-import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
+import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain";
 import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";

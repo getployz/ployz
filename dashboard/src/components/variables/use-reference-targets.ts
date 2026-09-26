@@ -1,4 +1,4 @@
-import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
+import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain";
 import { useServicesCollection } from "#/modules/services/services.collection";
 import { useLiveQuery, eq } from "@tanstack/react-db";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";

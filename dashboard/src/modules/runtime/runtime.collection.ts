@@ -46,6 +46,7 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   publicIp: Schema.NullOr(Schema.String),
+  acceptsIngress: Schema.Boolean,
   endpoints: Schema.Array(Schema.String),
   /** Server Policy as observed; Cloud keeps no desired copy. */
   acceptsBuilds: Schema.Boolean,

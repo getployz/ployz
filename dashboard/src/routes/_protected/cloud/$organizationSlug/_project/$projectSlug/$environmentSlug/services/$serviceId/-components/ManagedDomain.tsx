@@ -1,10 +1,4 @@
-import {
-  GlobeIcon,
-  PencilIcon,
-  Trash2Icon,
-} from "lucide-react";
 import { Schema, SchemaGetter } from "effect";
-import { Link } from "@tanstack/react-router";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -15,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
-import { FieldDescription, FieldGroup } from "#/components/ui/field";
+import { FieldGroup } from "#/components/ui/field";
 import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
@@ -23,93 +17,12 @@ import {
   validateOnChangeOrBlur,
 } from "#/form";
 import type { ServiceManagedHostname } from "#/modules/environment-design/tables";
-import { managedHostname } from "#/modules/environment-design/managed-service-exports";
 import {
   serviceManagedHostnamePrefixSchema,
   serviceManagedHostnameSchema,
 } from "#/modules/environment-design/services";
 import { strictParseOptions } from "#/modules/environment-design/schema";
-import {
-  CertificateEvidence,
-  DomainRowShell,
-  type DomainCertificateEvidence,
-  DomainTitle,
-} from "./domain-row";
 import { domainPortSchema } from "./domain-port";
-
-export function ManagedDomainRow({
-  organizationSlug,
-  managed,
-  clusterDomain,
-  certificateEvidence,
-  defaultTargetPort,
-  changed,
-  onEdit,
-  onDelete,
-}: {
-  organizationSlug: string;
-  managed: ServiceManagedHostname;
-  clusterDomain: string | null;
-  certificateEvidence: DomainCertificateEvidence;
-  defaultTargetPort: number | null;
-  changed: boolean;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  const hostname = clusterDomain ? managedHostname(managed.prefix, clusterDomain) : null;
-  const port = managed.targetPort ?? defaultTargetPort;
-  return (
-    <div className="flex flex-col gap-1">
-      <DomainRowShell
-        changed={changed}
-        icon={<GlobeIcon />}
-        actions={
-          <>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Edit managed domain"
-              onClick={onEdit}
-            >
-              <PencilIcon />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Remove managed domain"
-              onClick={onDelete}
-            >
-              <Trash2Icon />
-            </Button>
-          </>
-        }
-      >
-        {hostname ? (
-          <DomainTitle hostname={hostname} copyLabel="Copy domain" />
-        ) : (
-          <div className="truncate font-mono text-sm">
-            {managed.prefix}
-            <span className="text-muted-foreground">.pending</span>
-          </div>
-        )}
-        <div className="text-muted-foreground text-sm">
-          → {port === null ? "Uses PORT" : `Port ${port}`}
-        </div>
-      </DomainRowShell>
-      {hostname ? null : (
-        <FieldDescription>
-          The Cluster Domain is pending.{" "}
-          <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }}>
-            Open Server Settings
-          </Link>
-        </FieldDescription>
-      )}
-      <CertificateEvidence evidence={certificateEvidence} />
-    </div>
-  );
-}
 
 export function ManagedDomainDialog({
   mode = "edit",
@@ -193,7 +106,7 @@ export function ManagedDomainDialog({
                       description={
                         clusterDomain
                           ? `.${clusterDomain}`
-                          : "The Cluster Domain is pending."
+                          : "Your domain is assigned on your first deploy."
                       }
                     />
                   )}

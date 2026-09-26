@@ -13,13 +13,13 @@ import {
   FieldLabel,
 } from "#/components/ui/field";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
-import { useRuntimeStatus } from "#/providers/runtime-provider";
-import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
 import { managedHostname } from "#/modules/environment-design/managed-service-exports";
+import { certificateFor, dnsRecordsFor, publicDomainStatus } from "#/modules/services/public-domain-status";
+import { usePublicDomainContext } from "#/modules/services/use-public-domain-context";
 import type { ServiceDrawerState } from "./useServiceDrawerState";
 import { CustomDomainDialog } from "./CustomDomainDialog";
-import { CustomDomainRow, type DomainCertificateEvidence } from "./domain-row";
-import { ManagedDomainDialog, ManagedDomainRow } from "./ManagedDomain";
+import { DomainTitle, PublicDomainRow } from "./domain-row";
+import { ManagedDomainDialog } from "./ManagedDomain";
 import { PrivateEndpointField } from "./PrivateEndpointField";
 
 function defaultPrefix(privateDns: string) {
@@ -57,33 +57,12 @@ export function ServiceNetworkingSection({
   );
   const routes = service.routes;
   const managedList = service.managedHostnames;
-  const runtimeStatus = useRuntimeStatus();
-  const clusterDomain = useClusterDomainName(state.organizationSlug);
-  const runtimeIsCurrent = runtimeStatus.lensStatus === "observed";
+  const { clusterDomain, clusterStatus, ingressAddresses, observed, certificates } =
+    usePublicDomainContext(state.organizationSlug);
   const [editor, setEditor] = useState<PublicDomainEditor>(null);
-
-  const certificateEvidence = (hostname: string): DomainCertificateEvidence => {
-    // A published `*.parent` serves every hostname one label under it, and the
-    // Engine then keeps no row of the hostname's own.
-    const wildcard = `*.${hostname.slice(hostname.indexOf(".") + 1)}`;
-    const certificate =
-      runtimeStatus.certificates.find(
-        (candidate) => candidate.hostname === hostname
-      ) ??
-      runtimeStatus.certificates.find(
-        (candidate) => candidate.hostname === wildcard
-      );
-    const incomplete = [hostname, wildcard].some((name) =>
-      runtimeStatus.incompleteIds.certificates.includes(name)
-    );
-    if (!certificate && !incomplete) return null;
-    return {
-      status: certificate?.status ?? null,
-      failureKind: certificate?.backoff?.failureKind ?? null,
-      viaProxy: certificate?.viaProxy ?? false,
-      lastObserved: !runtimeIsCurrent,
-      incomplete,
-    };
+  const portLabel = (targetPort: number | null) => {
+    const port = targetPort ?? defaultTargetPort;
+    return port === null ? "Uses PORT" : `Port ${port}`;
   };
 
   // Optimistic: the service writer rolls back and toasts if saving fails.
@@ -125,42 +104,61 @@ export function ServiceNetworkingSection({
               <EmptyDescription>No public domains yet.</EmptyDescription>
             </Empty>
           ) : null}
-          {managedList.map((managed, index) => (
-            <ManagedDomainRow
-              key={managed.prefix}
-              organizationSlug={state.organizationSlug}
-              managed={managed}
-              clusterDomain={clusterDomain}
-              certificateEvidence={
-                clusterDomain
-                  ? certificateEvidence(managedHostname(managed.prefix, clusterDomain))
-                  : null
-              }
-              defaultTargetPort={defaultTargetPort}
-              changed={managedDiff.changed}
-              onEdit={() => setEditor({ kind: "managed", index })}
-              onDelete={() =>
-                commitManaged(
-                  managedList.filter((_, current) => current !== index)
-                )
-              }
-            />
-          ))}
-          {routes.map((route, index) => (
-            <CustomDomainRow
-              key={route.id}
-              route={route}
-              defaultTargetPort={defaultTargetPort}
-              certificateEvidence={certificateEvidence(route.hostname)}
-              changed={routesDiff.changed}
-              onEdit={() => setEditor({ kind: "route", index })}
-              onDelete={() =>
-                commitRoutes(
-                  routes.filter((_, current) => current !== index)
-                )
-              }
-            />
-          ))}
+          {managedList.map((managed, index) => {
+            const hostname = clusterDomain ? managedHostname(managed.prefix, clusterDomain) : null;
+            const status = publicDomainStatus({
+              domain: { kind: "generated" },
+              deployed: state.appliedDomains.managedPrefixes.has(managed.prefix),
+              observed,
+              clusterDomain: clusterStatus,
+            });
+            return (
+              <PublicDomainRow
+                key={managed.prefix}
+                organizationSlug={state.organizationSlug}
+                title={
+                  hostname ? (
+                    <DomainTitle hostname={hostname} live={status.kind === "live"} />
+                  ) : (
+                    <div className="truncate font-mono text-sm">
+                      {managed.prefix}
+                      <span className="text-muted-foreground">.…</span>
+                    </div>
+                  )
+                }
+                label={hostname ?? managed.prefix}
+                portLabel={portLabel(managed.targetPort)}
+                status={status}
+                changed={managedDiff.changed}
+                onEdit={() => setEditor({ kind: "managed", index })}
+                onDelete={() => commitManaged(managedList.filter((_, current) => current !== index))}
+              />
+            );
+          })}
+          {routes.map((route, index) => {
+            const status = publicDomainStatus({
+              domain: { kind: "custom", certificate: certificateFor(route.hostname, certificates) },
+              deployed: state.appliedDomains.routeHostnames.has(route.hostname),
+              observed,
+              clusterDomain: clusterStatus,
+            });
+            return (
+              <PublicDomainRow
+                key={route.id}
+                organizationSlug={state.organizationSlug}
+                title={
+                  <DomainTitle hostname={route.hostname} live={status.kind === "live"} />
+                }
+                label={route.hostname}
+                portLabel={portLabel(route.targetPort)}
+                status={status}
+                dnsRecords={dnsRecordsFor(route.hostname, clusterDomain, ingressAddresses)}
+                changed={routesDiff.changed}
+                onEdit={() => setEditor({ kind: "route", index })}
+                onDelete={() => commitRoutes(routes.filter((_, current) => current !== index))}
+              />
+            );
+          })}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
