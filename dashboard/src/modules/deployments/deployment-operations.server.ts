@@ -23,6 +23,7 @@ import { withoutSealedCiphertext } from "#/modules/environment-design/saved-inte
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
+import { user } from "#/modules/identity/tables";
 import { environment, project } from "#/modules/project/tables";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -271,8 +272,8 @@ export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironment
 });
 
 /**
- * One attempt: its row (with its Target Node List) and the service configs it deployed, for the service panel's Details.
- * Null when the organization has no such attempt.
+ * One attempt for its Deployment Page: its row (with its Target Node List), the name of the user who started a manual one,
+ * and the service configs it deployed. Null when the organization has no such attempt.
  */
 export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt")(function* (
   actor: Actor,
@@ -291,6 +292,8 @@ export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt"
       )),
   ]);
   if (!row) return null;
+  const actorId = row.triggerOrigin.origin === "manual" ? row.triggerOrigin.actorId : null;
+  const [starter] = actorId === null ? [] : yield* drizzle.select({ name: user.name }).from(user).where(eq(user.id, actorId));
   // Sealed variable ciphertext stays on the server.
-  return { row, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
+  return { row, actorName: starter?.name ?? null, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
 });
