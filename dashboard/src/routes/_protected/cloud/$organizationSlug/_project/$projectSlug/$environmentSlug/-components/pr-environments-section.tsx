@@ -10,15 +10,17 @@ import type { useWorkspace } from "#/modules/environment-design/workspace.querie
 import { usePrEnvironmentPlans } from "#/modules/pr-environments/plan.collection";
 import { useMissingPrEnvironmentGrant } from "#/modules/pr-environments/plan.queries";
 import { planSummary, prPlanInput } from "#/modules/pr-environments/repositories";
+import { openPrEnvironments } from "#/modules/pr-environments/pull-request";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO } from "./environment-route-paths";
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
 /** Settings → Project: one row per GitHub repository the project deploys from, each opening its plan page. */
-export function PrEnvironmentsSection({ organizationSlug, project, environments }: {
+export function PrEnvironmentsSection({ organizationSlug, project, environments, branches }: {
   organizationSlug: string;
   project: Workspace["projects"][number];
   environments: Workspace["environments"];
+  branches: Workspace["branches"];
 }) {
   const plans = usePrEnvironmentPlans(organizationSlug, project);
   if (plans.length === 0) return null;
@@ -37,6 +39,7 @@ export function PrEnvironmentsSection({ organizationSlug, project, environments 
           const over = startFrom ?? project.resolvedEnvironment;
           return over && (
             <PlanRow key={plan.repositoryId} organizationSlug={organizationSlug} plan={plan} startFrom={startFrom}
+              open={openPrEnvironments(branches, project.id, plan.repositoryId).length}
               params={{ organizationSlug, projectSlug: project.slug, environmentSlug: over.namespace, repositoryId: String(plan.repositoryId) }} />
           );
         })}
@@ -45,10 +48,12 @@ export function PrEnvironmentsSection({ organizationSlug, project, environments 
   );
 }
 
-function PlanRow({ organizationSlug, plan, startFrom, params }: {
+function PlanRow({ organizationSlug, plan, startFrom, open, params }: {
   organizationSlug: string;
   plan: PrEnvironmentPlanRow;
   startFrom: Workspace["environments"][number] | undefined;
+  /** How many PR Environments are open for the repository. */
+  open: number;
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string; repositoryId: string };
 }) {
   const approve = useMissingPrEnvironmentGrant(organizationSlug, plan.installationId);
@@ -66,7 +71,10 @@ function PlanRow({ organizationSlug, plan, startFrom, params }: {
         <ItemDescription>{summary}</ItemDescription>
         {approve && <ItemDescription className="text-warning">Needs permissions approved on GitHub</ItemDescription>}
       </ItemContent>
-      <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+      <ItemActions>
+        {open > 0 && <span className="text-sm text-muted-foreground">{open} open</span>}
+        <ChevronRightIcon className="size-4 text-muted-foreground" />
+      </ItemActions>
     </Item>
   );
 }

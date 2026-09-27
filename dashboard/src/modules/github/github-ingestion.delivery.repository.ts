@@ -180,6 +180,8 @@ function processedEvidence(
     case "ignored_no_matching_service":
     case "ignored_fork":
     case "ignored_pull_request":
+    case "ignored_nothing_from_repository":
+    case "pull_request_projected":
       return { state: "processed", outcome };
     case "malformed":
     case "identity_unresolved":

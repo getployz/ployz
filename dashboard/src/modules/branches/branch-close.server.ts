@@ -19,7 +19,7 @@ import { Conflict, NotFound } from "#/server/public-error";
 import type { SetBranchKept } from "./branch-schemas";
 
 /** Why the system closes a Branch; a person closes one through the teardown's typed confirmation. */
-export type BranchCloseReason = "merged" | "idle";
+export type BranchCloseReason = "merged" | "idle" | "pull_request_closed";
 
 /**
  * The system closes a Branch (after a Merge, or when it sits idle) through the Environment teardown, which takes its
@@ -76,6 +76,18 @@ export const tryCloseBranch = (environmentId: string) => Effect.gen(function* ()
       return (yield* branchUnsettled(drizzle, environmentId)) ? null : yield* close.admit;
     })))));
 });
+
+/** Tears down a PR Environment with its pull request, kept or not; null when its teardown already runs. */
+export const closePrEnvironment = (environmentId: string) => Effect.gen(function* () {
+  const database = yield* Database;
+  const close = yield* closeBranch(environmentId, "pull_request_closed");
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* lockBranchScope(close.projectId, environmentId, "update");
+    yield* lockEnvironmentDeploymentQueues(close.environmentIds);
+    if ((yield* activeTeardownFor([environmentId])).size > 0) return null;
+    return yield* close.admit;
+  }));
+}).pipe(Effect.scoped);
 
 /**
  * A kept Branch stays after merging and never closes for being idle. Under its Branch row, which a close holds while it

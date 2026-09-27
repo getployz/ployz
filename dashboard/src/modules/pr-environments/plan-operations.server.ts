@@ -7,6 +7,7 @@ import { environment } from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 import { planRepositories } from "./repositories";
+import { isPrEnvironment } from "./pr-environment.repository.server";
 import type { SetPrEnvironmentPlan } from "./plan-schemas";
 import { prEnvironmentPlan } from "./tables";
 
@@ -25,9 +26,11 @@ export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function
       .from(environment).where(eq(environment.projectId, projectId));
     const repository = planRepositories(environments).find((candidate) => candidate.repositoryId === input.repositoryId);
     if (!repository) return yield* new Validation({ message: "No service in this project deploys from that repository." });
-    // ponytail: PR Environments aren't marked yet (#1166); refuse them here once they are.
     if (input.startFromEnvironmentId !== null && !environments.some((row) => row.id === input.startFromEnvironmentId)) {
       return yield* new Validation({ message: "Pick an environment of this project to start from." });
+    }
+    if (input.startFromEnvironmentId !== null && (yield* isPrEnvironment(input.startFromEnvironmentId))) {
+      return yield* new Validation({ message: "A PR environment can't be where PR environments start from." });
     }
     const key = and(eq(prEnvironmentPlan.projectId, projectId), eq(prEnvironmentPlan.repositoryId, input.repositoryId));
     const [existing] = yield* drizzle.select().from(prEnvironmentPlan).where(key).for("update");

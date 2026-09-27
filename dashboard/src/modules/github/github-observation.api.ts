@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { Cache, Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
 import {
   GITHUB_COMPARE_STATUSES,
+  githubBranchNameSchema,
   githubChangedPathsSchema,
   githubCheckSuiteConclusionSchema,
   githubCheckSuiteStatusSchema,
@@ -54,7 +55,8 @@ export type GithubObservationOperation =
   | "dispatch_workflow"
   | "cancel_run"
   | "fetch_run"
-  | "fetch_installation";
+  | "fetch_installation"
+  | "fetch_pull_request";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -139,6 +141,14 @@ const checkSuiteResponseSchema = Schema.Struct({
   status: githubCheckSuiteStatusSchema,
   conclusion: Schema.NullOr(githubCheckSuiteConclusionSchema),
   updated_at: githubTimestampSchema,
+});
+const pullRequestResponseSchema = Schema.Struct({
+  number: githubIdSchema,
+  state: Schema.Literals(["open", "closed"]),
+  title: Schema.String,
+  user: Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)), type: Schema.String }),
+  head: Schema.Struct({ ref: githubBranchNameSchema, sha: githubExactShaSchema }),
+  base: Schema.Struct({ ref: githubBranchNameSchema }),
 });
 const installationTokenResponseSchema = Schema.Struct({
   token: Schema.String.check(Schema.isMinLength(1)),
@@ -309,7 +319,7 @@ export const compareInstallationRepositoryCommits = Effect.fn(
       : [file.filename],
   );
   const canonicalPaths = yield* Schema.decodeUnknownEffect(
-    githubChangedPathsSchema,
+  githubChangedPathsSchema,
   )(paths).pipe(
     Effect.mapError(() =>
       githubObservationError({
@@ -368,6 +378,35 @@ export const fetchInstallationCheckSuite = Effect.fn(
     updatedAt: testimony.updated_at,
   };
 });
+
+/** A pull request as GitHub has it now, so a late or repeated delivery never acts on an older state. */
+export const fetchInstallationPullRequest = Effect.fn(
+  "Github.fetchInstallationPullRequest",
+)(function* (installationId: number, repositoryId: number, number: number) {
+  const operation = "fetch_pull_request";
+  if (!isValidGithubId(repositoryId) || !isValidGithubId(number)) {
+    return yield* githubObservationError({ code: "invalid_input", operation, retriable: false });
+  }
+  const api = yield* GithubApi;
+  const observed = yield* api.json({
+    installationId,
+    url: `https://api.github.com/repositories/${repositoryId}/pulls/${number}`,
+    operation,
+    schema: pullRequestResponseSchema,
+  });
+  if (observed.number !== number) {
+    return yield* githubObservationError({ code: "identity_mismatch", operation, retriable: false });
+  }
+  return {
+    open: observed.state === "open",
+    title: observed.title,
+    author: { login: observed.user.login, isBot: observed.user.type === "Bot" },
+    headBranch: observed.head.ref,
+    headSha: observed.head.sha,
+    targetBranch: observed.base.ref,
+  };
+});
+export type GithubPullRequestObservation = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
 
 export function createGithubAppJwt(input: {
   readonly appId: string;

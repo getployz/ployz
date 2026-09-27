@@ -1,10 +1,10 @@
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
-import { TriangleAlertIcon } from "lucide-react";
+import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection, type PrEnvironmentPlanRow } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
-import { Item, ItemContent, ItemDescription, ItemMedia } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import { listNames } from "#/modules/branches/branch-plan";
@@ -14,6 +14,7 @@ import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinations, trackedBranches } from "#/modules/pr-environments/destinations";
 import { usePrEnvironmentPlans, useSetPrEnvironmentPlan } from "#/modules/pr-environments/plan.collection";
 import { useMissingPrEnvironmentGrant } from "#/modules/pr-environments/plan.queries";
+import { openPrEnvironments } from "#/modules/pr-environments/pull-request";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useBranchPicking } from "../new-branch/branch-picking";
@@ -28,13 +29,14 @@ export function PrPlanPanel({ repositoryId }: { repositoryId: number }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const workspace = useWorkspace(params.organizationSlug);
   const project = workspace.projects.find((row) => row.slug === params.projectSlug);
-  return project && <Plan repositoryId={repositoryId} project={project} environments={workspace.environments} />;
+  return project && <Plan repositoryId={repositoryId} project={project} environments={workspace.environments} branches={workspace.branches} />;
 }
 
-function Plan({ repositoryId, project, environments: all }: {
+function Plan({ repositoryId, project, environments: all, branches }: {
   repositoryId: number;
   project: Workspace["projects"][number];
   environments: Workspace["environments"];
+  branches: Workspace["branches"];
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
@@ -44,6 +46,11 @@ function Plan({ repositoryId, project, environments: all }: {
   const approve = useMissingPrEnvironmentGrant(organizationSlug, plan?.installationId ?? 0);
   const environments = all.filter((environment) => environment.projectId === project.id)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const prEnvironmentIds = new Set(branches.flatMap((branch) => branch.prNumber === null ? [] : [branch.environmentId]));
+  const open = openPrEnvironments(branches, project.id, repositoryId).flatMap((branch) => {
+    const environment = environments.find((row) => row.id === branch.environmentId);
+    return environment ? [{ branch, environment }] : [];
+  });
   const { data: attempts } = useLiveSuspenseQuery(getEnvironmentDeploymentsCollection(organizationSlug, useCollectionScope()));
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
   const deployed = new Set(attempts.map((attempt) => attempt.environmentId));
@@ -72,7 +79,7 @@ function Plan({ repositoryId, project, environments: all }: {
   // Where merges land, by the Destinations rule over each Environment's latest Saved State.
   const candidates = environments.map((environment) => ({
     id: environment.id,
-    prEnvironment: false,
+    prEnvironment: prEnvironmentIds.has(environment.id),
     savedServices: changeStates.find((state) => state.environmentId === environment.id)?.saved?.nodes
       .flatMap((node) => node.nodeType === "service" ? [node.config] : []) ?? [],
   }));
@@ -111,7 +118,7 @@ function Plan({ repositoryId, project, environments: all }: {
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {environments.map((environment) => (
+                {environments.filter((environment) => !prEnvironmentIds.has(environment.id)).map((environment) => (
                   <SelectItem key={environment.id} value={environment.id} label={environment.name}>
                     {environment.name}
                     {!deployed.has(environment.id) && <span className="text-muted-foreground">not deployed</span>}
@@ -161,6 +168,26 @@ function Plan({ repositoryId, project, environments: all }: {
             <Switch id="pr-plan-bots" checked={plan.includeBots} onCheckedChange={(includeBots) => set({ includeBots })} />
           </Field>
         </FieldLabel>
+        {open.length > 0 && (
+          <FieldSet>
+            <FieldLegend>Open now</FieldLegend>
+            <ItemGroup className="gap-2">
+              {open.map(({ branch, environment }) => (
+                <Item key={environment.id} variant="outline" size="sm" render={
+                  <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
+                    params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
+                }>
+                  <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
+                  <ItemContent className="min-w-0">
+                    <ItemTitle>{environment.name} <span className="font-normal text-muted-foreground">#{branch.prNumber}</span></ItemTitle>
+                    <ItemDescription className="truncate">{branch.prTitle} · {branch.prAuthor}</ItemDescription>
+                  </ItemContent>
+                  <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+                </Item>
+              ))}
+            </ItemGroup>
+          </FieldSet>
+        )}
       </FieldGroup>
     </div>
   );

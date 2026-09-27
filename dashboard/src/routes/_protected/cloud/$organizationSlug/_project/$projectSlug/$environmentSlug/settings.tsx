@@ -144,6 +144,8 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
     .filter((environment) => environment.projectId === project.id)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const defaultEnvironment = project.resolvedEnvironment;
+  // A PR Environment can't be the Default Environment.
+  const prEnvironmentIds = new Set(branches.flatMap((branch) => branch.prNumber === null ? [] : [branch.environmentId]));
 
   return (
     <>
@@ -159,7 +161,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {environments.map((environment) => (
+                {environments.filter((environment) => !prEnvironmentIds.has(environment.id)).map((environment) => (
                   <SelectItem key={environment.id} value={environment.id} label={environment.name}>{environment.name}</SelectItem>
                 ))}
               </SelectGroup>
@@ -205,7 +207,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
           })}
         </ItemGroup>
       </section>
-      <PrEnvironmentsSection organizationSlug={organizationSlug} project={project} environments={environments} />
+      <PrEnvironmentsSection organizationSlug={organizationSlug} project={project} environments={environments} branches={branches} />
       {creating && <CreateEnvironmentDialog onOpenChange={setCreating} organizationSlug={organizationSlug} projectSlug={project.slug} />}
     </>
   );
