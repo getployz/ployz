@@ -38,3 +38,22 @@ export const SetBranchSetupDefaults = Schema.Struct({
   setupCommands: SetupCommands,
 });
 export type SetBranchSetupDefaults = typeof SetBranchSetupDefaults.Type;
+
+/** One ticked merge row; `value` is a new value in plain text, sealed on the server when the row is a secret. */
+export const MergePickSchema = Schema.Struct({
+  key: Schema.String,
+  option: Schema.optional(Schema.Literals(["from", "parent", "new", "leave_out"])),
+  value: Schema.optional(Schema.String),
+});
+export type MergePick = typeof MergePickSchema.Type;
+
+/** Stage the ticked rows of a Branch's review in its Destination; `review` is the review string the user saw. */
+export const MergeBranch = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  branchEnvironmentId: Uuid,
+  destinationRevision: Schema.String,
+  review: Schema.String,
+  picks: Schema.mutable(Schema.Array(MergePickSchema)),
+  thenClose: Schema.Boolean,
+});
+export type MergeBranch = typeof MergeBranch.Type;

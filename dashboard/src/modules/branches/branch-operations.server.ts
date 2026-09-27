@@ -125,44 +125,11 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   });
 
   // 3. Identity rows under core's fresh ids: lineage reused; names, policy, credentials and positions copied.
-  const services = yield* drizzle.select().from(service).where(eq(service.environmentId, parent.id));
-  const credentials = yield* drizzle.select().from(serviceRegistryCredential)
-    .where(inArray(serviceRegistryCredential.serviceId, services.map((row) => row.id)));
-  const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, parent.id));
-  const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, parent.id));
-  const copies: Array<{ from: string; to: string }> = [];
-  for (const node of next.services) {
-    const source = services.find((row) => row.lineageId === node.lineageId);
-    if (!source) return yield* Effect.die(`Parent service for lineage ${node.lineageId} is missing.`);
-    yield* drizzle.insert(service).values({
-      id: node.id, organizationId: project.organizationId, projectId: project.id, environmentId: document.id,
-      lineageId: node.lineageId, name: source.name, policy: source.policy, hasRegistryCredential: source.hasRegistryCredential,
-    });
-    const credential = credentials.find((row) => row.serviceId === source.id);
-    if (credential) yield* drizzle.insert(serviceRegistryCredential).values({
-      organizationId: project.organizationId, serviceId: node.id,
-      encryptedRegistryUsername: credential.encryptedRegistryUsername, encryptedRegistrySecret: credential.encryptedRegistrySecret,
-    });
-    copies.push({ from: source.id, to: node.id });
-  }
-  for (const node of next.volumes) {
-    const source = resources.find((row) => row.lineageId === node.resourceLineageId);
-    if (!source) return yield* Effect.die(`Parent volume for lineage ${node.resourceLineageId} is missing.`);
-    yield* drizzle.insert(environmentResource).values({
-      id: node.resourceId, organizationId: project.organizationId, projectId: project.id, environmentId: document.id,
-      lineageId: node.resourceLineageId, implementationType: "volume",
-    });
-    copies.push({ from: source.id, to: node.resourceId });
-  }
-  const copiedPositions = copies.flatMap(({ from: sourceId, to }) => positions
-    .filter((row) => row.resourceId === sourceId)
-    .map((row) => ({ organizationId: project.organizationId, environmentId: document.id, resourceType: row.resourceType, resourceId: to, x: row.x, y: row.y })));
-  if (copiedPositions.length) yield* drizzle.insert(environmentCanvasNodePosition).values(copiedPositions);
+  yield* copyIdentities({ project, from: parent.id, to: document.id, services: next.services, volumes: next.volumes });
 
   // 4. Working State, then each node's Node Introduction.
   const written = yield* writeEnvironmentDocument(document, next);
-  for (const node of next.services) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "service", nodeId: node.id });
-  for (const node of next.volumes) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "volume", nodeId: node.resourceId });
+  yield* captureIntroductions(document.id, next.services, next.volumes);
 
   // 5. The Branch row, with the base core returned.
   if (!base) return yield* Effect.die("Core returned no base for a new Branch.");
@@ -175,6 +142,61 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   }).returning();
   if (!branch) return yield* Effect.die("PostgreSQL did not return the Branch row.");
   return { environment: written, branch };
+});
+
+/**
+ * Identity rows for nodes arriving in `to` under core's fresh ids, each from its lineage's node in `from`: lineage
+ * reused; display name, Deployment Policy, registry credential and canvas position copied.
+ */
+export const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project, from, to, services: arriving, volumes: arrivingVolumes }: {
+  project: ProjectRow; from: string; to: string;
+  services: ReadonlyArray<{ id: string; lineageId: string }>;
+  volumes: ReadonlyArray<{ resourceId: string; resourceLineageId: string }>;
+}) {
+  const { drizzle } = yield* Database;
+  const services = yield* drizzle.select().from(service).where(eq(service.environmentId, from));
+  const credentials = services.length ? yield* drizzle.select().from(serviceRegistryCredential)
+    .where(inArray(serviceRegistryCredential.serviceId, services.map((row) => row.id))) : [];
+  const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, from));
+  const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, from));
+  const copies: Array<{ from: string; to: string }> = [];
+  for (const node of arriving) {
+    const source = services.find((row) => row.lineageId === node.lineageId);
+    if (!source) return yield* Effect.die(`Source service for lineage ${node.lineageId} is missing.`);
+    yield* drizzle.insert(service).values({
+      id: node.id, organizationId: project.organizationId, projectId: project.id, environmentId: to,
+      lineageId: node.lineageId, name: source.name, policy: source.policy, hasRegistryCredential: source.hasRegistryCredential,
+    });
+    const credential = credentials.find((row) => row.serviceId === source.id);
+    if (credential) yield* drizzle.insert(serviceRegistryCredential).values({
+      organizationId: project.organizationId, serviceId: node.id,
+      encryptedRegistryUsername: credential.encryptedRegistryUsername, encryptedRegistrySecret: credential.encryptedRegistrySecret,
+    });
+    copies.push({ from: source.id, to: node.id });
+  }
+  for (const node of arrivingVolumes) {
+    const source = resources.find((row) => row.lineageId === node.resourceLineageId);
+    if (!source) return yield* Effect.die(`Source volume for lineage ${node.resourceLineageId} is missing.`);
+    yield* drizzle.insert(environmentResource).values({
+      id: node.resourceId, organizationId: project.organizationId, projectId: project.id, environmentId: to,
+      lineageId: node.resourceLineageId, implementationType: "volume",
+    });
+    copies.push({ from: source.id, to: node.resourceId });
+  }
+  const copiedPositions = copies.flatMap((copy) => positions
+    .filter((row) => row.resourceId === copy.from)
+    .map((row) => ({ organizationId: project.organizationId, environmentId: to, resourceType: row.resourceType, resourceId: copy.to, x: row.x, y: row.y })));
+  if (copiedPositions.length) yield* drizzle.insert(environmentCanvasNodePosition).values(copiedPositions);
+});
+
+/** Each arrived node's Node Introduction; call after writing the Working State. */
+export const captureIntroductions = Effect.fn("Branches.captureIntroductions")(function* (
+  environmentId: string,
+  services: ReadonlyArray<{ id: string }>,
+  volumes: ReadonlyArray<{ resourceId: string }>,
+) {
+  for (const node of services) yield* captureEnvironmentNodeIntroduction({ environmentId, nodeType: "service", nodeId: node.id });
+  for (const node of volumes) yield* captureEnvironmentNodeIntroduction({ environmentId, nodeType: "volume", nodeId: node.resourceId });
 });
 
 /** The failed attempt's Saved configuration of one service. */
