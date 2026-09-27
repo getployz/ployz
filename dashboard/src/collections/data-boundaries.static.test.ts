@@ -99,7 +99,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
   "modules/deployments/deployment-commands.ts": "deploy and retry start runtime work",
-  "modules/pr-environments/conditional-save-commands.ts": "approving is checked against the server's recompute of the rows, and new values are sealed there",
+  "modules/pr-environments/conditional-save-commands.ts": "approve: the server assigns the approval's id; approve, Undo and a given value each change the pull request's check on GitHub, an external service",
   "modules/branches/branch-commands.ts": "createBranch: the server assigns a new Branch's ids, and creating it deploys; mergeBranch is destructive",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
