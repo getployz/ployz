@@ -880,13 +880,14 @@ describe("PR Environment lifecycle", () => {
           expect(await saves()).toEqual([]);
         });
 
-        it("saves at close past an older trigger still waiting for CI, when the processed head has the merge commit", async () => {
+        it("saves past an older trigger still waiting for CI once it's superseded, when the processed head has the merge commit", async () => {
           await waitForCi();
           await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
           await push("b".repeat(40), ["api/main.ts"]);
           await push(mergeSha, ["docs/readme.md"]);
           expect((await triggers()).find((row) => row.headSha === "b".repeat(40))?.admissionState).toBe("waiting");
           await pullRequest("merged", "closed", 142, merged);
+          await runEffect(resumeGithubWaitingTriggers());
           expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toEqual(plain("on"));
           expect(await saves()).toEqual([]);
         });
@@ -900,6 +901,19 @@ describe("PR Environment lifecycle", () => {
           expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toBeUndefined();
           expect((await saves()).map((row) => row.state)).toEqual(["standing"]);
           await pullRequest("synchronize", "synchronize", 142);
+          expect(await saves()).toEqual([]);
+        });
+
+        it("lands what a superseded trigger carried: an unlinked merge push waiting for CI, then an unwatched descendant, close, the sweep", async () => {
+          await waitForCi();
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await push(mergeSha, ["api/main.ts"]);
+          await push("f".repeat(40), ["docs/readme.md"]);
+          await pullRequest("merged", "closed", 142, merged);
+          expect((await triggers()).find((row) => row.headSha === mergeSha)?.conditionalSaveIds).toHaveLength(1);
+          await runEffect(resumeGithubWaitingTriggers());
+          expect((await triggers()).find((row) => row.headSha === mergeSha)?.admissionState).toBe("superseded");
+          expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toEqual(plain("on"));
           expect(await saves()).toEqual([]);
         });
 

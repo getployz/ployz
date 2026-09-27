@@ -40,7 +40,7 @@ import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
 } from "#/modules/deployments/admission.server";
-import { landCarried, landCarriedInIdle } from "#/modules/pr-environments/land.server";
+import { handOverCarried, landCarried, landCarriedInIdle } from "#/modules/pr-environments/land.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import {
   listLatestEnvironmentSavedStatesForGithubBranch,
@@ -365,7 +365,12 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
     ));
     const supersede = () => drizzle.update(schemaGithubEnvironmentTrigger).set({ admissionState: "superseded" })
       .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
-    if (branch?.evaluatedHeadSha !== trigger.headSha) { yield* supersede(); return null; }
+    if (branch?.evaluatedHeadSha !== trigger.headSha) {
+      // A newer push took over: what this one carries moves on, or is saved now.
+      yield* handOverCarried(trigger, document);
+      yield* supersede();
+      return null;
+    }
     const target = yield* loadLatestSavedDeploymentTarget(trigger.environmentId);
     const candidates = yield* savedStateCandidates({ ...target, environmentId: trigger.environmentId }, trigger);
     const triggerSelection = yield* Schema.decodeUnknownEffect(githubEnvironmentTriggerSelectionSchema)({ mode: trigger.selectionMode, reason: trigger.reason })
