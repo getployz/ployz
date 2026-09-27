@@ -189,14 +189,15 @@ export function CanvasFlow({
         </CanvasContextMenu>
       </div>
       <CanvasNodeList
+        environmentId={environmentId}
         services={activeServicesWithBoundEnv}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
         volumeResourcesById={volumeResourcesById}
       />
-      <div className="pointer-events-none absolute top-4 left-4">
-        <IdleCloseWarning organizationSlug={params.organizationSlug} environmentId={environmentId} />
-      </div>
+      {/* Phones show it at the top of the node list instead. */}
+      <IdleCloseWarning organizationSlug={params.organizationSlug} environmentId={environmentId}
+        className="absolute top-4 left-4 max-[860px]:hidden" />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
         <CanvasFinder nodes={findableNodes} />
         <Button

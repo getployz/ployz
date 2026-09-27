@@ -28,6 +28,7 @@ import {
   ENVIRONMENT_RESOURCE_ROUTE_TO,
 } from "../environment-route-paths";
 import { cn } from "#/lib/utils";
+import { IdleCloseWarning } from "./IdleCloseWarning";
 
 function ServiceListItem({
   serviceView,
@@ -112,11 +113,13 @@ function ServiceListItem({
 }
 
 export function CanvasNodeList({
+  environmentId,
   services,
   selectedNodeId,
   servicesById,
   volumeResourcesById,
 }: {
+  environmentId: string;
   services: EnvironmentServiceViewRecord[];
   selectedNodeId: string | null;
   servicesById: Map<string, CanvasServiceState>;
@@ -128,6 +131,7 @@ export function CanvasNodeList({
       className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
     >
       <div className="flex flex-col gap-3">
+        <IdleCloseWarning organizationSlug={params.organizationSlug} environmentId={environmentId} />
         {services.map((serviceView) => {
           const serviceState = servicesById.get(serviceView.service.id);
           return serviceState ? (

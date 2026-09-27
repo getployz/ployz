@@ -17,6 +17,9 @@ import { CanvasNodeList } from "./canvas/CanvasServiceList";
 import type { CanvasVolumeResourceState } from "./canvas/CanvasServicesContext";
 import { asTestDouble } from "#/lib/test-double";
 
+// The idle warning reads the Org Store, which this route-only test doesn't start.
+vi.mock("./canvas/IdleCloseWarning", () => ({ IdleCloseWarning: () => null }));
+
 let workspaceWidth = 1000;
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
 const volume = asTestDouble<CanvasVolumeResourceState>()({
@@ -52,6 +55,7 @@ function Architecture() {
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
       <CanvasNodeList
+        environmentId="production"
         services={[]}
         servicesById={new Map()}
         selectedNodeId={nodeId}
