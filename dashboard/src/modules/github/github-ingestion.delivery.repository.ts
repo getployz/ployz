@@ -718,29 +718,26 @@ type GithubDeliveryIdentity =
   | { eventKind: "check_suite"; checkSuiteId: number }
   | { eventKind: "pull_request"; pullRequestNumber: number };
 
-function identityColumn(identity: GithubDeliveryIdentity) {
+/** The delivery column each event kind's identity lives in, and its value. */
+function identityKey(identity: GithubDeliveryIdentity) {
   switch (identity.eventKind) {
     case "push":
-      return eq(schemaGithubWebhookDelivery.ref, identity.ref);
+      return { column: "ref", value: identity.ref } as const;
     case "check_suite":
-      return eq(schemaGithubWebhookDelivery.checkSuiteId, identity.checkSuiteId);
+      return { column: "checkSuiteId", value: identity.checkSuiteId } as const;
     case "pull_request":
-      return eq(
-        schemaGithubWebhookDelivery.pullRequestNumber,
-        identity.pullRequestNumber,
-      );
+      return { column: "pullRequestNumber", value: identity.pullRequestNumber } as const;
   }
 }
 
+function identityColumn(identity: GithubDeliveryIdentity) {
+  const { column, value } = identityKey(identity);
+  return eq(schemaGithubWebhookDelivery[column], value);
+}
+
 function identityMatches(row: DeliveryRow, identity: GithubDeliveryIdentity) {
-  switch (identity.eventKind) {
-    case "push":
-      return row.ref === identity.ref;
-    case "check_suite":
-      return row.checkSuiteId === identity.checkSuiteId;
-    case "pull_request":
-      return row.pullRequestNumber === identity.pullRequestNumber;
-  }
+  const { column, value } = identityKey(identity);
+  return row[column] === value;
 }
 
 export const completeGithubDelivery = Effect.fn("Github.completeDelivery")(
@@ -749,25 +746,7 @@ export const completeGithubDelivery = Effect.fn("Github.completeDelivery")(
       deliveryId: string;
       receiptSequence: number;
       processingRunId: string;
-      identity:
-        | {
-            eventKind: "push";
-            installationId: number;
-            repositoryId: number;
-            ref: string;
-          }
-        | {
-            eventKind: "check_suite";
-            installationId: number;
-            repositoryId: number;
-            checkSuiteId: number;
-          }
-        | {
-            eventKind: "pull_request";
-            installationId: number;
-            repositoryId: number;
-            pullRequestNumber: number;
-          };
+      identity: GithubDeliveryIdentity & { installationId: number; repositoryId: number };
     },
     outcome: GithubWebhookOutcome,
   ) {
