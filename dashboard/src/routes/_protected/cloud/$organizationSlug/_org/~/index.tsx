@@ -9,7 +9,7 @@ import { requireWorkspace } from "#/collections/route-data";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getRuntimeCollections } from "#/modules/runtime/runtime.collection";
+import { getRuntimeCollections, isIncompleteObservation } from "#/modules/runtime/runtime.collection";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
@@ -124,7 +124,7 @@ function ProjectsGrid({ organizationSlug, query }: { organizationSlug: string; q
   const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
   const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
   const { lensStatus, incompleteIds } = useRuntimeStatus();
-  const runtimeStatus = incompleteIds.machines.length || incompleteIds.containers.length ? "unavailable" : lensStatus;
+  const runtimeStatus = isIncompleteObservation(incompleteIds) ? "unavailable" : lensStatus;
   const { projects } = useWorkspace(organizationSlug);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredProjects = normalizedQuery

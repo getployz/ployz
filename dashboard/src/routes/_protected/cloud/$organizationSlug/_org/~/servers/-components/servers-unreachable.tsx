@@ -2,7 +2,7 @@ import { WifiOffIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 
-/** The Runtime Watch can't reach the cluster and has nothing cached to show. */
+/** The evidence is uncertain (the watch dropped or its observation is incomplete) and there is nothing to show. */
 export function ServersUnreachable() {
   return (
     <Empty variant="first-run">
@@ -14,7 +14,7 @@ export function ServersUnreachable() {
   );
 }
 
-/** The Runtime Watch dropped; what shows is its last observation. */
+/** The evidence is uncertain: the watch dropped or its observation is incomplete, so what shows may be out of date. */
 export function ServersStaleAlert() {
   return (
     <Alert>

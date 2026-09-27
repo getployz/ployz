@@ -135,6 +135,10 @@ export const runtimeIncompleteIdsSchema = Schema.Struct({
 
 export type RuntimeIncompleteIds = typeof runtimeIncompleteIdsSchema.Type;
 
+/** Machines or containers went unread, so what the observation shows may be missing things. */
+export const isIncompleteObservation = (ids: RuntimeIncompleteIds) =>
+  ids.machines.length > 0 || ids.containers.length > 0;
+
 export const EMPTY_RUNTIME_INCOMPLETE_IDS: RuntimeIncompleteIds = {
   machines: [],
   containers: [],
