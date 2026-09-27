@@ -1,12 +1,12 @@
 import { toast } from "sonner";
-import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { createOptimisticAction, useLiveQuery, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { getEnvironmentsCollection, getPrEnvironmentPlansCollection, prEnvironmentPlanKey, type PrEnvironmentPlanRow } from "#/collections/collections";
 import { observeFailure } from "#/collections/query-collection";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { VirtualRowProps } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
-import type { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { planRepositories } from "./repositories";
 import { setPrEnvironmentPlanServerFn } from "./plan-functions";
 
@@ -17,6 +17,25 @@ export function usePrEnvironmentPlans(organizationSlug: string, project: Project
   const scope = useCollectionScope();
   const { data: environments } = useLiveSuspenseQuery(getEnvironmentsCollection(organizationSlug, scope));
   const { data } = useLiveSuspenseQuery(getPrEnvironmentPlansCollection(organizationSlug, scope));
+  return projectPlans(project, environments, data);
+}
+
+/** One repository's plan, like `usePrEnvironmentPlans` but never suspending: undefined until loaded. */
+export function usePrEnvironmentPlan(organizationSlug: string, projectSlug: string, repositoryId: number | null) {
+  const scope = useCollectionScope();
+  const { projects } = useWorkspace(organizationSlug);
+  const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
+  const { data } = useLiveQuery(getPrEnvironmentPlansCollection(organizationSlug, scope));
+  const project = projects.find((row) => row.slug === projectSlug);
+  if (repositoryId === null || !project) return undefined;
+  return projectPlans(project, environments, data).find((plan) => plan.repositoryId === repositoryId);
+}
+
+function projectPlans(
+  project: Project,
+  environments: ReadonlyArray<{ projectId: string } & Parameters<typeof planRepositories>[0][number]>,
+  data: PrEnvironmentPlanRow[],
+) {
   // SAFETY: live-query rows carry TanStack's four virtual props at runtime, which the row type leaves out.
   const saved = new Map(data.map((row) => [prEnvironmentPlanKey(row), withoutVirtualProps(row as VirtualRowProps & typeof row)]));
   return planRepositories(environments.filter((environment) => environment.projectId === project.id)).map((repository): PrEnvironmentPlanRow =>
@@ -54,6 +73,6 @@ const getPlanAction = cachedByCollectionScope((organizationSlug, scope) => {
 export function useSetPrEnvironmentPlan(organizationSlug: string, projectSlug: string) {
   const save = getPlanAction(organizationSlug, useCollectionScope());
   return (plan: PrEnvironmentPlanRow, change: Partial<Pick<PrEnvironmentPlanRow,
-    "enabled" | "startFromEnvironmentId" | "picks" | "removeOnClose" | "includeBots">>) =>
+    "enabled" | "startFromEnvironmentId" | "picks" | "setupCommands" | "removeOnClose" | "includeBots">>) =>
     observeFailure(save({ projectSlug, plan: { ...plan, ...change } }));
 }

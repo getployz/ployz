@@ -41,7 +41,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
   const [setupCommands, setSetupCommands] = useState(() => document?.branchSetupCommands ?? []);
   if (!picking) return null;
 
-  const { parent, intent, plan, presets, focus, picks, owned } = picking;
+  const { parent, intent, plan, presets, focus, picks } = picking;
   const own = ownLineages(plan);
   const nameOf = (lineage: string) => lineageName(lineage, environmentId);
   const rootId = ancestors(parent.id, branches).at(-1);
@@ -83,7 +83,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
         </p>
       </CanvasInspectorHeader>
       <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
-        <WhatComesAlongSection plan={plan} presets={presets} nameOf={nameOf} owned={owned} parentName={parent.name}
+        <WhatComesAlongSection plan={plan} presets={presets} nameOf={nameOf} fixed={picking.fixed} fromPr={picking.fromPr} parentName={parent.name}
           ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle} />
         <DataSection plan={plan} liveOwner={picking.liveOwner} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf}
           setupCommands={setupCommands} onSetupCommands={setSetupCommands} />

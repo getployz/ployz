@@ -36,7 +36,7 @@ export type CanvasInspectorSelection = {
   /** A Branch's review page is open over its canvas. */
   branchReview: boolean;
   /** A repository's PR Environments plan page is open over its start-from Environment's canvas. */
-  prPlan: boolean;
+  prPlan: { repositoryId: number } | null;
   isInspectorOpen: boolean;
 };
 
@@ -95,7 +95,7 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     deploymentList: deploymentListMatch != null,
     newBranch: newBranchMatch ? { focus: newBranchMatch.search.focus ?? null } : null,
     branchReview: branchReviewMatch != null,
-    prPlan: prPlanMatch != null,
+    prPlan: prPlanMatch ? { repositoryId: Number(prPlanMatch.params.repositoryId) } : null,
     isInspectorOpen: selectedNodeId != null,
   };
 }

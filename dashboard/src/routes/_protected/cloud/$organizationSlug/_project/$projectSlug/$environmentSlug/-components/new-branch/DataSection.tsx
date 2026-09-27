@@ -12,7 +12,7 @@ import { SetupCommandsField } from "./SetupCommandsField";
  * Where the Branch's data comes from: Own Copies of Volumes start empty (copying data is Soon), and a Live Node that owns
  * data, by its owner's Applied State, is that owner's real data. Setup Commands then run in the Branch's own services.
  */
-export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, setupCommands, onSetupCommands }: {
+export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, setupCommands, onSetupCommands, onSetupBlur, setupHelp }: {
   plan: BranchPlan;
   liveOwner: (lineage: string) => LiveNodeOwner | null;
   parentName: string;
@@ -20,7 +20,9 @@ export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, set
   rootName: string | null;
   nameOf: (lineage: string) => string;
   setupCommands: SetupCommand[];
-  onSetupCommands: (next: SetupCommand[]) => void;
+  onSetupCommands: (next: SetupCommand[], typed?: boolean) => void;
+  onSetupBlur?: () => void;
+  setupHelp?: string;
 }) {
   const own = plan.nodes.filter((node) => node.role === "own" && node.nodeType === "volume").map((node) => nameOf(node.lineageId));
   // Each owner's Live Nodes that keep data, by owner name.
@@ -53,8 +55,8 @@ export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, set
         {ownServices.length > 0 && (
           <Field>
             <FieldLabel htmlFor="branch-setup-command">Then run</FieldLabel>
-            <SetupCommandsField id="branch-setup-command" commands={setupCommands} services={ownServices} onChange={onSetupCommands} />
-            <FieldDescription>Runs in the service's new image before it first starts, until it deploys once. Use it to migrate or seed.</FieldDescription>
+            <SetupCommandsField id="branch-setup-command" commands={setupCommands} services={ownServices} onChange={onSetupCommands} onBlur={onSetupBlur} />
+            <FieldDescription>{setupHelp ?? "Runs in the service's new image before it first starts, until it deploys once. Use it to migrate or seed."}</FieldDescription>
           </Field>
         )}
       </>}
