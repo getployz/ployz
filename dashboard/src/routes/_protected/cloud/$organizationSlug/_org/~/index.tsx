@@ -100,8 +100,8 @@ function RouteComponent() {
 
   return (
     <DashboardPage>
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Projects</h1>
+      {/* The top bar names the page. */}
+      <div className="flex justify-end">
         <CreateProjectButton organizationSlug={organizationSlug} />
       </div>
       <div className="w-full sm:max-w-xs">

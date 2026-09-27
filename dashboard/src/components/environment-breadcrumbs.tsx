@@ -7,12 +7,13 @@ import { getEnvironmentsCollection, getEnvironmentSummariesCollection, environme
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
   getDashboardDestination,
+  getDashboardSectionLabel,
   type DashboardDestination,
   type DashboardScope,
   type DashboardSection,
 } from "#/components/dashboard-navigation-model";
 import { useDashboardSection } from "#/components/use-dashboard-section";
-import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
+import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -31,24 +32,16 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
-import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
-/** The Environment page's top bar: where you are, each crumb a switcher. */
-export function EnvironmentTopBar({ scope }: { scope: EnvironmentScope }) {
-  return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
-      <EnvironmentCrumbs scope={scope} />
-      <div className="ml-auto min-wf-nav:hidden"><DashboardAccountMenu /></div>
-    </header>
-  );
-}
-
+/** `project / environment`, each crumb a switcher; places other than Canvas add their name. */
 export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
+  const section = useDashboardSection();
   return <Crumbs items={[
     <ProjectCrumb key="project" scope={scope} />,
     <EnvironmentCrumb key="environment" scope={scope} />,
+    ...section === "canvas" ? [] : [<BreadcrumbPage key="place" className="px-2 font-medium">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;
 }
 
@@ -72,18 +65,26 @@ export function Crumbs({ items }: { items: ReactNode[] }) {
           </BreadcrumbItem>
           <BreadcrumbSeparator className="min-wf-nav:hidden">/</BreadcrumbSeparator>
         </> : null}
-        {items.map((item, index) => {
-          const hiddenOnPhones = index < collapsed.length ? "hidden min-wf-nav:inline-flex" : undefined;
-          return <Crumb key={index} className={hiddenOnPhones} separator={index > 0}>{item}</Crumb>;
-        })}
+        {items.map((item, index) => (
+          // The "…" menu brings its own separator, so the first visible crumb's is desktop-only too.
+          <Crumb key={index} className={index < collapsed.length ? phonesHidden : undefined}
+            separator={index > 0} separatorClassName={index <= collapsed.length ? phonesHidden : undefined}>{item}</Crumb>
+        ))}
       </BreadcrumbList>
     </Breadcrumb>
   );
 }
 
-function Crumb({ className, separator, children }: { className?: string; separator: boolean; children: ReactNode }) {
+const phonesHidden = "hidden min-wf-nav:inline-flex";
+
+function Crumb({ className, separator, separatorClassName, children }: {
+  className?: string | undefined;
+  separator: boolean;
+  separatorClassName?: string | undefined;
+  children: ReactNode;
+}) {
   return <>
-    {separator ? <BreadcrumbSeparator className={className}>/</BreadcrumbSeparator> : null}
+    {separator ? <BreadcrumbSeparator className={separatorClassName}>/</BreadcrumbSeparator> : null}
     <BreadcrumbItem className={className ?? "min-w-0"}>{children}</BreadcrumbItem>
   </>;
 }
@@ -141,7 +142,7 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup>
-                <CommandItem value="all-projects" onSelect={() => go(getDashboardDestination({ kind: "all", organizationSlug: scope.organizationSlug }, "overview"))}>
+                <CommandItem value="all-projects" onSelect={() => go(getDashboardDestination({ kind: "all", organizationSlug: scope.organizationSlug }, "projects"))}>
                   <LayoutGridIcon />All projects
                 </CommandItem>
               </CommandGroup>

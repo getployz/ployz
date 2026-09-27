@@ -24,6 +24,8 @@ import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
+import { CanvasFinder } from "./CanvasFinder";
+import { useEnvironmentNavigationNodes } from "../environment-node-navigation";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
@@ -77,6 +79,7 @@ export function CanvasFlow({
     organizationId,
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
+  const findableNodes = useEnvironmentNavigationNodes(params).nodes;
   const {
     canvasChangeState,
     diffGroups,
@@ -189,6 +192,7 @@ export function CanvasFlow({
         volumeResourcesById={volumeResourcesById}
       />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <CanvasFinder nodes={findableNodes} />
         <Button
           className="pointer-events-auto"
           onClick={() => creator.openCreatorAtCenter()}

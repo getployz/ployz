@@ -106,7 +106,7 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.xl}"
     padding: "16px"
-  sidebar-item-active:
+  nav-item-active:
     backgroundColor: "{colors.surface-muted}"
     textColor: "{colors.ink}"
     typography: "{typography.body}"
@@ -245,12 +245,15 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 ### Navigation
 
-- The application uses a 64px top navigation and a 256px expanded sidebar, collapsing structurally on smaller viewports.
-- Every Environment page's top bar says where you are with breadcrumbs, `project / environment`. Each crumb opens its switcher, and switching keeps the current place. On phones the path keeps its last two crumbs and moves the rest into a "…" menu; the bar never wraps.
+- An Environment has four places: **Canvas**, **Deployments**, **Logs** and **Settings**. On desktop they sit in a slim rail, each an icon over its label; on phones the same four fill a bottom tab bar. The current place uses a muted neutral surface and medium weight, never the staged-intent color.
+- The logo tops the rail and opens Projects. The avatar sits at the bottom and holds the organization's pages (Projects, Servers, Server Settings, and Billing where billing exists), organization switching and Theme. Organization pages show only the logo and the avatar in the rail.
+- One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't the Canvas. Each crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.
 - The Environment switcher notes the Default Environment and ends with **Manage environments**, which opens Settings → Project.
 - Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environments (each with its services-online summary and a Default chip, opening that Environment) and project teardown. Environment holds this Environment's teardown.
-- Items are 32px high with 10px corners. Active location uses a muted neutral surface and medium weight, not the staged-intent color.
-- Navigation labels remain visible whenever width permits; icon-only states always provide accessible names and either tooltips or labelled hover menus.
+- The canvas's **Find** button and the `/` key open the resource finder; `/` never fires while typing in a field.
+- Icon-only controls always have an accessible name and a tooltip.
+
+**The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
 
 ### Apply Changes
 

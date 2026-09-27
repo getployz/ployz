@@ -52,7 +52,6 @@ const AuthSession = Schema.Struct({
     userId: Schema.String,
     activeOrganizationId: Schema.optionalKey(Schema.NullOr(Schema.String)),
     activeOrganizationSlug: Schema.optionalKey(Schema.NullOr(Schema.String)),
-    sidebarOpen: Schema.optionalKey(Schema.Boolean),
   }),
   user: Schema.Struct({
     id: Schema.String,
