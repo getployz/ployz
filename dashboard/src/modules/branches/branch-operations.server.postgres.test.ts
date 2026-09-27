@@ -14,7 +14,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { createBranch } from "./branch-operations.server";
-import { recordInngestRun } from "#/modules/deployments/runtime-lifecycle.repository.server";
+import { beginEnvironmentDeploymentPlanning, recordInngestRun } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import type { CreateBranch } from "./branch-schemas";
 
 const organizationId = "00000000-0000-4000-8000-000000000301";
@@ -173,12 +173,48 @@ describe("createBranch", () => {
     expect(attempts[0]?.setupCommands).toEqual({ [webNode?.id ?? ""]: ["pnpm db:seed"] });
     expect(inngest.send).toHaveBeenCalledTimes(1);
 
-    // Queued behind ("Deploy next") an attempt that then first deploys web, it drops web's command as it starts.
-    await harness.db.update(schema.service).set({ firstDeployedAt: new Date() }).where(eq(schema.service.id, webNode?.id ?? ""));
-    await harness.db.update(schema.environmentDeployment).set({ dispatchRequestedAt: new Date() })
-      .where(eq(schema.environmentDeployment.id, data.deploymentId ?? ""));
-    expect(await harness.runEffect(recordInngestRun({ environmentDeploymentId: data.deploymentId ?? "", runId: "run-2" }))).toBe(true);
-    expect((await attemptsOf(branchId))[0]?.setupCommands).toEqual({});
+  });
+
+  it("runs a Setup Command queued behind the first deploy only if that deploy failed", async () => {
+    const { data } = await create({ setupCommands: [{ lineageId: webLineage, command: "pnpm db:seed" }] });
+    const [first] = await attemptsOf(data.environment.id);
+    if (!first) throw new Error("No first attempt.");
+    // The first has started its run and is deploying; web isn't first deployed until it applies.
+    expect(await harness.runEffect(recordInngestRun({ environmentDeploymentId: first.id, runId: "run-first" }))).toBe(true);
+    const deploying = (id: string) => harness.db.update(schema.environmentDeployment).set({ status: "deploying" })
+      .where(eq(schema.environmentDeployment.id, id));
+    await deploying(first.id);
+    // "Deploy next": a second attempt admitted while the first runs, with the same frozen command, already claiming its run.
+    const next = async () => {
+      const id = randomUUID();
+      await harness.db.insert(schema.environmentDeployment).values({
+        id, organizationId, environmentId: data.environment.id, savedStateSnapshotId: first.savedStateSnapshotId, status: "queued",
+        triggerOrigin: { origin: "manual", actorId: userId }, setupCommands: first.setupCommands, dispatchRequestedAt: new Date(),
+      });
+      expect(await harness.runEffect(recordInngestRun({ environmentDeploymentId: id, runId: `run-${id}` }))).toBe(true);
+      return id;
+    };
+    const planned = async (id: string) => {
+      expect(await harness.runEffect(beginEnvironmentDeploymentPlanning({ environmentDeploymentId: id, expectedInngestRunId: `run-${id}` })
+        .pipe(Effect.provideService(InngestClient, inngest)))).toEqual({ state: "started" });
+      return (await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, id)))[0]?.setupCommands;
+    };
+    const webId = Object.keys(first.setupCommands)[0] ?? "";
+
+    // The first fails: web never deployed, so the next still seeds it.
+    const afterFailure = await next();
+    await harness.db.update(schema.environmentDeployment).set({ status: "failed", finishedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, first.id));
+    expect(await planned(afterFailure)).toEqual({ [webId]: ["pnpm db:seed"] });
+
+    // It deploys and succeeds (web first deployed) while another waits behind it: that one drops the command when its
+    // turn comes.
+    await deploying(afterFailure);
+    const afterSuccess = await next();
+    await harness.db.update(schema.environmentDeployment).set({ status: "applied", finishedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, afterFailure));
+    await harness.db.update(schema.service).set({ firstDeployedAt: new Date() }).where(eq(schema.service.id, webId));
+    expect(await planned(afterSuccess)).toEqual({});
   });
 
   it("keeps a root Parent's hostname whole, even when it ends in the root's own suffix", async () => {

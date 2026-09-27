@@ -5,7 +5,7 @@ import { Cause, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
-import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
 import { dueForIdleClose } from "#/modules/branches/idle-close";
 import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
@@ -41,6 +41,8 @@ export const closeBranch = Effect.fn("Branches.close")(function* (environmentId:
   const prepared = yield* prepareSystemTeardown({ organizationId: branch.organizationId, environmentId });
   return {
     projectId: branch.projectId,
+    /** The Environments the teardown removes (the Branch and its Branches): their queues come before any document. */
+    environmentIds: prepared.expected,
     admit: Effect.gen(function* () {
       const attempt = yield* admitSystemTeardown(prepared, requestedByUserId);
       yield* afterDatabaseCommit(Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId, teardownAttemptId: attempt.id }));
@@ -67,9 +69,9 @@ export const tryCloseBranch = (environmentId: string) => Effect.gen(function* ()
       const row = yield* lockBranchScope(close.projectId, environmentId, "update");
       if (!row || row.kept) return null;
       // Anything staged or deploying since the Merge stays: under the Branch's queue and document locks, which a deploy and
-      // an edit take, the Branch must still run exactly its Working State.
+      // an edit take, the Branch must still run exactly its Working State. Every queue the teardown takes comes first.
       const { drizzle } = yield* Database;
-      yield* lockEnvironmentDeploymentQueue(environmentId);
+      yield* lockEnvironmentDeploymentQueues(close.environmentIds);
       yield* loadEnvironmentDocument(environmentId, true);
       return (yield* branchUnsettled(drizzle, environmentId)) ? null : yield* close.admit;
     })))));
@@ -114,9 +116,9 @@ export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now:
     "An idle Branch did not close; the next sweep retries it.",
     closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       // The rule again, in lock order (lockProjectDefault): the Project (a new Branch of it and a Default change wait),
-      // the Branch row (Keep, Merge and Update wait), then its queue (a deploy waits).
+      // the Branch row (Keep, Merge and Update wait), then the queues the teardown takes (a deploy waits).
       yield* lockBranchScope(close.projectId, environmentId, "update");
-      yield* lockEnvironmentDeploymentQueue(environmentId);
+      yield* lockEnvironmentDeploymentQueues(close.environmentIds);
       if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;
       return yield* close.admit;
     })))),
