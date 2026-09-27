@@ -277,15 +277,16 @@ Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt
 
 One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It shows one thing at a time, the first that applies:
 
-1. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
-2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
-3. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**.
-4. **On a Branch, updates from its Parent:** "N updates from X" and **Review**.
-5. Otherwise, no bar.
+1. **A starting point:** "X isn't deployed" and **New branch**. Its staged nodes are what Branches of it copy, not pending work, so the bar doesn't count them; its review page still lists them under **Not deployed here yet**.
+2. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
+3. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
+4. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**.
+5. **On a Branch, updates from its Parent:** "N updates from X" and **Review**.
+6. Otherwise, no bar.
 
 On a Branch, Review opens the Branch's review page instead of a dialog: a panel over its canvas with the whole relationship to its Parent, in order: **Not deployed here yet** (the staged-changes review), **Merge into X**, **New in X** (including Live Nodes their owner redeployed since this Branch last deployed), and **Meant to differ**, each with a plain reason. A conflict, a setting the Parent also changed since branching, reads old → new with a marker.
 
-Merge never deploys. Each change under **Merge into X** has a tick, and each variable a value choice: this Branch's, the Parent's, a new one, or leave it out; a new secret asks for X's value. Merge stays disabled, with the reason, while anything is staged on the Branch or an attempt of it is active, so only what runs there merges. It stages the ticked changes in X and lands on X's canvas, whose bottom bar shows them; X's own Review → Deploy ships them. **Then close** says Merge closes the Branch; a Kept Branch doesn't show it, and the Default Environment can't turn it on.
+Merge never deploys. Each change under **Merge into X** has a tick, and each variable a value choice: this Branch's, the Parent's, a new one, or leave it out; a new secret asks for X's value. Merge stays disabled, with the reason, while anything is staged on the Branch (a starting point's nodes too) or an attempt of it is active, so only what runs there merges. It stages the ticked changes in X and lands on X's canvas, whose bottom bar shows them; X's own Review → Deploy ships them. **Then close** says Merge closes the Branch; a Kept Branch doesn't show it, and the Default Environment can't turn it on.
 
 Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
