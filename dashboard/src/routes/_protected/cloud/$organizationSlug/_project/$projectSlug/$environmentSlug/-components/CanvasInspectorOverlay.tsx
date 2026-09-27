@@ -4,9 +4,9 @@ import {
 } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
-import { InspectorPresentation } from "./CanvasInspectorHeader";
+import { InspectorPresentation, inspectorExit } from "./CanvasInspectorHeader";
 
 export function CanvasInspectorOverlay({
   children,
@@ -55,10 +55,7 @@ export function CanvasInspectorOverlay({
 
   const returnTo = selection?.returnTo ?? null;
   function closeInspector() {
-    const viewTransition = { types: ["canvas-inspector-close"] };
-    void (returnTo
-      ? navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: returnTo }, search: { tab: "deployments" }, viewTransition })
-      : navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (previous) => ({ ...previous, tab: undefined }), viewTransition }));
+    void navigate(inspectorExit(params, returnTo));
   }
 
   return (

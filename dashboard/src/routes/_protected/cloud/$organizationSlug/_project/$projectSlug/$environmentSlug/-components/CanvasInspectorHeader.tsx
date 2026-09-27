@@ -1,6 +1,6 @@
 import { cn } from "#/lib/utils";
-import { createContext, useContext, type ComponentProps, type ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
+import { createContext, useContext, type ReactNode } from "react";
+import { Link, linkOptions } from "@tanstack/react-router";
 import { ArrowLeftIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -29,11 +29,11 @@ export function CanvasInspectorHeader({ params, children }: {
   const { takeover, toggleFullscreen, returnTo } = presentation;
   const back = returnTo ? "Back to service" : "Back to Canvas";
   const returnLink = (
-    <ExitLink params={params} returnTo={returnTo}
+    <Link {...inspectorExit(params, returnTo)}
       className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-back")}
       data-canvas-inspector-exit aria-label={back} title={back}>
       <ArrowLeftIcon />
-    </ExitLink>
+    </Link>
   );
 
   return (
@@ -52,21 +52,21 @@ export function CanvasInspectorHeader({ params, children }: {
           {takeover ? <Minimize2Icon /> : <Maximize2Icon />}
         </Button>
         {!takeover ? (
-          <ExitLink params={params} returnTo={returnTo}
+          <Link {...inspectorExit(params, returnTo)}
             className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-close")}
             data-canvas-inspector-exit data-canvas-inspector-desktop-control aria-label="Close inspector" title="Close inspector">
             <XIcon />
-          </ExitLink>
+          </Link>
         ) : null}
       </div>
     </div>
   );
 }
 
-/** Leaves the panel: back to the service panel that opened it, else to the canvas. */
-function ExitLink({ params, returnTo, ...props }: { params: CanvasInspectorHeaderParams; returnTo: string | null } & ComponentProps<"a">) {
-  const transition = { types: ["canvas-inspector-close"] };
+/** Where leaving a panel goes: back to the service panel that opened it (its Deployments tab), else to the canvas. */
+export function inspectorExit(params: CanvasInspectorHeaderParams, returnTo: string | null) {
+  const viewTransition = { types: ["canvas-inspector-close"] };
   return returnTo
-    ? <Link {...props} to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: returnTo }} search={{ tab: "deployments" }} viewTransition={transition} />
-    : <Link {...props} to={ENVIRONMENT_INDEX_ROUTE_TO} params={params} search={(previous) => ({ ...previous, tab: undefined })} viewTransition={transition} />;
+    ? linkOptions({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: returnTo }, search: { tab: "deployments" }, viewTransition })
+    : linkOptions({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {}, viewTransition });
 }
