@@ -93,7 +93,7 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
 }
 
 export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: TargetNode[]; view: DeploymentView };
-/** The attempt Deployment Mode shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
+/** The attempt a Deployment Page shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
 export type ViewedAttempt = DeploymentAttempt & { buildPending: boolean };
 
 /** An environment's attempts in the Org Store, newest first. */
@@ -115,7 +115,7 @@ function viewAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildL
 }
 
 /**
- * The attempt Deployment Mode shows, through the deployment view projection; null when the environment has no such attempt.
+ * The attempt a Deployment Page shows, through the deployment view projection; null when the environment has no such attempt.
  * An attempt the Org Store holds needs no read; one outside it comes from its per-attempt Remote Read, `pending` until it
  * arrives. `buildLog` also reads the attempt's Build Steps and output tails (polled until it finishes) for per-image build
  * stages and tails.
