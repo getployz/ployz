@@ -98,9 +98,16 @@ it("lists Environments as a tree, each Branch under its Parent, noting the defau
   fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
   await screen.findByRole("option", { name: "Production, default" });
   expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
-    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "Manage environments",
+    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "New branch of Production", "Manage environments",
   ]);
   expect(screen.queryByRole("option", { name: /New environment/u })).toBeNull();
+});
+
+it("offers New branch of the current Environment, which opens the panel over its canvas", async () => {
+  await using app = await renderAt("/cloud/acme/store/production/logs");
+  fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
+  fireEvent.click(await screen.findByRole("option", { name: "New branch of Production" }));
+  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/production/new-branch"));
 });
 
 it("reads project / Parent ⑂ Branch on a Branch, and the Parent's crumb opens the Parent in the same place", async () => {

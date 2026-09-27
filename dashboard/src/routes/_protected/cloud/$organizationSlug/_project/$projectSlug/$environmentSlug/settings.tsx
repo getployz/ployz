@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
-import { ChevronRightIcon, GitBranchIcon, PlusIcon } from "lucide-react";
+import { ChevronRightIcon, GitBranchIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { Effect, Option, Schema } from "effect";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
@@ -97,7 +97,7 @@ function RouteComponent() {
           />
         </TabsContent>
         <TabsContent value="project" className="mt-6 flex flex-col gap-8">
-          {project && <ProjectSettings organizationSlug={organizationSlug} project={project} branches={branches} />}
+          {project && <ProjectSettings organizationSlug={organizationSlug} project={project} branches={branches} environmentSlug={environmentSlug} />}
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="project"
@@ -115,8 +115,10 @@ function RouteComponent() {
   );
 }
 
-function ProjectSettings({ organizationSlug, project, branches }: {
+function ProjectSettings({ organizationSlug, project, branches, environmentSlug }: {
   organizationSlug: string;
+  /** The current Environment, which "New branch" branches. */
+  environmentSlug: string;
   project: ReturnType<typeof useWorkspace>["projects"][number];
   branches: ReturnType<typeof useWorkspace>["branches"];
 }) {
@@ -154,9 +156,15 @@ function ProjectSettings({ organizationSlug, project, branches }: {
         </Field>
       </section>
       <section aria-labelledby="project-environments-heading" className="flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 id="project-environments-heading" className="text-base font-semibold">Environments</h2>
-          <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
+          <div className="flex gap-2">
+            <Button variant="outline" nativeButton={false} render={<Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"
+              params={{ organizationSlug, projectSlug: project.slug, environmentSlug }} />}>
+              <GitBranchPlusIcon data-icon="inline-start" />New branch
+            </Button>
+            <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
+          </div>
         </div>
         <ItemGroup className="gap-2">
           {environmentTree(environments, branches).map(({ environment, depth, parent }) => {
