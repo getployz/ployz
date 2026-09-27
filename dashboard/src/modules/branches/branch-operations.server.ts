@@ -10,7 +10,8 @@ import { withMutationResult } from "#/server/mutation-result.server";
 import { environment, environmentBranch, type project } from "#/modules/project/tables";
 import { environmentCanvasNodePosition, environmentResource, service, serviceRegistryCredential } from "#/modules/environment-design/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
-import { createEnvironmentRecord } from "#/modules/environment-design/workspace-repository.server";
+import { createEnvironmentRecord, lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { loadCurrentEnvironmentSnapshotProjection, loadCurrentEnvironmentState, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { captureEnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introduction.repository.server";
 import { emptyEnvironmentIntent, parseDashboardEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
@@ -76,6 +77,12 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   actor: Actor; project: ProjectRow; parent: EnvironmentRow; input: CreateBranch;
 }) {
   const { drizzle } = yield* Database;
+  // Under the Project lock teardown admission takes: a Parent that is being torn down gets no new Branch, and one torn
+  // down after this commits takes the new Branch with it.
+  yield* lockProjectDefault(project.id);
+  if ((yield* activeTeardownFor([parent.id])).size > 0) {
+    return yield* new Conflict({ message: `${parent.name} is being torn down.` });
+  }
   const { intent: working } = yield* loadCurrentEnvironmentState(parent.id);
   const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: parent.id });
   const applied = projection.explicitStates.find((state) => state.environmentId === parent.id)?.applied.nodes ?? [];

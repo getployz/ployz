@@ -1,3 +1,5 @@
+import type { VirtualRowProps } from "@tanstack/react-db";
+import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { toast } from "sonner";
 import { environmentManager, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { createOptimisticAction, useLiveQuery } from "@tanstack/react-db";
@@ -98,7 +100,8 @@ export function useWorkspace(organizationSlug: string) {
   return {
     projects: resolveProjects(projects.data, environmentRows),
     environments: environmentRows,
-    branches: branches.data,
+    // SAFETY: live-query rows carry TanStack's four virtual props at runtime, which the row type leaves out.
+    branches: branches.data.map((branch) => withoutVirtualProps(branch as VirtualRowProps & typeof branch)),
     isPending: projects.isLoading || environments.isLoading || branches.isLoading,
     isError,
     refetch: () => Promise.all(Object.values(collections).map((collection) => collection.utils.refetch())),

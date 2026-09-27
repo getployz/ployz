@@ -19,7 +19,7 @@ import {
   createProject,
   getProjectContextForActor,
   listOrganizationsForActor,
-  lockProjectRow,
+  lockProjectDefault,
   setDefaultEnvironment,
   updateActorSessionsOrganization,
 } from "./workspace-repository.server";
@@ -137,7 +137,7 @@ export const setProjectDefaultEnvironment = Effect.fn(
   const database = yield* Database;
   // Under the Project row, so an idle close admitting this Environment's teardown either sees the new default or runs first.
   return yield* database.transaction(Effect.gen(function* () {
-    yield* lockProjectRow(context.project.id);
+    yield* lockProjectDefault(context.project.id);
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: "This environment is being torn down." });
     const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
     if (project === null) {

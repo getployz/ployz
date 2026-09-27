@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { getBranchesCollection, getEnvironmentDeploymentsCollection, getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
@@ -42,8 +42,12 @@ export function useIdleClose(organizationSlug: string, environmentId: string) {
   const { data: branches } = useLiveSuspenseQuery(getBranchesCollection(organizationSlug, scope));
   const { data: projects } = useLiveSuspenseQuery(getProjectsCollection(organizationSlug, scope));
   const { data: deployments } = useLiveSuspenseQuery(getEnvironmentDeploymentsCollection(organizationSlug, scope));
-  // ponytail: read once per mount; the warning moves in whole days, so a stale hour doesn't matter.
-  const [now] = useState(() => new Date());
+  // ponytail: the time moves hourly; the warning counts whole days, so an hour late doesn't matter.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
   const latest = deployments
     .filter((deployment) => deployment.environmentId === environmentId)
     .reduce<Date | undefined>((at, deployment) => (at && at > deployment.createdAt ? at : deployment.createdAt), undefined);

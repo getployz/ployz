@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { branchChanges, type BranchPick } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { environmentBranch } from "#/modules/project/tables";
@@ -66,9 +66,12 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     if (rows.review !== input.review) return yield* new Conflict({ message: "Changes moved after this review. Review them again." });
 
     // 4. Apply the picks with core; new values are sealed here, never in the browser.
+    // A new value, secret or not, lands; an empty one would leave the change behind in a Branch that may close.
+    const empty = input.picks.find((pick) => pick.option === "new" && pick.value === "");
+    if (empty) return yield* new Validation({ field: "picks", message: `Enter a new value for ${empty.key.slice(empty.key.indexOf(".") + 1)}.` });
     const refs = environmentVariableReferences(into);
     const picks = input.picks.map((pick): BranchPick => {
-      if (pick.option !== "new" || pick.value === "") return pick.option ? { key: pick.key, choice: { option: pick.option } } : { key: pick.key };
+      if (pick.option !== "new") return pick.option ? { key: pick.key, choice: { option: pick.option } } : { key: pick.key };
       const row = rows.rows.find((candidate) => candidate.key === pick.key);
       const secret = row?.role === "move" && row.choice?.secret === true;
       const variable = savedVariableIntent({

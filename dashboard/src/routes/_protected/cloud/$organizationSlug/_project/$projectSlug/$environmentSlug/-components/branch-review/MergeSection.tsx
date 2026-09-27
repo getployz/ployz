@@ -41,7 +41,7 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
   });
   const edit = (key: string, change: Partial<Pick>) => setEdits((current) => ({ ...current, [key]: { ...current[key], ...change } }));
   const ticked = picks.filter(({ pick }) => pick.ticked);
-  const missing = ticked.find(({ choice, pick }) => pick.option === "new" && !choice?.secret && !pick.value);
+  const missing = ticked.find(({ pick }) => pick.option === "new" && !pick.value);
   const closes = !review.kept && !isDefault && thenClose;
   const blocked = unsettled
     ?? (ticked.length === 0 ? "Tick a change to merge."
@@ -83,7 +83,7 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
                     {pick.option === "new" ? (
                       <Input className="min-w-48 flex-1" type={choice.secret ? "password" : "text"} autoComplete="off" value={pick.value}
                         aria-label={`New value of ${presented.label}`}
-                        placeholder={choice.secret ? `${destination}'s value, or empty for later` : `${destination}'s value`}
+                        placeholder={`${destination}'s value`}
                         onChange={(event) => edit(row.key, { value: event.target.value })} />
                     ) : null}
                   </div>

@@ -205,6 +205,10 @@ describe("mergeBranch", () => {
     // A new secret asks for production's value by default.
     const apiKey = seen.rows.find((row) => row.key === `${webLineage}:variables.API_KEY`);
     expect(apiKey?.choice).toMatchObject({ default: "new", secret: true });
+    // Left empty, it would never land while Then close tears the Branch down: refused, and nothing changes.
+    const empty = await merge(branch.id, seen, defaults(seen.rows)).then(() => null, (error: Error) => error);
+    expect(empty).toMatchObject({ _tag: "Validation", message: "Enter a new value for API_KEY." });
+    expect(await teardowns()).toEqual([]);
     const picks = defaults(seen.rows).map((pick) => pick.key === apiKey?.key ? { ...pick, value: "production-key" } : pick);
     const { data } = await merge(branch.id, seen, picks);
     expect(data.closed).toBe(true);
