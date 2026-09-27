@@ -48,7 +48,7 @@ it("shows the deployment still serving the service, its changing history, and op
   expect(running?.textContent).toContain("Ship api");
   // The Running attempt shows once.
   expect(screen.getAllByText(/Ship api/)).toHaveLength(1);
-  expect(running?.getAttribute("href")).toBe(`/cloud/acme/shop/production/deployments/${first}?service=${api}&logs=deploy`);
+  expect(running?.getAttribute("href")).toBe(`/cloud/acme/shop/production/deployments/${first}?service=${api}&logs=deploy&returnTo=${api}`);
   expect(screen.getByText(/Bump api/).closest("a")?.textContent).toContain("Failed");
   expect(screen.queryByText("Show more")).toBeNull();
 
@@ -56,5 +56,5 @@ it("shows the deployment still serving the service, its changing history, and op
   if (!row) throw new Error("Missing history row");
   await act(async () => { fireEvent.click(row); });
   expect(router.state.location.pathname).toBe(`/cloud/acme/shop/production/deployments/${third}`);
-  expect(router.state.location.search).toEqual({ service: api });
+  expect(router.state.location.search).toEqual({ service: api, returnTo: api });
 });
