@@ -163,7 +163,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <CrumbTrigger label="Environment" name={current?.name ?? scope.environmentSlug} current />
-      <PopoverContent padding="none" align="start" className="w-[min(18rem,calc(100vw-2rem))]">
+      <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch environment</PopoverTitle>
         <SwitcherLoading isPending={isPending} retry={isError ? () => void refetch() : undefined}>
           <Command tabIndex={0} label="Environments" defaultValue={current?.id}>

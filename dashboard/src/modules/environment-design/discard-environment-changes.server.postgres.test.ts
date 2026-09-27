@@ -233,7 +233,7 @@ it.live(
           .find((state) => state.environmentId === scope.environmentId)?.applied;
         const token = applied?.intent?.services[0]?.variables.find((variable) => variable.key === "TOKEN");
         assert.strictEqual(token?.value.kind, "secret");
-        assert.ok(token.valueFingerprint);
+        assert.ok(token?.valueFingerprint);
         assert.deepStrictEqual(Object.keys(applied?.deployedAt ?? {}).sort(), applied?.nodes.map((node) => node.nodeLineageId).sort());
         const attempt = yield* getDeploymentAttempt(actor, { organizationSlug: "acme", deploymentId: active.id });
         assert.ok(!JSON.stringify(attempt).includes("ciphertext"));
