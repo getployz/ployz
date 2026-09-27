@@ -6,8 +6,10 @@ import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "#/mo
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-repository.server";
 import { compileRuntimeIntent } from "#/modules/deployments/runtime-session.server";
+import type { compileSdkPreparationInput } from "#/modules/deployments/runtime-preview";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { Effect } from "effect";
+import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000a01";
@@ -91,9 +93,12 @@ describe("branchAdmission", () => {
       environmentId: branchId, savedStateSnapshotId, triggerOrigin, message: null,
     }));
     const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
-    const input = await harness.runEffect(loadDeploymentContext(admitted.id).pipe(
-      Effect.flatMap(compileRuntimeIntent), Effect.provideService(SecretEncryption, encryption),
-    ));
+    // What the runtime receives. No managed hostnames, so the Cluster Domain is never reserved.
+    const compiled = loadDeploymentContext(admitted.id).pipe(
+      Effect.flatMap((context) => context ? compileRuntimeIntent(context) : Effect.die("No deployment context.")),
+      Effect.provideService(SecretEncryption, encryption),
+    );
+    const input = await harness.runEffect(compiled as Effect.Effect<ReturnType<typeof compileSdkPreparationInput>, unknown, Database>);
     return { row, env: input.snapshots.find((snapshot) => snapshot.serviceId === branchWeb)?.resolvedEnv, dependencies: input.dependencies };
   }
 
