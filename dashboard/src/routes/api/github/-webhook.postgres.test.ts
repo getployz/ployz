@@ -180,7 +180,7 @@ it.live(
         const answers = [];
         for (const [deliveryId, payload] of [
           ["delivery-pr-labeled", pullRequest("labeled", 1, { id: 42 })],
-          ["delivery-pr-title-edit", pullRequest("edited", 1, { id: 42 }, { changes: { title: { from: "Old" } } })],
+          ["delivery-pr-body-edit", pullRequest("edited", 1, { id: 42 }, { changes: { body: { from: "Old" } } })],
           ["delivery-pr-opened", pullRequest("opened", 1, { id: 42 })],
           ["delivery-pr-retarget", pullRequest("edited", 1, { id: 42 }, { changes: { base: { ref: { from: "dev" } } } })],
           ["delivery-pr-fork", pullRequest("synchronize", 2, { id: 7 })],
@@ -194,7 +194,7 @@ it.live(
         }
         assert.deepStrictEqual(answers, [
           ["delivery-pr-labeled", 200],
-          ["delivery-pr-title-edit", 200],
+          ["delivery-pr-body-edit", 200],
           ["delivery-pr-opened", 200],
           ["delivery-pr-retarget", 200],
           ["delivery-pr-fork", 200],
