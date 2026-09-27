@@ -9,7 +9,8 @@ use ts_rs::TS;
 use super::service_changes::{FIELDS, at};
 use super::{
     ConfigError, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, SavedVolumeIntent, ValuePart, ValuePartOwner, parse_environment_intent,
+    SavedVariableValue, SavedVolumeIntent, ServiceConfig, ValuePart, ValuePartOwner,
+    VolumeAttachment, parse_environment_intent, redact_environment_intent, restore_service_setting,
 };
 
 /// The sides of one move: changes flow from `from` into `into`, judged against `base`.
@@ -31,6 +32,32 @@ pub struct BranchChangesInput {
     pub provided: Vec<String>,
     pub hostnames: BranchHostnames,
     pub from_kept: bool,
+    /// Absent compares only; present moves the picked rows.
+    #[serde(default)]
+    #[ts(optional)]
+    pub picks: Option<Vec<BranchPick>>,
+}
+
+/// One chosen move row. A variable row also names a choice.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchPick {
+    pub key: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub choice: Option<BranchOption>,
+    /// The value for `new`, supplied by the caller (a secret's arrives sealed); never reviewed.
+    #[serde(default)]
+    #[ts(optional)]
+    pub new_value: Option<BranchNewValue>,
+}
+
+/// A caller-supplied variable value; core never encrypts or fingerprints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchNewValue {
+    pub value: SavedVariableValue,
+    pub value_fingerprint: String,
 }
 
 /// Each side's generated-address suffix, appended to managed hostname prefixes.
@@ -138,12 +165,27 @@ pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, Config
         from_kept: input.from_kept,
     };
     let rows = sides.rows();
-    let review =
-        serde_json::to_string(&rows).map_err(|_| ConfigError::at("review", "Rows must be JSON"))?;
+    let Some(picks) = input.picks else {
+        let review = serde_json::to_string(&rows)
+            .map_err(|_| ConfigError::at("review", "Rows must be JSON"))?;
+        return Ok(BranchChanges {
+            rows,
+            next: into,
+            base,
+            review,
+        });
+    };
+    let (next, advanced) = sides.apply(&rows, &picks)?;
+    let mut reviewed: Vec<_> = picks
+        .iter()
+        .map(|pick| json!({"choice": pick.choice, "key": pick.key}))
+        .collect();
+    reviewed.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
+    let review = json!({"picks": reviewed, "rows": rows}).to_string();
     Ok(BranchChanges {
         rows,
-        next: into,
-        base,
+        next,
+        base: advanced,
         review,
     })
 }
@@ -264,6 +306,68 @@ impl Sides<'_> {
                 from: name(Some(from)),
                 into: name(Some(into)),
             });
+        }
+    }
+
+    /// Move the picked rows into `next` and advance `base` by exactly those rows.
+    fn apply(
+        &self,
+        rows: &[BranchRow],
+        picks: &[BranchPick],
+    ) -> Result<(SavedEnvironmentIntent, Option<SavedEnvironmentIntent>), ConfigError> {
+        let mut next = self.into.clone();
+        let mut base = self.base.cloned();
+        let mut seen = BTreeSet::new();
+        for pick in picks {
+            if !seen.insert(pick.key.as_str()) {
+                return Err(ConfigError::at("picks.key", "Each change is picked once"));
+            }
+            let row = rows
+                .iter()
+                .find(|row| row.key == pick.key)
+                .ok_or_else(|| ConfigError::at("picks.key", "Unknown change"))?;
+            let BranchRole::Move { choice, .. } = &row.role else {
+                return Err(ConfigError::at("picks.key", "Change is meant to differ"));
+            };
+            let (lineage, path) = pick.key.split_once(':').expect("row keys hold a lineage");
+            match (choice, pick.choice, path.strip_prefix("variables.")) {
+                (Some(offered), Some(chosen), Some(key)) if offered.options.contains(&chosen) => {
+                    if let Some(variable) = self.chosen_variable(lineage, key, chosen, pick) {
+                        put_variable(&mut next, lineage, variable);
+                    }
+                }
+                (None, None, None) => move_setting(&mut next, self.from, lineage, path)?,
+                _ => return Err(ConfigError::at("picks.choice", "Choice is not offered")),
+            }
+            // ponytail: a null base (create) advances in #1146.
+            if let Some(base) = &mut base {
+                adopt_node(base, self.into, lineage, path);
+                match path.strip_prefix("variables.") {
+                    Some(key) => put_variable(base, lineage, variable(self.from, lineage, key)),
+                    None => move_setting(base, self.from, lineage, path)?,
+                }
+            }
+        }
+        let next = parse_environment_intent(json!(next))?;
+        Ok((next, base.map(redact_environment_intent)))
+    }
+
+    fn chosen_variable(
+        &self,
+        lineage: &str,
+        key: &str,
+        chosen: BranchOption,
+        pick: &BranchPick,
+    ) -> Option<SavedVariableIntent> {
+        match chosen {
+            BranchOption::From => Some(variable(self.from, lineage, key)),
+            BranchOption::Parent => self.parent.map(|parent| variable(parent, lineage, key)),
+            BranchOption::New => pick.new_value.clone().map(|new| SavedVariableIntent {
+                value: new.value,
+                value_fingerprint: new.value_fingerprint,
+                ..variable(self.from, lineage, key)
+            }),
+            BranchOption::LeaveOut => None,
         }
     }
 
@@ -421,4 +525,140 @@ fn uses(env: &SavedEnvironmentIntent, lineage: &str) -> bool {
             }),
             SavedVariableValue::Literal { .. } | SavedVariableValue::Secret { .. } => false,
         })
+}
+
+fn service_mut<'a>(
+    env: &'a mut SavedEnvironmentIntent,
+    lineage: &str,
+) -> &'a mut SavedServiceIntent {
+    env.services
+        .iter_mut()
+        .find(|s| s.lineage_id == lineage)
+        .expect("move rows are on nodes both sides have")
+}
+
+fn service<'a>(env: &'a SavedEnvironmentIntent, lineage: &str) -> &'a SavedServiceIntent {
+    env.services
+        .iter()
+        .find(|s| s.lineage_id == lineage)
+        .expect("move rows are on nodes both sides have")
+}
+
+/// The variable a row was computed from; offered choices guarantee it exists.
+fn variable(env: &SavedEnvironmentIntent, lineage: &str, key: &str) -> SavedVariableIntent {
+    service(env, lineage)
+        .variables
+        .iter()
+        .find(|v| v.key == key)
+        .expect("offered variables exist")
+        .clone()
+}
+
+/// Set a variable by key, keeping the receiver's id or minting a fresh one.
+fn put_variable(
+    env: &mut SavedEnvironmentIntent,
+    lineage: &str,
+    mut variable: SavedVariableIntent,
+) {
+    let variables = &mut service_mut(env, lineage).variables;
+    if let Some(existing) = variables.iter_mut().find(|v| v.key == variable.key) {
+        variable.id = std::mem::take(&mut existing.id);
+        *existing = variable;
+    } else {
+        variable.id = uuid::Uuid::new_v4().to_string();
+        variables.push(variable);
+    }
+}
+
+/// Give `env` the setting at `path` that `from` has.
+fn move_setting(
+    env: &mut SavedEnvironmentIntent,
+    from: &SavedEnvironmentIntent,
+    lineage: &str,
+    path: &str,
+) -> Result<(), ConfigError> {
+    if path == "name" {
+        let name = from
+            .volumes
+            .iter()
+            .find(|v| v.resource_lineage_id == lineage)
+            .map(|v| v.name.clone());
+        if let (Some(volume), Some(name)) = (
+            env.volumes
+                .iter_mut()
+                .find(|v| v.resource_lineage_id == lineage),
+            name,
+        ) {
+            volume.name = name;
+        }
+        return Ok(());
+    }
+    if let Some(volume_lineage) = path.strip_prefix("mounts.") {
+        let volume_id = |env: &SavedEnvironmentIntent| {
+            env.volumes
+                .iter()
+                .find(|v| v.resource_lineage_id == volume_lineage)
+                .map(|v| v.resource_id.clone())
+        };
+        let from_id = volume_id(from).expect("mount rows name an authored Volume");
+        let mount_path = service(from, lineage)
+            .volume_attachments
+            .iter()
+            .find(|a| a.volume_resource_id == from_id)
+            .expect("mount rows come from an attachment")
+            .mount_path
+            .clone();
+        let volume_resource_id = volume_id(env).ok_or_else(|| {
+            ConfigError::at(
+                "picks.key",
+                "Mounted Volume is not in the receiving configuration",
+            )
+        })?;
+        let attachments = &mut service_mut(env, lineage).volume_attachments;
+        attachments.retain(|a| a.volume_resource_id != volume_resource_id);
+        attachments.push(VolumeAttachment {
+            volume_resource_id,
+            mount_path,
+        });
+        return Ok(());
+    }
+    let target = service_mut(env, lineage);
+    target.config = restore_service_setting(
+        ServiceConfig::from(target.config.clone()),
+        &ServiceConfig::from(service(from, lineage).config.clone()),
+        path,
+    )?
+    .settings;
+    Ok(())
+}
+
+/// A base that predates a node starts that node, and any mounted Volume, from `into`'s copy.
+fn adopt_node(
+    base: &mut SavedEnvironmentIntent,
+    into: &SavedEnvironmentIntent,
+    lineage: &str,
+    path: &str,
+) {
+    let volume = |lineage: &str| {
+        into.volumes
+            .iter()
+            .find(|v| v.resource_lineage_id == lineage)
+    };
+    for lineage in [Some(lineage), path.strip_prefix("mounts.")]
+        .into_iter()
+        .flatten()
+    {
+        if nodes(base).contains_key(lineage) {
+            continue;
+        }
+        if let Some(volume) = volume(lineage) {
+            base.volumes.push(volume.clone());
+        } else if let Some(service) = into.services.iter().find(|s| s.lineage_id == lineage) {
+            // Its mounts name `into`'s Volume ids, which base lacks; mount picks re-add them.
+            base.services.push(SavedServiceIntent {
+                volume_attachments: Vec::new(),
+                ..service.clone()
+            });
+        }
+    }
 }
