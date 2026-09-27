@@ -10,13 +10,14 @@ import { environment, environmentBranch } from "#/modules/project/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
 import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
 import { loadCurrentEnvironmentState, loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { loadIdentitySources } from "#/modules/branches/branch-operations.server";
 import { corePicks, sealValue } from "#/modules/branches/branch-merge.server";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { mergeInput, rowLineage } from "#/modules/branches/branch-review";
+import { requestPrCheck } from "./pr-check-request.server";
 import { prDestinations } from "./pr-environment.repository.server";
 import { standing, type ApproveConditionalSave, type GiveConditionalSaveValue, type WithdrawConditionalSave } from "./conditional-save";
 import { conditionalSave, type HeldRow } from "./tables";
@@ -49,21 +50,8 @@ export const approveConditionalSave = Effect.fn("PrEnvironments.approveCondition
       return yield* new Conflict({ message: `Nothing there deploys ${branch.prTargetBranch} any more. Review again.` });
     }
 
-    const { intent: from } = yield* loadCurrentEnvironmentState(input.prEnvironmentId);
-    const { intent: into } = yield* loadCurrentEnvironmentState(input.destinationEnvironmentId);
-    const [destination] = yield* drizzle.select({ namespace: environment.namespace, branch: environmentBranch.environmentId }).from(environment)
-      .leftJoin(environmentBranch, eq(environmentBranch.environmentId, environment.id))
-      .where(eq(environment.id, input.destinationEnvironmentId));
-    if (!destination) return yield* new NotFound({ message: "The destination was not found." });
-    const [parent] = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.id, branch.parentEnvironmentId));
-    const compare = mergeInput({
-      base: branch.base, kept: false, branch: from, parent: into,
-      // "The Parent's value" is the Parent's Applied State, as the review shows it.
-      parentApplied: parent ? yield* appliedIntent(branch.parentEnvironmentId, parent.namespace) : null,
-      hostnames: {
-        branch: branchHostnameSuffix(project.slug, prEnvironment.namespace, true),
-        parent: branchHostnameSuffix(project.slug, destination.namespace, destination.branch !== null),
-      },
+    const { from, into, compare } = yield* goesToComparison({
+      projectSlug: project.slug, prEnvironment, branch, destinationEnvironmentId: input.destinationEnvironmentId,
     });
     const { rows, review } = branchChanges(compare);
     if (review !== input.review) return yield* new Conflict({ message: "Changes moved after this review. Review them again." });
@@ -94,6 +82,7 @@ export const approveConditionalSave = Effect.fn("PrEnvironments.approveCondition
       .onConflictDoUpdate({ target: [conditionalSave.prEnvironmentId, conditionalSave.destinationEnvironmentId], set: values })
       .returning({ id: conditionalSave.id });
     if (!saved) return yield* Effect.die("PostgreSQL did not return the Conditional Save.");
+    yield* requestPrCheck([input.prEnvironmentId]);
     return saved;
   }));
 });
@@ -103,6 +92,7 @@ export const withdrawConditionalSave = Effect.fn("PrEnvironments.withdrawConditi
   yield* prEnvironmentFor(actor, input);
   const { drizzle } = yield* Database;
   yield* drizzle.delete(conditionalSave).where(heldOn(input));
+  yield* requestPrCheck([input.prEnvironmentId]);
 });
 
 /** A new value an approved row still lacks, sealed and stored with the approval, which stays standing. */
@@ -125,8 +115,39 @@ export const giveConditionalSaveValue = Effect.fn("PrEnvironments.giveConditiona
       picks: save.picks.map((pick) => pick.key === input.key ? { key: pick.key, choice: { option: "new", value } } : pick),
       rows: save.rows.map((row) => row.row.key === input.key ? { ...row, missing: false } : row),
     }).where(eq(conditionalSave.id, save.id));
+    yield* requestPrCheck([input.prEnvironmentId]);
     return { id: save.id };
   }));
+});
+
+/**
+ * What a PR Environment moves into one Destination, compared from authoritative states exactly as the review does in
+ * the browser: its Working State into the Destination's, over its base, with the Parent's Applied State as "the
+ * Parent's value".
+ */
+export const goesToComparison = Effect.fn("PrEnvironments.goesToComparison")(function* (input: {
+  projectSlug: string;
+  prEnvironment: { id: string; namespace: string };
+  branch: { base: SavedEnvironmentIntent; parentEnvironmentId: string };
+  destinationEnvironmentId: string;
+}) {
+  const { drizzle } = yield* Database;
+  const { intent: from } = yield* loadCurrentEnvironmentState(input.prEnvironment.id);
+  const { intent: into } = yield* loadCurrentEnvironmentState(input.destinationEnvironmentId);
+  const [destination] = yield* drizzle.select({ namespace: environment.namespace, branch: environmentBranch.environmentId }).from(environment)
+    .leftJoin(environmentBranch, eq(environmentBranch.environmentId, environment.id))
+    .where(eq(environment.id, input.destinationEnvironmentId));
+  if (!destination) return yield* new NotFound({ message: "The destination was not found." });
+  const [parent] = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.id, input.branch.parentEnvironmentId));
+  const compare = mergeInput({
+    base: input.branch.base, kept: false, branch: from, parent: into,
+    parentApplied: parent ? yield* appliedIntent(input.branch.parentEnvironmentId, parent.namespace) : null,
+    hostnames: {
+      branch: branchHostnameSuffix(input.projectSlug, input.prEnvironment.namespace, true),
+      parent: branchHostnameSuffix(input.projectSlug, destination.namespace, destination.branch !== null),
+    },
+  });
+  return { from, into, compare };
 });
 
 const heldOn = (input: { prEnvironmentId: string; destinationEnvironmentId: string }) => and(

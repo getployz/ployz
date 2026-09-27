@@ -9,7 +9,7 @@ import * as schema from "#/db/schema";
 import { asTestDouble } from "#/lib/test-double";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { createGitServiceSource } from "#/modules/environment-design/services";
-import { GithubApi, type GithubJsonRequest } from "#/modules/github/github-observation.api";
+import { GithubApi, GithubObservationError, type GithubJsonRequest } from "#/modules/github/github-observation.api";
 import { executeProcessGithubPullRequestReceived, executeProcessGithubPushReceived, type GithubIngestionEffectRunner } from "#/modules/github/inngest-ingestion/process";
 import { InngestClient, type PloyzStepTools } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -29,6 +29,7 @@ import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
 import { standing } from "./conditional-save";
+import { executePostPrCheck } from "./pr-check.inngest";
 
 const organizationId = "00000000-0000-4000-8000-000000001101";
 const userId = "00000000-0000-4000-8000-000000001102";
@@ -66,6 +67,8 @@ const stagingIntent = {
 
 type PullRequest = { number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } }; base?: { ref: string }; draft: boolean };
 
+type CheckRunBody = { head_sha?: string; conclusion: string; details_url: string; output: { title: string; summary: string } };
+
 type PushDelivery = { ref: string; before: string; after: string; created: boolean; deleted: boolean; forced: boolean };
 type PullRequestDelivery = {
   action: string;
@@ -85,9 +88,16 @@ describe("PR Environment lifecycle", () => {
     sent.push(...(Array.isArray(input) ? input : [input]) as Array<{ name: string }>);
     return { ids: [] };
   };
+  // The check runs GitHub has, and whether the installation refuses to write them.
+  const checkRuns: Array<{ id: number; headSha: string; body: CheckRunBody }> = [];
+  let checksForbidden = false;
   const githubApi = {
     archive: () => Effect.die("unused"),
     json: <S extends Schema.ConstraintDecoder<unknown>>(request: GithubJsonRequest<S>) => {
+      if (checksForbidden && request.method) {
+        return Effect.fail(new GithubObservationError({ code: "request_failed", operation: request.operation, status: 403, retriable: false, message: "Forbidden" }));
+      }
+      const body = request.body as CheckRunBody;
       const response = (() => {
         switch (request.operation) {
           case "fetch_pull_request": {
@@ -98,6 +108,20 @@ describe("PR Environment lifecycle", () => {
           case "resolve_branch_head": {
             const ref = decodeURIComponent(request.url.split("/git/ref/")[1] ?? "");
             return { ref: `refs/${ref}`, object: { type: "commit", sha: heads.get(ref.slice("heads/".length)) } };
+          }
+          case "list_check_runs": {
+            const sha = request.url.split("/commits/")[1]?.split("/")[0];
+            return { check_runs: checkRuns.filter((run) => run.headSha === sha).map((run) => ({ id: run.id })) };
+          }
+          case "create_check_run": {
+            const run = { id: checkRuns.length + 1, headSha: String(body.head_sha), body };
+            checkRuns.push(run);
+            return { id: run.id };
+          }
+          case "update_check_run": {
+            const run = checkRuns.find((candidate) => candidate.id === Number(request.url.split("/check-runs/")[1]));
+            if (run) run.body = body;
+            return { id: run?.id };
           }
           default: return undefined;
         }
@@ -132,6 +156,20 @@ describe("PR Environment lifecycle", () => {
   };
   const step = { run, sendEvent: async () => ({ ids: [] }) };
 
+  /** Removes and returns the sent events whose names start with `prefix`. */
+  function take(prefix: string) {
+    const taken = sent.filter((item) => item.name.startsWith(prefix));
+    sent.splice(0, sent.length, ...sent.filter((item) => !item.name.startsWith(prefix)));
+    return taken;
+  }
+
+  /** Runs every requested check post, as Inngest would. */
+  async function postChecks() {
+    const results = [];
+    for (const queued of take("pr-environments/")) results.push((await executePostPrCheck({ event: queued as never, step }, runEffect as never)).posted);
+    return results;
+  }
+
   /** A signed delivery through the webhook, then the Inngest function it queues. */
   async function deliver(event: "pull_request" | "push", deliveryId: string, payload: PushDelivery | PullRequestDelivery) {
     const body = JSON.stringify({ installation: { id: installationId }, repository: { id: repositoryId }, ...payload });
@@ -142,7 +180,7 @@ describe("PR Environment lifecycle", () => {
       body,
     })).pipe(Effect.provide(appConfig()), Effect.provideService(InngestClient, inngest)));
     expect(response.status).toBe(200);
-    for (const queued of sent.splice(0).filter((item) => item.name.startsWith("github/"))) {
+    for (const queued of take("github/")) {
       const input = { event: queued as never, step, runId: `run-${deliveryId}` };
       if (event === "push") await executeProcessGithubPushReceived(input, runEffect);
       else await executeProcessGithubPullRequestReceived(input, runEffect);
@@ -197,6 +235,8 @@ describe("PR Environment lifecycle", () => {
 
   beforeEach(async () => {
     sent.length = 0;
+    checkRuns.length = 0;
+    checksForbidden = false;
     pulls.clear();
     heads.clear();
     await harness.pool.query(`
@@ -379,7 +419,7 @@ describe("PR Environment lifecycle", () => {
     }
     const approve = async (prId: string, picks: (keys: string[]) => Array<{ key: string; option?: "from" | "new"; value: string }>) => {
       const { rows, review: string } = await review(prId);
-      return harness.runEffect(approveConditionalSave({ userId }, {
+      return runEffect(approveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: picks(rows.map((row) => row.key)),
       }));
     };
@@ -399,17 +439,17 @@ describe("PR Environment lifecycle", () => {
 
     it("holds the ticked rows on the Destination, sealed, until the PR Environment's settings change", async () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
-      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
-      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test_pr" } }));
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test_pr" } }));
       const { rows } = await review(prId);
       const flag = rows.find((row) => variableName(row) === "FLAG")?.key ?? "";
       const stripe = rows.find((row) => variableName(row) === "STRIPE_KEY")?.key ?? "";
       expect(rowLineage({ key: stripe })).toBe(apiLineage);
 
       // A stale review is refused.
-      const stale = await harness.runEffect(approveConditionalSave({ userId }, {
+      const stale = await runEffect(approveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: "old", picks: [{ key: flag, value: "" }],
-      }).pipe(Effect.flip));
+      }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
       expect(stale).toMatchObject({ _tag: "Conflict", message: "Changes moved after this review. Review them again." });
 
       // The browser's review string is the server's; a secret asks for staging's value, which can come later.
@@ -425,7 +465,7 @@ describe("PR Environment lifecycle", () => {
       expect(await stands(prId)).toBe(true);
 
       // A value given after approval is sealed and stored without withdrawing it; it never reaches the browser.
-      await harness.runEffect(giveConditionalSaveValue({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, key: stripe, value: "sk_live_staging" }));
+      await runEffect(giveConditionalSaveValue({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, key: stripe, value: "sk_live_staging" }));
       const [given] = await saves();
       expect(JSON.stringify(given?.picks)).not.toContain("sk_live_staging");
       expect(given?.picks.find((pick) => pick.key === stripe)?.choice).toMatchObject({ option: "new", value: { valueFingerprint: expect.any(String) } });
@@ -436,7 +476,7 @@ describe("PR Environment lifecycle", () => {
       expect(JSON.stringify(read.rows)).not.toMatch(/encryptedValue|landing|picks|approvedAgainst/u);
 
       // An edit in the Destination and a new commit leave it standing.
-      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(stagingId)), key: "OTHER", description: null, exported: false, value: { type: "plain", value: "x" } }));
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(stagingId)), key: "OTHER", description: null, exported: false, value: { type: "plain", value: "x" } }));
       heads.set("feature-142", "d".repeat(40));
       await deliver("push", "push-1", { ref: "refs/heads/feature-142", before: "c".repeat(40), after: "d".repeat(40), created: false, deleted: false, forced: false });
       await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142", sha: "d".repeat(40), repo: { id: repositoryId } } });
@@ -444,17 +484,17 @@ describe("PR Environment lifecycle", () => {
 
       // A settings change on the PR Environment withdraws it.
       const flagId = (await environmentOf(prId))?.intent.services.find((node) => node.lineageId === apiLineage)?.variables.find((variable) => variable.key === "FLAG")?.id ?? "";
-      await harness.runEffect(updateServiceVariable({ userId }, { ...(await scope(prId)), variableId: flagId, key: "FLAG", description: null, exported: false, value: { type: "plain", value: "off" } }));
+      await runEffect(updateServiceVariable({ userId }, { ...(await scope(prId)), variableId: flagId, key: "FLAG", description: null, exported: false, value: { type: "plain", value: "off" } }));
       expect(await stands(prId)).toBe(false);
     });
 
     it("is withdrawn by Undo, a new target Git branch, and the PR Environment closing", async () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
-      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
       const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
 
       await approve(prId, tickAll);
-      await harness.runEffect(withdrawConditionalSave({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId }));
+      await runEffect(withdrawConditionalSave({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId }));
       expect(await saves()).toEqual([]);
 
       await approve(prId, tickAll);
@@ -465,6 +505,70 @@ describe("PR Environment lifecycle", () => {
       await approve(prId, tickAll);
       await harness.db.delete(schema.environment).where(eq(schema.environment.id, prId));
       expect(await saves()).toEqual([]);
+    });
+
+    it("posts the Ployz · ready to merge check on the head commit, and updates it as the PR Environment changes", async () => {
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      const [first, second] = ["c".repeat(40), "d".repeat(40)];
+      const runOn = (sha: string) => {
+        const runs = checkRuns.filter((run) => run.headSha === sha);
+        expect(runs).toHaveLength(1);
+        const body = runs[0]?.body;
+        return { conclusion: body?.conclusion, reason: body?.output.title, detailsUrl: body?.details_url, summary: body?.output.summary };
+      };
+      // Its web addresses: api's managed hostname on the Organization's Cluster Domain.
+      await harness.pool.query(`insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at)
+        values ('${organizationId}', 'https://dns.test', 'acme.ployz.test', '{}', now(), now())`);
+      const pr = await environmentOf(prId);
+      await harness.db.update(schema.environment).set({ intent: { ...pr?.intent, services: pr?.intent.services.map((node) => ({
+        ...node, config: { ...node.config, managedHostnames: [{ prefix: "api-pr-142", targetPort: 3000 }] },
+      })) } as never }).where(eq(schema.environment.id, prId));
+
+      // Opened: nothing here staging lacks yet.
+      expect(await postChecks()).toEqual(["posted"]);
+      expect(runOn(first)).toEqual({
+        conclusion: "success", reason: "Nothing here that staging doesn’t have",
+        detailsUrl: expect.stringMatching(/\/cloud\/acme\/shop\/shop-pr-142\/review$/u),
+        summary: expect.stringContaining("- https://api-pr-142.acme.ployz.test"),
+      });
+
+      // A setting edited on the PR Environment updates the same check run.
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test_pr" } }));
+      await postChecks();
+      expect(runOn(first)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
+
+      // A new head gets its own.
+      await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142", sha: second, repo: { id: repositoryId } } });
+      expect(await postChecks()).toEqual(["posted"]);
+      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
+
+      // Approved without staging's value, then given it.
+      await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "" })));
+      await postChecks();
+      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "STRIPE_KEY needs a value for staging" });
+      const stripe = (await saves())[0]?.rows[0]?.row.key ?? "";
+      await runEffect(giveConditionalSaveValue({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, key: stripe, value: "sk_live" }));
+      await postChecks();
+      expect(runOn(second)).toMatchObject({ conclusion: "success", reason: "1 change approved for staging by Owner" });
+
+      // Undo.
+      await runEffect(withdrawConditionalSave({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId }));
+      await postChecks();
+      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
+
+      // Without Checks: write nothing is posted, and nothing fails.
+      checksForbidden = true;
+      await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "" })));
+      expect(await postChecks()).toEqual(["forbidden"]);
+      expect(runOn(second)).toMatchObject({ reason: "Review and approve 1 change for staging" });
+      expect(checkRuns).toHaveLength(2);
+
+      // A pull request without a PR Environment gets none.
+      checksForbidden = false;
+      await setPlan({ enabled: false });
+      expect(await pullRequest("other", "opened", 9, { head: { ref: "other", sha: "e".repeat(40), repo: { id: repositoryId } } })).toBe("ignored_pull_request");
+      expect(await postChecks()).toEqual([]);
+      expect(checkRuns).toHaveLength(2);
     });
   });
 });

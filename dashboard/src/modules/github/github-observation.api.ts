@@ -56,7 +56,10 @@ export type GithubObservationOperation =
   | "cancel_run"
   | "fetch_run"
   | "fetch_installation"
-  | "fetch_pull_request";
+  | "fetch_pull_request"
+  | "list_check_runs"
+  | "create_check_run"
+  | "update_check_run";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -162,8 +165,8 @@ export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   schema: S;
   /** `app` calls as the GitHub App itself (`/app/...` endpoints), not as an installation; `installationId` is ignored. */
   auth?: "app";
-  /** A POST sends `body` as JSON; an empty response reads as `{}`. */
-  method?: "POST";
+  /** A POST or PATCH sends `body` as JSON; an empty response reads as `{}`. */
+  method?: "POST" | "PATCH";
   body?: unknown;
 };
 
@@ -408,6 +411,38 @@ export const fetchInstallationPullRequest = Effect.fn(
 });
 export type GithubPullRequestObservation = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
 
+const checkRunSchema = Schema.Struct({ id: githubIdSchema });
+const checkRunsResponseSchema = Schema.Struct({ check_runs: Schema.Array(checkRunSchema) });
+
+/**
+ * The installation's completed check run `name` on a commit: updated in place when the commit already has one, else
+ * created. The caller serializes posts per check, so two never race to create.
+ */
+export const postInstallationCheckRun = Effect.fn(
+  "Github.postInstallationCheckRun",
+)(function* (installationId: number, repositoryId: number, input: {
+  headSha: string; name: string; conclusion: "success" | "action_required"; detailsUrl: string; title: string; summary: string;
+}) {
+  if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
+    return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
+  }
+  const api = yield* GithubApi;
+  const repository = `https://api.github.com/repositories/${repositoryId}`;
+  const { check_runs: [existing] } = yield* api.json({
+    installationId,
+    url: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}`,
+    operation: "list_check_runs",
+    schema: checkRunsResponseSchema,
+  });
+  const body = {
+    name: input.name, status: "completed", conclusion: input.conclusion, details_url: input.detailsUrl,
+    output: { title: input.title, summary: input.summary },
+  };
+  return yield* api.json(existing
+    ? { installationId, url: `${repository}/check-runs/${existing.id}`, operation: "update_check_run", schema: checkRunSchema, method: "PATCH", body }
+    : { installationId, url: `${repository}/check-runs`, operation: "create_check_run", schema: checkRunSchema, method: "POST", body: { ...body, head_sha: input.headSha } });
+});
+
 export function createGithubAppJwt(input: {
   readonly appId: string;
   readonly privateKey: string;
@@ -562,8 +597,8 @@ export const GithubApiLive = Layer.effect(
         const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
         if (token !== null) headers.Authorization = `Bearer ${token}`;
         const response = yield* Effect.tryPromise({
-          try: (signal) => fetch(input.url, input.method === "POST"
-            ? { signal, method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
+          try: (signal) => fetch(input.url, input.method
+            ? { signal, method: input.method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
             : { signal, headers }),
           catch: () =>
             githubObservationError({

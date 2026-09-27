@@ -40,6 +40,7 @@ import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
 } from "#/modules/runtime/volume-removal.inngest";
+import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
 
 describe("Inngest function policies", () => {
   it("pins the SDK-default retry count and domain-owned concurrency", () => {
@@ -68,6 +69,7 @@ describe("Inngest function policies", () => {
       createSweepIdleBranches(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
+    createPostPrCheck(inngest),
     ];
 
     expect(
@@ -100,6 +102,7 @@ describe("Inngest function policies", () => {
       { id: "sweep-idle-branches", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "post-pr-check", retries: 3, concurrency: [{ key: "event.data.prEnvironmentId", limit: 1 }] },
     ]);
   });
 

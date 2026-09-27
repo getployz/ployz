@@ -6,16 +6,21 @@ import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { standing } from "./conditional-save";
 import type { ConditionalSaveRow } from "./tables";
 
-/** Every standing Conditional Save of the organization; withdrawn ones are left out. */
-export function useStandingSaves(organizationSlug: string): ConditionalSaveRow[] {
+/** Every Conditional Save of the organization, with whether it still stands. */
+export function useConditionalSaves(organizationSlug: string): Array<ConditionalSaveRow & { standing: boolean }> {
   const { data } = useLiveSuspenseQuery(getConditionalSavesCollection(organizationSlug, useCollectionScope()));
   const environments = useEnvironmentDocuments(organizationSlug);
   const { branches } = useWorkspace(organizationSlug);
-  return data.filter((save) => {
+  return data.map((save) => {
     const pr = environments.find((environment) => environment.id === save.prEnvironmentId);
     const branch = branches.find((candidate) => candidate.environmentId === save.prEnvironmentId);
-    return standing(save, pr && { id: pr.id, revision: pr.revision, targetBranch: branch?.prTargetBranch ?? null });
+    return { ...save, standing: standing(save, pr && { id: pr.id, revision: pr.revision, targetBranch: branch?.prTargetBranch ?? null }) };
   });
+}
+
+/** Every standing Conditional Save of the organization; withdrawn ones are left out. */
+export function useStandingSaves(organizationSlug: string): ConditionalSaveRow[] {
+  return useConditionalSaves(organizationSlug).filter((save) => save.standing);
 }
 
 /** The standing Conditional Saves held on `destinationId`, oldest approval first. */

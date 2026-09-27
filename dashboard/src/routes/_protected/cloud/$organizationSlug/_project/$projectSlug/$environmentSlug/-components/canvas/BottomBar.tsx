@@ -203,7 +203,7 @@ function BranchState({ review }: { review: BranchReviewView }) {
     const to = pr ? listNames(review.goesTo.filter((landing) => landing.rows.length).map((landing) => landing.destination.name)) : review.parent.name;
     return (
       <Bar title={pr && review.approved ? "Approved" : `${plural(review.changes, "change")} for ${to}`}
-        detail={pr ? (review.approved ? `Lands when #${pr.number} merges` : "Not approved yet")
+        detail={pr ? (review.approved ? (review.check?.passing === false ? review.check.reason : `Lands when #${pr.number} merges`) : "Not approved yet")
           : `${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
         <ReviewLink label={isMobile || (pr && review.approved) ? "Review" : pr ? "Review and approve" : "Review and merge"} />
       </Bar>

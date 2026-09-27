@@ -32,6 +32,7 @@ import {
   updateServiceCanvasPosition,
 } from "./service-operations.server";
 import { createGitServiceSource, createImageServiceSource } from "./services";
+import { InngestLive } from "#/modules/inngest/client";
 
 it.live(
   "keeps service, credential, and canvas authoring authorized and atomic",
@@ -55,6 +56,7 @@ it.live(
         Layer.succeed(Polar, { mode: "self_hosted" }),
       ).pipe(
         Layer.merge(SecretEncryptionLive.pipe(Layer.provide(config))),
+        Layer.merge(InngestLive.pipe(Layer.provide(config))),
       );
 
       yield* Effect.gen(function* () {
@@ -225,7 +227,7 @@ it.live(
         DATABASE_URL: testDatabase.url.href,
       } }))));
       const layer = (polar: PolarService) => Layer.mergeAll(DatabaseLive.pipe(Layer.provide(config)),
-        Layer.succeed(Polar, polar), SecretEncryptionLive.pipe(Layer.provide(config)));
+        Layer.succeed(Polar, polar), SecretEncryptionLive.pipe(Layer.provide(config)), InngestLive.pipe(Layer.provide(config)));
 
       const seeded = yield* Effect.gen(function* () {
         const database = yield* Database;
