@@ -55,7 +55,6 @@ function RouteComponent() {
 
   return (
     <DashboardPage width="content">
-      <h1 className="text-xl font-semibold">Settings</h1>
       <Tabs value={tab} onValueChange={(value) => {
         if (Schema.is(settingsTab)(value)) void navigate({ search: { scope: value }, replace: true });
       }}>
