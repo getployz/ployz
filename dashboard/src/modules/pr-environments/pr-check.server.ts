@@ -18,15 +18,11 @@ import { checkDestination, PR_CHECK_NAME, prCheck } from "./pr-check";
 import { prDestinations } from "./pr-environment.repository.server";
 import { conditionalSave, prEnvironment, prEnvironmentPlan } from "./tables";
 
-/**
- * Posts a pull request's "Ployz · ready to merge" check on its head commit, computed from the state as it is now, so a
- * later post always carries the latest state. Every project's PR Environment for the pull request counts towards the
- * one check. Nothing is posted for a closed pull request, one whose PR Environments are all being torn down, or an
- * installation that hasn't granted Checks: write.
- */
-export const postPrCheck = Effect.fn("PrEnvironments.postPrCheck")(function* (pullRequest: { repositoryId: number; number: number }) {
+type PrRow = Effect.Success<ReturnType<typeof loadPrEnvironments>>[number];
+
+/** Every project's current PR Environment for the pull request, with what the check reads of each. */
+const loadPrEnvironments = Effect.fn("PrEnvironments.loadPrEnvironments")(function* (pullRequest: { repositoryId: number; number: number }) {
   const { drizzle } = yield* Database;
-  const config = yield* AppConfig;
   const rows = yield* drizzle.select({
     pr: prEnvironment, branch: environmentBranch, namespace: environment.namespace, intent: environment.intent, revision: environment.revision,
     organizationId: organization.id, organizationSlug: organization.slug, projectSlug: project.slug,
@@ -37,52 +33,69 @@ export const postPrCheck = Effect.fn("PrEnvironments.postPrCheck")(function* (pu
     .innerJoin(project, eq(project.id, prEnvironment.projectId))
     .innerJoin(organization, eq(organization.id, prEnvironment.organizationId))
     .innerJoin(prEnvironmentPlan, and(eq(prEnvironmentPlan.projectId, prEnvironment.projectId), eq(prEnvironmentPlan.repositoryId, prEnvironment.repositoryId)))
-    .where(and(eq(prEnvironment.repositoryId, pullRequest.repositoryId), eq(prEnvironment.number, pullRequest.number), eq(prEnvironment.closed, false)))
+    .where(and(eq(prEnvironment.repositoryId, pullRequest.repositoryId), eq(prEnvironment.number, pullRequest.number), eq(prEnvironment.closed, false), eq(prEnvironment.retired, false)))
     .orderBy(prEnvironment.environmentId);
   const closing = yield* activeTeardownFor(rows.map((row) => row.pr.environmentId));
-  const prs = rows.filter((row) => !closing.has(row.pr.environmentId));
+  return rows.filter((row) => !closing.has(row.pr.environmentId));
+});
+
+/** What one PR Environment moves into each of its Destinations, and its approval there, as the check reads them. */
+const checkDestinationsOf = Effect.fn("PrEnvironments.checkDestinationsOf")(function* (pr: PrRow) {
+  const { drizzle } = yield* Database;
+  const prEnvironmentId = pr.pr.environmentId;
+  const destinationIds = yield* prDestinations(prEnvironmentId);
+  const names = destinationIds.length ? yield* drizzle.select({ id: environment.id, name: environment.name }).from(environment)
+    .where(inArray(environment.id, destinationIds)) : [];
+  const saves = yield* drizzle.select({ save: conditionalSave, approvedBy: user.name }).from(conditionalSave)
+    .leftJoin(user, eq(user.id, conditionalSave.approvedByUserId))
+    .where(eq(conditionalSave.prEnvironmentId, prEnvironmentId));
+  return yield* Effect.forEach(destinationIds, (destinationEnvironmentId) => Effect.gen(function* () {
+    const { compare } = yield* goesToComparison({
+      projectSlug: pr.projectSlug, prEnvironment: { id: prEnvironmentId, namespace: pr.namespace }, branch: pr.branch, destinationEnvironmentId,
+    });
+    const held = saves.find(({ save }) => save.destinationEnvironmentId === destinationEnvironmentId);
+    const { rows: changes } = yield* core("review", () => branchChanges(compare));
+    return checkDestination(
+      names.find((row) => row.id === destinationEnvironmentId)?.name ?? "",
+      changes.filter((row) => row.role === "move").length,
+      held ? {
+        standing: standing(held.save, { id: prEnvironmentId, revision: pr.revision, targetBranch: pr.pr.targetBranch }),
+        rows: held.save.rows, approvedBy: held.approvedBy,
+      } : null,
+    );
+  }));
+});
+
+/** Where one PR Environment is on the web, for the check's summary. */
+const addressSummaryOf = Effect.fn("PrEnvironments.addressSummaryOf")(function* (pr: PrRow) {
+  const clusterDomain = (yield* loadClusterDomain(pr.organizationId))?.name ?? null;
+  const addresses = pr.intent.services.flatMap(({ config: service }) => [
+    ...service.routes.map((route) => route.hostname),
+    ...(clusterDomain ? service.managedHostnames.map(({ prefix }) => managedHostname(prefix, clusterDomain)) : []),
+  ]);
+  return addresses.length ? `${pr.namespace} is at:\n\n${addresses.map((address) => `- https://${address}`).join("\n")}` : `${pr.namespace} has no web addresses.`;
+});
+
+/**
+ * Posts a pull request's "Ployz · ready to merge" check on its head commit, computed from the state as it is now, so a
+ * later post always carries the latest state. Every project's PR Environment for the pull request counts towards the
+ * one check, which GitHub knows by the pull request (its external id), so two pull requests from one head keep theirs.
+ * Nothing is posted for a closed pull request, one whose PR Environments are all being torn down, or an installation
+ * that hasn't granted Checks: write.
+ */
+export const postPrCheck = Effect.fn("PrEnvironments.postPrCheck")(function* (pullRequest: { repositoryId: number; number: number }) {
+  const config = yield* AppConfig;
+  const prs = yield* loadPrEnvironments(pullRequest);
   const [first] = prs;
   if (!first) return "skipped" as const;
   const live = yield* fetchInstallationPullRequest(first.installationId, pullRequest.repositoryId, pullRequest.number);
   if (!live.open) return "skipped" as const;
-
-  const destinations = yield* Effect.forEach(prs, (pr) => Effect.gen(function* () {
-    const prEnvironmentId = pr.pr.environmentId;
-    const destinationIds = yield* prDestinations(prEnvironmentId);
-    const names = destinationIds.length ? yield* drizzle.select({ id: environment.id, name: environment.name }).from(environment)
-      .where(inArray(environment.id, destinationIds)) : [];
-    const saves = yield* drizzle.select({ save: conditionalSave, approvedBy: user.name }).from(conditionalSave)
-      .leftJoin(user, eq(user.id, conditionalSave.approvedByUserId))
-      .where(eq(conditionalSave.prEnvironmentId, prEnvironmentId));
-    return yield* Effect.forEach(destinationIds, (destinationEnvironmentId) => Effect.gen(function* () {
-      const { compare } = yield* goesToComparison({
-        projectSlug: pr.projectSlug, prEnvironment: { id: prEnvironmentId, namespace: pr.namespace }, branch: pr.branch, destinationEnvironmentId,
-      });
-      const held = saves.find(({ save }) => save.destinationEnvironmentId === destinationEnvironmentId);
-      const { rows: changes } = yield* core("review", () => branchChanges(compare));
-      return checkDestination(
-        names.find((row) => row.id === destinationEnvironmentId)?.name ?? "",
-        changes.filter((row) => row.role === "move").length,
-        held ? {
-          standing: standing(held.save, { id: prEnvironmentId, revision: pr.revision, targetBranch: pr.pr.targetBranch }),
-          rows: held.save.rows, approvedBy: held.approvedBy,
-        } : null,
-      );
-    }));
-  }));
-  const check = prCheck(destinations.flat());
-
-  const summary = yield* Effect.forEach(prs, (pr) => Effect.gen(function* () {
-    const clusterDomain = (yield* loadClusterDomain(pr.organizationId))?.name ?? null;
-    const addresses = pr.intent.services.flatMap(({ config: service }) => [
-      ...service.routes.map((route) => route.hostname),
-      ...(clusterDomain ? service.managedHostnames.map(({ prefix }) => managedHostname(prefix, clusterDomain)) : []),
-    ]);
-    return addresses.length ? `${pr.namespace} is at:\n\n${addresses.map((address) => `- https://${address}`).join("\n")}` : `${pr.namespace} has no web addresses.`;
-  }));
+  const check = prCheck((yield* Effect.forEach(prs, checkDestinationsOf)).flat());
+  const summary = yield* Effect.forEach(prs, addressSummaryOf);
   return yield* postInstallationCheckRun(first.installationId, pullRequest.repositoryId, {
     headSha: live.headSha,
     name: PR_CHECK_NAME,
+    externalId: `${pullRequest.repositoryId}:${pullRequest.number}`,
     conclusion: check.passing ? "success" : "action_required",
     detailsUrl: new URL(`cloud/${first.organizationSlug}/${first.projectSlug}/${first.namespace}/review`, config.app.url).href,
     title: check.reason,

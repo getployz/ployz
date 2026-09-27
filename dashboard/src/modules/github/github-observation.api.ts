@@ -462,30 +462,34 @@ export const fetchAppInstallationPermissions = Effect.fn(
 });
 
 const checkRunSchema = Schema.Struct({ id: githubIdSchema });
-const checkRunsResponseSchema = Schema.Struct({ check_runs: Schema.Array(checkRunSchema) });
+const checkRunsResponseSchema = Schema.Struct({
+  check_runs: Schema.Array(Schema.Struct({ id: githubIdSchema, external_id: Schema.optional(Schema.NullOr(Schema.String)) })),
+});
 
 /**
- * The installation's completed check run `name` on a commit: updated in place when the commit already has one, else
- * created. The caller serializes posts per check, so two never race to create.
+ * The installation's completed check run `name` on a commit for `externalId`: updated in place when the commit already
+ * has that one, else created. Two checks of one name on one commit (two pull requests from one head) stay apart by
+ * `externalId`. The caller serializes posts per check, so two never race to create.
  */
 export const postInstallationCheckRun = Effect.fn(
   "Github.postInstallationCheckRun",
 )(function* (installationId: number, repositoryId: number, input: {
-  headSha: string; name: string; conclusion: "success" | "action_required"; detailsUrl: string; title: string; summary: string;
+  headSha: string; name: string; externalId: string; conclusion: "success" | "action_required"; detailsUrl: string; title: string; summary: string;
 }) {
   if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
     return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
   }
   const api = yield* GithubApi;
   const repository = `https://api.github.com/repositories/${repositoryId}`;
-  const { check_runs: [existing] } = yield* api.json({
+  const { check_runs: runs } = yield* api.json({
     installationId,
     url: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}`,
     operation: "list_check_runs",
     schema: checkRunsResponseSchema,
   });
+  const existing = runs.find((run) => run.external_id === input.externalId);
   const body = {
-    name: input.name, status: "completed", conclusion: input.conclusion, details_url: input.detailsUrl,
+    name: input.name, external_id: input.externalId, status: "completed", conclusion: input.conclusion, details_url: input.detailsUrl,
     output: { title: input.title, summary: input.summary },
   };
   return yield* api.json(existing
