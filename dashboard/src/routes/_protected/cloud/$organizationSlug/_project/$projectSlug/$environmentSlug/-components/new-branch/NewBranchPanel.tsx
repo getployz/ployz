@@ -99,7 +99,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
     }}>
       <CanvasInspectorHeader params={params}>
         <span className="font-medium">{failedNode ? `Fix ${failedNode.name} on a branch` : "New branch"}</span>
-        <p className="truncate text-sm text-muted-foreground">
+        <p className="text-sm break-words text-muted-foreground">
           From {parent.name}{failedNode ? `, with the change that failed${failedChange
             ? `: ${failedChange.label.toLowerCase()} ${failedChange.newValue}${moreChanges > 0 ? ` and ${moreChanges} more` : ""}` : ""}` : null}
         </p>
