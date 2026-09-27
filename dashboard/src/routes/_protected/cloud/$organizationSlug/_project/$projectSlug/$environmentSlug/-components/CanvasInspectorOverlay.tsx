@@ -17,7 +17,8 @@ export function CanvasInspectorOverlay({
   children: ReactNode;
   canvas: ReactNode;
   header: ReactNode;
-  selection: { key: string; nodeId: string } | null;
+  /** `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear. */
+  selection: { key: string; nodeId: string; lit?: boolean } | null;
 }) {
   const navigate = useNavigate();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -73,6 +74,7 @@ export function CanvasInspectorOverlay({
       {selection ? <>
         <button
           className="canvas-inspector-shade"
+          data-clear={selection.lit || undefined}
           type="button"
           tabIndex={-1}
           aria-label="Close inspector and return to Architecture"

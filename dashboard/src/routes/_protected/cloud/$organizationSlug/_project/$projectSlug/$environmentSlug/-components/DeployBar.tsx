@@ -1,119 +1,80 @@
-import { createContext, Suspense, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, Suspense, useRef, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import {
-  ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon, PencilIcon,
-} from "lucide-react";
-import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
+import { ChevronDownIcon, ChevronRightIcon, CircleDashedIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Drawer, DrawerContent, DrawerTitle, DrawerTrigger } from "#/components/ui/drawer";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemSeparator, ItemTitle } from "#/components/ui/item";
+import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { ListRowSkeletons, ShowMore } from "#/components/show-more";
+import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useIsMobile } from "#/hooks/use-mobile";
-import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
-import { useDeployQueuedNow, useRetryDeployment } from "#/modules/deployments/deployment-commands";
 import { useDeploymentList, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
-import { deploymentStatusLabel, shortDeploymentId, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { deploymentStatusLabel, shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { RelativeTime } from "#/components/relative-time";
-import { CANVAS_ROUTE_ID, useDeploymentMode, usePendingDeploymentId } from "./deployment-mode";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "./deployment-page";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
+import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
-function StatusIcon({ view }: { view: DeploymentView }) {
-  switch (view.status) {
-    case "deployed": return <CircleCheckIcon className="text-success" />;
-    case "failed": return <CircleXIcon className="text-destructive" />;
-    case "cancelled": return <CircleSlashIcon className="text-muted-foreground" />;
-    case "queued": return <CircleDashedIcon className="text-muted-foreground" />;
-    default: return <CircleDotIcon className="text-info" />;
-  }
-}
+const CANVAS_ROUTE_ID = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas";
 
 /** The editor canvas owns the change state, so it portals the apply zone into this slot of the bar. */
 export const ApplyZoneSlot = createContext<HTMLElement | null>(null);
 
 /**
- * The floating deploy bar: Editor | Deployments ⌄ on every screen size, usable while a service panel is open.
- * `children` renders after the segments (the apply zone, #1051).
+ * The floating deploy bar, usable while a panel is open: the running deployment's shortcut or the deployment list,
+ * each opening a Deployment Page. `children` renders after them (the apply zone, #1051).
  */
 export function DeployBar({ children }: { children?: ReactNode }) {
-  const { organizationSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const listOpen = useSearch({ from: CANVAS_ROUTE_ID, select: (search) => search.deploymentList === true });
-  const viewed = useDeploymentMode();
-  const pendingId = usePendingDeploymentId();
-  // An attempt still loading is already the one shown.
-  const viewedId = viewed?.deployment.id ?? pendingId;
-  const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
-  const { selectedNodeId } = useCanvasInspectorSelection();
+  const viewedId = useCanvasInspectorSelection().deploymentId;
+  const attempts = useEnvironmentDeployments(params.organizationSlug, environmentId);
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { queryClient } = useCollectionScope();
-  const warmList = () => void queryClient.prefetchInfiniteQuery(environmentDeploymentsQueryOptions(organizationSlug, environmentId));
+  const warmList = () => void queryClient.prefetchInfiniteQuery(environmentDeploymentsQueryOptions(params.organizationSlug, environmentId));
   const barRef = useRef<HTMLDivElement>(null);
   // The oldest queued or running attempt holds, or is next for, the Environment execution slot; the rest wait behind it.
   const active = attempts.filter(({ deployment }) => isActiveDeployment(deployment.status));
   const running = active.at(-1);
   const queued = active.length > 1 ? active[0] : undefined;
+  const page = (deploymentId: string) => ({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }) as const;
 
   function setListOpen(open: boolean) {
     void navigate({ to: ".", search: (previous) => ({ ...previous, deploymentList: open || undefined }), replace: true });
   }
 
-  // Esc closes the topmost thing: the list, menus and dialogs close themselves (they portal outside the scene), the panel closes itself, then Esc leaves Deployment Mode.
-  useEffect(() => {
-    if (!viewedId || listOpen || selectedNodeId) return;
-    function leaveOnEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      const scene = barRef.current?.closest(".environment-canvas-scene");
-      if (event.target !== document.body && !(event.target instanceof Node && scene?.contains(event.target))) return;
-      void navigate({ to: ".", search: (previous) => ({ ...previous, deployment: undefined }) });
-    }
-    document.addEventListener("keydown", leaveOnEscape);
-    return () => document.removeEventListener("keydown", leaveOnEscape);
-  }, [viewedId, listOpen, selectedNodeId, navigate]);
-
   const listTrigger = (
-    <Button size="sm" variant="ghost" data-active={viewedId !== null} onPointerEnter={warmList} onFocus={warmList}
-      aria-label={viewedId ? `Deployment ${shortDeploymentId(viewedId)}, all deployments` : "Deployments"}>
-      {viewedId ? <>{viewed ? <StatusIcon view={viewed.view} /> : null}<span className="font-mono">{shortDeploymentId(viewedId)}</span></>
-        : "Deployments"}
-      <ChevronDownIcon />
+    <Button size="sm" variant="ghost" onPointerEnter={warmList} onFocus={warmList}>
+      Deployments<ChevronDownIcon />
     </Button>
   );
-  // A queued or running attempt opens directly from Editor Mode, with no list.
-  const openRunning = !viewedId && running ? (
-    <Link to="." search={(previous) => ({ ...previous, deployment: running.deployment.id, deploymentList: undefined })}
-      className={buttonVariants({ size: "sm", variant: "secondary" })}>
-      <StatusIcon view={running.view} />
+  // A queued or running attempt opens directly, unless its page is already open.
+  const openRunning = running && running.deployment.id !== viewedId ? (
+    <Link {...page(running.deployment.id)} className={buttonVariants({ size: "sm", variant: "secondary" })}>
+      <DeploymentStatusIcon status={running.view.status} />
       <span className="tabular-nums">{running.view.status === "deploying" ? `Deploying ${running.view.deployed}/${running.view.changed}` : deploymentStatusLabel(running.view)}</span>
       <ChevronRightIcon />
     </Link>
   ) : null;
-  const openQueued = !viewedId && queued ? (
-    <Link to="." search={(previous) => ({ ...previous, deployment: queued.deployment.id, deploymentList: undefined })}
-      className={buttonVariants({ size: "sm", variant: "ghost" })}>
+  const openQueued = queued && queued.deployment.id !== viewedId ? (
+    <Link {...page(queued.deployment.id)} className={buttonVariants({ size: "sm", variant: "ghost" })}>
       <CircleDashedIcon />{active.length > 2 ? `${active.length - 1} queued` : "Queued"}
     </Link>
   ) : null;
-  const list = <DeploymentList organizationSlug={organizationSlug} environmentId={environmentId}
-    viewedId={viewedId} environmentSlug={environmentSlug} />;
+  const list = <DeploymentList organizationSlug={params.organizationSlug} environmentId={environmentId} viewedId={viewedId} />;
 
   return (
-    <div ref={barRef} role="group" aria-label="Deploy bar" className="deploy-bar" data-deployment={viewedId ? "" : undefined}>
-      {/* One toggle: the Editor or a deployment; the active segment is raised out of the track. */}
-      <div className="flex min-w-0 items-center gap-0.5 rounded-lg bg-muted p-0.5 [&>[data-active=true]]:bg-background [&>[data-active=true]]:shadow-sm">
-        <Link to="." search={(previous) => ({ ...previous, deployment: undefined, deploymentList: undefined })}
-          className={buttonVariants({ size: "sm", variant: "ghost" })} data-active={viewedId === null}>
-          {/* Intent Pink marks staged changes; styles.css shows it only while the bar holds the apply zone. */}
-          <span aria-hidden className="deploy-bar-pending size-2 rounded-full bg-changed" />
-          Editor
-        </Link>
+    <div ref={barRef} role="group" aria-label="Deploy bar" className="deploy-bar">
+      <div className="flex min-w-0 items-center gap-0.5">
+        {/* Intent Pink marks staged changes; styles.css shows it only while the bar holds the apply zone. */}
+        <span aria-hidden className="deploy-bar-pending mx-1.5 size-2 rounded-full bg-changed" />
         {openRunning}
         {openQueued}
         {isMobile ? (
@@ -131,43 +92,15 @@ export function DeployBar({ children }: { children?: ReactNode }) {
           </Popover>
         )}
       </div>
-      {viewed ? <DeploymentActions deployment={viewed.deployment}
-        building={attempts.some(({ deployment }) => deployment.status === "queued" && deployment.inngestRunId !== null && deployment.id !== viewed.deployment.id)} /> : null}
       {children}
     </div>
   );
 }
 
-/**
- * Retry on a failed attempt, Deploy now on one queued for the next trigger, Cancel on a queued or running one; all keep their existing semantics.
- * `building`: another queued attempt is building, so this one is the pending attempt and waits for it rather than offering Deploy now.
- */
-function DeploymentActions({ deployment, building }: { deployment: EnvironmentDeploymentSummary; building: boolean }) {
-  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const [retry, isRetrying] = useRetryDeployment(deployment);
-  const [deployNow, isDispatching] = useDeployQueuedNow(deployment);
-  const [cancelOpen, setCancelOpen] = useState(false);
-  const cancellable = !deployment.cancellationRequestedAt && isActiveDeployment(deployment.status);
-  return <>
-    {deployment.canRetry ? <Button size="sm" variant="outline" disabled={isRetrying} onClick={() => void retry()}>Retry</Button> : null}
-    {/* Queued with no dispatch requested: it waits for the environment's next trigger. */}
-    {deployment.status === "queued" && !deployment.dispatchRequestedAt ? (building
-      ? <span className="text-sm text-muted-foreground">Waiting for the current build</span>
-      : <Button size="sm" variant="outline" disabled={isDispatching} onClick={() => void deployNow()}>Deploy now</Button>) : null}
-    {cancellable ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}
-    <CancelDeploymentDialog open={cancelOpen} onOpenChange={setCancelOpen} organizationSlug={organizationSlug} deployment={deployment} />
-  </>;
-}
-
-/** The Editor first, then the environment's deployments newest first, a page at a time. */
-function DeploymentList({ organizationSlug, environmentId, viewedId, environmentSlug }: {
-  organizationSlug: string; environmentId: string; viewedId: string | null; environmentSlug: string;
-}) {
+/** The environment's deployments newest first, a page at a time; each opens its Deployment Page. */
+function DeploymentList({ organizationSlug, environmentId, viewedId }: { organizationSlug: string; environmentId: string; viewedId: string | null }) {
   return (
     <nav aria-label="Deployments" className="max-h-[min(28rem,70dvh)] overflow-y-auto"><ItemGroup>
-      <ListRow current={viewedId === null} search={{ deployment: undefined }}
-        icon={<PencilIcon />} title="Editor" detail={`${environmentSlug} as it is now`} />
-      <ItemSeparator />
       <Suspense fallback={<ListRowSkeletons />}>
         <DeploymentRows organizationSlug={organizationSlug} environmentId={environmentId} viewedId={viewedId} />
       </Suspense>
@@ -176,30 +109,23 @@ function DeploymentList({ organizationSlug, environmentId, viewedId, environment
 }
 
 function DeploymentRows({ organizationSlug, environmentId, viewedId }: { organizationSlug: string; environmentId: string; viewedId: string | null }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { attempts, hasMore, loadingMore, showMore } = useDeploymentList(organizationSlug, environmentId);
   return <>
     {attempts.length === 0 ? <Empty variant="placeholder"><EmptyDescription>No deployments yet</EmptyDescription></Empty> : null}
-    {attempts.map(({ deployment, view }) => (
-      <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}
-        icon={<StatusIcon view={view} />}
-        title={<><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
-        detail={<>{deploymentStatusLabel(view)} · <RelativeTime date={deployment.createdAt} /></>} />
-    ))}
+    {attempts.map(({ deployment, view }) => {
+      const current = deployment.id === viewedId;
+      return (
+        <Item key={deployment.id} size="xs" variant={current ? "muted" : "default"} data-current={current}
+          render={<Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} aria-current={current ? "page" : undefined} />}>
+          <ItemMedia variant="icon"><DeploymentStatusIcon status={view.status} /></ItemMedia>
+          <ItemContent className="min-w-0">
+            <ItemTitle><span><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</span></ItemTitle>
+            <ItemDescription className="truncate">{deploymentStatusLabel(view)} · <RelativeTime date={deployment.createdAt} /></ItemDescription>
+          </ItemContent>
+        </Item>
+      );
+    })}
     <ShowMore hasMore={hasMore} loading={loadingMore} onShowMore={showMore} />
   </>;
-}
-
-function ListRow({ current, search, icon, title, detail }: {
-  current: boolean; search: { deployment: string | undefined }; icon: ReactElement; title: ReactNode; detail: ReactNode;
-}) {
-  return (
-    <Item size="xs" variant={current ? "muted" : "default"} data-current={current}
-      render={<Link to="." search={(previous) => ({ ...previous, ...search, deploymentList: undefined })} />}>
-      <ItemMedia variant="icon">{icon}</ItemMedia>
-      <ItemContent className="min-w-0">
-        <ItemTitle><span>{title}</span></ItemTitle>
-        <ItemDescription className="truncate">{detail}</ItemDescription>
-      </ItemContent>
-    </Item>
-  );
 }

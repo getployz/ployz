@@ -44,7 +44,6 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/DeploymentNode.tsx": "build or deploy stage running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
@@ -79,7 +78,6 @@ const DOCUMENT_COMMAND_FILES = {
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
-  deploymentServiceVariablesQueryOptions: "read when the user opens a deployed service's variables",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",

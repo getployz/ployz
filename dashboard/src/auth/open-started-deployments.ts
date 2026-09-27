@@ -30,12 +30,12 @@ export async function setOpenStartedDeployments(value: boolean) {
 
 /**
  * How watching a deployment changes the preference: opening your own running attempt turns it on,
- * and returning to live while it runs turns it off. Null leaves it alone.
+ * and leaving its page while it runs turns it off. Null leaves it alone.
  */
 export function openStartedDeploymentsChange({ shownBefore, shownNow, deploymentId }: {
   /** Your own running attempt shown before and now, if any. */
   shownBefore: string | null; shownNow: string | null;
-  /** The attempt in the URL; null is Editor Mode. */
+  /** The attempt whose Deployment Page is open; null when none is. */
   deploymentId: string | null;
 }): boolean | null {
   if (shownNow !== null && shownNow !== shownBefore) return true;

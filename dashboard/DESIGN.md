@@ -253,17 +253,16 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Details (the review) and Deploy in the deploy bar's apply zone. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
-### Deployment Mode
+### Deployments
 
-Deployments are a view of the canvas, not a page. One floating **deploy bar** sits at the bottom of the canvas on every screen size and stays usable while a service panel is open:
+Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt has its own Deployment Page, which opens as a panel over the canvas; the canvas stays mounted underneath and always draws the Environment as it is now. Closing the page leaves the canvas, its selection and its viewport as they were.
 
-- A segmented control, **Editor | Deployments ⌄**. The Editor is the environment as it is now and the only place edits happen; an Intent Pink dot on it marks staged changes. (Not "Live": that read as the running production state.) The second segment is a dropdown that always opens the deployment list, except while a deployment runs, when it reads **Deploying 2/4 ›** and opens that deployment directly.
-- When changes are pending, the whole bar takes the staged-intent surface and adds **Apply N changes · Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Git-triggered deployments never clear these changes.
-- Bar text stays minimal: one short label per segment, fewer words on mobile. Explanations belong in the panel, never in the bar.
+- While the page is open, the canvas lights up what the attempt changed: those nodes show their Node Outcome and the rest dim. Nodes it removed, or that were deleted since, appear only in the page's list.
+- The page's header places the attempt: its message, what triggered it and who, the Git branch and commit, the status, the duration and the age. Its actions follow the status.
+- One chip per changed service picks whose logs show; past six they become a dropdown. **Build | Deploy** tabs follow the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. Build is disabled for a prebuilt image.
+- A manual Deploy opens its page when the user's "open started deployments" setting is on. Git-triggered deployments never take over the screen, and nothing returns the user to the canvas automatically. Deploying while another deployment runs queues.
 
-Choosing a deployment puts the canvas into that deployment: the header and canvas tint, nodes show Build → Deploy with a short log tail, and the service panel becomes **Details · Build logs · Deploy logs**. Editor Mode nodes never change. A manual Deploy opens its deployment (remembered if the user leaves it while running); Git-triggered deployments never take over the canvas, and nothing returns the user to the Editor automatically. Deploying while another deployment runs queues.
-
-The switch between the Editor and a deployment is the product's one moment of flair, and it stays minimal: the tint and frame sweep in and reverse on Back to editor. Motion is short, moves the same elements rather than swapping them, and falls back to a crossfade under reduced motion.
+One floating **deploy bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. When changes are pending, the whole bar takes the staged-intent surface and adds **Apply N changes · Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Git-triggered deployments never clear these changes. Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
 The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
 

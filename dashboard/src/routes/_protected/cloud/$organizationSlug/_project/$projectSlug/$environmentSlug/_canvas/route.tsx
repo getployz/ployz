@@ -1,34 +1,34 @@
 import { Suspense } from "react";
 import {
   createFileRoute,
+  redirect,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
-import { prefetchFromOrgStore, prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
-import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
-import { deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
+import { Schema } from "effect";
+import { prefetchFromOrgStore, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
+import { environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentCanvasScene";
-import { canvasRouteSearch, viewedDeploymentId } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
+import { DEPLOYMENT_PAGE_ROUTE_TO, legacyDeploymentLink } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
-  ...canvasRouteSearch,
-  loaderDeps: ({ search }) => ({ deployment: viewedDeploymentId(search), deploymentList: search.deploymentList }),
-  // Deployment Mode's nodes read the attempt and its build tail, and the open list its first page; all start together.
-  // SSR renders them and hover preload warms them.
-  loader: async ({ params, context, deps: { deployment, deploymentList } }) => {
+  // `deploymentList=true` opens the deploy bar's deployment list; it is not retained.
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ deploymentList: Schema.optional(Schema.Boolean) })),
+  // Old Deployment Mode links (`?deployment=<id>`, on the canvas or a service) open that attempt's Deployment Page.
+  beforeLoad: ({ location, params }) => {
+    const legacy = legacyDeploymentLink(location);
+    if (legacy) throw redirect({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: legacy.deploymentId }, search: legacy.search, replace: true });
+  },
+  loaderDeps: ({ search }) => ({ deploymentList: search.deploymentList }),
+  // The open list's first page; the list is keyed by environment id, which the Org Store resolves.
+  loader: async ({ params, context, deps: { deploymentList } }) => {
     const { organizationSlug } = params;
-    await prefetchFromOrgStore(context, organizationSlug, (scope) => [
-      deployment !== null && prefetchRemote(context, deploymentBuildTailQueryOptions(organizationSlug, deployment)),
-      // An attempt the Org Store holds draws from it alone.
-      deployment !== null && !getEnvironmentDeploymentsCollection(organizationSlug, scope).has(deployment)
-        && prefetchRemote(context, deploymentAttemptQueryOptions(organizationSlug, deployment)),
-      // The list is keyed by environment id, which the Org Store resolves.
+    await prefetchFromOrgStore(context, organizationSlug, () => [
       deploymentList === true && requireEnvironment(context, params).then((environment) =>
         prefetchRemotePages(context, environmentDeploymentsQueryOptions(organizationSlug, environment.id))),
     ]);

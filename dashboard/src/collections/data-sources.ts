@@ -31,7 +31,6 @@ export const dataSources = {
   "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes; a finished log is never refetched" },
   "modules/deployments/deployment-build-log.queries.ts": { kind: "remote", freshness: "fresh on mount; polls until the build finishes" },
   "modules/deployments/deployment-history.queries.ts": { kind: "remote", freshness: "an environment's deployment list pages, a node's Running attempt and History pages, and one attempt (row, target node list, service configs): kept until the change stream names environment_change_state (a deployment row changed, not a progress event), then refetched" },
-  "modules/deployments/deployment-variables.queries.ts": { kind: "remote", freshness: "never refetched: recomputed from the attempt's frozen inputs, which never change" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;
 
 /**

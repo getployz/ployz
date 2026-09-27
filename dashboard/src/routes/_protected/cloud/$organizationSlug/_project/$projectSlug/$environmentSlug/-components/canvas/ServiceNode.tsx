@@ -1,5 +1,4 @@
 import { Handle, Position } from "@xyflow/react";
-import { canvasNodeTransition } from "./constants";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Link, useParams } from "@tanstack/react-router";
 import {
@@ -18,6 +17,9 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { cn } from "#/lib/utils";
+import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { useNodeLighting } from "../deployment-page";
+import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useCanvasService } from "./CanvasServicesContext";
 import {
   ENVIRONMENT_ROUTE_FROM,
@@ -65,6 +67,7 @@ export function ServiceNode({
     ? `${serviceState.serviceView.service.environmentSlug}/${serviceState.serviceView.service.privateDns}`
     : "";
   const { runtime } = useRuntimeService(runtimeIdentity);
+  const light = useNodeLighting(data.serviceId);
 
   if (!serviceState) {
     return <LoadingNode />;
@@ -102,7 +105,6 @@ export function ServiceNode({
         }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
-        {...canvasNodeTransition(service.id)}
         preload="intent"
         draggable={false}
         className="block h-36 w-72"
@@ -121,8 +123,8 @@ export function ServiceNode({
         />
         <Card
           size="node"
-          state={state}
-          className="h-full justify-between"
+          state={light ? outcomeCardState(light.outcome) : state}
+          className={cn("h-full justify-between", light === null && "opacity-40")}
           data-selected={selected}
         >
           <CardHeader>
@@ -143,7 +145,7 @@ export function ServiceNode({
                 ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {semantics.showNewBadge ? (
+                {light ? <NodeOutcomeBadge light={light} /> : semantics.showNewBadge ? (
                   <Badge variant="success">New</Badge>
                 ) : null}
               </div>

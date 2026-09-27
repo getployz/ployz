@@ -1,5 +1,4 @@
 import { Handle, Position } from "@xyflow/react";
-import { canvasNodeTransition } from "./constants";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
@@ -13,6 +12,9 @@ import {
 } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
+import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { useNodeLighting } from "../deployment-page";
+import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useCanvasVolumeResource } from "./CanvasServicesContext";
 import {
   ENVIRONMENT_RESOURCE_ROUTE_TO,
@@ -49,6 +51,7 @@ export function VolumeNode({
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const resourceState = useCanvasVolumeResource(data.resourceId);
+  const light = useNodeLighting(data.resourceId);
 
   if (!resourceState) {
     return <VolumeLoadingNode />;
@@ -72,7 +75,6 @@ export function VolumeNode({
       }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={data.resourceId}
-      {...canvasNodeTransition(data.resourceId)}
       preload="intent"
       draggable={false}
       className="block h-36 w-72"
@@ -92,9 +94,11 @@ export function VolumeNode({
       <Card
         size="node"
         data-selected={selected}
+        state={light ? outcomeCardState(light.outcome) : undefined}
         className={cn(
           "h-full justify-between",
           isRemoved && "opacity-60",
+          light === null && "opacity-40",
         )}
       >
         <CardHeader>
@@ -111,7 +115,7 @@ export function VolumeNode({
               </CardDescription>
             </div>
             <Badge variant="secondary">{resource.consumerCount}</Badge>
-            {isRemoved ? (
+            {light ? <NodeOutcomeBadge light={light} /> : isRemoved ? (
               <Badge variant="destructive">Removing</Badge>
             ) : resourceState.diffRowCount > 0 ? (
               <Badge variant="changed">{resourceState.diffRowCount}</Badge>

@@ -29,12 +29,16 @@ function useDeploymentCommand<T>(deployment: EnvironmentDeploymentSummary, messa
   return [start, isRunning] as const;
 }
 
-/** Retry re-admits a failed attempt's frozen target; Deployment Mode then follows the new attempt the user just started. */
+/** Retry re-admits a failed attempt's frozen target, then opens the Deployment Page of the new attempt the user just started. */
 export function useRetryDeployment(deployment: EnvironmentDeploymentSummary) {
   const navigate = useNavigate();
+  const { organizationSlug = "" } = useParams({ strict: false });
   return useDeploymentCommand(deployment, { success: () => "Deployment retry queued.", failure: "Could not retry this deployment." },
     async (target) => (await retryEnvironmentDeploymentServerFn({ data: { ...target, failedDeploymentId: deployment.id } })).data.environmentDeploymentId,
-    (retried) => void navigate({ to: ".", search: (previous) => ({ ...previous, deployment: retried }) }));
+    (retried) => void navigate({
+      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId",
+      params: { organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug, deploymentId: retried },
+    }));
 }
 
 /** Deploy now dispatches an attempt queued for its environment's next trigger; behind a building attempt it waits. */
