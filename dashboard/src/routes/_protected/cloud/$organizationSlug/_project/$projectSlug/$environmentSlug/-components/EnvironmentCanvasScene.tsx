@@ -10,14 +10,13 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { Outlet, useLoaderData, useParams } from "@tanstack/react-router";
+import { Outlet, useLoaderData, useMatch, useParams } from "@tanstack/react-router";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   buildEnvironmentServicesViewQuery,
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
-import { shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
@@ -33,11 +32,8 @@ import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
-import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
 import { ApplyZoneSlot, DeployBar } from "./DeployBar";
-import { BackToLive, DeploymentModeProvider, useDeploymentMode, usePendingDeploymentId } from "./deployment-mode";
-import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
-import { DeploymentServicePanel } from "./DeploymentServicePanel";
+import { DEPLOYMENT_PAGE_ROUTE_ID, DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -205,53 +201,34 @@ function CanvasWithData() {
 }
 
 export function EnvironmentCanvasScene() {
-  return (
-    <DeploymentModeProvider>
-      <CanvasScene />
-    </DeploymentModeProvider>
-  );
-}
-
-function CanvasScene() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({
     from: ENVIRONMENT_ROUTE_FROM,
   });
-  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
-  const attempt = useDeploymentMode();
-  const pendingId = usePendingDeploymentId();
-  const viewedId = attempt?.deployment.id ?? pendingId;
+  const deploymentId = useMatch({ from: DEPLOYMENT_PAGE_ROUTE_ID, shouldThrow: false })?.params.deploymentId ?? null;
+  const lighting = useOpenDeployment();
   const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
-  // Deployment Mode opens only its read-only panel, and only for a service in the target node list; the live panel edits.
-  // While the attempt loads, a selected service's panel waits for it.
-  const inspectedNodeId = pendingId ? selectedServiceId : !attempt ? selectedNodeId
-    : attempt.nodes.some((node) => node.nodeType === "service" && node.nodeId === selectedServiceId) ? selectedServiceId : null;
 
   return (
     <ApplyZoneSlot.Provider value={applyZoneSlot}>
     <CanvasInspectorOverlay
-      selection={inspectedNodeId ? {
-        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${inspectedNodeId}`,
-        nodeId: inspectedNodeId,
-      } : null}
-      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }}>
-        {viewedId ? <>
-          <span className="ml-auto font-mono text-muted-foreground">{shortDeploymentId(viewedId)}</span>
-          <BackToLive />
-        </> : null}
-      </DashboardPageHeader>}
+      selection={selectedNodeId ? {
+        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
+        nodeId: selectedNodeId,
+      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId } : null}
+      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />}
       canvas={<>
-        <Suspense fallback={<PendingCanvas />}>
-          {pendingId ? <PendingCanvas />
-            : attempt ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
-            : <CanvasWithData key={canvasKey} />}
-        </Suspense>
+        {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
+        <DeploymentLightingProvider value={lighting}>
+          <Suspense fallback={<PendingCanvas />}>
+            <CanvasWithData key={canvasKey} />
+          </Suspense>
+        </DeploymentLightingProvider>
         <Suspense fallback={null}><DeployBar><div ref={setApplyZoneSlot} className="contents" /></DeployBar></Suspense>
       </>}
     >
-      {!inspectedNodeId ? null : pendingId ? <CanvasInspectorPending />
-        : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
+      <Outlet />
     </CanvasInspectorOverlay>
     </ApplyZoneSlot.Provider>
   );

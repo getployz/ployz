@@ -10,7 +10,8 @@ import { useNodeDeployments, type NodeDeployment } from "#/modules/deployments/d
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { nodeOutcomeLabels, shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { RelativeTime } from "#/components/relative-time";
-import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../../../-components/environment-route-paths";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
+import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
 function Summary({ deployment }: { deployment: NodeDeployment }) {
   return (
@@ -24,7 +25,7 @@ function Summary({ deployment }: { deployment: NodeDeployment }) {
 /**
  * The live panel's Deployments tab: the attempt currently serving this service (the newest that
  * Deployed it, so a later failure leaves it in place) and the other attempts that changed it.
- * Each opens the canvas in Deployment Mode for that attempt with this service open.
+ * Each opens that attempt's Deployment Page focused on this service.
  */
 export function ServiceDeploymentsTab({ organizationSlug, serviceId }: { organizationSlug: string; serviceId: string }) {
   return (
@@ -45,14 +46,14 @@ function Deployments({ organizationSlug, serviceId }: { organizationSlug: string
   const running = data.pages[0]?.running;
   // History holds the Running attempt too; it shows once, as Running.
   const history = data.pages.flatMap((page) => page.items).filter((deployment) => deployment.id !== running?.id);
-  const open = (deployment: NodeDeployment, tab?: "deploy-logs") =>
-    <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId }} search={{ deployment: deployment.id, tab }} />;
+  const open = (deployment: NodeDeployment, logs?: "deploy") =>
+    <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} search={{ service: serviceId, logs }} />;
 
   return (
     <>
       {running ? (
         // The card is one link (links cannot nest), so it goes where its "View logs" label says.
-        <Item variant="outline" render={open(running, "deploy-logs")}>
+        <Item variant="outline" render={open(running, "deploy")}>
           <Badge variant="success">Running</Badge>
           <Summary deployment={running} />
           <ItemActions><span className={buttonVariants({ variant: "outline", size: "sm" })}>View logs</span></ItemActions>

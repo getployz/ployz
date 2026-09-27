@@ -4,12 +4,10 @@ import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import type { EffectPgDatabase } from "drizzle-orm/effect-postgres";
 import { Effect, Schema } from "effect";
 
-import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type {
   DeploymentAttemptQueryInput,
   DeploymentBuildTailQueryInput,
   DeploymentOperationEvidencePageQueryInput,
-  DeploymentServiceVariablesQueryInput,
   EnvironmentChangeStateNodeProjection,
   EnvironmentChangeStateProjection,
   NodeDeploymentsQueryInput,
@@ -33,7 +31,6 @@ import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-event
 import { viewTargetNodes, deploymentView } from "./deployment-view";
 import { deploymentRowColumns } from "./deployment-row.server";
 import { environmentDeployment } from "./tables";
-import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
   function* (actor: Actor, organizationSlug: string) {
@@ -165,26 +162,6 @@ export const listDeploymentBuildTail = Effect.fn("Deployments.buildTail")(functi
 
 export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
   return yield* loadDeploymentEvents(yield* logCursor(actor, input));
-});
-
-/**
- * One service's variables as the attempt deployed them, recomputed through deploy's own loader
- * from the attempt's frozen snapshots and producers. Sealed values, and values resolving from them,
- * are null: never decrypted.
- */
-export const getDeploymentServiceVariables = Effect.fn("Deployments.serviceVariables")(function* (
-  actor: Actor,
-  input: DeploymentServiceVariablesQueryInput,
-) {
-  const organization = yield* requireOrganization(actor, input.organizationSlug);
-  const context = yield* loadDeploymentContext(input.deploymentId);
-  if (context?.organization.id !== organization.id) {
-    return yield* new NotFound({ message: "The deployment was not found." });
-  }
-  // Deploy reserves the Cluster Domain; a read only looks. Once reserved it never changes.
-  const clusterDomain = needsClusterDomain(context) ? (yield* loadClusterDomain(organization.id))?.name ?? null : null;
-  const env = yield* loadDisplayedDeployEnv(context, clusterDomain);
-  return env.get(input.serviceId) ?? {};
 });
 
 /** Every paged deployment read's page size. */
