@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@ployz/sdk";
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
-import { viewTargetNodes, buildLogSections, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type TargetNode, type DeploymentViewInput } from "./deployment-view";
+import {
+  viewTargetNodes, buildLogSections, deploymentLighting, deploymentLogTab, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, hasBuildLogs,
+  type TargetNode, type DeploymentViewInput,
+} from "./deployment-view";
 
 function row(index: number, operation?: DeployOperation): OperationRow {
   const spec = resolvedServiceSpecFixture();
@@ -205,5 +208,41 @@ describe("deployment view projection", () => {
     const { nodes, progress } = viewTargetNodes(list, recorded);
     expect(nodes.map(({ nodeId, changed }) => [nodeId, changed])).toEqual([["api", true], ["web", false], ["old", true], ["data", false]]);
     expect(progress?.rows.map((r) => r.serviceId)).toEqual(["api", "old"]);
+  });
+
+  it("lights the canvas nodes an attempt changed and lists the ones the canvas no longer draws", () => {
+    const remove = row(0, { type: "remove_container", machine_id: "machine-0" as MachineId, container_id: "gone" as ContainerId });
+    const progress = deploymentProgressForEvent({ type: "outcome", outcome: engineOrdered({ type: "success", completed: [remove.operation] } as const) }, [remove], context);
+    const nodes = [node({ nodeId: "svc-0", changed: true, removed: true }), node({ nodeId: "web", changed: true }), node({ nodeId: "gone", changed: true }), node({ nodeId: "db", changed: false })];
+    const view = deploymentView({ deployment: deployment("applied"), progress, nodes });
+    // "gone" was deleted since; "db" is unchanged, so it dims like any canvas node the attempt did not change.
+    const { lit, offCanvas } = deploymentLighting({ nodes, view }, new Set(["web", "db", "added-later"]));
+    expect([...lit]).toEqual([["web", "deployed"]]);
+    expect(offCanvas.map(({ node, view }) => [node.nodeId, view.outcome])).toEqual([["svc-0", "removed"], ["gone", "deployed"]]);
+  });
+
+  it("opens the log tab on the focused service's stage and follows it until the user picks one", () => {
+    const api = [node({ nodeId: "api", changed: true, needsBuild: true })];
+    const tab = (input: Omit<DeploymentViewInput, "nodes">, picked?: "build" | "deploy") => {
+      const [view] = deploymentView({ ...input, nodes: api }).nodes;
+      if (!view) throw new Error("no node");
+      return deploymentLogTab(view, picked);
+    };
+    const building = { steps: [step(1, 1, "run", "RUN make", 1, null, null, "api")], output: [] };
+    expect(tab({ deployment: deployment("queued"), progress: null })).toBe("build");
+    expect(tab({ deployment: deployment("deploying"), progress: null, buildLog: building })).toBe("build");
+    expect(tab({ deployment: deployment("deploying", { planned: true }), progress: null })).toBe("deploy");
+    expect(tab({ deployment: deployment("failed", { failureMessage: "Build failed" }), progress: null })).toBe("build");
+    expect(tab({ deployment: deployment("failed", { failureMessage: "Unhealthy", planned: true }), progress: null })).toBe("deploy");
+    // A picked tab holds while the stage moves on.
+    expect(tab({ deployment: deployment("deploying", { planned: true }), progress: null }, "build")).toBe("build");
+    expect(tab({ deployment: deployment("deploying", { planned: false }), progress: null, buildLog: building }, "deploy")).toBe("deploy");
+  });
+
+  it("disables Build for a prebuilt image, even when a link names it", () => {
+    const [view] = deploymentView({ deployment: deployment("deploying", { planned: true }), progress: null, nodes: [node({ nodeId: "web", changed: true })] }).nodes;
+    if (!view) throw new Error("no node");
+    expect(hasBuildLogs(view)).toBe(false);
+    expect(deploymentLogTab(view, "build")).toBe("deploy");
   });
 });

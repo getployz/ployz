@@ -419,3 +419,35 @@ export const nodeOutcomeLabels = {
 
 /** The first eight characters: how the UI names an attempt next to its message. */
 export const shortDeploymentId = (id: string) => id.slice(0, 8);
+
+/**
+ * What an open Deployment Page does to the canvas, which always draws the Environment as it is now.
+ * `lit`: the canvas nodes the attempt changed, by Node Outcome; every other canvas node dims.
+ * `offCanvas`: nodes it changed that the canvas no longer draws (it removed them, or they were deleted since); only the page lists them.
+ */
+export function deploymentLighting(attempt: { nodes: readonly TargetNode[]; view: DeploymentView }, onCanvas: ReadonlySet<string>) {
+  const lit = new Map<string, DeploymentNodeView["outcome"]>();
+  const offCanvas: { node: TargetNode; view: DeploymentNodeView }[] = [];
+  for (const node of attempt.nodes) {
+    const view = attempt.view.nodes.find((candidate) => candidate.nodeId === node.nodeId);
+    if (!view || view.outcome === "unchanged") continue;
+    if (node.removed || !onCanvas.has(node.nodeId)) offCanvas.push({ node, view });
+    else lit.set(node.nodeId, view.outcome);
+  }
+  return { lit, offCanvas };
+}
+
+export type LogTab = "build" | "deploy";
+
+/** A prebuilt image has nothing to build, so its Build tab is disabled. */
+export const hasBuildLogs = (view: DeploymentNodeView) => view.build.state !== "none";
+
+/**
+ * The Deployment Page's log tab for the focused service: the tab the user picked, otherwise its current stage.
+ * That is Build while it waits for or runs its build, Deploy once deploying, and the failed stage on failure.
+ */
+export function deploymentLogTab(view: DeploymentNodeView, picked: LogTab | undefined): LogTab {
+  if (!hasBuildLogs(view)) return "deploy";
+  if (picked) return picked;
+  return view.build.state === "queued" || view.build.state === "running" || view.build.state === "failed" ? "build" : "deploy";
+}
