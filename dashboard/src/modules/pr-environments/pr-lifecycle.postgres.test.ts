@@ -30,6 +30,10 @@ import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-revi
 import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
 import { standing } from "./conditional-save";
 import { executePostPrCheck } from "./pr-check.inngest";
+import { createService } from "#/modules/environment-design/service-operations.server";
+import { createImageServiceSource } from "#/modules/environment-design/services";
+import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
+import { mergeBranch } from "#/modules/branches/branch-merge.server";
 
 const organizationId = "00000000-0000-4000-8000-000000001101";
 const userId = "00000000-0000-4000-8000-000000001102";
@@ -65,7 +69,10 @@ const stagingIntent = {
   volumes: [],
 };
 
-type PullRequest = { number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } }; base?: { ref: string }; draft: boolean };
+type PullRequest = {
+  number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } };
+  base?: { ref: string }; draft: boolean; merged?: boolean; merge_commit_sha?: string | null;
+};
 
 type CheckRunBody = { head_sha?: string; conclusion: string; details_url: string; output: { title: string; summary: string } };
 
@@ -73,7 +80,7 @@ type PushDelivery = { ref: string; before: string; after: string; created: boole
 type PullRequestDelivery = {
   action: string;
   changes: { base: { ref: { from: string } } } | undefined;
-  pull_request: PullRequest & { title: string; base: { ref: string }; merged: boolean; merge_commit_sha: null; commits: number };
+  pull_request: PullRequest & { title: string; base: { ref: string }; merged: boolean; merge_commit_sha: string | null; commits: number };
 };
 
 describe("PR Environment lifecycle", () => {
@@ -102,7 +109,7 @@ describe("PR Environment lifecycle", () => {
         switch (request.operation) {
           case "fetch_pull_request": {
             const pull = pulls.get(Number(request.url.split("/pulls/")[1]));
-            return pull && { base: { ref: "main" }, ...pull, title: `Change ${pull.number}` };
+            return pull && { base: { ref: "main" }, merged: false, merge_commit_sha: null, ...pull, title: `Change ${pull.number}` };
           }
           case "resolve_repository": return { id: repositoryId, full_name: "acme/app" };
           case "resolve_branch_head": {
@@ -206,7 +213,7 @@ describe("PR Environment lifecycle", () => {
       changes: action === "edited" ? { base: { ref: { from: "main" } } } : undefined,
       pull_request: {
         base: { ref: "main" }, ...pull, title: `Change ${pull.number}`,
-        merged: false, merge_commit_sha: null, commits: 1,
+        merged: pull.merged ?? false, merge_commit_sha: pull.merge_commit_sha ?? null, commits: 1,
       },
     });
   }
@@ -409,7 +416,7 @@ describe("PR Environment lifecycle", () => {
 
     /** The review of what goes to staging, computed as the browser does from Org Store rows. */
     async function review(prId: string) {
-      const branch = await prEnvironment(142);
+      const branch = (await prEnvironments()).find((row) => row.environmentId === prId);
       const [pr, staging] = [await environmentOf(prId), await environmentOf(stagingId)];
       if (!branch || !pr || !staging) throw new Error("missing rows");
       return goesTo({
@@ -417,10 +424,10 @@ describe("PR Environment lifecycle", () => {
         hostnames: { branch: branchHostnameSuffix("shop", pr.namespace, true), parent: branchHostnameSuffix("shop", staging.namespace, false) },
       });
     }
-    const approve = async (prId: string, picks: (keys: string[]) => Array<{ key: string; option?: "from" | "new"; value: string }>) => {
+    const approve = async (prId: string, picks: (keys: string[], rows: Awaited<ReturnType<typeof review>>["rows"]) => Array<{ key: string; option?: "from" | "new"; value: string }>) => {
       const { rows, review: string } = await review(prId);
       return runEffect(approveConditionalSave({ userId }, {
-        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: picks(rows.map((row) => row.key)),
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: picks(rows.map((row) => row.key), rows),
       }));
     };
     const saves = () => harness.db.select().from(schema.conditionalSave);
@@ -569,6 +576,121 @@ describe("PR Environment lifecycle", () => {
       expect(await pullRequest("other", "opened", 9, { head: { ref: "other", sha: "e".repeat(40), repo: { id: repositoryId } } })).toBe("ignored_pull_request");
       expect(await postChecks()).toEqual([]);
       expect(checkRuns).toHaveLength(2);
+    });
+
+    describe("when the pull request closes", () => {
+      const merged = { state: "closed" as const, merged: true, merge_commit_sha: "e".repeat(40) };
+      type Intent = { services: Array<{ id: string; lineageId: string; variables: Array<{ key: string; value: unknown }> }> };
+      const variableIn = (intent: Intent | undefined, key: string) =>
+        intent?.services.find((node) => node.lineageId === apiLineage)?.variables.find((variable) => variable.key === key)?.value;
+      const plain = (value: string) => ({ kind: "literal", value });
+      const setVariable = async (environmentId: string, key: string, value: string) => {
+        const scoped = await scope(environmentId);
+        const existing = (await environmentOf(environmentId))?.intent.services.find((node) => node.lineageId === apiLineage)?.variables.find((variable) => variable.key === key);
+        const input = { ...scoped, key, description: null, exported: false, value: { type: "plain" as const, value } };
+        await runEffect(existing ? updateServiceVariable({ userId }, { ...input, variableId: existing.id }) : createServiceVariable({ userId }, input));
+      };
+      /** staging's Working State becomes its latest Saved revision. */
+      const saveStaging = async () => harness.db.insert(schema.environmentSavedStateSnapshot).values({
+        organizationId, environmentId: stagingId, actorId: userId, intent: (await environmentOf(stagingId))?.intent, volumeDeletionAuthorizations: [],
+      });
+      const latestSaved = async () => (await harness.db.select().from(schema.environmentSavedStateSnapshot)
+        .where(eq(schema.environmentSavedStateSnapshot.environmentId, stagingId))).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).at(-1);
+      const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
+
+      it("lands where nothing deploys on push: changed rows staged and marked, staged edits kept, a missing secret empty", async () => {
+        await setVariable(stagingId, "MODE", "a");
+        await setVariable(stagingId, "LEVEL", "1");
+        await saveStaging();
+        await pullRequest("opened-150", "opened", 150);
+        const prId = (await prEnvironment(150))?.environmentId ?? "";
+        await setVariable(prId, "MODE", "b");
+        await setVariable(prId, "LEVEL", "2");
+        await setVariable(prId, "FLAG", "on");
+        await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test" } }));
+        // A service the pull request adds.
+        const worker = await runEffect(createService({ userId }, {
+          organizationSlug, environmentId: prId, name: "Worker", source: createImageServiceSource({ image: "acme/worker:1" }), x: 5, y: 6,
+          preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
+        }));
+        const workerLineage = worker.data.service.lineageId;
+        await approve(prId, (_, rows) => rows.map((row) => variableName(row) === "STRIPE_KEY" ? { key: row.key, option: "new" as const, value: "" }
+          : row.role === "move" && row.choice ? { key: row.key, option: "from" as const, value: "" } : { key: row.key, value: "" }));
+        const [approved] = await saves();
+        expect(approved?.rows.some(({ row }) => row.key === `${workerLineage}:node`)).toBe(true);
+
+        // After approval staging saves its own MODE, and stages a LEVEL edit.
+        await setVariable(stagingId, "MODE", "c");
+        await saveStaging();
+        await setVariable(stagingId, "LEVEL", "5");
+        const before = (await latestSaved())?.id;
+
+        expect(await pullRequest("merged-150", "closed", 150, merged)).toBe("pull_request_projected");
+        const saved = await latestSaved();
+        expect(saved?.id).not.toBe(before);
+        const savedIntent = saved?.intent as Intent | undefined;
+        const working = (await environmentOf(stagingId))?.intent;
+        expect([variableIn(savedIntent, "MODE"), variableIn(savedIntent, "LEVEL"), variableIn(savedIntent, "FLAG")]).toEqual([plain("c"), plain("2"), plain("on")]);
+        expect([variableIn(working, "MODE"), variableIn(working, "LEVEL"), variableIn(working, "FLAG")]).toEqual([plain("b"), plain("5"), plain("on")]);
+        expect(variableIn(working, "STRIPE_KEY")).toMatchObject({ kind: "secret" });
+
+        // The added service has identities in staging, the same in both states.
+        const arrived = working?.services.find((node) => node.lineageId === workerLineage);
+        expect(arrived?.id).toBeDefined();
+        expect(savedIntent?.services.find((node) => node.lineageId === workerLineage)?.id).toBe(arrived?.id);
+        const [identity] = await harness.db.select().from(schema.service).where(eq(schema.service.id, arrived?.id ?? ""));
+        expect(identity).toMatchObject({ environmentId: stagingId, lineageId: workerLineage, name: "Worker" });
+
+        // Only MODE is left, marking what was staged instead; the PR Environment's teardown keeps it.
+        const [marker, ...none] = await saves();
+        expect(none).toEqual([]);
+        expect(marker).toMatchObject({ prEnvironmentId: null, mergeCommitSha: "e".repeat(40), landedSavedStateId: saved?.id });
+        expect(marker?.rows.map(({ row }) => variableName(row))).toEqual(["MODE"]);
+        await finishTeardown(prId);
+        expect(await saves()).toHaveLength(1);
+
+        // The empty secret shows as missing and doesn't block the deploy.
+        await harness.runTransaction(() => admitEnvironmentDeployment({
+          environmentId: stagingId, savedStateSnapshotId: saved?.id ?? "", triggerOrigin: { origin: "first_connect", machineId: "a".repeat(32) }, message: null,
+        }));
+        const [attempt] = await deploymentsOf(stagingId);
+        expect(attempt?.missingLiveValues).toEqual([{ serviceId: apiId, from: "API", key: "STRIPE_KEY" }]);
+      });
+
+      it("lands nothing when withdrawn or unmerged, waits where staging deploys on push, and Merge refuses a PR Environment", async () => {
+        const prId = (await prEnvironment(142))?.environmentId ?? "";
+        await setVariable(prId, "FLAG", "on");
+        const snapshots = async () => (await harness.db.select().from(schema.environmentSavedStateSnapshot)
+          .where(eq(schema.environmentSavedStateSnapshot.environmentId, stagingId))).length;
+        const count = await snapshots();
+
+        const refused = await harness.runEffect(mergeBranch({ userId }, {
+          organizationSlug, branchEnvironmentId: prId, destinationRevision: (await environmentOf(stagingId))?.revision ?? "", review: "", picks: [], thenClose: false,
+        }).pipe(Effect.flip, Effect.provideService(OrganizationRuntime, runtime), Effect.provideService(InngestClient, inngest)));
+        expect(refused).toMatchObject({ _tag: "Conflict", message: "A PR environment lands when #142 merges." });
+
+        // Withdrawn by an edit, then merged: nothing lands.
+        await setPlan({ removeOnClose: false });
+        await approve(prId, tickAll);
+        await setVariable(prId, "FLAG", "off");
+        await pullRequest("merged", "closed", 142, merged);
+        expect(await saves()).toEqual([]);
+        expect(await snapshots()).toBe(count);
+
+        // Closed without merging: dropped.
+        await pullRequest("reopened", "reopened", 142);
+        await approve(prId, tickAll);
+        await pullRequest("closed", "closed", 142);
+        expect(await saves()).toEqual([]);
+
+        // staging deploys main on push: frozen, waiting for the merge commit's deployment.
+        await harness.db.update(schema.service).set({ policy: { ...policy, autoDeploy: true, imageUpdate: { type: "off" as const } } }).where(eq(schema.service.id, apiId));
+        await pullRequest("reopened-again", "reopened", 142);
+        await approve(prId, tickAll);
+        await pullRequest("merged-again", "closed", 142, merged);
+        expect(await saves()).toEqual([expect.objectContaining({ prEnvironmentId: null, mergeCommitSha: "e".repeat(40), landedSavedStateId: null })]);
+        expect(await snapshots()).toBe(count);
+      });
     });
   });
 });

@@ -41,6 +41,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     // The Project, then the Branch row, before any queue (lock order: lockProjectDefault); its base advances below.
     const branch = yield* lockBranchScope(project.id, input.branchEnvironmentId, "update");
     if (!branch) return yield* new NotFound({ message: "The branch was not found." });
+    if (branch.prNumber !== null) return yield* new Conflict({ message: `A PR environment lands when #${branch.prNumber} merges.` });
     const destinationId = branch.parentEnvironmentId;
 
     // 1–3. Lock the Destination, check its revision, and refuse a Branch that runs something other than its Working State.

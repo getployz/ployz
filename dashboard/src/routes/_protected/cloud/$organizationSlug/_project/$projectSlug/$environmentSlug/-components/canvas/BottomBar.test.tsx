@@ -45,6 +45,7 @@ beforeEach(() => {
   branch = null;
   held = [];
   vi.spyOn(conditionalSaves, "useHeldChanges").mockImplementation(() => held);
+  vi.spyOn(conditionalSaves, "useStagedInstead").mockImplementation(() => []);
   vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
   vi.spyOn(branchReviews, "useBranchReview").mockImplementation(() => branch);

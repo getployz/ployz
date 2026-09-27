@@ -1,6 +1,7 @@
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { getConditionalSavesCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { standing } from "./conditional-save";
@@ -23,8 +24,17 @@ export function useStandingSaves(organizationSlug: string): ConditionalSaveRow[]
   return useConditionalSaves(organizationSlug).filter((save) => save.standing);
 }
 
-/** The standing Conditional Saves held on `destinationId`, oldest approval first. */
-export function useHeldChanges(organizationSlug: string, destinationId: string) {
-  return useStandingSaves(organizationSlug).filter((save) => save.destinationEnvironmentId === destinationId)
+/** The Conditional Saves held on `destinationId`, standing or frozen at the merge and not landed yet, oldest approval first. */
+export function useHeldChanges(organizationSlug: string, destinationId: string): ConditionalSaveRow[] {
+  return useConditionalSaves(organizationSlug)
+    .filter((save) => save.destinationEnvironmentId === destinationId
+      && (save.standing || (save.mergeCommitSha !== null && save.landedSavedStateId === null)))
     .sort((a, b) => a.approvedAt.getTime() - b.approvedAt.getTime());
+}
+
+/** Landed Conditional Saves whose rows `destinationId` had changed since approval, so they're staged there, not saved. */
+export function useStagedInstead(organizationSlug: string, destinationId: string) {
+  const savedStateId = useEnvironmentChangeStateProjection({ organizationSlug, environmentId: destinationId })?.saved?.snapshotId;
+  return useConditionalSaves(organizationSlug)
+    .filter((save) => save.destinationEnvironmentId === destinationId && save.landedSavedStateId !== null && save.landedSavedStateId === savedStateId);
 }

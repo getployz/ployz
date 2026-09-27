@@ -7,6 +7,7 @@ import { fetchInstallationPullRequest } from "#/modules/github/github-observatio
 import { environment, environmentBranch } from "#/modules/project/tables";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
+import { landAtMerge, settleAtClose } from "./land.server";
 import { fromRepository } from "./pull-request";
 import { conditionalSave, prEnvironmentPlan } from "./tables";
 
@@ -20,7 +21,8 @@ export class PrEnvironmentStillClosing extends Data.TaggedError("PrEnvironmentSt
 /**
  * Brings every project's PR Environment for one pull request in line with the pull request as GitHub has it now, so a
  * late or repeated delivery never undoes a newer state. Open: each project with PR Environments on makes one if it has
- * none. Closed: each is torn down where "remove its environment" is on. Every PR Environment's recorded facts refresh.
+ * none. Closed: its approvals land if it merged, or drop, and each is torn down where "remove its environment" is on.
+ * Every PR Environment's recorded facts refresh.
  */
 export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(function* (input: {
   installationId: number; repositoryId: number; number: number;
@@ -46,6 +48,9 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
   const closing = yield* activeTeardownFor(existing.map((row) => row.environmentId));
 
   if (!live.open) {
+    // Approvals freeze or drop before any teardown; Destinations that don't deploy on push take theirs now.
+    yield* settleAtClose(existing.map((row) => row.environmentId), live.mergeCommitSha);
+    if (live.mergeCommitSha) yield* landAtMerge({ repositoryId: input.repositoryId, number: input.number });
     for (const row of existing) {
       // No plan row reads as the defaults: removed when it closes.
       const removeOnClose = plans.find((plan) => plan.projectId === row.projectId)?.removeOnClose ?? true;

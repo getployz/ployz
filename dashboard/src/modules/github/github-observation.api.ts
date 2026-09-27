@@ -152,6 +152,8 @@ const pullRequestResponseSchema = Schema.Struct({
   user: Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)), type: Schema.String }),
   head: Schema.Struct({ ref: githubBranchNameSchema, sha: githubExactShaSchema }),
   base: Schema.Struct({ ref: githubBranchNameSchema }),
+  merged: Schema.Boolean,
+  merge_commit_sha: Schema.NullOr(githubExactShaSchema),
 });
 const installationTokenResponseSchema = Schema.Struct({
   token: Schema.String.check(Schema.isMinLength(1)),
@@ -407,6 +409,8 @@ export const fetchInstallationPullRequest = Effect.fn(
     headBranch: observed.head.ref,
     headSha: observed.head.sha,
     targetBranch: observed.base.ref,
+    // Only a merged pull request's is its merge commit.
+    mergeCommitSha: observed.merged ? observed.merge_commit_sha : null,
   };
 });
 export type GithubPullRequestObservation = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;

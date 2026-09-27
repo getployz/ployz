@@ -17,15 +17,27 @@ type Producers = SavedDeploymentTarget["variableProducers"];
 
 /**
  * A Branch's attempt as admission writes it, captured fresh on every attempt: plus each never-deployed Own Copy's Setup
- * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides. A
- * root's comes back unchanged.
+ * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides. Any
+ * Environment's secrets with an empty value count as missing too.
  */
 export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
   environmentId: string,
   target: SavedDeploymentTarget,
 ) {
   const live = yield* liveValuesOf(environmentId, target);
-  return { ...target, ...live, setupCommands: yield* setupCommandsOf(environmentId) } satisfies SavedDeploymentTarget;
+  const missingLiveValues = [...live.missingLiveValues, ...yield* emptySecretsOf(target)];
+  return { ...target, ...live, missingLiveValues, setupCommands: yield* setupCommandsOf(environmentId) } satisfies SavedDeploymentTarget;
+});
+
+/** Its services' secrets whose value is empty, such as one a pull request landed without a value: shown, never blocking. */
+const emptySecretsOf = Effect.fn("Branches.emptySecretsOf")(function* (target: SavedDeploymentTarget) {
+  // AES-GCM ciphertext is as long as its plaintext: an empty one seals "".
+  const empty = target.variableProducers.filter(({ value }) => value.kind === "secret" && value.encryptedValue?.ciphertext === "");
+  if (empty.length === 0) return [];
+  const { drizzle } = yield* Database;
+  const names = new Map((yield* drizzle.select({ id: service.id, name: service.name }).from(service)
+    .where(inArray(service.id, empty.map((producer) => producer.ownerId)))).map((row) => [row.id, row.name]));
+  return empty.map((producer): MissingLiveValue => ({ serviceId: producer.ownerId, from: names.get(producer.ownerId) ?? "", key: producer.key }));
 });
 
 /**
