@@ -2,213 +2,22 @@
 //! the picked rows from one into the other.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
-use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
-use ts_rs::TS;
 
+use super::branch_changes_types::RowPath;
 use super::service_changes::{FIELDS, at};
 use super::{
-    ConfigError, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
-    VolumeAttachment, parse_environment_intent, redact_environment_intent, restore_service_setting,
+    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue, BranchOption,
+    BranchPick, BranchPickChoice, BranchReason, BranchRole, BranchRow, BranchRowKey, ConfigError,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
+    SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource, VolumeAttachment,
+    parse_environment_intent, redact_environment_intent, restore_service_setting,
 };
 
-/// The sides of one move: changes flow from `from` into `into`, judged against `base`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchChangesInput {
-    /// Null when creating: nothing is shared yet.
-    #[ts(as = "Option<SavedEnvironmentIntent>")]
-    pub base: Option<Value>,
-    #[ts(as = "SavedEnvironmentIntent")]
-    pub from: Value,
-    #[ts(as = "SavedEnvironmentIntent")]
-    pub into: Value,
-    /// The Parent, when the caller can offer its values as a variable choice.
-    #[serde(default)]
-    #[ts(optional, as = "Option<SavedEnvironmentIntent>")]
-    pub parent: Option<Value>,
-    /// Lineages `into` may use live.
-    pub provided: Vec<String>,
-    pub hostnames: BranchHostnames,
-    pub from_kept: bool,
-    /// Absent compares only; present moves the picked rows.
-    #[serde(default)]
-    #[ts(optional)]
-    pub picks: Option<Vec<BranchPick>>,
-}
-
-/// One chosen move row. Only a variable row takes a choice.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchPick {
-    pub key: String,
-    #[serde(default)]
-    #[ts(optional)]
-    pub choice: Option<BranchPickChoice>,
-}
-
-/// How a picked variable lands. Only `new` carries a value, and it is never reviewed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "option", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BranchPickChoice {
-    From,
-    Parent,
-    /// Without a value the variable stays out of `next`, so the browser can still review.
-    New {
-        #[serde(default)]
-        #[ts(optional)]
-        value: Option<BranchNewValue>,
-    },
-    LeaveOut,
-}
-
-impl BranchPickChoice {
-    const fn option(&self) -> BranchOption {
-        match self {
-            Self::From => BranchOption::From,
-            Self::Parent => BranchOption::Parent,
-            Self::New { .. } => BranchOption::New,
-            Self::LeaveOut => BranchOption::LeaveOut,
-        }
-    }
-}
-
-/// A caller-supplied variable value; core never encrypts or fingerprints. A secret's is sealed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchNewValue {
-    pub value: SavedVariableValue,
-    pub value_fingerprint: String,
-}
-
-/// Each side's generated-address suffix, appended to managed hostname prefixes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchHostnames {
-    pub from: String,
-    pub into: String,
-}
-
-/// The rows between two configurations, the receiver after moving, and the advanced base.
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct BranchChanges {
-    pub rows: Vec<BranchRow>,
-    pub next: SavedEnvironmentIntent,
-    pub base: Option<SavedEnvironmentIntent>,
-    /// Canonical, id-free rendering of the rows and picks; callers hash it.
-    pub review: String,
-}
-
-/// One setting of one lineage. Values are redacted: secrets carry only fingerprints.
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct BranchRow {
-    /// `<lineageId>:<path>`.
-    #[ts(type = "string")]
-    pub key: BranchRowKey,
-    #[serde(flatten)]
-    #[ts(flatten)]
-    pub role: BranchRole,
-    pub base: Value,
-    pub from: Value,
-    pub into: Value,
-}
-
-/// A row's lineage and setting path; it serializes as `<lineageId>:<path>`.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct BranchRowKey {
-    lineage: String,
-    path: RowPath,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum RowPath {
-    Node,
-    Data,
-    Name,
-    Mount(String),
-    Variable(String),
-    Setting(&'static str),
-}
-
-impl fmt::Display for BranchRowKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lineage = &self.lineage;
-        match &self.path {
-            RowPath::Node => write!(f, "{lineage}:node"),
-            RowPath::Data => write!(f, "{lineage}:data"),
-            RowPath::Name => write!(f, "{lineage}:name"),
-            RowPath::Mount(volume) => write!(f, "{lineage}:mounts.{volume}"),
-            RowPath::Variable(key) => write!(f, "{lineage}:variables.{key}"),
-            RowPath::Setting(path) => write!(f, "{lineage}:{path}"),
-        }
-    }
-}
-
-impl Serialize for BranchRowKey {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-/// A row either moves (possibly over a conflicting change) or is meant to differ.
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
-#[serde(
-    tag = "role",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
-pub enum BranchRole {
-    Move {
-        /// `into` also changed since `base`; shown into → from.
-        conflict: bool,
-        /// Present only on variable rows.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        choice: Option<BranchChoice>,
-    },
-    Differ {
-        why: BranchReason,
-    },
-}
-
-/// Why a row never moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum BranchReason {
-    Live,
-    LeftOut,
-    Sizing,
-    CustomDomain,
-    GeneratedAddress,
-    GitBranch,
-    Data,
-}
-
-/// The ways a moving variable can land.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct BranchChoice {
-    pub default: BranchOption,
-    pub options: Vec<BranchOption>,
-    pub secret: bool,
-}
-
-/// A variable's source when it moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum BranchOption {
-    From,
-    Parent,
-    New,
-    LeaveOut,
-}
-
-/// Compare `from` and `into` against `base`; without picks `next` is `into` and `base` is unchanged.
+/// Compare `from` and `into` against `base`. Without picks (`None`) this only compares: `next` is
+/// `into` and `base` is unchanged. With picks, even none, `next` receives them and `base` advances;
+/// creating (no `base`) returns the Parent minus the lineages `into` uses live.
 ///
 /// # Errors
 /// Returns ConfigError when any supplied configuration is invalid, or a pick is unknown, meant to
@@ -228,17 +37,16 @@ pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, Config
         from_kept: input.from_kept,
     };
     let rows = comparison.rows();
-    let picks = input.picks.unwrap_or_default();
-    let (next, base) = if picks.is_empty() {
-        (into.clone(), base.clone())
-    } else {
-        comparison.apply(&rows, &picks)?
+    let picks = input.picks.as_deref();
+    let (next, advanced) = match picks {
+        None => (into.clone(), base.clone()),
+        Some(picks) => comparison.apply(&rows, picks)?,
     };
-    let review = review(&rows, &picks);
+    let review = review(&rows, picks.unwrap_or_default());
     Ok(BranchChanges {
         rows,
         next,
-        base,
+        base: advanced,
         review,
     })
 }
@@ -251,6 +59,31 @@ fn review(rows: &[BranchRow], picks: &[BranchPick]) -> String {
         .collect();
     picks.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
     serde_json::to_string(&json!({"picks": picks, "rows": rows})).expect("rows are JSON")
+}
+
+/// Admitted picks in landing order, the lineages they introduce, and the rows they name.
+struct Admitted<'a> {
+    landings: Vec<(&'a str, Landing<'a>)>,
+    introduced: BTreeSet<&'a str>,
+    picked: BTreeSet<&'a BranchRowKey>,
+}
+
+/// What an admitted pick changes.
+enum Landing<'a> {
+    Node,
+    Variable {
+        key: &'a str,
+        choice: &'a BranchPickChoice,
+    },
+    Setting(SettingPath<'a>),
+}
+
+/// A setting a move row carries.
+#[derive(Clone, Copy)]
+enum SettingPath<'a> {
+    Name,
+    Mount(&'a str),
+    Field(&'static str),
 }
 
 #[derive(Clone, Copy)]
@@ -447,20 +280,20 @@ impl Comparison<'_> {
         }
     }
 
-    /// Move the picked rows into `next` and advance `base` by exactly those rows.
+    /// Move the picked rows into `next` and advance `base` by what lands there.
     /// Creating (no `base`) returns `from` minus the lineages `into` uses live as the new base.
     fn apply(
         &self,
         rows: &[BranchRow],
         picks: &[BranchPick],
     ) -> Result<(SavedEnvironmentIntent, Option<SavedEnvironmentIntent>), ConfigError> {
-        let picked = self.admit_picks(rows, picks)?;
+        let admitted = self.admit_picks(rows, picks)?;
         let mut next = self.into.clone();
         let mut base = self.base.cloned();
-        for (row, choice) in &picked {
-            self.land(row, *choice, &mut next, base.as_mut())?;
+        for (lineage, landing) in &admitted.landings {
+            self.land(lineage, landing, &mut next, base.as_mut())?;
         }
-        self.land_defaults(rows, &picked, &mut next);
+        self.land_defaults(rows, &admitted, &mut next, base.as_mut());
         let next = parse_environment_intent(json!(next))?;
         let base = base.unwrap_or_else(|| {
             let mut base = self.from.clone();
@@ -471,76 +304,86 @@ impl Comparison<'_> {
         Ok((next, Some(redact_environment_intent(base))))
     }
 
-    /// Match picks to rows and refuse any that can't land; order introductions first
-    /// (Volumes, then services) so settings and variables find their node.
+    /// Match picks to rows, refuse any that can't land, and type each by what it changes;
+    /// introductions come first (Volumes, then services) so settings and variables find their node.
     fn admit_picks<'r>(
         &self,
         rows: &'r [BranchRow],
         picks: &'r [BranchPick],
-    ) -> Result<Vec<(&'r BranchRow, Option<&'r BranchPickChoice>)>, ConfigError> {
-        let mut seen = BTreeSet::new();
-        let mut picked = Vec::new();
+    ) -> Result<Admitted<'r>, ConfigError> {
+        let by_key: BTreeMap<String, &BranchRow> =
+            rows.iter().map(|row| (row.key.to_string(), row)).collect();
+        let mut admitted = Admitted {
+            landings: Vec::new(),
+            introduced: BTreeSet::new(),
+            picked: BTreeSet::new(),
+        };
         for pick in picks {
-            if !seen.insert(pick.key.as_str()) {
+            let row = by_key
+                .get(pick.key.as_str())
+                .copied()
+                .ok_or_else(|| ConfigError::at("picks.key", "Unknown change"))?;
+            if !admitted.picked.insert(&row.key) {
                 return Err(ConfigError::at("picks.key", "Each change is picked once"));
             }
-            let row = rows
-                .iter()
-                .find(|row| row.key.to_string() == pick.key)
-                .ok_or_else(|| ConfigError::at("picks.key", "Unknown change"))?;
             let BranchRole::Move {
                 choice: offered, ..
             } = &row.role
             else {
                 return Err(ConfigError::at("picks.key", "Change is meant to differ"));
             };
-            match (offered, &pick.choice) {
-                (None, None) => {}
-                (Some(offered), Some(chosen)) if offered.options.contains(&chosen.option()) => {
-                    admit_new_value(offered, chosen)?;
+            let landing = match (&row.key.path, offered, &pick.choice) {
+                (RowPath::Variable(key), Some(offered), Some(choice))
+                    if offered.options.contains(&choice.option()) =>
+                {
+                    admit_new_value(offered, choice)?;
+                    Landing::Variable { key, choice }
+                }
+                (RowPath::Node, None, None) => Landing::Node,
+                (RowPath::Name, None, None) => Landing::Setting(SettingPath::Name),
+                (RowPath::Mount(volume), None, None) => {
+                    Landing::Setting(SettingPath::Mount(volume))
+                }
+                (RowPath::Setting(field), None, None) => {
+                    Landing::Setting(SettingPath::Field(field))
                 }
                 _ => return Err(ConfigError::at("picks.choice", "Choice is not offered")),
+            };
+            let lineage = row.key.lineage.as_str();
+            if matches!(landing, Landing::Node) {
+                admitted.introduced.insert(lineage);
             }
-            picked.push((row, pick.choice.as_ref()));
+            admitted.landings.push((lineage, landing));
         }
-        let introduced: BTreeSet<_> = picked
-            .iter()
-            .filter(|(row, _)| row.key.path == RowPath::Node)
-            .map(|(row, _)| row.key.lineage.as_str())
-            .collect();
-        if picked.iter().any(|(row, _)| {
-            !introduced.contains(row.key.lineage.as_str())
-                && !nodes(self.into).contains_key(row.key.lineage.as_str())
+        let into = nodes(self.into);
+        if admitted.landings.iter().any(|(lineage, _)| {
+            !admitted.introduced.contains(lineage) && !into.contains_key(lineage)
         }) {
             return Err(ConfigError::at(
                 "picks.key",
                 "Pick the node to introduce its variables",
             ));
         }
-        picked.sort_by_key(|(row, _)| match row.key.path {
-            RowPath::Node if volume(self.from, &row.key.lineage).is_some() => 0,
-            RowPath::Node => 1,
-            RowPath::Data
-            | RowPath::Name
-            | RowPath::Mount(_)
-            | RowPath::Variable(_)
-            | RowPath::Setting(_) => 2,
-        });
-        Ok(picked)
+        admitted
+            .landings
+            .sort_by_key(|(lineage, landing)| match landing {
+                Landing::Node if volume(self.from, lineage).is_some() => 0,
+                Landing::Node => 1,
+                Landing::Variable { .. } | Landing::Setting(_) => 2,
+            });
+        Ok(admitted)
     }
 
     fn land(
         &self,
-        row: &BranchRow,
-        choice: Option<&BranchPickChoice>,
+        lineage: &str,
+        landing: &Landing,
         next: &mut SavedEnvironmentIntent,
         base: Option<&mut SavedEnvironmentIntent>,
     ) -> Result<(), ConfigError> {
-        let lineage = row.key.lineage.as_str();
-        match &row.key.path {
-            RowPath::Node => return self.introduce(next, base, lineage),
-            RowPath::Variable(key) => {
-                let choice = choice.expect("variable picks are admitted with a choice");
+        match *landing {
+            Landing::Node => self.introduce(next, base, lineage)?,
+            Landing::Variable { key, choice } => {
                 let new_value = match choice {
                     BranchPickChoice::New { value } => value.as_ref(),
                     BranchPickChoice::From
@@ -555,14 +398,18 @@ impl Comparison<'_> {
                 // A secret still waiting for its value stays proposed.
                 let waiting = matches!(choice, BranchPickChoice::New { value: None });
                 if let (Some(base), false) = (base, waiting) {
-                    adopt_node(base, self.into, lineage, &row.key.path);
+                    adopt_node(base, self.into, lineage, None);
                     put_variable(base, lineage, variable(self.from, lineage, key));
                 }
             }
-            path @ (RowPath::Data | RowPath::Name | RowPath::Mount(_) | RowPath::Setting(_)) => {
+            Landing::Setting(path) => {
                 move_setting(next, self.from, lineage, path)?;
                 if let Some(base) = base {
-                    adopt_node(base, self.into, lineage, path);
+                    let mounted = match path {
+                        SettingPath::Mount(volume) => Some(volume),
+                        SettingPath::Name | SettingPath::Field(_) => None,
+                    };
+                    adopt_node(base, self.into, lineage, mounted);
                     move_setting(base, self.from, lineage, path)?;
                 }
             }
@@ -570,19 +417,16 @@ impl Comparison<'_> {
         Ok(())
     }
 
-    /// An introduced node's unpicked variables land in `next` by their default choice; `base`
-    /// doesn't record them, so they stay proposed until picked.
+    /// An introduced node's unpicked variables land in `next` by their default choice, and
+    /// `base` records each one that lands; one that doesn't (a secret awaiting its value) stays
+    /// proposed.
     fn land_defaults(
         &self,
         rows: &[BranchRow],
-        picked: &[(&BranchRow, Option<&BranchPickChoice>)],
+        admitted: &Admitted,
         next: &mut SavedEnvironmentIntent,
+        mut base: Option<&mut SavedEnvironmentIntent>,
     ) {
-        let introduced: BTreeSet<_> = picked
-            .iter()
-            .filter(|(row, _)| row.key.path == RowPath::Node)
-            .map(|(row, _)| row.key.lineage.as_str())
-            .collect();
         for row in rows {
             let (
                 RowPath::Variable(key),
@@ -595,11 +439,15 @@ impl Comparison<'_> {
                 continue;
             };
             let lineage = row.key.lineage.as_str();
-            if !introduced.contains(lineage) || picked.iter().any(|(p, _)| p.key == row.key) {
+            if !admitted.introduced.contains(lineage) || admitted.picked.contains(&row.key) {
                 continue;
             }
-            if let Some(variable) = self.chosen_variable(lineage, key, choice.default, None) {
-                put_variable(next, lineage, variable);
+            let Some(landed) = self.chosen_variable(lineage, key, choice.default, None) else {
+                continue;
+            };
+            put_variable(next, lineage, landed);
+            if let Some(base) = base.as_deref_mut() {
+                put_variable(base, lineage, variable(self.from, lineage, key));
             }
         }
     }
@@ -747,6 +595,19 @@ fn volume<'a>(env: &'a SavedEnvironmentIntent, lineage: &str) -> Option<&'a Save
         .find(|v| v.resource_lineage_id == lineage)
 }
 
+fn volume_mut<'a>(
+    env: &'a mut SavedEnvironmentIntent,
+    lineage: &str,
+) -> Option<&'a mut SavedVolumeIntent> {
+    env.volumes
+        .iter_mut()
+        .find(|v| v.resource_lineage_id == lineage)
+}
+
+fn volume_by_id<'a>(env: &'a SavedEnvironmentIntent, id: &str) -> Option<&'a SavedVolumeIntent> {
+    env.volumes.iter().find(|v| v.resource_id == id)
+}
+
 fn service_mut<'a>(
     env: &'a mut SavedEnvironmentIntent,
     lineage: &str,
@@ -815,11 +676,7 @@ fn settings(env: &SavedEnvironmentIntent, node: Node, suffix: &str) -> BTreeMap<
     values.insert(RowPath::Setting("managedHostnames"), json!(generated));
     // Mounts compare by Volume lineage and mount path.
     for attachment in &service.volume_attachments {
-        if let Some(volume) = env
-            .volumes
-            .iter()
-            .find(|v| v.resource_id == attachment.volume_resource_id)
-        {
+        if let Some(volume) = volume_by_id(env, &attachment.volume_resource_id) {
             values.insert(
                 RowPath::Mount(volume.resource_lineage_id.clone()),
                 json!(attachment.mount_path),
@@ -914,23 +771,16 @@ fn move_setting(
     env: &mut SavedEnvironmentIntent,
     from: &SavedEnvironmentIntent,
     lineage: &str,
-    path: &RowPath,
+    path: SettingPath,
 ) -> Result<(), ConfigError> {
     match path {
-        RowPath::Name => {
-            let name = volume(from, lineage)
-                .expect("name rows are Volumes")
-                .name
-                .clone();
-            if let Some(target) = env
-                .volumes
-                .iter_mut()
-                .find(|v| v.resource_lineage_id == lineage)
-            {
-                target.name = name;
+        SettingPath::Name => {
+            let name = &volume(from, lineage).expect("name rows are Volumes").name;
+            if let Some(target) = volume_mut(env, lineage) {
+                target.name.clone_from(name);
             }
         }
-        RowPath::Mount(volume_lineage) => {
+        SettingPath::Mount(volume_lineage) => {
             let from_id = &volume(from, volume_lineage)
                 .expect("mount rows name an authored Volume")
                 .resource_id;
@@ -946,7 +796,7 @@ fn move_setting(
             attachments.retain(|a| a.volume_resource_id != moved.volume_resource_id);
             attachments.push(moved);
         }
-        RowPath::Setting(path) => {
+        SettingPath::Field(path) => {
             let target = service_mut(env, lineage);
             let from_config = &service(from, lineage)
                 .expect("setting rows are services")
@@ -960,9 +810,6 @@ fn move_setting(
             if path.starts_with("source") {
                 rebind_credential(target);
             }
-        }
-        RowPath::Node | RowPath::Data | RowPath::Variable(_) => {
-            unreachable!("nodes and variables land elsewhere; data rows are refused")
         }
     }
     Ok(())
@@ -985,11 +832,7 @@ fn attachment_in(
     attachment: &VolumeAttachment,
     to: &SavedEnvironmentIntent,
 ) -> Option<VolumeAttachment> {
-    let lineage = &from
-        .volumes
-        .iter()
-        .find(|v| v.resource_id == attachment.volume_resource_id)?
-        .resource_lineage_id;
+    let lineage = &volume_by_id(from, &attachment.volume_resource_id)?.resource_lineage_id;
     Some(VolumeAttachment {
         volume_resource_id: volume(to, lineage)?.resource_id.clone(),
         mount_path: attachment.mount_path.clone(),
@@ -1001,16 +844,8 @@ fn adopt_node(
     base: &mut SavedEnvironmentIntent,
     into: &SavedEnvironmentIntent,
     lineage: &str,
-    path: &RowPath,
+    mounted: Option<&str>,
 ) {
-    let mounted = match path {
-        RowPath::Mount(volume_lineage) => Some(volume_lineage.as_str()),
-        RowPath::Node
-        | RowPath::Data
-        | RowPath::Name
-        | RowPath::Variable(_)
-        | RowPath::Setting(_) => None,
-    };
     for lineage in [Some(lineage), mounted].into_iter().flatten() {
         if nodes(base).contains_key(lineage) {
             continue;

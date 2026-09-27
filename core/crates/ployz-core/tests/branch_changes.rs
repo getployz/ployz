@@ -812,6 +812,17 @@ fn a_new_branch_service_is_introduced_into_the_parent() {
             "{JOBS}:variables.KEY move conflict=false default=new"
         )]
     );
+    // MODE landed by default, so base records it: the receiver's own later edit is not a
+    // stale move or conflict.
+    let mut edited = result["next"].clone();
+    var(&mut edited, JOBS, "MODE")["value"] = literal("prod");
+    var(&mut edited, JOBS, "MODE")["valueFingerprint"] = json!("fp-prod");
+    let again = changes(Some(&result["base"]), &from, &edited, &json!({}));
+    assert!(
+        !summary(&again).iter().any(|r| r.contains("MODE")),
+        "{:#?}",
+        summary(&again)
+    );
 
     // A name `into` already uses is refused.
     svc(&mut from, JOBS)["slug"] = json!("worker");
@@ -965,5 +976,32 @@ fn a_private_address_clash_is_refused() {
     assert_eq!(
         (error.path.as_str(), error.message.as_str()),
         ("picks.key", "Name or private address is already used")
+    );
+}
+
+#[test]
+fn empty_picks_apply_nothing_but_still_create_the_base() {
+    let result = create(&parent(), &[], "-pr-7").unwrap();
+    assert_eq!(result["next"]["services"], json!([]));
+    let lineages: Vec<_> = result["base"]["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["lineageId"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        lineages,
+        [API, WEB, CACHE],
+        "the Parent minus what the Branch uses live"
+    );
+    // Compare-only (no picks) leaves base as given.
+    let compared = config_request(json!({"operation": "branch_changes", "value": {
+        "base": null, "from": parent(), "into": empty("pr-7"), "provided": [WORKER],
+        "hostnames": {"from": "", "into": "-pr-7"}, "fromKept": false}}))
+    .unwrap();
+    assert_eq!(compared["base"], Value::Null);
+    assert_eq!(
+        compared["review"].as_str().unwrap(),
+        result["review"].as_str().unwrap()
     );
 }
