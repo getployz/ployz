@@ -10,7 +10,7 @@ import { withMutationResult } from "#/server/mutation-result.server";
 import { environment, environmentBranch, type project } from "#/modules/project/tables";
 import { environmentCanvasNodePosition, environmentResource, service, serviceRegistryCredential } from "#/modules/environment-design/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
-import { createEnvironmentRecord, lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
+import { createEnvironmentRecord, lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { loadCurrentEnvironmentSnapshotProjection, loadCurrentEnvironmentState, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { captureEnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introduction.repository.server";
@@ -80,8 +80,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   // Under the Project lock teardown admission takes: a Parent that is being torn down gets no new Branch, and one torn
   // down after this commits takes the new Branch with it. Then the Parent's Branch row, shared, so an idle close of the
   // Parent waits for this Branch and sees it (lock order: lockProjectDefault).
-  yield* lockProjectDefault(project.id);
-  const [parentBranch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, parent.id)).for("share");
+  const parentBranch = yield* lockBranchScope(project.id, parent.id, "share");
   if ((yield* activeTeardownFor([parent.id])).size > 0) {
     return yield* new Conflict({ message: `${parent.name} is being torn down.` });
   }

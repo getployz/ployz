@@ -10,7 +10,7 @@ import { dueForIdleClose } from "#/modules/branches/idle-close";
 import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
-import { lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
+import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -60,12 +60,7 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
  * Holds a closing Branch in lock order (lockProjectDefault): its Project, then its Branch row, which Keep also takes. Null
  * when the Branch is gone.
  */
-const lockClosingBranch = Effect.fn("Branches.lockClosing")(function* (projectId: string, environmentId: string) {
-  yield* lockProjectDefault(projectId);
-  const [row] = yield* (yield* Database).drizzle.select({ kept: schemaEnvironmentBranch.kept }).from(schemaEnvironmentBranch)
-    .where(eq(schemaEnvironmentBranch.environmentId, environmentId)).for("update");
-  return row ?? null;
-});
+const lockClosingBranch = (projectId: string, environmentId: string) => lockBranchScope(projectId, environmentId, "update");
 
 /** Closes a merged Branch unless it was kept meanwhile; false when it doesn't close, and the Merge stands. */
 export const tryCloseBranch = (environmentId: string) => Effect.gen(function* () {
@@ -90,8 +85,11 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
       eq(schemaEnvironmentBranch.environmentId, input.environmentId),
       eq(schemaEnvironmentBranch.organizationId, organization.id),
     );
-    const [locked] = yield* drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch).where(where).for("update");
-    if (locked === undefined) return yield* new NotFound({ message: "The branch was not found." });
+    const [branch] = yield* drizzle.select({ projectId: schemaEnvironmentBranch.projectId }).from(schemaEnvironmentBranch).where(where);
+    if (branch === undefined) return yield* new NotFound({ message: "The branch was not found." });
+    if ((yield* lockBranchScope(branch.projectId, input.environmentId, "update")) === null) {
+      return yield* new NotFound({ message: "The branch was not found." });
+    }
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
       return yield* new Conflict({ message: "This branch is already closing." });
     }

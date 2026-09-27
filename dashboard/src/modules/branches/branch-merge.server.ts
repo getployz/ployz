@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { branchChanges, type BranchPick } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
+import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -37,8 +38,8 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
   const encryption = yield* SecretEncryption;
   const merged = yield* withMutationResult(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    // The Branch row before any queue (lock order: lockProjectDefault); its base advances below.
-    const [branch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, input.branchEnvironmentId)).for("update");
+    // The Project, then the Branch row, before any queue (lock order: lockProjectDefault); its base advances below.
+    const branch = yield* lockBranchScope(project.id, input.branchEnvironmentId, "update");
     if (!branch) return yield* new NotFound({ message: "The branch was not found." });
     const destinationId = branch.parentEnvironmentId;
 

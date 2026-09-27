@@ -3,7 +3,7 @@ import { asc, and, eq, exists } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { environment, project } from "#/modules/project/tables";
+import { environment, environmentBranch, project } from "#/modules/project/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
@@ -232,15 +232,30 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
  *
  * Lock order. Every path takes these locks in this order, skipping any it doesn't need, so none waits on another in a
  * cycle: Project rows (by id when several: `lockOrganizationProjects`), then Branch rows (`environment_branch`), then
- * Environment deployment queues (`lockEnvironmentDeploymentQueue`). Create Branch: Project, Parent's Branch row. Idle
- * sweep: Project, Branch row, queue. Merge's close: Project, Branch row. Keep: Branch row. Merge and Update: Branch row, then queues. Teardown admission and Default
- * selection: Project(s) only.
+ * Environment deployment queues (`lockEnvironmentDeploymentQueue`). Inserting any row that references the Project (a
+ * service, a volume, an Environment) takes a KEY SHARE on the Project row through its foreign key, so a path that locks
+ * a Branch row and then inserts must hold the Project first: every Branch row lock goes through `lockBranchScope`.
+ * Create Branch, Merge, Update, Own Copy, Merge's close, Keep and the idle sweep: Project, Branch row (then queues).
+ * Teardown admission and Default selection: Project(s) only.
  */
 export const lockProjectDefault = Effect.fn("EnvironmentDesign.lockProjectDefault")(function* (projectId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ defaultEnvironmentId: project.defaultEnvironmentId }).from(project)
     .where(eq(project.id, projectId)).for("update");
   return row?.defaultEnvironmentId ?? null;
+});
+
+/**
+ * Holds a Branch in lock order: its Project (FOR UPDATE), then its Branch row (`mode`: "update" to change it, "share" to
+ * keep it from closing). Null when `environmentId` is not a Branch; the Project is held either way.
+ */
+export const lockBranchScope = Effect.fn("EnvironmentDesign.lockBranchScope")(function* (
+  projectId: string, environmentId: string, mode: "update" | "share",
+) {
+  yield* lockProjectDefault(projectId);
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, environmentId)).for(mode);
+  return row ?? null;
 });
 
 /** Holds every Project row of an organization, by id: an organization teardown admits under all of them. */
