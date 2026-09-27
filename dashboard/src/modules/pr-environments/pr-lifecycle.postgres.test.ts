@@ -248,7 +248,7 @@ describe("PR Environment lifecycle", () => {
   async function finishTeardown(environmentId: string) {
     const [attempt] = await teardownsOf(environmentId);
     if (!attempt) throw new Error("No teardown was admitted.");
-    await harness.runEffect(dropTeardownCloudRowsActivity(attempt));
+    await runEffect(dropTeardownCloudRowsActivity(attempt));
   }
   const setPlan = (change: Partial<typeof schema.prEnvironmentPlan.$inferInsert>) =>
     harness.db.update(schema.prEnvironmentPlan).set(change).where(eq(schema.prEnvironmentPlan.projectId, projectId));
@@ -893,12 +893,20 @@ describe("PR Environment lifecycle", () => {
           expect(idOf((await environmentOf(stagingId))?.intent as Intent | undefined)?.id).toBe(idOf(saved)?.id);
         });
 
-        it("lands at the merge commit's push when it comes before the closed delivery, by asking GitHub", async () => {
+        it("lands at the merge commit's push when it comes before the closed delivery, by asking GitHub, and takes no approval after", async () => {
           await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
           commitPulls.set(mergeSha, [{ number: 142, base: { ref: "main" }, merged_at: new Date().toISOString(), merge_commit_sha: mergeSha }]);
           await push(mergeSha, ["api/main.ts"]);
           expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toEqual(plain("on"));
           expect(await saves()).toEqual([]);
+
+          // Merged, as the push showed: no approval after it.
+          const prId = (await prEnvironment(142))?.environmentId ?? "";
+          const { rows, review: string } = await review(prId);
+          const refused = await runEffect(approveConditionalSave({ userId }, {
+            organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
+          }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
+          expect(refused).toMatchObject({ _tag: "Conflict", message: "#142 is closed." });
 
           const count = (await harness.db.select().from(schema.environmentSavedStateSnapshot)).length;
           await pullRequest("merged", "closed", 142, merged);

@@ -340,6 +340,8 @@ export const settleAtClose = Effect.fn("PrEnvironments.settleAtClose")(function*
           .where(and(ofPr, eq(conditionalSave.workingRevision, document.revision), eq(conditionalSave.targetBranch, merge.targetBranch)));
       }
       yield* drizzle.delete(conditionalSave).where(ofPr);
+      // Closed under its document: settled before the closed delivery (a merge push), it takes no approval after.
+      yield* drizzle.update(prEnvironment).set({ closed: true }).where(eq(prEnvironment.environmentId, prEnvironmentId));
     }));
   }
 });

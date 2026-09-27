@@ -106,9 +106,11 @@ function Plan({ repositoryId, project, environments: all, branches }: {
           <Select value={startFrom?.id ?? null} onValueChange={(next) => {
             const environment = environments.find((candidate) => candidate.id === next);
             if (!environment || environment.id === startFrom?.id) return;
-            set({ startFromEnvironmentId: environment.id });
-            void navigate({ to: ENVIRONMENT_PR_PLAN_ROUTE_TO, replace: true,
-              params: { ...params, environmentSlug: environment.namespace, repositoryId: String(repositoryId) } });
+            const over = (environmentSlug: string) => void navigate({ to: ENVIRONMENT_PR_PLAN_ROUTE_TO, replace: true,
+              params: { ...params, environmentSlug, repositoryId: String(repositoryId) } });
+            // Refused and rolled back: back over the canvas it was on.
+            set({ startFromEnvironmentId: environment.id }).isPersisted.promise.catch(() => over(params.environmentSlug));
+            over(environment.namespace);
           }}>
             <SelectTrigger id="pr-plan-start-from" className="w-full" aria-invalid={!startFrom || undefined}>
               <SelectValue placeholder="Pick an environment">{startFrom?.name}</SelectValue>

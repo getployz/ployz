@@ -23,9 +23,15 @@ export const requestPullRequestChecks = (repositoryId: number, number: number) =
  */
 export const requestPrCheck = Effect.fn("PrEnvironments.requestPrCheck")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ projectId: environment.projectId }).from(environment).where(eq(environment.id, environmentId));
+  if (row) yield* requestProjectPrChecks(row.projectId);
+});
+
+/** `requestPullRequestChecks` for every current PR Environment in the project, as when one of its Environments goes. */
+export const requestProjectPrChecks = Effect.fn("PrEnvironments.requestProjectPrChecks")(function* (projectId: string) {
+  const { drizzle } = yield* Database;
   // ponytail: every PR Environment of the project, not just those the Environment is a Destination of.
   const pullRequests = yield* drizzle.selectDistinct({ repositoryId: prEnvironment.repositoryId, number: prEnvironment.number })
-    .from(prEnvironment).innerJoin(environment, eq(environment.projectId, prEnvironment.projectId))
-    .where(and(eq(environment.id, environmentId), eq(prEnvironment.retired, false)));
+    .from(prEnvironment).where(and(eq(prEnvironment.projectId, projectId), eq(prEnvironment.retired, false)));
   for (const { repositoryId, number } of pullRequests) yield* requestPullRequestChecks(repositoryId, number);
 });
