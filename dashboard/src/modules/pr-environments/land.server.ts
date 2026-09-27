@@ -2,11 +2,11 @@ import "@tanstack/react-start/server-only";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { branchChanges, type BranchPick, type BranchRow } from "@ployz/sdk/config";
+import { branchChanges, type BranchRow } from "@ployz/sdk/config";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type environment, project } from "#/modules/project/tables";
-import { githubEnvironmentTrigger } from "#/modules/github/tables";
+import { githubBranchProjection, githubEnvironmentTrigger } from "#/modules/github/tables";
 import {
   compareInstallationRepositoryCommits, isGithubObservationNotFound, listInstallationCommitMergedPullRequests, resolveGithubRepository,
   type GithubResolvedRepository,
@@ -18,7 +18,7 @@ import { loadLatestEnvironmentSavedState } from "#/modules/environment-design/sa
 import { publishLandedSavedState } from "#/modules/environment-design/saved-state-operations.server";
 import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
 import { core, landChanges } from "#/modules/branches/branch-operations.server";
-import { sealValue } from "#/modules/branches/branch-merge.server";
+import { withEmptyValues } from "#/modules/branches/branch-merge.server";
 import { rowLineage, usedLive } from "#/modules/branches/branch-review";
 import type { CarriedSave } from "./carried";
 import { actingMember } from "./plan-operations.server";
@@ -62,9 +62,7 @@ export const landConditionalSave = Effect.fn("PrEnvironments.landConditionalSave
   const unchanged = (key: string) => same(inSaved.get(key), approvedAgainst.get(key)) || same(inWorking.get(key), approvedAgainst.get(key));
 
   // A missing new value arrives empty (`isEmptyValue`); the service shows it as missing, and nothing blocks.
-  const held = save.rows.map(({ row }) => row);
-  const picks = save.picks.map((pick): BranchPick => pick.choice?.option === "new" && !pick.choice.value
-    ? { key: pick.key, choice: { option: "new", value: sealValue(encryption, held, working, pick.key, "") } } : pick);
+  const picks = withEmptyValues({ encryption, rows: save.rows.map(({ row }) => row), into: working, picks: save.picks });
 
   // 1. Saved. A node the pull request introduced arrives with its variables, or not at all.
   const introduced = new Set(picks.filter(isNode).map(rowLineage));
@@ -126,7 +124,7 @@ const actorFor = Effect.fn("PrEnvironments.actorFor")(function* (save: Condition
   const { drizzle } = yield* Database;
   const [plan] = yield* drizzle.select().from(prEnvironmentPlan)
     .where(and(eq(prEnvironmentPlan.projectId, save.projectId), eq(prEnvironmentPlan.repositoryId, save.repositoryId)));
-  const userId = plan && (yield* actingMember({ ...plan, enabled: true }));
+  const userId = plan && (yield* actingMember(plan));
   return userId ?? (yield* Effect.die("Nobody is left to land the held changes as."));
 });
 
@@ -143,15 +141,21 @@ const deploysOnPush = Effect.fn("PrEnvironments.deploysOnPush")(function* (save:
   return rows.some((row) => row.policy.autoDeploy);
 });
 
-/** Lands frozen Conditional Save `id` now, in its own transaction under its Destination's queue lock, when `now` agrees. */
+/**
+ * Lands frozen Conditional Save `id` now, in its own transaction under its Destination's queue lock, when `now` agrees.
+ * Returns false only when `now` refused; a save no longer frozen landed elsewhere.
+ */
 const landNow = <E, R>(id: string, destinationId: string, now: (save: ConditionalSave) => Effect.Effect<boolean, E, R>) => Effect.gen(function* () {
   const database = yield* Database;
-  yield* database.transaction(Effect.gen(function* () {
+  return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* lockEnvironmentDeploymentQueue(destinationId);
     const document = yield* loadEnvironmentDocument(destinationId, true);
     const [save] = yield* drizzle.select().from(conditionalSave).where(and(eq(conditionalSave.id, id), frozen)).for("update");
-    if (save && (yield* now(save))) yield* landConditionalSave(save, document);
+    if (!save) return true;
+    if (!(yield* now(save))) return false;
+    yield* landConditionalSave(save, document);
+    return true;
   }));
 }).pipe(Effect.withSpan("PrEnvironments.landNow"));
 
@@ -245,11 +249,22 @@ export const landCarriedInIdle = Effect.fn("PrEnvironments.landCarriedInIdle")(f
   }
 });
 
+/** The newest trigger for `save`'s Destination on its target Git branch that isn't superseded. */
+const latestTriggerFor = Effect.fn("PrEnvironments.latestTriggerFor")(function* (save: ConditionalSave) {
+  const { drizzle } = yield* Database;
+  const [latest] = yield* drizzle.select().from(githubEnvironmentTrigger).where(and(
+    eq(githubEnvironmentTrigger.repositoryId, save.repositoryId), eq(githubEnvironmentTrigger.ref, `refs/heads/${save.targetBranch}`),
+    eq(githubEnvironmentTrigger.environmentId, save.destinationEnvironmentId), ne(githubEnvironmentTrigger.admissionState, "superseded"),
+  )).orderBy(desc(githubEnvironmentTrigger.createdAt)).limit(1);
+  return latest ?? null;
+});
+
 /**
- * The merged pull request's frozen Conditional Saves ride a trigger already waiting for CI on its target Git branch in
- * their Destination, when its commit is, or descends from, the merge commit. One whose Destination already took such a
- * commit (a trigger admitted before its closed delivery could tell) lands now instead of waiting for another push.
- * Asks GitHub, outside any transaction.
+ * The merged pull request's frozen Conditional Saves the pushes so far already carry. One rides a trigger waiting for
+ * CI on its target Git branch in its Destination when that commit is, or descends from, the merge commit. With nothing
+ * waiting there, the Destination has taken every processed push: when the processed head has the merge commit (its
+ * push came before the closed delivery could tell, deploying there or not), the changes are saved now. Otherwise the
+ * next push that has it carries them. Asks GitHub, outside any transaction.
  */
 export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTriggers")(function* (pullRequest: {
   installationId: number; repositoryId: number; number: number;
@@ -257,21 +272,32 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
   const { drizzle } = yield* Database;
   const saves = yield* drizzle.select().from(conditionalSave).where(ofPullRequest(pullRequest));
   let repository: GithubResolvedRepository | undefined;
-  for (const save of saves) {
-    const triggers = yield* drizzle.select().from(githubEnvironmentTrigger).where(and(
-      eq(githubEnvironmentTrigger.repositoryId, save.repositoryId), eq(githubEnvironmentTrigger.ref, `refs/heads/${save.targetBranch}`),
-      eq(githubEnvironmentTrigger.environmentId, save.destinationEnvironmentId), ne(githubEnvironmentTrigger.admissionState, "superseded"),
-    )).orderBy(desc(githubEnvironmentTrigger.createdAt)).limit(1);
-    const [latest] = triggers;
-    if (!latest || latest.conditionalSaveIds.includes(save.id)) continue;
+  const hasMerge = (save: ConditionalSave, sha: string) => Effect.gen(function* () {
     repository ??= yield* resolveGithubRepository(pullRequest.installationId, pullRequest.repositoryId);
-    if (!(yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), latest.headSha))) continue;
-    const [attached] = yield* drizzle.update(githubEnvironmentTrigger)
-      .set({ conditionalSaveIds: sql`array_append(${githubEnvironmentTrigger.conditionalSaveIds}, ${save.id}::uuid)` })
-      .where(and(eq(githubEnvironmentTrigger.id, latest.id), eq(githubEnvironmentTrigger.admissionState, "waiting")))
-      .returning({ id: githubEnvironmentTrigger.id });
-    // Admitted already, before or since the check: its Destination has the commit, so the changes are saved now.
-    if (!attached) yield* landNow(save.id, save.destinationEnvironmentId, () => Effect.succeed(true));
+    return yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), sha);
+  });
+  for (const save of saves) {
+    // ponytail: a few looks, as triggers are admitted or superseded meanwhile; past that the next push carries them.
+    for (let look = 0; look < 3; look++) {
+      const latest = yield* latestTriggerFor(save);
+      if (latest?.conditionalSaveIds.includes(save.id)) break;
+      if (latest?.admissionState === "waiting") {
+        if (!(yield* hasMerge(save, latest.headSha))) break;
+        const [attached] = yield* drizzle.update(githubEnvironmentTrigger)
+          .set({ conditionalSaveIds: sql`array_append(${githubEnvironmentTrigger.conditionalSaveIds}, ${save.id}::uuid)` })
+          .where(and(eq(githubEnvironmentTrigger.id, latest.id), eq(githubEnvironmentTrigger.admissionState, "waiting")))
+          .returning({ id: githubEnvironmentTrigger.id });
+        if (attached) break;
+        continue;
+      }
+      const [branch] = yield* drizzle.select({ head: githubBranchProjection.evaluatedHeadSha }).from(githubBranchProjection).where(and(
+        eq(githubBranchProjection.installationId, pullRequest.installationId), eq(githubBranchProjection.repositoryId, save.repositoryId),
+        eq(githubBranchProjection.ref, `refs/heads/${save.targetBranch}`)));
+      if (!branch?.head || !(yield* hasMerge(save, branch.head))) break;
+      // Under the queue lock nothing may wait for CI there by now, or that trigger carries them instead.
+      if (yield* landNow(save.id, save.destinationEnvironmentId, () => latestTriggerFor(save).pipe(
+        Effect.map((now) => now?.admissionState !== "waiting")))) break;
+    }
   }
 });
 

@@ -30,7 +30,7 @@ export function prEnvironmentIntent(intent: SavedEnvironmentIntent, pullRequest:
   };
 }
 
-type PrBranch = { environmentId: string; projectId: string; pullRequest: { repositoryId: number; number: number; closed: boolean } | null };
+type PrBranch = { environmentId: string; projectId: string; pullRequest: { repositoryId: number; number: number; closed: boolean; retired: boolean } | null };
 
 /** The PR Environments among `branches`, by Environment id. */
 export function prEnvironmentIds(branches: ReadonlyArray<PrBranch>) {
@@ -39,6 +39,6 @@ export function prEnvironmentIds(branches: ReadonlyArray<PrBranch>) {
 
 /** The project's PR Environments for one repository whose pull request is open, by pull request number. */
 export function openPrEnvironments<B extends PrBranch>(branches: ReadonlyArray<B>, projectId: string, repositoryId: number) {
-  return branches.filter((branch) => branch.projectId === projectId && branch.pullRequest?.repositoryId === repositoryId && !branch.pullRequest.closed)
+  return branches.filter((branch) => branch.projectId === projectId && branch.pullRequest?.repositoryId === repositoryId && !branch.pullRequest.closed && !branch.pullRequest.retired)
     .sort((a, b) => (a.pullRequest?.number ?? 0) - (b.pullRequest?.number ?? 0));
 }

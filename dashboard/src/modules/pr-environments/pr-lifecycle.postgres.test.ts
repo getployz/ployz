@@ -27,6 +27,7 @@ import { createServiceVariable, updateServiceVariable } from "#/modules/environm
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
+import { closePrEnvironment } from "#/modules/branches/branch-close.server";
 import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
 import { standing } from "./conditional-save";
 import { executePostPrCheck } from "./pr-check.inngest";
@@ -75,7 +76,7 @@ type PullRequest = {
   base?: { ref: string }; draft: boolean; merged?: boolean; merge_commit_sha?: string | null;
 };
 
-type CheckRunBody = { head_sha?: string; conclusion: string; details_url: string; output: { title: string; summary: string } };
+type CheckRunBody = { head_sha?: string; external_id: string; conclusion: string; details_url: string; output: { title: string; summary: string } };
 
 type PushDelivery = { ref: string; before: string; after: string; created: boolean; deleted: boolean; forced: boolean };
 type PullRequestDelivery = {
@@ -129,7 +130,7 @@ describe("PR Environment lifecycle", () => {
           case "list_commit_pulls": return commitPulls.get(request.url.split("/commits/")[1]?.split("/")[0] ?? "") ?? [];
           case "list_check_runs": {
             const sha = request.url.split("/commits/")[1]?.split("/")[0];
-            return { check_runs: checkRuns.filter((run) => run.headSha === sha).map((run) => ({ id: run.id })) };
+            return { check_runs: checkRuns.filter((run) => run.headSha === sha).map((run) => ({ id: run.id, external_id: run.body.external_id })) };
           }
           case "create_check_run": {
             const run = { id: checkRuns.length + 1, headSha: String(body.head_sha), body };
@@ -234,7 +235,7 @@ describe("PR Environment lifecycle", () => {
     .map((row) => ({ ...row.environment_branch, ...row.pr_environment }));
   const prEnvironment = async (number: number) => {
     const rows = (await prEnvironments()).filter((row) => row.number === number);
-    return rows.find((row) => !row.closed) ?? rows[0];
+    return rows.find((row) => !row.retired) ?? rows[0];
   };
   const deploymentsOf = (environmentId: string) => harness.db.select().from(schema.environmentDeployment)
     .where(eq(schema.environmentDeployment.environmentId, environmentId));
@@ -528,8 +529,34 @@ describe("PR Environment lifecycle", () => {
 
       await pullRequest("edited-back", "edited", 142, { base: { ref: "main" } });
       await approve(prId, tickAll);
-      await harness.db.delete(schema.environment).where(eq(schema.environment.id, prId));
+      // Torn down while the pull request stays open: retired, it loses its approvals, and a new one starts unapproved.
+      await runEffect(closePrEnvironment(prId));
+      await pullRequest("synchronize", "synchronize", 142);
       expect(await saves()).toEqual([]);
+      expect((await prEnvironment(142))?.environmentId).not.toBe(prId);
+    });
+
+    it("takes a new value later, but refuses picks core couldn't land", async () => {
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      const worker = await runEffect(createService({ userId }, {
+        organizationSlug, environmentId: prId, name: "Worker", source: createImageServiceSource({ image: "acme/worker:1" }), x: 5, y: 6,
+        preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
+      }));
+      const workerScope = { ...(await scope(prId)), serviceId: worker.data.service.id, revision: (await environmentOf(prId))?.revision ?? "" };
+      await runEffect(createServiceVariable({ userId }, { ...workerScope, key: "QUEUE", description: null, exported: false, value: { type: "plain", value: "jobs" } }));
+      const { rows, review: string } = await review(prId);
+      const flag = rows.find((row) => variableName(row) === "FLAG")?.key ?? "";
+      const queue = rows.find((row) => variableName(row) === "QUEUE")?.key ?? "";
+      const approveOnly = (picks: Array<{ key: string; option?: "from" | "new"; value: string }>) => runEffect(approveConditionalSave({ userId }, {
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks,
+      }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
+
+      // The new service's variable without the service: core refuses it.
+      expect(await approveOnly([{ key: queue, option: "from", value: "" }])).toMatchObject({ _tag: "Validation" });
+      // A plain value left for later is allowed.
+      expect(await approveOnly([{ key: flag, option: "new", value: "" }])).toBeNull();
+      expect((await saves())[0]?.rows.map((row) => row.missing)).toEqual([true]);
     });
 
     it("takes no approval once its pull request closes, even with its environment kept", async () => {
@@ -853,6 +880,15 @@ describe("PR Environment lifecycle", () => {
           await pullRequest("merged", "closed", 142, merged);
           await push(mergeSha, ["docs/readme.md"]);
           expect((await attemptAt(mergeSha)).attempt).toBeUndefined();
+          expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+        });
+
+        it("saves at close when a merge commit's push GitHub hadn't linked yet deployed nothing", async () => {
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await push(mergeSha, ["docs/readme.md"]);
+          expect(await saves()).toHaveLength(1);
+          await pullRequest("merged", "closed", 142, merged);
           expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toEqual(plain("on"));
           expect(await saves()).toEqual([]);
         });

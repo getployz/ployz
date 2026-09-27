@@ -59,11 +59,14 @@ export type BranchKind = {
   plan: (parent: SavedEnvironmentIntent, deployed: string[]) => Parameters<typeof planBranch>[0];
   setupCommands: (plan: BranchPlan) => SetupCommand[];
   derive: (intent: SavedEnvironmentIntent) => SavedEnvironmentIntent;
+  /** Its name, picked under the Project lock from the project's taken namespaces; a plain Branch takes the one asked for. */
+  name: (taken: ReadonlySet<string>) => string;
   finish: (written: { branch: typeof environmentBranch.$inferSelect; next: SavedEnvironmentIntent }) => Effect.Effect<void, EffectDrizzleQueryError, Database>;
 };
 
 /** A Branch as the user asks for it: the picks planned as given. */
 const plainBranch = (input: BranchInput): BranchKind => ({
+  name: () => input.name,
   plan: (parent, deployed) => ({ parent, deployed, focus: input.focus, picks: input.picks }),
   setupCommands: () => input.setupCommands,
   derive: (intent) => intent,
@@ -137,8 +140,10 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     : working;
 
   // The browser checks these first; the unique index settles a race.
-  const namespace = branchNamespace(project.slug, input.name);
-  const nameError = branchNameError(project.slug, input.name, new Set());
+  const taken = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.projectId, project.id));
+  const name = kind.name(new Set(taken.map((row) => row.namespace)));
+  const namespace = branchNamespace(project.slug, name);
+  const nameError = branchNameError(project.slug, name, new Set());
   if (nameError) return yield* new Validation({ field: "name", message: nameError });
 
   // 1. Core derives the Branch's configuration: fresh ids, the Parent's lineages, secrets with their values.
@@ -160,7 +165,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
 
   // 2. The Environment row; a taken namespace fails the unique index.
   const document = yield* createEnvironmentRecord({
-    projectId: project.id, organizationId: project.organizationId, name: input.name.trim(), namespace,
+    projectId: project.id, organizationId: project.organizationId, name: name.trim(), namespace,
   });
 
   // 3–4. Identity rows under core's fresh ids, the Working State, then each node's Node Introduction.

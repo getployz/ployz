@@ -59,6 +59,8 @@ export const prEnvironmentPlan = pgTable(
 /**
  * A PR Environment: the Branch the system made for one pull request, whose facts each delivery refreshes from GitHub.
  * With "remove its environment" off it stays after the pull request closes, `closed`, and takes no more approvals.
+ * `retired` once it's being torn down while its pull request lives on: a new one can start beside it, and deliveries
+ * leave it be.
  */
 export const prEnvironment = pgTable(
   "pr_environment",
@@ -76,6 +78,7 @@ export const prEnvironment = pgTable(
     targetBranch: text("target_branch").notNull(),
     commits: integer("commits").notNull(),
     closed: boolean("closed").default(false).notNull(),
+    retired: boolean("retired").default(false).notNull(),
   },
   (table) => [
     foreignKey({
@@ -83,8 +86,8 @@ export const prEnvironment = pgTable(
       columns: [table.environmentId],
       foreignColumns: [environmentBranch.environmentId],
     }).onDelete("cascade"),
-    // One open PR Environment per pull request in a project; a closed one can still be tearing down beside a new one.
-    uniqueIndex("pr_environment_pull_request_idx").on(table.repositoryId, table.number, table.projectId).where(sql`not ${table.closed}`),
+    // One current PR Environment per pull request in a project; a retired one can still be tearing down beside a new one.
+    uniqueIndex("pr_environment_pull_request_idx").on(table.repositoryId, table.number, table.projectId).where(sql`not ${table.retired}`),
     index("pr_environment_organization_idx").on(table.organizationId),
   ],
 );

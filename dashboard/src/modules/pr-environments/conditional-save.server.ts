@@ -14,7 +14,7 @@ import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { core, loadIdentitySources } from "#/modules/branches/branch-operations.server";
-import { corePicks, sealValue } from "#/modules/branches/branch-merge.server";
+import { corePicks, sealValue, withEmptyValues } from "#/modules/branches/branch-merge.server";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { mergeInput, rowLineage } from "#/modules/branches/branch-review";
 import { requestPrCheck } from "./pr-check-request.server";
@@ -42,11 +42,13 @@ export const approveConditionalSave = Effect.fn("PrEnvironments.approveCondition
     const { drizzle } = yield* Database;
     // The Project, the Branch row, then the PR Environment's document, whose revision the approval records.
     const branch = yield* lockBranchScope(project.id, input.prEnvironmentId, "share");
-    const [pullRequest] = branch ? yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, input.prEnvironmentId)) : [];
-    if (!branch || !pullRequest) return yield* new NotFound({ message: "The PR environment was not found." });
-    // Nothing would land or drop an approval of a closed pull request.
-    if (pullRequest.closed) return yield* new Conflict({ message: `#${pullRequest.number} is closed.` });
+    if (!branch) return yield* new NotFound({ message: "The PR environment was not found." });
+    // Under its document, as the close settles its approvals: one made after that would never land or drop.
     const document = yield* loadEnvironmentDocument(input.prEnvironmentId, true);
+    const [pullRequest] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, input.prEnvironmentId));
+    if (!pullRequest) return yield* new NotFound({ message: "The PR environment was not found." });
+    if (pullRequest.closed) return yield* new Conflict({ message: `#${pullRequest.number} is closed.` });
+    if (pullRequest.retired) return yield* new Conflict({ message: "This PR environment is being replaced." });
     if (!(yield* prDestinations(input.prEnvironmentId)).includes(input.destinationEnvironmentId)) {
       return yield* new Conflict({ message: `Nothing there deploys ${pullRequest.targetBranch} any more. Review again.` });
     }
@@ -62,8 +64,9 @@ export const approveConditionalSave = Effect.fn("PrEnvironments.approveCondition
     if (input.picks.length === 0) return yield* new Validation({ field: "picks", message: "Tick a change to approve." });
 
     const picks = corePicks({ encryption, rows, into, picks: input.picks });
-    // Core refuses picks it couldn't land, such as a new service's variable without the service.
-    yield* core("picks", () => branchChanges({ ...compare, picks }));
+    // Core refuses picks it couldn't land, such as a new service's variable without the service. A missing value is
+    // allowed: it can be given later, and lands empty.
+    yield* core("picks", () => branchChanges({ ...compare, picks: withEmptyValues({ encryption, rows, into, picks }) }));
     const held = input.picks.flatMap((pick): HeldRow[] => {
       const row = byKey.get(pick.key);
       return row ? [{ row: withoutSealedCiphertext(row), option: pick.option, missing: pick.option === "new" && pick.value === "" }] : [];
@@ -107,7 +110,7 @@ export const giveConditionalSaveValue = Effect.fn("PrEnvironments.giveConditiona
     const [save] = yield* drizzle.select().from(conditionalSave).where(heldOn(input)).for("update");
     const [pr] = yield* drizzle.select({ id: environment.id, revision: environment.revision, targetBranch: prEnvironment.targetBranch })
       .from(environment).innerJoin(prEnvironment, eq(prEnvironment.environmentId, environment.id))
-      .where(and(eq(environment.id, input.prEnvironmentId), eq(prEnvironment.closed, false)));
+      .where(and(eq(environment.id, input.prEnvironmentId), eq(prEnvironment.closed, false), eq(prEnvironment.retired, false)));
     if (!save || !standing(save, pr)) return yield* new Conflict({ message: "It isn't approved any more. Review and approve again." });
     const held = save.rows.find(({ row }) => row.key === input.key);
     if (!held || held.option !== "new") return yield* new Validation({ field: "key", message: "That change doesn't take a new value." });

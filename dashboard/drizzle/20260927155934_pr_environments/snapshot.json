@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "ddfecbd7-8b6c-4720-a9c2-8ee78ca7c6ab",
+  "id": "8f51a553-4709-4590-a283-a9dbc40eba43",
   "prevIds": [
     "292c208c-df30-40b7-a37a-1a1ae0135044"
   ],
@@ -6731,6 +6731,19 @@
       "table": "pr_environment"
     },
     {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "retired",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "pr_environment"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -8696,7 +8709,7 @@
         }
       ],
       "isUnique": true,
-      "where": "not \"closed\"",
+      "where": "not \"retired\"",
       "with": "",
       "method": "btree",
       "concurrently": false,

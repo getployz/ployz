@@ -117,6 +117,14 @@ export function corePicks({ encryption, rows, into, picks }: {
   return [...ticked, ...leftOut];
 }
 
+/** `picks` with each new value still missing given an empty one, sealed as its row needs: what landing saves for it. */
+export function withEmptyValues({ encryption, rows, into, picks }: {
+  encryption: Encryption; rows: BranchRow[]; into: SavedEnvironmentIntent; picks: readonly BranchPick[];
+}): BranchPick[] {
+  return picks.map((pick) => pick.choice?.option === "new" && !pick.choice.value
+    ? { key: pick.key, choice: { option: "new", value: sealValue(encryption, rows, into, pick.key, "") } } : pick);
+}
+
 /** A new value for row `key`, sealed when the row is a secret. */
 export function sealValue(
   encryption: Encryption, rows: BranchRow[], into: SavedEnvironmentIntent, key: string, value: string,

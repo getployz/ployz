@@ -57,10 +57,9 @@ export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function
 
 /**
  * Who a plan's PR Environments act as: the member who turned them on while they're still in the organization, else its
- * first owner, who then stands recorded instead. Null for a plan that's off.
+ * first owner. Null when the organization has neither.
  */
 export const actingMember = Effect.fn("PrEnvironments.actingMember")(function* (plan: typeof prEnvironmentPlan.$inferSelect) {
-  if (!plan.enabled) return null;
   const { drizzle } = yield* Database;
   const inOrganization = eq(member.organizationId, plan.organizationId);
   if (plan.enabledByUserId !== null) {
@@ -70,8 +69,5 @@ export const actingMember = Effect.fn("PrEnvironments.actingMember")(function* (
   }
   const [owner] = yield* drizzle.select({ userId: member.userId }).from(member)
     .where(and(inOrganization, eq(member.role, "owner"))).orderBy(asc(member.createdAt)).limit(1);
-  if (!owner) return null;
-  yield* drizzle.update(prEnvironmentPlan).set({ enabledByUserId: owner.userId })
-    .where(and(eq(prEnvironmentPlan.projectId, plan.projectId), eq(prEnvironmentPlan.repositoryId, plan.repositoryId)));
-  return owner.userId;
+  return owner?.userId ?? null;
 });

@@ -36,14 +36,15 @@ CREATE TABLE "pr_environment" (
 	"head_branch" text NOT NULL,
 	"target_branch" text NOT NULL,
 	"commits" integer NOT NULL,
-	"closed" boolean DEFAULT false NOT NULL
+	"closed" boolean DEFAULT false NOT NULL,
+	"retired" boolean DEFAULT false NOT NULL
 );
 --> statement-breakpoint
 ALTER TABLE "github_environment_trigger" ADD COLUMN "conditional_save_ids" uuid[] DEFAULT '{}'::uuid[] NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "conditional_save_pr_destination_idx" ON "conditional_save" ("pr_environment_id","destination_environment_id");--> statement-breakpoint
 CREATE INDEX "conditional_save_organization_idx" ON "conditional_save" ("organization_id");--> statement-breakpoint
 CREATE INDEX "conditional_save_destination_idx" ON "conditional_save" ("destination_environment_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "pr_environment_pull_request_idx" ON "pr_environment" ("repository_id","number","project_id") WHERE not "closed";--> statement-breakpoint
+CREATE UNIQUE INDEX "pr_environment_pull_request_idx" ON "pr_environment" ("repository_id","number","project_id") WHERE not "retired";--> statement-breakpoint
 CREATE INDEX "pr_environment_organization_idx" ON "pr_environment" ("organization_id");--> statement-breakpoint
 ALTER TABLE "conditional_save" ADD CONSTRAINT "conditional_save_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "conditional_save" ADD CONSTRAINT "conditional_save_pr_environment_id_environment_id_fkey" FOREIGN KEY ("pr_environment_id") REFERENCES "environment"("id") ON DELETE CASCADE;--> statement-breakpoint

@@ -32,14 +32,18 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     .where(and(eq(prEnvironmentPlan.installationId, input.installationId), eq(prEnvironmentPlan.repositoryId, input.repositoryId)));
   const ofPullRequest = and(eq(prEnvironment.repositoryId, input.repositoryId), eq(prEnvironment.number, input.number));
   const all = yield* drizzle.select({ environmentId: prEnvironment.environmentId, projectId: prEnvironment.projectId })
-    .from(prEnvironment).where(ofPullRequest);
+    .from(prEnvironment).where(and(ofPullRequest, eq(prEnvironment.retired, false)));
   // Nothing to act on: skip the read from GitHub.
   if (plans.length === 0 && all.length === 0) return "ignored_pull_request" as const;
   const live = yield* fetchInstallationPullRequest(input.installationId, input.repositoryId, input.number);
-  // One being torn down is done with: closed, it keeps its facts, and a new one can start beside it.
-  const closing = yield* activeTeardownFor(all.map((row) => row.environmentId));
-  if (closing.size) yield* drizzle.update(prEnvironment).set({ closed: true }).where(inArray(prEnvironment.environmentId, [...closing]));
-  const existing = all.filter((row) => !closing.has(row.environmentId));
+  // One being torn down is done with: retired, it keeps its facts and loses its approvals, and a new one can start
+  // beside it.
+  const closing = [...yield* activeTeardownFor(all.map((row) => row.environmentId))];
+  if (closing.length) {
+    yield* drizzle.update(prEnvironment).set({ retired: true }).where(inArray(prEnvironment.environmentId, closing));
+    yield* drizzle.delete(conditionalSave).where(and(inArray(conditionalSave.prEnvironmentId, closing), eq(conditionalSave.state, "standing")));
+  }
+  const existing = all.filter((row) => !closing.includes(row.environmentId));
   if (existing.length) {
     yield* drizzle.update(prEnvironment).set({
       title: live.title, author: live.author.login, headBranch: live.headBranch, targetBranch: live.targetBranch,
@@ -74,6 +78,11 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     if (existing.some((row) => row.projectId === plan.projectId)) continue;
     const userId = yield* actingMember(plan);
     if (!userId) continue;
+    // The enabler left: the owner acting now stands recorded as the one PR Environments act for.
+    if (userId !== plan.enabledByUserId) {
+      yield* drizzle.update(prEnvironmentPlan).set({ enabledByUserId: userId })
+        .where(and(eq(prEnvironmentPlan.projectId, plan.projectId), eq(prEnvironmentPlan.repositoryId, plan.repositoryId)));
+    }
     const [start] = yield* drizzle.select({ intent: environment.intent }).from(environment)
       .where(eq(environment.id, plan.startFromEnvironmentId));
     if (!start?.intent.services.some((node) => fromRepository(node.config, input.repositoryId))) {
@@ -108,14 +117,13 @@ export const createPrEnvironment = Effect.fn("PrEnvironments.createPrEnvironment
     .innerJoin(project, eq(project.id, environment.projectId))
     .where(eq(environment.id, parentEnvironmentId));
   if (!row) return;
-  const taken = yield* drizzle.select({ namespace: environment.namespace }).from(environment)
-    .where(eq(environment.organizationId, row.project.organizationId));
-  const name = defaultBranchName(row.project.slug, `pr-${pullRequest.number}`, new Set(taken.map((environment) => environment.namespace)));
   const { repositoryId } = pullRequest;
+  const name = `pr-${pullRequest.number}`;
   return yield* writeAndDeploy({
     actor, project: row.project, parent: row.environment,
     input: { name, focus: [], picks: plan.picks, keep: false, deployNow: true, setupCommands: plan.setupCommands },
     kind: {
+      name: (taken) => defaultBranchName(row.project.slug, name, taken),
       // Picks the start-from lacks are kept, and Then run commands for services it doesn't copy are left out.
       plan: (parent, deployed) => prPlanInput(parent, deployed, repositoryId, plan.picks),
       setupCommands: (branchPlan) => branchSetupCommands(branchPlan, plan.setupCommands),
