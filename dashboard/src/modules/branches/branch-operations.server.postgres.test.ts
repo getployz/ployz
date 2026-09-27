@@ -14,6 +14,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { createBranch } from "./branch-operations.server";
+import { recordInngestRun } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import type { CreateBranch } from "./branch-schemas";
 
 const organizationId = "00000000-0000-4000-8000-000000000301";
@@ -171,6 +172,13 @@ describe("createBranch", () => {
     // Admission froze web's Setup Command on it: web has never deployed.
     expect(attempts[0]?.setupCommands).toEqual({ [webNode?.id ?? ""]: ["pnpm db:seed"] });
     expect(inngest.send).toHaveBeenCalledTimes(1);
+
+    // Queued behind ("Deploy next") an attempt that then first deploys web, it drops web's command as it starts.
+    await harness.db.update(schema.service).set({ firstDeployedAt: new Date() }).where(eq(schema.service.id, webNode?.id ?? ""));
+    await harness.db.update(schema.environmentDeployment).set({ dispatchRequestedAt: new Date() })
+      .where(eq(schema.environmentDeployment.id, data.deploymentId ?? ""));
+    expect(await harness.runEffect(recordInngestRun({ environmentDeploymentId: data.deploymentId ?? "", runId: "run-2" }))).toBe(true);
+    expect((await attemptsOf(branchId))[0]?.setupCommands).toEqual({});
   });
 
   it("fixes a failed deploy on a branch: the failed change arrives staged and the Parent stays as it was", async () => {
