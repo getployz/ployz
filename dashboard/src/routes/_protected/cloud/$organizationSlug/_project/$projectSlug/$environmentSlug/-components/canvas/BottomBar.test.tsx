@@ -9,6 +9,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as branchCollections from "#/modules/branches/branch.collection";
 import * as deploymentCollections from "#/modules/deployments/deployment.collection";
 import * as branchReviews from "#/modules/branches/use-branch-review";
+import * as conditionalSaves from "#/modules/pr-environments/conditional-save.collection";
+import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import type { ChangeRow } from "#/modules/branches/branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { asTestDouble } from "#/lib/test-double";
@@ -30,6 +32,7 @@ const onDiscardAll = vi.fn(async () => true);
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
 let branch: branchReviews.BranchReviewView | null = null;
+let held: ConditionalSaveRow[] = [];
 const imageRow = (from: string): ChangeRow => ({ key: `web-lineage:source.image`, role: "move", conflict: false, base: "web:1", from, into: "web:1" });
 const branchReview = (merge: ChangeRow[], updates: number) => asTestDouble<branchReviews.BranchReviewView>()({
   parent: { id: "env-0", name: "production", namespace: "shop-production" },
@@ -40,6 +43,8 @@ beforeEach(() => {
   attempts = [];
   startingPoint = undefined;
   branch = null;
+  held = [];
+  vi.spyOn(conditionalSaves, "useHeldChanges").mockImplementation(() => held);
   vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
   vi.spyOn(branchReviews, "useBranchReview").mockImplementation(() => branch);
@@ -183,4 +188,38 @@ it("on a Branch, then shows what would merge into its Parent, else what's new th
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("on a PR Environment, says whether it's approved; on a Destination, what waits for a pull request once nothing else shows", async () => {
+  const pullRequest = (approved: boolean) => asTestDouble<branchReviews.BranchReviewView>()({
+    ...branchReview([], 0), pullRequest: { number: 142, title: "Discounts", author: "maya", headBranch: "discounts", targetBranch: "main" },
+    goesTo: [{ destination: { id: "env-0", name: "production", namespace: "shop-production" }, rows: [imageRow("web:2")], review: "r", approval: null }],
+    approved, changes: 1,
+  });
+  branch = pullRequest(false);
+  open(canvasUrl);
+  const unapproved = await bar();
+  expect(unapproved.getByText("1 change for production")).toBeTruthy();
+  expect(unapproved.getByText("Not approved yet")).toBeTruthy();
+  expect(unapproved.getByRole("link", { name: "Review and approve" })).toBeTruthy();
+  cleanup();
+  branch = pullRequest(true);
+  open(canvasUrl);
+  const approved = await bar();
+  expect(approved.getByText("Approved")).toBeTruthy();
+  expect(approved.getByText("Lands when #142 merges")).toBeTruthy();
+  expect(approved.getByRole("link", { name: "Review" })).toBeTruthy();
+  cleanup();
+
+  held = [asTestDouble<ConditionalSaveRow>()({ id: "save", prNumber: 142, approvedBy: "maya", rows: [{ row: imageRow("web:2"), missing: false }] })];
+  branch = branchReview([imageRow("web:2")], 0);
+  open(canvasUrl);
+  expect((await bar()).getByText("1 change for production")).toBeTruthy();
+  cleanup();
+  branch = null;
+  open(canvasUrl);
+  const waiting = await bar();
+  expect(waiting.getByText("Waiting for #142")).toBeTruthy();
+  expect(waiting.getByText("1 change · approved by maya")).toBeTruthy();
+  expect(waiting.getByRole("button", { name: "Review" })).toBeTruthy();
 });

@@ -2,6 +2,8 @@ import { useEnvironmentChangeStatesIfReady } from "#/modules/deployments/environ
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinationCandidates, destinations } from "#/modules/pr-environments/destinations";
+import { useStandingSaves } from "#/modules/pr-environments/conditional-save.collection";
+import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { branchHostnameSuffix } from "./branch-plan";
 import { useLineageNames } from "./use-lineage-names";
 import { branchReview, goesTo, latestDeploy, liveUpdates, usedLive, type BranchReview, type GoesTo, type LiveUpdate } from "./branch-review";
@@ -18,7 +20,9 @@ export type BranchReviewView = BranchReview & {
   /** A PR Environment's pull request; null for any other Branch. */
   pullRequest: PullRequest | null;
   /** A PR Environment's changes for each of its Destinations, which it never Merges into. Empty for any other Branch. */
-  goesTo: Array<GoesTo & { destination: EnvironmentName }>;
+  goesTo: Array<GoesTo & { destination: EnvironmentName; approval: ConditionalSaveRow | null }>;
+  /** A PR Environment whose every Destination with changes has a standing approval. */
+  approved: boolean;
   /** "N changes": what would merge, or on a PR Environment what goes to its Destinations. */
   changes: number;
   /** "N updates": the Parent's deployed changes the Branch lacks, plus Live Nodes redeployed since. */
@@ -46,6 +50,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
     return environment && project ? branchHostnameSuffix(project.slug, environment.namespace, branchById.has(environmentId)) : "";
   };
   const lineageName = useLineageNames(organizationSlug);
+  const saves = useStandingSaves(organizationSlug);
 
   return (environmentId) => {
     const row = branchById.get(environmentId);
@@ -71,6 +76,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       const destination = environmentById.get(id);
       return destination ? [{
         destination,
+        approval: saves.find((save) => save.prEnvironmentId === environmentId && save.destinationEnvironmentId === id) ?? null,
         ...goesTo({
           base: row.base, kept: false, branch: branch.intent, parent: destination.intent,
           parentApplied: stateById.get(parent.id)?.applied.intent ?? null,
@@ -80,6 +86,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
     }) : [];
     return {
       ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings,
+      approved: landings.some((landing) => landing.rows.length) && landings.every((landing) => !landing.rows.length || landing.approval),
       changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.merge.length,
       updates: review.update.length + live.length,
       nameOf: (lineage) => lineageName(lineage, environmentId), environmentName: (id) => environmentById.get(id)?.name ?? "another environment",

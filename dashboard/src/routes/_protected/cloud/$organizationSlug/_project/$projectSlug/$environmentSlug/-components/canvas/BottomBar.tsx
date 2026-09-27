@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { CircleDashedIcon, GitBranchPlusIcon, MoreVerticalIcon } from "lucide-react";
+import { CircleDashedIcon, GitBranchPlusIcon, GitPullRequestIcon, MoreVerticalIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
@@ -17,6 +17,8 @@ import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { presentRow } from "#/modules/branches/branch-review";
 import { listNames } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
+import { useHeldChanges } from "#/modules/pr-environments/conditional-save.collection";
+import { HeldChanges, waitingLine } from "../branch-review/HeldChanges";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "../environment-route-paths";
@@ -55,7 +57,7 @@ type BottomBarProps = {
 /**
  * The bottom bar shows one thing at a time: a starting point's state, else staged changes, else a running or queued
  * attempt whose page isn't open, else on a Branch what would merge into its Parent, else what's new in its Parent, else
- * nothing. A starting point's staged nodes are the recipe Branches copy, not pending work.
+ * changes held here for a pull request, else nothing. A starting point's staged nodes are the recipe Branches copy, not pending work.
  */
 export function BottomBar({
   environmentId,
@@ -90,6 +92,8 @@ export function BottomBar({
   const hasChanges = !startingPoint && (totalChanges > 0 || canSaveWithoutDeploying);
   const deployable = hasChanges && canDeploy && totalChanges > 0;
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
+  // Held for a pull request, not staged here: the bar's last state, so the list stays reachable.
+  const [waiting] = useHeldChanges(params.organizationSlug, environmentId);
 
   function deploy() {
     setOpen(false);
@@ -147,14 +151,19 @@ export function BottomBar({
       </DropdownMenu>
     </Bar>
   ) : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
-    : review ? <BranchState review={review} /> : null;
+    : review && branchHasBar(review) ? <BranchState review={review} />
+    : waiting ? (
+      <Bar icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={waitingLine(waiting).title} detail={waitingLine(waiting).detail}>
+        {review ? <ReviewLink label="Review" /> : <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Review</Button>}
+      </Bar>
+    ) : null;
 
   const reviewProps = {
     groups, totalChanges, canDeploy: deployable, canSave: canSaveWithoutDeploying, commitMessage,
     onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
     onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
     onDiscardAll: async () => { if (await onDiscardAll()) setOpen(false); },
-    onDiscardNode, onDiscardRow,
+    onDiscardNode, onDiscardRow, held: waiting ? <HeldChanges environmentId={environmentId} /> : null,
   };
 
   return (
@@ -177,21 +186,26 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
   return groups.map((group) => group.nodeName).join(", ");
 }
 
+const firstChange = (review: BranchReviewView) => (review.pullRequest ? review.goesTo.flatMap((landing) => landing.rows) : review.merge)[0];
+const branchHasBar = (review: BranchReviewView) => firstChange(review) !== undefined || review.updates > 0;
+
 /**
  * A Branch with nothing staged or running: what would merge into its Parent (on a PR Environment, what goes to its
- * Destinations), else what's new there.
+ * Destinations and whether it's approved), else what's new there.
  */
 function BranchState({ review }: { review: BranchReviewView }) {
   const isMobile = useIsMobile();
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-  const [first] = review.pullRequest ? review.goesTo.flatMap((landing) => landing.rows) : review.merge;
+  const first = firstChange(review);
+  const pr = review.pullRequest;
   if (first) {
     const row = presentRow(first, review.nameOf);
-    const to = review.pullRequest ? listNames(review.goesTo.map((landing) => landing.destination.name)) : review.parent.name;
+    const to = pr ? listNames(review.goesTo.filter((landing) => landing.rows.length).map((landing) => landing.destination.name)) : review.parent.name;
     return (
-      <Bar title={`${plural(review.changes, "change")} for ${to}`}
-        detail={`${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
-        <ReviewLink label={isMobile || review.pullRequest ? "Review" : "Review and merge"} />
+      <Bar title={pr && review.approved ? "Approved" : `${plural(review.changes, "change")} for ${to}`}
+        detail={pr ? (review.approved ? `Lands when #${pr.number} merges` : "Not approved yet")
+          : `${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
+        <ReviewLink label={isMobile || (pr && review.approved) ? "Review" : pr ? "Review and approve" : "Review and merge"} />
       </Bar>
     );
   }

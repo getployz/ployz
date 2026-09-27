@@ -392,7 +392,7 @@ describe("PR Environment lifecycle", () => {
 
     beforeEach(async () => {
       await harness.db.insert(schema.environmentSavedStateSnapshot).values({
-        organizationId, environmentId: stagingId, actorId: userId, intent: stagingIntent as never, volumeDeletionAuthorizations: [],
+        organizationId, environmentId: stagingId, actorId: userId, intent: stagingIntent, volumeDeletionAuthorizations: [],
       });
       await pullRequest("opened", "opened", 142);
     });
@@ -444,7 +444,7 @@ describe("PR Environment lifecycle", () => {
 
       // A settings change on the PR Environment withdraws it.
       const flagId = (await environmentOf(prId))?.intent.services.find((node) => node.lineageId === apiLineage)?.variables.find((variable) => variable.key === "FLAG")?.id ?? "";
-      await harness.runEffect(updateServiceVariable({ userId }, { ...(await scope(prId)), variableId: flagId, value: { type: "plain", value: "off" } }));
+      await harness.runEffect(updateServiceVariable({ userId }, { ...(await scope(prId)), variableId: flagId, key: "FLAG", description: null, exported: false, value: { type: "plain", value: "off" } }));
       expect(await stands(prId)).toBe(false);
     });
 
