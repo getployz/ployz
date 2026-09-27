@@ -11,7 +11,6 @@ import { loadEnvironmentSnapshotProjection, type AppliedSavedNode } from "#/modu
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { servicePublicDomain } from "#/modules/environment-design/managed-service-exports";
 import { ancestors } from "#/modules/project/environment-tree";
-import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { liveOwner } from "./live-owner";
 
 type Producers = SavedDeploymentTarget["variableProducers"];
@@ -32,9 +31,8 @@ export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
 
 /** Its services' secrets whose value is empty, such as one a pull request landed without a value: shown, never blocking. */
 const emptySecretsOf = Effect.fn("Branches.emptySecretsOf")(function* (target: SavedDeploymentTarget) {
-  const encryption = yield* SecretEncryption;
-  const empty = target.variableProducers.filter(({ value }) => value.kind === "secret" && value.encryptedValue !== null
-    && encryption.decrypt(value.encryptedValue) === "");
+  // AES-GCM ciphertext is as long as its plaintext: an empty one seals "".
+  const empty = target.variableProducers.filter(({ value }) => value.kind === "secret" && value.encryptedValue?.ciphertext === "");
   if (empty.length === 0) return [];
   const { drizzle } = yield* Database;
   const names = new Map((yield* drizzle.select({ id: service.id, name: service.name }).from(service)

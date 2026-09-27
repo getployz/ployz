@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { Effect } from "effect";
-import { branchChanges, type BranchPick } from "@ployz/sdk/config";
+import { branchChanges, type BranchPick, type BranchRow } from "@ployz/sdk/config";
+import type { JsonValue } from "#/db/tables";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { project } from "#/modules/project/tables";
@@ -22,7 +23,8 @@ type ConditionalSave = typeof conditionalSave.$inferSelect;
 type Document = Effect.Success<ReturnType<typeof loadEnvironmentDocument>>;
 
 const isNode = (pick: { key: string }) => pick.key.endsWith(":node");
-const same = (a: unknown, b: unknown) => isDeepStrictEqual(a ?? null, b ?? null);
+type RowValue = BranchRow["into"] | JsonValue;
+const same = (left: RowValue | undefined, right: RowValue | undefined) => isDeepStrictEqual(left ?? null, right ?? null);
 
 /**
  * Lands a frozen Conditional Save in its Destination, `document`, without reading the PR Environment. The caller holds

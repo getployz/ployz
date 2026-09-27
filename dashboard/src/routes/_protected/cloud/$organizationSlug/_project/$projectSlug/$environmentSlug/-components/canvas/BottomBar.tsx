@@ -17,7 +17,7 @@ import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { presentRow } from "#/modules/branches/branch-review";
 import { listNames } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
-import { useHeldChanges } from "#/modules/pr-environments/conditional-save.collection";
+import { useHeldChanges, useStagedInstead } from "#/modules/pr-environments/conditional-save.collection";
 import { HeldChanges, waitingLine } from "../branch-review/HeldChanges";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
@@ -94,6 +94,8 @@ export function BottomBar({
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
   // Held for a pull request, not staged here: the bar's last state, so the list stays reachable.
   const [waiting] = useHeldChanges(params.organizationSlug, environmentId);
+  // Rows a merge staged here instead of saving, marked in the review.
+  const stagedInstead = useStagedInstead(params.organizationSlug, environmentId);
 
   function deploy() {
     setOpen(false);
@@ -163,7 +165,7 @@ export function BottomBar({
     onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
     onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
     onDiscardAll: async () => { if (await onDiscardAll()) setOpen(false); },
-    onDiscardNode, onDiscardRow, held: waiting ? <HeldChanges environmentId={environmentId} /> : null,
+    onDiscardNode, onDiscardRow, held: waiting || stagedInstead.length ? <HeldChanges environmentId={environmentId} /> : null,
   };
 
   return (
