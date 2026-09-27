@@ -3,7 +3,8 @@ import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generato
 import { Effect } from "effect";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { isPrEnvironment } from "#/modules/pr-environments/pr-environment.repository.server";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
 import {
@@ -139,6 +140,7 @@ export const setProjectDefaultEnvironment = Effect.fn(
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockProjectDefault(context.project.id);
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: "This environment is being torn down." });
+    if (yield* isPrEnvironment(input.environmentId)) return yield* new Validation({ message: "A PR environment can't be the Default Environment." });
     const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
     if (project === null) {
       return yield* new NotFound({ message: "Environment not found in this project." });
