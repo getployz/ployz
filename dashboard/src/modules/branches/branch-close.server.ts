@@ -1,10 +1,12 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { and, eq, inArray, isNotNull, max } from "drizzle-orm";
+import { Cause, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
-import { environmentBranch as schemaEnvironmentBranch } from "#/modules/project/tables";
+import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
+import { dueForIdleClose } from "#/modules/branches/idle-close";
+import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import type { BranchCloseReason } from "#/modules/runtime/teardown";
 import { confirmSystemTeardown } from "#/modules/runtime/teardown.server";
@@ -50,4 +52,43 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
     .returning();
   if (row === undefined) return yield* new NotFound({ message: "The branch was not found." });
   return { ...row, base: withoutSealedCiphertext(row.base) };
+});
+
+/**
+ * Closes every idle Branch, across organizations, as the system. A close that fails (an unreachable runtime, a
+ * teardown already running) leaves that Branch for the next sweep and never stops the others.
+ */
+export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now: Date) {
+  const database = yield* Database;
+  const branches = yield* database.drizzle
+    .select({
+      environmentId: schemaEnvironmentBranch.environmentId,
+      parentEnvironmentId: schemaEnvironmentBranch.parentEnvironmentId,
+      kept: schemaEnvironmentBranch.kept,
+    })
+    .from(schemaEnvironmentBranch);
+  if (branches.length === 0) return [];
+  const branchIds = branches.map((branch) => branch.environmentId);
+  const latest = yield* database.drizzle
+    .select({ environmentId: schemaEnvironmentDeployment.environmentId, at: max(schemaEnvironmentDeployment.createdAt) })
+    .from(schemaEnvironmentDeployment)
+    .where(inArray(schemaEnvironmentDeployment.environmentId, branchIds))
+    .groupBy(schemaEnvironmentDeployment.environmentId);
+  const defaults = yield* database.drizzle
+    .select({ environmentId: schemaProject.defaultEnvironmentId })
+    .from(schemaProject)
+    .where(and(isNotNull(schemaProject.defaultEnvironmentId), inArray(schemaProject.defaultEnvironmentId, branchIds)));
+  const due = dueForIdleClose({
+    branches,
+    latestAttemptAt: new Map(latest.flatMap((row) => (row.at === null ? [] : [[row.environmentId, row.at]]))),
+    defaultEnvironmentIds: new Set(defaults.flatMap((row) => (row.environmentId === null ? [] : [row.environmentId]))),
+  }, now);
+  const closed = yield* Effect.forEach(due, (environmentId) => closeBranch({ environmentId, reason: "idle" }).pipe(
+    Effect.scoped,
+    Effect.as([environmentId]),
+    Effect.catchCause((cause) => Cause.hasInterrupts(cause)
+      ? Effect.failCause(cause)
+      : Effect.logWarning("An idle Branch did not close; the next sweep retries it.", { environmentId, cause }).pipe(Effect.as([]))),
+  ));
+  return closed.flat();
 });

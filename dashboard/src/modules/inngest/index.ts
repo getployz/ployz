@@ -28,6 +28,7 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
+import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
@@ -54,6 +55,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessTeardown(inngest),
     createCancelTeardown(inngest),
     createPruneOrganizationChangeLog(inngest),
+    createSweepIdleBranches(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
   ];

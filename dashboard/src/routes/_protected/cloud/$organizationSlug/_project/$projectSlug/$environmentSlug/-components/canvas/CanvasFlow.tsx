@@ -26,6 +26,7 @@ import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
+import { IdleCloseWarning } from "./IdleCloseWarning";
 import { useEnvironmentNavigationNodes } from "../environment-node-navigation";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
@@ -193,6 +194,9 @@ export function CanvasFlow({
         servicesById={servicesById}
         volumeResourcesById={volumeResourcesById}
       />
+      <div className="pointer-events-none absolute top-4 left-4">
+        <IdleCloseWarning organizationSlug={params.organizationSlug} environmentId={environmentId} />
+      </div>
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
         <CanvasFinder nodes={findableNodes} />
         <Button

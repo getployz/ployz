@@ -10,7 +10,7 @@ import { dropTeardownCloudRowsActivity } from "#/modules/runtime/teardown-activi
 import { confirmTeardown, loadTeardownDataLoss } from "#/modules/runtime/teardown.server";
 import { Conflict } from "#/server/public-error";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
-import { closeBranch } from "./branch-close.server";
+import { closeBranch, sweepIdleBranches } from "./branch-close.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
 const creatorId = "00000000-0000-4000-8000-000000000902";
@@ -36,7 +36,7 @@ describe("closing a Branch", () => {
     return harness.runEffect(operation);
   }
 
-  function provide<A, E, R>(operation: Effect.Effect<A, E, R>) {
+  function provide<A, E, R>(operation: Effect.Effect<A, E, R>, unreachable?: string) {
     const inngest = new Inngest({ id: "branch-close-postgres" });
     inngest.send = async (event) => {
       sent.push(event);
@@ -50,8 +50,9 @@ describe("closing a Branch", () => {
         open: () => Effect.succeed({
           status: "connected" as const,
           connected: asTestDouble<PloyzSession>()({
-            dataLossIfProjectDestroyed: (namespace: ProjectName) =>
-              Effect.succeed({ data_loss: [volumeOf(namespace)], unknown_machines: [] }),
+            dataLossIfProjectDestroyed: (namespace: ProjectName) => namespace === unreachable
+              ? Effect.fail(new Error("The runtime is unreachable."))
+              : Effect.succeed({ data_loss: [volumeOf(namespace)], unknown_machines: [] }),
           }),
         }),
       }),
@@ -142,5 +143,27 @@ describe("closing a Branch", () => {
       organizationSlug: "acme", scope: "environment", environmentId: tryCacheId, identities: [],
     })));
     expect(manual).toMatchObject({ requestedByUserId: userId, closeReason: "manual" });
+  });
+
+  it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
+    // Everything but production last deployed 8 days ago; fix-web still has try-cache open.
+    for (const id of [fixWebId, tryCacheId, fixStagingId]) {
+      await harness.pool.query(`
+        with snapshot as (
+          insert into environment_saved_state_snapshot (organization_id, environment_id, actor_id, intent, volume_deletion_authorizations)
+          values ($1, $2, $3, '{}', '[]') returning id
+        )
+        insert into environment_deployment (organization_id, environment_id, trigger_origin, saved_state_snapshot_id, created_at)
+        select $1, $2, '{}', id, now() - interval '8 days' from snapshot`, [organizationId, id, creatorId]);
+    }
+
+    const closed = await run(provide(sweepIdleBranches(new Date()), "app-try-cache"));
+
+    expect(closed).toEqual([fixStagingId]);
+    expect(await attemptRows()).toEqual([expect.objectContaining({
+      requested_by_user_id: creatorId,
+      close_reason: "idle",
+      targets: expect.objectContaining({ environments: [expect.objectContaining({ environmentId: fixStagingId })] }),
+    })]);
   });
 });
