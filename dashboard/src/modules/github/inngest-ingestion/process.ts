@@ -58,6 +58,7 @@ import { runInngestEffect } from "#/server/run.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
+import { requestPullRequestChecks } from "#/modules/pr-environments/pr-check-request.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export type GithubIngestionEffectRunner = <A, E extends Error>(
@@ -480,6 +481,10 @@ export async function executeProcessGithubPullRequestReceived(
     : await input.step.run("apply-pull-request", () => runEffect(applyPullRequest({
       installationId: payload.installationId, repositoryId: payload.repositoryId, number: payload.number,
     })));
+  // Its own step, after the lifecycle: every PR Environment of the pull request posts its check again.
+  if (outcome === "pull_request_projected") {
+    await input.step.run("request-pr-checks", () => runEffect(requestPullRequestChecks(payload.repositoryId, payload.number)));
+  }
   await input.step.run("complete-delivery", () =>
     runEffect(
       completeGithubDelivery(

@@ -89,6 +89,7 @@ export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
 export const teardownRequestedEvent = "cloud/teardown.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
+export const prCheckRequestedEvent = "pr-environments/check.requested";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -133,6 +134,10 @@ export type TeardownRequestedEventData = {
 
 export type ClusterDomainSyncRequestedEventData = {
   organizationId: string;
+};
+
+export type PrCheckRequestedEventData = {
+  prEnvironmentId: string;
 };
 
 export type InngestFunctionCancelledEventData = {
@@ -203,6 +208,10 @@ export const teardownRequestedEventType = eventType(
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
+);
+export const prCheckRequestedEventType = eventType(
+  prCheckRequestedEvent,
+  { schema: staticSchema<PrCheckRequestedEventData>() },
 );
 export const inngestFunctionCancelledEventType = eventType(
   "inngest/function.cancelled",
@@ -293,6 +302,10 @@ export function createClusterDomainSyncRequestedEvent(
   data: ClusterDomainSyncRequestedEventData,
 ) {
   return { name: clusterDomainSyncRequestedEvent, data } as const;
+}
+
+export function createPrCheckRequestedEvent(data: PrCheckRequestedEventData) {
+  return { name: prCheckRequestedEvent, data } as const;
 }
 
 export function createOrganizationBillingSyncRequestedEvent(
@@ -471,6 +484,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createTeardownRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createPrCheckRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
