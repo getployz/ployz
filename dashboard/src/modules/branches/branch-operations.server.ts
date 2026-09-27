@@ -22,9 +22,10 @@ import { loadEnvironmentSavedIntentById } from "#/modules/environment-design/sav
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { createManualEnvironmentDeployment } from "#/modules/deployments/deployment-command.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
-import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages } from "./branch-plan";
+import { branchHostnameSuffix, branchSetupCommands, branchNameError, branchNamespace, liveLineages, ownLineages } from "./branch-plan";
 import { rowLineage } from "./branch-review";
 import type { CreateBranch, SetBranchSetupDefaults } from "./branch-schemas";
+import { prPlanInput } from "#/modules/pr-environments/repositories";
 import { fromRepository, prEnvironmentIntent, pullRequestColumns, type PullRequestFacts } from "#/modules/pr-environments/pull-request";
 
 type EnvironmentRow = typeof environment.$inferSelect;
@@ -117,13 +118,16 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   const { intent: working } = yield* loadCurrentEnvironmentState(parent.id);
   const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: parent.id });
   const applied = projection.explicitStates.find((state) => state.environmentId === parent.id)?.applied.nodes ?? [];
-  const plan = yield* core("picks", () => planBranch({
-    parent: working, deployed: applied.map((node) => node.nodeLineageId), focus: input.focus, picks: input.picks,
-  }));
+  const deployed = applied.map((node) => node.nodeLineageId);
+  // A PR Environment's plan keeps picks the start-from lacks, and Then run commands for services it doesn't copy.
+  const plan = yield* core("picks", () => planBranch(pullRequest
+    ? prPlanInput(working, deployed, pullRequest.repositoryId, input.picks)
+    : { parent: working, deployed, focus: input.focus, picks: input.picks }));
+  const setupCommands = pullRequest ? branchSetupCommands(plan, input.setupCommands) : input.setupCommands;
   const own = ownLineages(plan);
   if (own.length === 0) return yield* new Validation({ field: "picks", message: "Pick something to copy." });
   const ownServices = new Set(working.services.map((node) => node.lineageId).filter((lineage) => own.includes(lineage)));
-  if (input.setupCommands.some((setup) => !ownServices.has(setup.lineageId))) {
+  if (setupCommands.some((setup) => !ownServices.has(setup.lineageId))) {
     return yield* new Validation({ field: "setupCommands", message: "A setup command runs in one of the branch's own services." });
   }
 
@@ -173,7 +177,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     environmentId: document.id, organizationId: project.organizationId, projectId: project.id,
     parentEnvironmentId: parent.id, kept: input.keep,
     base: parseDashboardEnvironmentIntent(base),
-    setupCommands: input.setupCommands,
+    setupCommands,
     createdByUserId: actor.userId,
     ...pullRequestColumns(pullRequest),
   }).returning();

@@ -258,6 +258,17 @@ describe("PR Environment lifecycle", () => {
     expect(asStart).toMatchObject({ _tag: "Validation", message: "A PR environment can't be where PR environments start from." });
   });
 
+  it("keeps picks and Then run commands the start-from lacks out of the PR Environment's plan", async () => {
+    // Picked while another Environment was the start-from: a lineage staging lacks, and a command for it.
+    const gone = "00000000-0000-4000-8000-0000000000ff";
+    await setPlan({ picks: { own: [dbLineage, gone] }, setupCommands: [{ lineageId: gone, command: "php artisan migrate" }] });
+    expect(await pullRequest("opened", "opened", 142)).toBe("pull_request_projected");
+    const branch = await prEnvironment(142);
+    expect(branch?.setupCommands).toEqual([]);
+    const [environment] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, branch?.environmentId ?? ""));
+    expect(environment?.intent.services.map((node) => node.lineageId).sort()).toEqual([apiLineage, dbLineage].sort());
+  });
+
   it("ignores forks, follows the bots setting, and records a start-from that runs nothing from the repository", async () => {
     expect(await pullRequest("fork", "opened", 7, { head: { ref: "x", sha: "c".repeat(40), repo: { id: 99 } } })).toBe("ignored_fork");
     expect(await pullRequest("bot", "opened", 8, { user: { login: "renovate[bot]", type: "Bot" } })).toBe("ignored_pull_request");
