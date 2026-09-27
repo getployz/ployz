@@ -13,7 +13,7 @@ import { environment } from "#/modules/project/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
-import { TEARDOWN_ATTEMPT_STATUSES, TEARDOWN_SCOPES, type TeardownAttemptStatus, type TeardownOutcome, type TeardownScope, type TeardownTargets } from "#/modules/runtime/teardown";
+import { BRANCH_CLOSE_REASONS, TEARDOWN_ATTEMPT_STATUSES, TEARDOWN_SCOPES, type BranchCloseReason, type TeardownAttemptStatus, type TeardownOutcome, type TeardownScope, type TeardownTargets } from "#/modules/runtime/teardown";
 
 import { VOLUME_REMOVE_ATTEMPT_STATUSES, type VolumeRemoveAttemptStatus, type VolumeRemoveOutcome, type VolumeRemoveVolume } from "#/modules/runtime/volume-removal";
 
@@ -154,6 +154,8 @@ export const teardownAttempt = pgTable(
       .notNull()
       .$type<DataLossIdentity[]>(),
     targets: jsonb("targets").notNull().$type<TeardownTargets>(),
+    // Set when the target is a Branch; null for any other teardown.
+    closeReason: text("close_reason").$type<BranchCloseReason>(),
     status: text("status")
       .default("pending")
       .notNull()
@@ -206,6 +208,10 @@ export const teardownAttempt = pgTable(
     check(
       "teardown_attempt_status_check",
       sql`${table.status} in (${sqlStringLiterals(TEARDOWN_ATTEMPT_STATUSES)})`,
+    ),
+    check(
+      "teardown_attempt_close_reason_check",
+      sql`${table.closeReason} in (${sqlStringLiterals(BRANCH_CLOSE_REASONS)})`,
     ),
     check(
       "teardown_attempt_scope_ids_check",

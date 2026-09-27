@@ -13,6 +13,7 @@ import { organizationClusterDomain as schemaOrganizationClusterDomain } from "#/
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import {
   environment as schemaEnvironment,
+  environmentBranch as schemaEnvironmentBranch,
   project as schemaProject,
 } from "#/modules/project/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
@@ -155,6 +156,10 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
         yield* transaction.drizzle
           .delete(schemaService)
           .where(inArray(schemaService.environmentId, environmentIds));
+        // Branch rows first: a Parent's row check can run before its Branch's row cascades.
+        yield* transaction.drizzle
+          .delete(schemaEnvironmentBranch)
+          .where(inArray(schemaEnvironmentBranch.environmentId, environmentIds));
         yield* transaction.drizzle
           .delete(schemaEnvironment)
           .where(inArray(schemaEnvironment.id, environmentIds));

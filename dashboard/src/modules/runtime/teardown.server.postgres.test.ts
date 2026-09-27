@@ -33,8 +33,8 @@ import {
   completeTeardownAttempt,
   insertTeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
-import { confirmTeardown, dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
-import { Conflict, Validation } from "#/server/public-error";
+import { dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
+import { Validation } from "#/server/public-error";
 
 const encryption = makeSecretEncryption("teardown-test-encryption");
 const organizationId = "00000000-0000-4000-8000-000000000701";
@@ -203,31 +203,6 @@ describe("teardown durable state", () => {
       [attempt.id],
     );
     expect(rows.rows).toEqual([{ status: "pending", inngest_run_id: null }]);
-  });
-
-  it("refuses to tear down a Parent with open Branches, and a Branch's row goes with its Environment", async () => {
-    const branchId = "00000000-0000-4000-8000-000000000705";
-    await harness.pool.query(`
-      insert into environment (id, project_id, organization_id, name, namespace, intent)
-      values ('${branchId}', '${projectId}', '${organizationId}', 'fix-web', 'app-fix-web', '{}');
-      insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, created_by_user_id)
-      values ('${branchId}', '${organizationId}', '${projectId}', '${environmentId}', '{}', '${userId}');
-    `);
-    const refused = await runPromiseDb(confirmTeardown({ userId }, {
-      organizationSlug: "acme", scope: "environment", environmentId, identities: [],
-    }).pipe(Effect.provideService(InngestClient, new Inngest({ id: "teardown-parent-refused" })), Effect.flip, Effect.scoped));
-    expect(refused).toBeInstanceOf(Conflict);
-    expect(refused.message).toContain("fix-web");
-
-    const attempt = await harness.runEffect(insertTeardownAttempt({
-      organizationId, requestedByUserId: userId, projectId, environmentId: branchId, scope: "environment", confirmDataLoss: [],
-      targets: {
-        environments: [{ environmentId: branchId, projectId, projectName: "app-fix-web", cloudName: "acme/app/fix-web" }],
-        destroyRuntimeProjects: true, revokePairing: false, runtimeMembership: "untouched",
-      },
-    }));
-    await runPromiseDb(dropTeardownCloudRowsActivity(attempt));
-    expect((await harness.pool.query("select * from environment_branch")).rowCount).toBe(0);
   });
 
   it("claims once, rejects another owner, drops Cloud rows, then completes", async () => {

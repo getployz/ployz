@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { environmentTree } from "./environment-tree";
+import { descendants, environmentTree } from "./environment-tree";
 
 const environment = (id: string, createdAt: number) => ({ id, createdAt: new Date(createdAt) });
 const branch = (environmentId: string, parentEnvironmentId: string) => ({ environmentId, parentEnvironmentId });
@@ -21,4 +21,10 @@ it("lists root Environments first, each Branch under its Parent, siblings oldest
 it("reads a Branch whose Parent isn't listed as a root", () => {
   const tree = environmentTree([environment("fix-web", 1)], [branch("fix-web", "elsewhere")]);
   expect(tree).toEqual([{ environment: environment("fix-web", 1), depth: 0, parent: null }]);
+});
+
+it("lists every Branch under an Environment, deepest first", () => {
+  const branches = [branch("fix-web", "production"), branch("try-cache", "fix-web"), branch("fix-api", "production"), branch("pr-7", "staging")];
+  expect(descendants("production", branches)).toEqual(["try-cache", "fix-web", "fix-api"]);
+  expect(descendants("try-cache", branches)).toEqual([]);
 });

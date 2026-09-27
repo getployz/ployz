@@ -18,6 +18,10 @@ export const TEARDOWN_SCOPES = [
 
 export type TeardownScope = (typeof TEARDOWN_SCOPES)[number];
 
+/** Why a Branch was closed: by hand, after merging it, or idle for too long. */
+export const BRANCH_CLOSE_REASONS = ["manual", "merged", "idle"] as const;
+export type BranchCloseReason = (typeof BRANCH_CLOSE_REASONS)[number];
+
 export const TeardownTargetInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   scope: Schema.Literals(TEARDOWN_SCOPES),

@@ -27,3 +27,20 @@ export function environmentTree<E extends { id: string; createdAt: Date }>(
   visit(null, 0);
   return tree;
 }
+
+/** The ids of every Branch under `environmentId`, deepest first: the order they close in. */
+export function descendants(
+  environmentId: string,
+  branches: Iterable<{ environmentId: string; parentEnvironmentId: string }>,
+): string[] {
+  const rows = [...branches];
+  const found: string[] = [];
+  let level = [environmentId];
+  while (level.length > 0) {
+    level = rows
+      .filter((branch) => level.includes(branch.parentEnvironmentId) && !found.includes(branch.environmentId))
+      .map((branch) => branch.environmentId);
+    found.unshift(...level);
+  }
+  return found;
+}

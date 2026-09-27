@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
   parseTeardownTargets,
+  type BranchCloseReason,
   type TeardownOutcome,
   type TeardownScope,
   type TeardownTargets,
@@ -96,6 +97,7 @@ export const insertTeardownAttempt = Effect.fn("TeardownRepository.insert")(
     scope: TeardownScope;
     confirmDataLoss: readonly DataLossIdentity[];
     targets: TeardownTargets;
+    closeReason?: BranchCloseReason | null;
     now?: Date;
   }) {
     const now = input.now ?? new Date();
@@ -110,6 +112,7 @@ export const insertTeardownAttempt = Effect.fn("TeardownRepository.insert")(
         scope: input.scope,
         confirmDataLoss: [...input.confirmDataLoss],
         targets: input.targets,
+        closeReason: input.closeReason ?? null,
         status: "pending",
         createdAt: now,
         updatedAt: now,

@@ -16,9 +16,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { cn } from "#/lib/utils";
-import { environmentTree } from "#/modules/project/environment-tree";
+import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
+import { BranchSettingsSection } from "./-components/branch-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
@@ -48,6 +49,11 @@ function RouteComponent() {
   const { projects, environments, branches } = useWorkspace(organizationSlug);
   const project = projects.find((row) => row.slug === projectSlug);
   const environment = environments.find((row) => row.id === environmentId);
+  const branch = branches.find((row) => row.environmentId === environmentId);
+  const parent = branch && environments.find((row) => row.id === branch.parentEnvironmentId);
+  // A teardown takes the Environment's Branches with it, deepest first.
+  const closing = descendants(environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
+  const defaultEnvironment = [...closing, environment].find((row) => row !== undefined && row.id === project?.defaultEnvironmentId);
 
   function leaveDeletedTree() {
     void navigate({
@@ -70,15 +76,22 @@ function RouteComponent() {
             Project <span className="text-muted-foreground">{project?.name ?? projectSlug}</span>
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="environment" className="mt-6">
+        <TabsContent value="environment" className="mt-6 flex flex-col gap-8">
+          {branch && parent && (
+            <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent} />
+          )}
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="environment"
             environmentId={environmentId}
             confirmPhrase={environment?.name ?? environmentSlug}
-            title="Tear down this environment"
-            description="Deletes this environment and all of its services and volumes. This cannot be undone."
-            actionLabel="Tear down environment"
+            title={branch ? "Close this branch" : "Tear down this environment"}
+            description={branch
+              ? "Deletes this branch and its own services and volumes. Services it uses live keep running. This cannot be undone."
+              : "Deletes this environment and all of its services and volumes. This cannot be undone."}
+            closes={closing.map((row) => row.name)}
+            disabledReason={defaultEnvironment && `${defaultEnvironment.name} is the Default Environment. Choose another Default Environment first.`}
+            actionLabel={branch ? "Close branch" : "Tear down environment"}
             headingId="environment-teardown-heading"
             onCompleted={leaveDeletedTree}
           />
