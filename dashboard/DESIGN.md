@@ -249,7 +249,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 - The logo tops the rail and opens Projects. The avatar sits at the bottom and holds the organization's pages (Projects, Servers, Server Settings, and Billing where billing exists), organization switching and Theme. Organization pages show only the logo and the avatar in the rail.
 - One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't the Canvas. On a Branch the path reads `project / parent ⑂ branch`: ⑂ marks what the Branch was made from, and the Parent's crumb opens the Parent. Each switcher crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.
 - Wherever Environments are listed, they form one tree: root Environments first, each Branch indented under its Parent and marked ⑂.
-- The Environment switcher shows that tree, notes "default" and "not deployed", and ends with **New branch of X**, which opens the New branch panel over the current Environment's canvas, and **Manage environments**, which opens Settings → Project.
+- The Environment switcher shows that tree, notes "default" and "not deployed", and on a Branch "N changes" (what would merge into its Parent) and "N updates" (what's new there). On a Branch it offers **Review X**, which opens the Branch's review page. It ends with **New branch of X**, which opens the New branch panel over the current Environment's canvas, and **Manage environments**, which opens Settings → Project.
 - Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environment tree (each with its services-online summary and a Default chip, opening that Environment) with **New branch** (of the current Environment) and **New environment** (an empty root Environment) above it, and project teardown. Environment holds this Environment's teardown.
 - The canvas's **Find** button and the `/` key open the resource finder; `/` never fires while typing in a field.
 - Icon-only controls always have an accessible name and a tooltip.
@@ -273,7 +273,11 @@ One floating **bottom bar** sits at the bottom of the canvas on every screen siz
 
 1. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
 2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
-3. Otherwise, no bar.
+3. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**.
+4. **On a Branch, updates from its Parent:** "N updates from X" and **Review**.
+5. Otherwise, no bar.
+
+On a Branch, Review opens the Branch's review page instead of a dialog: a panel over its canvas with the whole relationship to its Parent, in order: **Not deployed here yet** (the staged-changes review), **Merge into X**, **New in X** (including Live Nodes their owner redeployed since this Branch last deployed), and **Meant to differ**, each with a plain reason. A conflict, a setting the Parent also changed since branching, reads old → new with a marker.
 
 Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
