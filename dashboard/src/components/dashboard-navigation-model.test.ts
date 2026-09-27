@@ -77,7 +77,7 @@ describe("dashboard navigation model", () => {
     const environmentRoute = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/logs`)).toBe("logs");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/settings`)).toBe("settings");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments`)).toBe("deployments");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/`)).toBe("deployments");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/$deploymentId`)).toBe("deployments");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/`)).toBe("canvas");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/services/$serviceId`)).toBe("canvas");

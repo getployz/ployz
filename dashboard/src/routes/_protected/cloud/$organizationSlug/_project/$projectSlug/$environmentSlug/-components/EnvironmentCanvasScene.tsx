@@ -204,7 +204,7 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId, deploymentId } = useCanvasInspectorSelection();
+  const { selectedNodeId, selectedServiceId, deploymentId, deploymentList } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
 
@@ -214,7 +214,8 @@ export function EnvironmentCanvasScene() {
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
-      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true } : null}
+      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true }
+        : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" } : null}
       canvas={<>
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>

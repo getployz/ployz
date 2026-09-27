@@ -10,6 +10,7 @@ import { Uuid } from "#/modules/environment-design/schema";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 
+export const DEPLOYMENT_LIST_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments";
 export const DEPLOYMENT_PAGE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId";
 
