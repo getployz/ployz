@@ -43,8 +43,9 @@ export function GoesToSection({ review, pr, landing, name, environmentId }: {
       {approval ? <HeldRows approval={approval} review={review} save={save} destination={destination} /> : landing.rows.length ? (
         <RowPicks picks={rows} names={{ from: name, parent: review.parent.name, destination }} verb={`Send to ${destination}`} />
       ) : <p className="text-sm text-muted-foreground">Nothing here that {destination} doesn't have.</p>}
-      {pr.closed ? <FieldDescription>#{pr.number} is closed, so nothing here goes to {destination}.</FieldDescription>
-        : approval || landing.rows.length ? (
+      {!(approval || landing.rows.length) ? null
+        : pr.closed ? <FieldDescription>#{pr.number} is closed, so nothing here goes to {destination}.</FieldDescription>
+        : (
         <div className="flex flex-col gap-2">
           {approval ? (
             <Button className="self-start" variant="outline" disabled={save.withdraw.isPending} onClick={() => save.withdraw.mutate()}>
@@ -64,7 +65,7 @@ export function GoesToSection({ review, pr, landing, name, environmentId }: {
           </FieldDescription>
           {failed ? <FieldError>{failed.message}</FieldError> : null}
         </div>
-      ) : null}
+      )}
     </ReviewSection>
   );
 }

@@ -99,7 +99,7 @@ const logNotCreated = (plan: Plan) => (error: { message: string }) =>
  * repository's pull request, or an old one still being torn down). After derivation the repository's services track
  * the pull request's head Git branch and deploy on push, and every Own Copy runs one replica.
  */
-const createPrEnvironment = Effect.fn("PrEnvironments.createPrEnvironment")(function* (
+export const createPrEnvironment = Effect.fn("PrEnvironments.createPrEnvironment")(function* (
   plan: Plan, parentEnvironmentId: string, actor: { userId: string },
   pullRequest: LivePullRequest & { repositoryId: number; number: number },
 ) {
