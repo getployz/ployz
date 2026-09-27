@@ -1,16 +1,25 @@
 import { useEnvironmentChangeStatesIfReady } from "#/modules/deployments/environment-change-state.queries";
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { destinationCandidates, destinations } from "#/modules/pr-environments/destinations";
 import { branchHostnameSuffix } from "./branch-plan";
 import { useLineageNames } from "./use-lineage-names";
-import { branchReview, latestDeploy, liveUpdates, usedLive, type BranchReview, type LiveUpdate } from "./branch-review";
+import { branchReview, goesTo, latestDeploy, liveUpdates, usedLive, type BranchReview, type GoesTo, type LiveUpdate } from "./branch-review";
+
+export type PullRequest = { number: number; title: string; author: string; headBranch: string; targetBranch: string };
+
+type EnvironmentName = { id: string; name: string; namespace: string };
 
 export type BranchReviewView = BranchReview & {
-  /** The Destination: the Parent. */
-  parent: { id: string; name: string; namespace: string };
+  /** The Destination of a Merge: the Parent. */
+  parent: EnvironmentName;
   kept: boolean;
   live: LiveUpdate[];
-  /** "N changes": what would merge. */
+  /** A PR Environment's pull request; null for any other Branch. */
+  pullRequest: PullRequest | null;
+  /** A PR Environment's changes for each of its Destinations, which it never Merges into. Empty for any other Branch. */
+  goesTo: Array<GoesTo & { destination: EnvironmentName }>;
+  /** "N changes": what would merge, or on a PR Environment what goes to its Destinations. */
   changes: number;
   /** "N updates": the Parent's deployed changes the Branch lacks, plus Live Nodes redeployed since. */
   updates: number;
@@ -49,9 +58,28 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       hostnames: { branch: hostnameSuffix(branch.id), parent: hostnameSuffix(parent.id) },
     });
     const live = liveUpdates({ live: usedLive(branch.intent), parentId: parent.id, branches, branchDeployedAt: latestDeploy(deployedAt.get(environmentId)), deployedAt });
+    const pr = row.prNumber === null || row.prRepositoryId === null ? null : {
+      number: row.prNumber, title: row.prTitle ?? "", author: row.prAuthor ?? "",
+      headBranch: row.prHeadBranch ?? "", targetBranch: row.prTargetBranch ?? "",
+    };
+    const project = environments.filter((environment) => environment.projectId === branch.projectId);
+    const landings = pr && row.prRepositoryId !== null ? destinations({
+      environments: destinationCandidates(project, branches, states), repositoryId: row.prRepositoryId, targetBranch: pr.targetBranch,
+    }).flatMap((id) => {
+      const destination = environmentById.get(id);
+      return destination ? [{
+        destination,
+        ...goesTo({
+          base: row.base, kept: false, branch: branch.intent, parent: destination.intent,
+          parentApplied: stateById.get(parent.id)?.applied.intent ?? null,
+          hostnames: { branch: hostnameSuffix(branch.id), parent: hostnameSuffix(id) },
+        }),
+      }] : [];
+    }) : [];
     return {
-      ...review, live, parent, kept: row.kept,
-      changes: review.merge.length, updates: review.update.length + live.length,
+      ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings,
+      changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.merge.length,
+      updates: review.update.length + live.length,
       nameOf: (lineage) => lineageName(lineage, environmentId), environmentName: (id) => environmentById.get(id)?.name ?? "another environment",
     };
   };

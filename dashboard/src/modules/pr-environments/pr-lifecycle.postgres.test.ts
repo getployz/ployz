@@ -62,7 +62,7 @@ type PullRequest = { number: number; state: "open" | "closed"; user: { login: st
 type PushDelivery = { ref: string; before: string; after: string; created: boolean; deleted: boolean; forced: boolean };
 type PullRequestDelivery = {
   action: string;
-  changes?: { base: { ref: { from: string } } };
+  changes: { base: { ref: { from: string } } } | undefined;
   pull_request: PullRequest & { title: string; base: { ref: string }; merged: boolean; merge_commit_sha: null; commits: number };
 };
 
@@ -158,7 +158,7 @@ describe("PR Environment lifecycle", () => {
     return deliver("pull_request", deliveryId, {
       action,
       // Only an edit of the target Git branch reaches Ployz; which one it was isn't read.
-      ...action === "edited" ? { changes: { base: { ref: { from: "main" } } } } : {},
+      changes: action === "edited" ? { base: { ref: { from: "main" } } } : undefined,
       pull_request: {
         base: { ref: "main" }, ...pull, title: `Change ${pull.number}`,
         merged: false, merge_commit_sha: null, commits: 1,

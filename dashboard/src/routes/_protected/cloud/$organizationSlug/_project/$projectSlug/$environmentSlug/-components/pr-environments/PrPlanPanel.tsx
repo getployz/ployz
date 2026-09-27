@@ -11,7 +11,7 @@ import { listNames } from "#/modules/branches/branch-plan";
 import { useEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
 import { useLineageNames } from "#/modules/branches/use-lineage-names";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { destinations, trackedBranches } from "#/modules/pr-environments/destinations";
+import { destinationCandidates, destinations, trackedBranches } from "#/modules/pr-environments/destinations";
 import { usePrEnvironmentPlans, useSetPrEnvironmentPlan } from "#/modules/pr-environments/plan.collection";
 import { useMissingPrEnvironmentGrant } from "#/modules/pr-environments/plan.queries";
 import { openPrEnvironments } from "#/modules/pr-environments/pull-request";
@@ -77,12 +77,7 @@ function Plan({ repositoryId, project, environments: all, branches }: {
   const nameOf = (lineage: string) => lineageName(lineage, plan.startFromEnvironmentId ?? "");
 
   // Where merges land, by the Destinations rule over each Environment's latest Saved State.
-  const candidates = environments.map((environment) => ({
-    id: environment.id,
-    prEnvironment: prEnvironmentIds.has(environment.id),
-    savedServices: changeStates.find((state) => state.environmentId === environment.id)?.saved?.nodes
-      .flatMap((node) => node.nodeType === "service" ? [node.config] : []) ?? [],
-  }));
+  const candidates = destinationCandidates(environments, branches, changeStates);
   const landings = trackedBranches(candidates, repositoryId).map((branch) => `${branch} → ${listNames(
     destinations({ environments: candidates, repositoryId, targetBranch: branch })
       .map((id) => environments.find((environment) => environment.id === id)?.name ?? id))}`);

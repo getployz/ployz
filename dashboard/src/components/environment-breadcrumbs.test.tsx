@@ -36,9 +36,11 @@ async function renderAt(path: string) {
     { createdAt: new Date(1), id: "docs-production", projectId: "docs", namespace: "production", name: "Docs production" },
     { createdAt: new Date(0), id: "docs-preview", projectId: "docs", namespace: "preview", name: "Docs preview" },
     { createdAt: new Date(2), id: "store-fix-web", projectId: "store", namespace: "fix-web", name: "fix-web" },
+    { createdAt: new Date(3), id: "store-pr-142", projectId: "store", namespace: "pr-142", name: "pr-142" },
   ]));
   queryClient.setQueryData(key("environment_branch"), orgStoreSeed([
-    { environmentId: "store-fix-web", parentEnvironmentId: "store-production" },
+    { environmentId: "store-fix-web", parentEnvironmentId: "store-production", prNumber: null },
+    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", prNumber: 142 },
   ]));
   queryClient.setQueryData(key("environment_deployment"), orgStoreSeed([
     { id: "attempt", environmentId: "store-production" },
@@ -100,7 +102,8 @@ it("lists Environments as a tree, each Branch under its Parent, noting the defau
   fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
   await screen.findByRole("option", { name: "Production, default" });
   expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
-    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "New branch of Production", "Manage environments",
+    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "pr-142, branch of Staging, #142, not deployed",
+    "New branch of Production", "Manage environments",
   ]);
   expect(screen.queryByRole("option", { name: /New environment/u })).toBeNull();
 });
@@ -149,4 +152,11 @@ it("notes each Branch's changes and updates, and offers Review of the current Br
   fireEvent.click(screen.getByRole("option", { name: "Review fix-web" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/fix-web/review"));
   vi.restoreAllMocks();
+});
+
+it("notes a PR Environment's pull request, and offers What #142 changes on it", async () => {
+  await using app = await renderAt("/cloud/acme/store/pr-142/logs");
+  fireEvent.click(screen.getByRole("button", { name: "Environment: pr-142" }));
+  fireEvent.click(await screen.findByRole("option", { name: "What #142 changes" }));
+  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/pr-142/review"));
 });
