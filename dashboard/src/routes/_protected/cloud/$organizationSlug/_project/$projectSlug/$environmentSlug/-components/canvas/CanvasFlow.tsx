@@ -23,6 +23,8 @@ import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation"
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
+import { LIVE_EDGE_STYLE } from "./nodes";
+import { useBranchPicking } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
@@ -39,10 +41,10 @@ import type { CanvasResourceNode } from "./types";
 import { DestructiveConfirmationDialog } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
 
-// Shared styling for every canvas edge: dashed, primary colour, matching arrow.
+// Shared styling for every canvas edge: solid, primary colour, matching arrow. Links into Live Nodes are dashed.
 const DEFAULT_EDGE_OPTIONS = {
   type: "smoothstep",
-  style: { stroke: "var(--primary)", strokeDasharray: "6 4" },
+  style: { stroke: "var(--primary)" },
   markerEnd: { type: MarkerType.ArrowClosed, color: "var(--primary)" },
 } as const;
 
@@ -101,11 +103,21 @@ export function CanvasFlow({
     canvasNodes,
     selectedNodeId,
   });
+  // While picking a Branch, links into what it would use live are dashed.
+  const picking = useBranchPicking();
+  const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.lineageId] : []));
+  const pickedLiveIds = new Set([
+    ...[...servicesById].flatMap(([id, state]) => liveRoles.has(state.serviceView.service.lineageId) ? [id] : []),
+    ...[...volumeResourcesById].flatMap(([id, state]) => liveRoles.has(state.resource.resource.lineageId) ? [id] : []),
+  ]);
+  const edges = pickedLiveIds.size === 0 ? canvasEdges : canvasEdges.map((edge) =>
+    pickedLiveIds.has(edge.source) || pickedLiveIds.has(edge.target) ? { ...edge, style: LIVE_EDGE_STYLE } : edge);
   const { getViewportCenter } = useCanvasNavigation(
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
-    useDeploymentFocus(),
+    // Picking a Branch brings the whole canvas into view beside the panel.
+    useDeploymentFocus() ?? (picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(
@@ -162,7 +174,7 @@ export function CanvasFlow({
             <ReactFlow
               key={`${params.projectSlug}/${params.environmentSlug}`}
               nodes={canvasNodes}
-              edges={canvasEdges}
+              edges={edges}
               defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
               nodeTypes={canvasNodeTypes}
               elementsSelectable={false}
@@ -189,6 +201,7 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList
         services={activeServicesWithBoundEnv}
+        liveNodes={canvasNodes.flatMap((node) => node.type === "live" ? [node.data.liveNode] : [])}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
         volumeResourcesById={volumeResourcesById}

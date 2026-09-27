@@ -256,6 +256,12 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 **The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
 
+### Branches
+
+- A Live Node is drawn dashed and translucent, labelled with the Environment it comes from ("production's, live"), and links into it are dashed; every other link is solid. Opening it says whose it is, which services here use it, and opens it in its own Environment.
+- A Live Node that owns data carries an amber "real data" line.
+- While a Branch is being picked, the canvas is the picker: clicking a card toggles its Own Copy. Own Copies are lit, Live Nodes dashed and left-out nodes faded, and the panel shows the legend. Phones pick with a tick list.
+
 ### Apply Changes
 
 The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.

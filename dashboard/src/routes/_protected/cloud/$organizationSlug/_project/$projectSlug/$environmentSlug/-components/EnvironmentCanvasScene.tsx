@@ -8,7 +8,8 @@ import {
   ReactFlowProvider,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { eq, inArray, useLiveQuery, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { useLiveNodes } from "#/modules/branches/use-live-nodes";
 import { Outlet, useLoaderData, useParams } from "@tanstack/react-router";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
@@ -33,8 +34,9 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
-import { buildEdges, buildNodes } from "./canvas/nodes";
+import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { BranchPickingProvider } from "./new-branch/branch-picking";
 
 export function PendingCanvas() {
   return (
@@ -148,6 +150,20 @@ function CanvasWithData() {
           updatedAt: introduction.updatedAt,
         })),
   });
+  // A Branch draws the services its Own Copies use live where they sit on their owner's canvas.
+  const liveNodes = useLiveNodes(params.organizationSlug, environmentId);
+  const liveOwnerNodeIds = liveNodes.flatMap((node) => node.owner ? [node.owner.node.nodeId] : []);
+  const { data: liveNodePositionRows } = useLiveQuery({
+    queryKey: ['canvas-live-positions', canvasPositionsCollection.id, liveOwnerNodeIds.join()],
+    query: (q) => q.from({ canvasPosition: canvasPositionsCollection })
+      .where(({ canvasPosition }) => inArray(canvasPosition["resourceId"], liveOwnerNodeIds))
+      .select(({ canvasPosition }) => ({
+        id: canvasPosition["id"], environmentId: canvasPosition["environmentId"], resourceType: canvasPosition["resourceType"],
+        resourceId: canvasPosition["resourceId"], x: canvasPosition["x"], y: canvasPosition["y"],
+        createdAt: canvasPosition["createdAt"], updatedAt: canvasPosition["updatedAt"],
+      })),
+  });
+  const liveNodePositions = liveNodePositionRows.map((position) => parseLiveQueryRow(environmentResourceCanvasPositionSchema, position));
   const nodeIntroductions = nodeIntroductionRows.map((introduction) =>
     parseLiveQueryRow(environmentNodeIntroductionSchema, introduction),
   );
@@ -163,17 +179,17 @@ function CanvasWithData() {
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );
-  const initialNodes = buildNodes(
+  const initialNodes = [...buildNodes(
     activeServicesWithBoundEnv,
     canvasPositions,
     selectedNodeId,
     volumeResources,
-  );
-  const initialEdges = buildEdges(
+  ), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
+  const initialEdges = [...buildEdges(
     volumeResources,
     serviceVolumeAttachments,
     activeServicesWithBoundEnv,
-  );
+  ), ...buildLiveEdges(liveNodes)];
 
   return (
     <ReactFlowProvider
@@ -210,13 +226,14 @@ export function EnvironmentCanvasScene() {
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
+    <BranchPickingProvider open={newBranch !== null} focus={newBranch?.focus ?? null}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
       } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
         : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
-        : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch" } : null}
+        : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true } : null}
       canvas={<>
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>
@@ -229,6 +246,7 @@ export function EnvironmentCanvasScene() {
     >
       <Outlet />
     </CanvasInspectorOverlay>
+    </BranchPickingProvider>
     </BottomBarSlot.Provider>
   );
 }

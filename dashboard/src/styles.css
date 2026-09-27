@@ -260,6 +260,12 @@
   view-transition-name: canvas-inspector;
   transition: width 220ms cubic-bezier(0.32, 0.72, 0, 1), margin 220ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 220ms ease;
 }
+/* Picking a Branch on the canvas: the panel narrows so the canvas stays readable. */
+@media (min-width: 861px) {
+  @container (min-width: 741px) {
+    .canvas-inspector-pane[data-picking]:not([data-takeover="true"]) { width: min(28rem, 40%); }
+  }
+}
 .canvas-inspector-pane[data-takeover="true"] {
   grid-row: 1 / 2;
   width: 100%;

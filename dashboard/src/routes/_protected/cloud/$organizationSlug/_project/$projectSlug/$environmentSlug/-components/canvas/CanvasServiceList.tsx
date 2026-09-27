@@ -26,8 +26,12 @@ import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
   ENVIRONMENT_RESOURCE_ROUTE_TO,
+  ENVIRONMENT_LIVE_NODE_ROUTE_TO,
 } from "../environment-route-paths";
 import { cn } from "#/lib/utils";
+import type { LiveNode } from "#/modules/branches/use-live-nodes";
+import { liveNodeLabel, useLiveNodeHealth } from "./LiveServiceNode";
+import { LiveLabel } from "./PickableNode";
 
 function ServiceListItem({
   serviceView,
@@ -111,13 +115,46 @@ function ServiceListItem({
   );
 }
 
+function LiveListItem({ liveNode }: { liveNode: LiveNode }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const health = useLiveNodeHealth(liveNode);
+  const status = getServiceStatusClasses(health.healthy ? "success" : undefined);
+  return (
+    <Link to={ENVIRONMENT_LIVE_NODE_ROUTE_TO} params={{ ...params, lineageId: liveNode.lineageId }}
+      className="block" data-canvas-node={`live:${liveNode.lineageId}`}>
+      <Card state="live">
+        <CardHeader>
+          <div className="flex items-start gap-3">
+            <Avatar><AvatarFallback>{health.source ? getServiceIcon({ source: health.source }) : null}</AvatarFallback></Avatar>
+            <div className="min-w-0 flex-1">
+              <CardTitle className="truncate">{liveNode.name}</CardTitle>
+              <CardDescription><LiveLabel label={liveNodeLabel(liveNode)} ownsData={liveNode.ownsData} /></CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-3">
+            <span className={cn("flex size-3 items-center justify-center rounded-full", status.dot)}>
+              <span className={cn("size-1.5 rounded-full", status.innerDot)} />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">{health.text}</span>
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
+  );
+}
+
 export function CanvasNodeList({
   services,
+  liveNodes,
   selectedNodeId,
   servicesById,
   volumeResourcesById,
 }: {
   services: EnvironmentServiceViewRecord[];
+  /** A Branch's Live Nodes, after its own services. */
+  liveNodes: LiveNode[];
   selectedNodeId: string | null;
   servicesById: Map<string, CanvasServiceState>;
   volumeResourcesById: Map<string, CanvasVolumeResourceState>;
@@ -139,6 +176,7 @@ export function CanvasNodeList({
             />
           ) : null;
         })}
+        {liveNodes.map((liveNode) => <LiveListItem key={liveNode.lineageId} liveNode={liveNode} />)}
         {[...volumeResourcesById.values()].map(({ resource, diffRowCount }) => {
           const removed = !resource.isAuthored;
           const summary = resource.attachments.map((attachment) => attachment.mountPath).join(", ") || "No mounts";
