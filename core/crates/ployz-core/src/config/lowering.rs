@@ -50,6 +50,9 @@ struct LowerDeploymentSnapshot {
     replicas: Option<u8>,
     #[serde(default)]
     resolved_env: BTreeMap<String, String>,
+    /// Run in order after the service's own pre-deploy command, in the same hook.
+    #[serde(default)]
+    setup_commands: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -191,12 +194,33 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             ));
         }
         let command = |command: &str| vec!["/bin/sh".into(), "-c".into(), command.into()];
-        let pre_deploy = config
-            .pre_deploy_command
-            .as_deref()
+        let mut hook_commands: Vec<String> = config.pre_deploy_command.into_iter().collect();
+        for mut setup in snapshot.setup_commands {
+            super::validation::trimmed(&mut setup, "setupCommands", 2000)?;
+            hook_commands.push(setup);
+        }
+        // Each command is its own positional argument run by its own shell, so a
+        // trailing comment or quote in one can never swallow or change the next.
+        let hook_command = match hook_commands.as_slice() {
+            [] => None,
+            [only] => Some(command(only)),
+            _ => Some(
+                [
+                    "/bin/sh",
+                    "-c",
+                    r#"for c do /bin/sh -c "$c" || exit; done"#,
+                    "sh",
+                ]
+                .into_iter()
+                .map(String::from)
+                .chain(hook_commands)
+                .collect(),
+            ),
+        };
+        let pre_deploy = hook_command
             .map(|value| {
                 Ok::<_, ConfigError>(PreDeployHook {
-                    command: PreDeployCommand::parse(command(value)).map_err(lowering_error)?,
+                    command: PreDeployCommand::parse(value).map_err(lowering_error)?,
                     environment: BTreeMap::new(),
                     privileged: None,
                     timeout_millis: None,

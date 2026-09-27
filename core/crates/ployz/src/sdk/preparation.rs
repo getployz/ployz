@@ -408,6 +408,10 @@ mod tests {
                 "/deployment/snapshots/0/resolvedEnv",
                 json!({"PORT":"8080"}),
             ),
+            (
+                "/deployment/snapshots/0/setupCommands",
+                json!(["seed --demo"]),
+            ),
         ] {
             let mut changed = base.clone();
             let (parent, key) = pointer.rsplit_once('/').unwrap();
@@ -417,7 +421,16 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .insert(key.into(), value);
-            assert_eq!(fingerprint(changed), expected, "{pointer}");
+            assert_eq!(fingerprint(changed.clone()), expected, "{pointer}");
+            assert_eq!(
+                expected_fingerprints(
+                    changed.get("deployment").unwrap().clone(),
+                    BTreeMap::from([(web.clone(), "a".repeat(40))])
+                )
+                .unwrap(),
+                expected,
+                "{pointer}"
+            );
         }
         for (pointer, value) in [
             ("/source_commits/web", json!("b".repeat(40))),
