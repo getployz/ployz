@@ -32,6 +32,7 @@ import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
 import { useCanvasFlowState } from "./useCanvasFlowState";
+import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -101,6 +102,8 @@ export function CanvasFlow({
     nodeIntroductions,
     canvasNodes,
     selectedNodeId,
+    // The latest attempt's: admission records them afresh, so a deploy that resolves them clears the amber.
+    missingLiveValues: useEnvironmentDeployments(params.organizationSlug, environmentId)[0]?.deployment.missingLiveValues ?? [],
   });
   const { getViewportCenter } = useCanvasNavigation(
     selectedNodeId,

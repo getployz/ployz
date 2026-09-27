@@ -136,6 +136,7 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   sourcePins: deploymentSourcePinsSchema,
   targetNodes: targetNodeListSchema,
+  missingLiveValues: Schema.Array(Schema.Struct({ serviceId: Uuid, from: Schema.String, key: Schema.String })),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),

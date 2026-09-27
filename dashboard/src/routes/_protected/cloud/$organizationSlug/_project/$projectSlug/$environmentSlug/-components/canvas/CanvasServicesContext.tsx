@@ -8,6 +8,7 @@ export type CanvasServiceState = {
   diffRowCount: number;
   hasRecordedTargetSnapshot: boolean;
   latestDeploymentStatus: EnvironmentDeploymentStatus | null;
+  missingLiveValues: string[];
 };
 
 export type CanvasVolumeResourceState = {

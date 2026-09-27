@@ -17,6 +17,7 @@ import type {
 import { projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import { projectDestructiveEnvironmentSave } from "#/modules/environment-design/working-state-review";
+import type { MissingLiveValue } from "#/modules/deployments/tables";
 import type { CanvasResourceNode } from "./types";
 
 type UseCanvasFlowStateInput = {
@@ -26,6 +27,7 @@ type UseCanvasFlowStateInput = {
   nodeIntroductions: EnvironmentNodeIntroduction[];
   canvasNodes: CanvasResourceNode[];
   selectedNodeId: string | null;
+  missingLiveValues: readonly MissingLiveValue[];
 };
 
 function projectedNode(
@@ -57,6 +59,7 @@ export function useCanvasFlowState({
   nodeIntroductions,
   canvasNodes,
   selectedNodeId,
+  missingLiveValues,
 }: UseCanvasFlowStateInput) {
   const workingNodes: EnvironmentNodeProjection[] = [
     ...servicesWithBoundEnv.map(
@@ -178,6 +181,9 @@ export function useCanvasFlowState({
         latestDeploymentStatus: evidenceNodeIds.has(service.service.id)
           ? (environmentChangeState?.deploymentEvidence?.status ?? null)
           : null,
+        missingLiveValues: missingLiveValues
+          .filter((value) => value.serviceId === service.service.id)
+          .map((value) => `${value.from}.${value.key}`),
       },
     ]),
   );

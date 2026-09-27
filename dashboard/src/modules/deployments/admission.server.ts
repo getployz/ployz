@@ -27,7 +27,8 @@ import {
   volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 import type { EncryptedSecretValue } from "#/db/tables";
-import type { EnvironmentDeploymentServiceActionPolicy } from "#/modules/deployments/tables";
+import type { EnvironmentDeploymentServiceActionPolicy, MissingLiveValue } from "#/modules/deployments/tables";
+import { branchAdmission } from "#/modules/branches/branch-admission.server";
 import {
   organizationIdForDeployment,
   organizationIdForEnvironment,
@@ -59,7 +60,6 @@ import {
 } from "./deployment";
 import { Database } from "#/server/database.server";
 import { writeTargetNodeList } from "./attempt-target.server";
-import { branchAdmission } from "#/modules/branches/branch-admission.server";
 import { loadAppliedNodeConfigs } from "./environment-state.repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
@@ -342,7 +342,7 @@ function stageReviewedVolumeRemoveAttempt(input: {
 
 function writeQueuedSavedTarget(
   input: DeploymentAdmissionInput,
-  target: SavedDeploymentTarget & { readonly setupCommands: Record<string, string[]> },
+  target: SavedDeploymentTarget & { readonly setupCommands: Record<string, string[]>; readonly missingLiveValues: MissingLiveValue[] },
 ) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -380,6 +380,7 @@ function writeQueuedSavedTarget(
             sourcePins,
             variableProducers: target.variableProducers,
             setupCommands: target.setupCommands,
+            missingLiveValues: target.missingLiveValues,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
             updatedAt: now,
@@ -402,6 +403,7 @@ function writeQueuedSavedTarget(
             sourcePins,
             variableProducers: target.variableProducers,
             setupCommands: target.setupCommands,
+            missingLiveValues: target.missingLiveValues,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
           })
@@ -500,7 +502,8 @@ export const admitEnvironmentDeployment = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
-    const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
-    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+    const target = yield* loadExactSavedDeploymentTarget(input);
+    const branch = yield* branchAdmission(input.environmentId, target);
+    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, { ...target, ...branch });
   }));
 });
