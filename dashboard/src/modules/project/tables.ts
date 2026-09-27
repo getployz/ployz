@@ -1,11 +1,9 @@
 import { createdAt, updatedAt } from "#/db/tables";
 
-import { user } from "#/modules/identity/tables";
-
 import { organization } from "#/modules/organization/tables";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
-import { foreignKey, index, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { foreignKey, jsonb, pgTable, text, unique, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 
 
@@ -18,6 +16,9 @@ export const project = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+    // Null once its Environment is torn down: the project then opens its oldest Environment.
+    defaultEnvironmentId: uuid("default_environment_id")
+      .references((): AnyPgColumn => environment.id, { onDelete: "set null" }),
     createdAt,
   },
   (table) => [
@@ -51,32 +52,5 @@ export const environment = pgTable(
       columns: [table.organizationId, table.projectId],
       foreignColumns: [project.organizationId, project.id],
     }).onDelete("cascade"),
-  ],
-);
-
-export const userProjectPreference = pgTable(
-  "user_project_preference",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    projectId: uuid("project_id")
-      .notNull()
-      .references(() => project.id, { onDelete: "cascade" }),
-    environmentId: uuid("environment_id")
-      .notNull()
-      .references(() => environment.id, { onDelete: "cascade" }),
-    createdAt,
-    updatedAt,
-  },
-  (table) => [
-    unique().on(table.userId, table.projectId),
-    index("user_project_preference_user_idx").on(table.userId),
-    index("user_project_preference_organization_idx").on(table.organizationId),
-    index("user_project_preference_project_idx").on(table.projectId),
   ],
 );

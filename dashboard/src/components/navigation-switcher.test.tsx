@@ -19,15 +19,13 @@ it.each(["desktop", "mobile", "rail"] as const)("offers the same scoped org and 
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const organization of ["acme", "other"]) {
-    queryClient.setQueryData(["collections", "session", "user", organization, "project_preference"],
-      orgStoreSeed(organization === "acme" ? [{ id: "other-project", environmentId: "other-production" }] : []));
     queryClient.setQueryData(organizationKeys.state(organization), {
       activeOrganization: { name: organization === "acme" ? "Acme" : "Other org" },
       organizations: [{ id: "acme", slug: "acme", name: "Acme" }, { id: "other", slug: "other", name: "Other org" }],
     });
     queryClient.setQueryData(["collections", "session", "user", organization, "project"], orgStoreSeed(organization === "acme" ? [
-      { id: "project", slug: "store", name: "Store", resolvedEnvironment: { namespace: "production", name: "Production" } },
-      { id: "other-project", slug: "docs", name: "Docs", resolvedEnvironment: { namespace: "production", name: "Other production" } },
+      { id: "project", slug: "store", name: "Store", defaultEnvironmentId: null },
+      { id: "other-project", slug: "docs", name: "Docs", defaultEnvironmentId: "other-production" },
     ] : []));
     queryClient.setQueryData(["collections", "session", "user", organization, "environment_summary"], orgStoreSeed(organization === "acme" ? [
       { createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" },

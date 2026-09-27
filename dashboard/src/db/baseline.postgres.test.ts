@@ -18,7 +18,6 @@ afterAll(async () => {
 it("creates collection tables with default replication identity without the retired notification triggers", async () => {
   const tables = [...new Set(collectionReadInput.fields.table.literals.map((table) =>
     table === "environment_summary" ? "environment"
-      : table === "project_preference" ? "user_project_preference"
       : table === "organization_enrollment" ? "organization_pairing"
       : table,
   ))].sort();
