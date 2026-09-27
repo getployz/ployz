@@ -31,7 +31,6 @@ import {
   githubCheckSuiteReceivedEventDataSchema,
   githubPullRequestReceivedEventDataSchema,
   githubPushReceivedEventDataSchema,
-  type GithubPullRequestReceivedEventData,
   type GithubPushReceivedEventData,
 } from "#/modules/github/github-ingestion.contracts";
 import {
@@ -58,6 +57,7 @@ import {
 import { runInngestEffect } from "#/server/run.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export type GithubIngestionEffectRunner = <A, E extends Error>(
@@ -446,22 +446,13 @@ export async function executeProcessGithubCheckSuiteReceived(
   throw new Error("GitHub check-suite testimony stayed unpublished.");
 }
 
-/**
- * What a recorded pull request delivery does. Forks never go further. Nothing acts on
- * same-repository pull requests yet: the PR Environment lifecycle replaces that branch.
- */
-function planPullRequestDelivery(payload: GithubPullRequestReceivedEventData) {
-  if (payload.headRepositoryId !== payload.repositoryId) return "ignored_fork" as const;
-  return "ignored_pull_request" as const;
-}
-
 export async function executeProcessGithubPullRequestReceived(
   input: {
     event: UntrustedInngestEnvelope;
     step: Pick<GithubIngestionStepTools, "run">;
     runId: string;
   },
-  runEffect: <A, E extends Error>(effect: Effect.Effect<A, E, Database>) => Promise<A>,
+  runEffect: PullRequestEffectRunner,
 ) {
   const payload = await input.step.run("decode-pull-request-event", () =>
     decodeInngestEnvelope(GithubPullRequestReceivedEnvelope)(input.event).data,
@@ -483,7 +474,12 @@ export async function executeProcessGithubPullRequestReceived(
   if (receipt.disposition === "terminal" || receipt.disposition === "owned_elsewhere") {
     return receipt;
   }
-  const outcome = planPullRequestDelivery(payload);
+  // Forks never go further. Otherwise act on the pull request as GitHub has it now, not as this delivery saw it.
+  const outcome = payload.headRepositoryId !== payload.repositoryId
+    ? "ignored_fork" as const
+    : await input.step.run("apply-pull-request", () => runEffect(applyPullRequest({
+      installationId: payload.installationId, repositoryId: payload.repositoryId, number: payload.number,
+    })));
   await input.step.run("complete-delivery", () =>
     runEffect(
       completeGithubDelivery(

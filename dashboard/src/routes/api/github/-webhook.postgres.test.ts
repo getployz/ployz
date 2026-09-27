@@ -11,6 +11,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { postgresTestDatabase } from "#/test/postgres";
 import { executeProcessGithubPullRequestReceived } from "#/modules/github/inngest-ingestion/process";
+import type { PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
 import { handleGithubWebhookRequest } from "./-webhook.handler";
 
 const webhookSecret = "github-webhook-secret";
@@ -221,7 +222,8 @@ it.live(
           expect.objectContaining({ deliveryId: "delivery-pr-deleted-fork", pullRequestKey: "17:42:3" }),
         ]);
 
-        const runEffect = Effect.runPromiseWith(yield* Effect.context<Database>());
+        // No project has a plan for this repository, so only the database is reached.
+        const runEffect = Effect.runPromiseWith(yield* Effect.context<Database>()) as PullRequestEffectRunner;
         for (const [index, event] of sent.entries()) {
           const input = {
             event: event as { name: string; data: unknown },

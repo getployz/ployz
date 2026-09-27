@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { branchChanges, planBranch, type BranchChanges } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { environment, environmentBranch, type project } from "#/modules/project/tables";
+import { environment, environmentBranch, project as projectTable, type project } from "#/modules/project/tables";
 import { environmentCanvasNodePosition, environmentResource, service, serviceRegistryCredential } from "#/modules/environment-design/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
 import { createEnvironmentRecord, lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
@@ -25,6 +25,7 @@ import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lif
 import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages } from "./branch-plan";
 import { rowLineage } from "./branch-review";
 import type { CreateBranch, SetBranchSetupDefaults } from "./branch-schemas";
+import { fromRepository, prEnvironmentIntent, pullRequestColumns, type PullRequestFacts } from "#/modules/pr-environments/pull-request";
 
 type EnvironmentRow = typeof environment.$inferSelect;
 type ProjectRow = typeof project.$inferSelect;
@@ -44,8 +45,37 @@ export const createBranch = Effect.fn("Branches.createBranch")(function* (actor:
     organizationSlug: input.organizationSlug, environmentId: input.parentEnvironmentId,
   });
   if (context === null) return yield* new NotFound({ message: "The environment was not found." });
+  return yield* writeAndDeploy({ actor, project: context.project, parent: context.environment, input });
+});
+
+/**
+ * The system makes a pull request's PR Environment, `pr-<number>`, as a Branch of `parent` acting for `actor`, and admits
+ * its first deployment. After derivation the repository's services track the pull request's head Git branch and deploy
+ * on push, and every Own Copy runs one replica.
+ */
+export const createPrEnvironment = Effect.fn("Branches.createPrEnvironment")(function* ({ actor, parentEnvironmentId, focus, picks, setupCommands, pullRequest }: {
+  actor: Actor; parentEnvironmentId: string; focus: string[];
+  picks: CreateBranch["picks"]; setupCommands: CreateBranch["setupCommands"]; pullRequest: PullRequestFacts;
+}) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ environment, project: projectTable }).from(environment)
+    .innerJoin(projectTable, eq(projectTable.id, environment.projectId))
+    .where(eq(environment.id, parentEnvironmentId));
+  if (!row) return yield* new NotFound({ message: "The environment was not found." });
+  return yield* writeAndDeploy({
+    actor, project: row.project, parent: row.environment, pullRequest,
+    input: { name: `pr-${pullRequest.number}`, focus, picks, keep: false, deployNow: true, setupCommands },
+  });
+});
+
+type BranchInput = Omit<CreateBranch, "organizationSlug" | "parentEnvironmentId">;
+
+/** Writes the Branch and, with `deployNow`, admits its first deployment, in one transaction; then dispatches it. */
+const writeAndDeploy = Effect.fn("Branches.writeAndDeploy")(function* ({ actor, project, parent, input, pullRequest }: {
+  actor: Actor; project: ProjectRow; parent: EnvironmentRow; input: BranchInput; pullRequest?: PullRequestFacts;
+}) {
   const created = yield* withMutationResult(Effect.gen(function* () {
-    const branch = yield* writeBranch({ actor, project: context.project, parent: context.environment, input });
+    const branch = yield* writeBranch({ actor, project, parent, input, pullRequest });
     if (!input.deployNow) return { ...branch, deploymentId: null };
     const projection = yield* loadCurrentEnvironmentSnapshotProjection(branch.environment.id);
     const deployment = yield* createManualEnvironmentDeployment({
@@ -73,8 +103,8 @@ export const createBranch = Effect.fn("Branches.createBranch")(function* (actor:
 });
 
 /** Steps 1–5 of creation: configuration, Environment row, identity rows, Working State, Branch row. */
-const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, project, parent, input }: {
-  actor: Actor; project: ProjectRow; parent: EnvironmentRow; input: CreateBranch;
+const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, project, parent, input, pullRequest }: {
+  actor: Actor; project: ProjectRow; parent: EnvironmentRow; input: BranchInput; pullRequest?: PullRequestFacts;
 }) {
   const { drizzle } = yield* Database;
   // Under the Project lock teardown admission takes: a Parent that is being torn down gets no new Branch, and one torn
@@ -122,7 +152,8 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     picks: picks.map((lineage) => ({ key: `${lineage}:node` })),
   }));
   const changes = yield* create(from, own);
-  const next = parseDashboardEnvironmentIntent(changes.next);
+  const derived = parseDashboardEnvironmentIntent(changes.next);
+  const next = pullRequest ? prEnvironmentIntent(derived, pullRequest) : derived;
   // A fix's base is the Parent's Applied State (minus what it uses live), so the failed change shows as staged.
   const base = failed
     ? (yield* create(yield* loadAppliedIntent(parent.id, parent.namespace, projection), [])).base
@@ -144,8 +175,16 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     base: parseDashboardEnvironmentIntent(base),
     setupCommands: input.setupCommands,
     createdByUserId: actor.userId,
+    ...(pullRequest ? pullRequestColumns(pullRequest) : {}),
   }).returning();
   if (!branch) return yield* Effect.die("PostgreSQL did not return the Branch row.");
+  // The repository's services deploy on push whatever the Parent's Deployment Policy says; Wait for CI and watch paths stay.
+  if (pullRequest) {
+    for (const node of next.services) {
+      if (!fromRepository(node.config, pullRequest.repositoryId)) continue;
+      yield* drizzle.update(service).set({ policy: sql`${service.policy} || '{"autoDeploy":true}'::jsonb` }).where(eq(service.id, node.id));
+    }
+  }
   return { environment: written, branch };
 });
 

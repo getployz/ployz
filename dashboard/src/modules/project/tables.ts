@@ -5,7 +5,7 @@ import { user } from "#/modules/identity/tables";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
 import { sql } from "drizzle-orm";
-import { boolean, check, foreignKey, index, jsonb, pgTable, text, unique, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 
 
@@ -80,6 +80,16 @@ export const environmentBranch = pgTable(
     createdByUserId: uuid("created_by_user_id")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
+    // A PR Environment's pull request, kept current by its deliveries; all null on any other Branch.
+    prRepositoryId: bigint("pr_repository_id", { mode: "number" }),
+    // The repository's full name, for display: "acme/app".
+    prRepository: text("pr_repository"),
+    prNumber: integer("pr_number"),
+    prTitle: text("pr_title"),
+    prAuthor: text("pr_author"),
+    prHeadBranch: text("pr_head_branch"),
+    prHeadSha: text("pr_head_sha"),
+    prTargetBranch: text("pr_target_branch"),
     createdAt,
   },
   (table) => [
@@ -94,6 +104,9 @@ export const environmentBranch = pgTable(
       foreignColumns: [environment.projectId, environment.id],
     }),
     check("environment_branch_not_own_parent", sql`${table.environmentId} <> ${table.parentEnvironmentId}`),
+    check("environment_branch_pull_request", sql`num_nulls(${table.prRepositoryId}, ${table.prRepository}, ${table.prNumber}, ${table.prTitle}, ${table.prAuthor}, ${table.prHeadBranch}, ${table.prHeadSha}, ${table.prTargetBranch}) in (0, 8)`),
+    // One PR Environment per pull request in a project.
+    uniqueIndex("environment_branch_pull_request_idx").on(table.projectId, table.prRepositoryId, table.prNumber),
     index("environment_branch_organization_idx").on(table.organizationId),
     index("environment_branch_parent_idx").on(table.parentEnvironmentId),
   ],
