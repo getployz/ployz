@@ -1,10 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { prEnvironment } from "#/modules/pr-environments/tables";
+import { loadBranchRows } from "#/modules/pr-environments/pr-environment.repository.server";
 
 import { and, eq, inArray, isNotNull, max, or } from "drizzle-orm";
 import { Cause, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
 import { dueForIdleClose } from "#/modules/branches/idle-close";
@@ -111,10 +110,10 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
       return yield* new Conflict({ message: "This branch is already closing." });
     }
-    const [row] = yield* drizzle.update(schemaEnvironmentBranch).set({ kept: input.kept }).where(where).returning();
+    yield* drizzle.update(schemaEnvironmentBranch).set({ kept: input.kept }).where(where);
+    const [row] = yield* loadBranchRows(where);
     if (row === undefined) return yield* new NotFound({ message: "The branch was not found." });
-    const [pullRequest = null] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, row.environmentId));
-    return { ...row, base: withoutSealedCiphertext(row.base), pullRequest };
+    return row;
   }));
 });
 

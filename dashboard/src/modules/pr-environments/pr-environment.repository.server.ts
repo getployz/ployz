@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
-import { decodePersistedSavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
-import { environment } from "#/modules/project/tables";
+import { decodePersistedSavedEnvironmentIntent, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { environment, environmentBranch } from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
 import { destinations } from "./destinations";
-import { prEnvironment } from "./tables";
+import { prEnvironment, type BranchRow } from "./tables";
 
 /** Whether the Environment is a PR Environment. */
 export const isPrEnvironment = Effect.fn("PrEnvironments.isPrEnvironment")(function* (environmentId: string) {
@@ -35,4 +35,12 @@ export const prDestinations = Effect.fn("PrEnvironments.prDestinations")(functio
     Effect.map((intent) => ({ id: saved.id, prEnvironment: saved.prEnvironment !== null, savedServices: intent.services.map((node) => node.config) })),
   ));
   return destinations({ environments, repositoryId: row.repositoryId, targetBranch: row.targetBranch });
+});
+
+/** Branch rows as the browser has them: redacted base, and a PR Environment's pull request. */
+export const loadBranchRows = Effect.fn("PrEnvironments.loadBranchRows")(function* (where: SQL | undefined) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ branch: environmentBranch, pullRequest: prEnvironment }).from(environmentBranch)
+    .leftJoin(prEnvironment, eq(prEnvironment.environmentId, environmentBranch.environmentId)).where(where);
+  return rows.map(({ branch, pullRequest }): BranchRow => ({ ...branch, base: withoutSealedCiphertext(branch.base), pullRequest }));
 });

@@ -11,12 +11,12 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
-import type { BranchRow, ConditionalSaveRow } from "#/modules/pr-environments/tables";
+import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
+import { loadBranchRows } from "#/modules/pr-environments/pr-environment.repository.server";
 import { deploymentRowColumns, orgStoreDeploymentSlice } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
-import type { JsonValue } from "#/db/tables";
+import { withoutRowFingerprints, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 import { Database } from "#/server/database.server";
 
 export class CollectionReadFailure extends Data.TaggedError("CollectionReadFailure")<{
@@ -29,10 +29,6 @@ export class CollectionReadDenied extends Data.TaggedError("CollectionReadDenied
 }> {
   readonly publicErrorCategory = "not-found" as const;
 }
-
-const withoutFingerprints = <Value>(value: Value): Value =>
-  // SAFETY: a JSON round trip of JSON data returns the same shape minus the dropped keys.
-  JSON.parse(JSON.stringify(value, (key: string, entry: JsonValue) => key === "fingerprint" || key === "valueFingerprint" ? undefined : entry)) as Value;
 
 export const readCollection = Effect.fn("Collections.read")(function* (
   actor: Actor,
@@ -65,14 +61,8 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment":
         return yield* database.drizzle.select().from(tables.environment).where(scoped(tables.environment));
       // A base is core's redacted configuration; stripping again keeps sealed ciphertext on the server regardless.
-      case "environment_branch": {
-        const rows: BranchRow[] = (yield* database.drizzle.select({ branch: tables.environmentBranch, pullRequest: tables.prEnvironment })
-          .from(tables.environmentBranch)
-          .leftJoin(tables.prEnvironment, eq(tables.prEnvironment.environmentId, tables.environmentBranch.environmentId))
-          .where(scoped(tables.environmentBranch)))
-          .map(({ branch, pullRequest }) => ({ ...branch, base: withoutSealedCiphertext(branch.base), pullRequest }));
-        return rows;
-      }
+      case "environment_branch":
+        return yield* loadBranchRows(scoped(tables.environmentBranch));
       case "pr_environment_plan":
         return yield* database.drizzle.select().from(tables.prEnvironmentPlan).where(scoped(tables.prEnvironmentPlan));
       // Sealed picks and the landing copy stay on the server; held rows go without secret fingerprints.
@@ -84,7 +74,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           rows: save.rows, workingRevision: save.workingRevision, targetBranch: save.targetBranch,
           approvedBy: tables.user.name, approvedAt: save.approvedAt, state: save.state, landedSavedStateId: save.landedSavedStateId,
         }).from(save).leftJoin(tables.user, eq(tables.user.id, save.approvedByUserId)).where(scoped(save)))
-          .map((row) => ({ ...row, rows: withoutFingerprints(row.rows) }));
+          .map((save) => ({ ...save, rows: save.rows.map((held) => ({ ...held, row: withoutRowFingerprints(held.row) })) }));
         return rows;
       }
       case "service":

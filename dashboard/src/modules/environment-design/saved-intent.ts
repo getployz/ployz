@@ -11,6 +11,7 @@ import {
   type VolumeConfig,
 } from "@ployz/sdk/config";
 import type { EncryptedSecretValue, JsonValue } from "#/db/tables";
+import type { BranchRow } from "@ployz/sdk/config";
 import type { ValuePart } from "./tables";
 import { savedServiceIntentConfigEffectSchema } from "./services";
 import { sharedSchema } from "./service-config";
@@ -164,6 +165,15 @@ export function redactSavedEnvironmentIntent(intent: SavedEnvironmentIntent): Sa
 export function withoutSealedCiphertext<Value>(value: Value): Value {
   // SAFETY: a JSON round trip of JSON data returns the same shape minus the dropped key.
   return JSON.parse(JSON.stringify(value, (key: string, entry: JsonValue) => key === "encryptedValue" ? undefined : entry)) as Value;
+}
+type RowValue = BranchRow["into"];
+const withoutFingerprints = (value: RowValue): RowValue => Array.isArray(value) ? value.map(withoutFingerprints)
+  : value instanceof Object
+    ? Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => key === "fingerprint" || key === "valueFingerprint" || entry === undefined ? [] : [[key, withoutFingerprints(entry)]]))
+    : value;
+/** A comparison row as the browser may have it: no secret fingerprints on any side. */
+export function withoutRowFingerprints<Row extends BranchRow>(row: Row): Row {
+  return { ...row, base: withoutFingerprints(row.base), from: withoutFingerprints(row.from), into: withoutFingerprints(row.into) };
 }
 export function encodePersistedSavedEnvironmentIntent(input: { intent: SavedEnvironmentIntent }) { return { intent: canonicalizeSavedEnvironmentIntent(input.intent) }; }
 export function reuseSavedEnvironmentPublication(input: {
