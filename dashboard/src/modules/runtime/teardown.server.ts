@@ -459,9 +459,9 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
 });
 
 /**
- * Admits a teardown against its graph as it is now. A project or Environment teardown holds the Project row, so choosing a
- * Default Environment waits for it, and it sees a Default chosen before it (loadTeardownGraph refuses one). With
- * `expected`, the graph must still hold exactly those Environments.
+ * Admits a teardown against its graph as it is now. A project or Environment teardown holds the Project row and reads its
+ * Default Environment under it, so choosing a Default waits for the teardown, and a Default chosen before it (even after
+ * `access` was read) is refused by loadTeardownGraph. With `expected`, the graph must still hold exactly those Environments.
  */
 const admitTeardown = Effect.fn("Teardown.admit")(function* (
   access: TeardownAccess,
@@ -470,12 +470,13 @@ const admitTeardown = Effect.fn("Teardown.admit")(function* (
 ) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
-    if (access.scope !== "organization") yield* lockProjectRow(access.project.id);
-    const graph = yield* loadTeardownGraph(access);
+    const current = access.scope === "organization" ? access
+      : { ...access, project: { ...access.project, defaultEnvironmentId: yield* lockProjectRow(access.project.id) } };
+    const graph = yield* loadTeardownGraph(current);
     if (input.expected && graph.environments.map((environment) => environment.id).join() !== input.expected.join()) {
       return yield* new Conflict({ message: "What this teardown removes changed. Try again." });
     }
-    return yield* startTeardown(access, graph, runtime, input);
+    return yield* startTeardown(current, graph, runtime, input);
   }));
 });
 

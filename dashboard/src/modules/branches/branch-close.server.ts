@@ -9,9 +9,9 @@ import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock
 import { dueForIdleClose } from "#/modules/branches/idle-close";
 import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
-import { Database } from "#/server/database.server";
+import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import type { SetBranchKept } from "./branch-schemas";
 
@@ -20,14 +20,11 @@ export type BranchCloseReason = "merged" | "idle";
 
 /**
  * The system closes a Branch (after a Merge, or when it sits idle) through the Environment teardown, which takes its
- * own Branches first. It runs as the Branch's creator, and each close it starts is logged with its reason. The runtime is
- * asked first, holding nothing; `underLocks` then runs inside the admitting transaction, and a false there admits nothing.
+ * own Branches first. It runs as the Branch's creator. This asks the runtime, holding nothing, and returns `admit`, which
+ * writes the teardown attempt (inside the caller's transaction, under its locks) and logs the close with its reason once
+ * that commits.
  */
-export const closeBranch = Effect.fn("Branches.close")(function* (
-  environmentId: string,
-  reason: BranchCloseReason,
-  underLocks: Effect.Effect<boolean, never, Database> = Effect.succeed(true),
-) {
+export const closeBranch = Effect.fn("Branches.close")(function* (environmentId: string, reason: BranchCloseReason) {
   const database = yield* Database;
   const [branch] = yield* database.drizzle
     .select({ organizationId: schemaEnvironmentBranch.organizationId, createdByUserId: schemaEnvironmentBranch.createdByUserId })
@@ -36,16 +33,17 @@ export const closeBranch = Effect.fn("Branches.close")(function* (
   if (branch === undefined) return yield* new NotFound({ message: "The branch was not found." });
   const requestedByUserId = branch.createdByUserId;
   const prepared = yield* prepareSystemTeardown({ organizationId: branch.organizationId, environmentId });
-  const attempt = yield* database.transaction(Effect.gen(function* () {
-    if (!(yield* underLocks)) return null;
-    return yield* admitSystemTeardown(prepared, requestedByUserId);
-  }));
-  if (attempt) yield* Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId, teardownAttemptId: attempt.id });
-  return attempt;
+  return {
+    admit: Effect.gen(function* () {
+      const attempt = yield* admitSystemTeardown(prepared, requestedByUserId);
+      yield* afterDatabaseCommit(Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId, teardownAttemptId: attempt.id }));
+      return attempt;
+    }),
+  };
 });
 
 /** Runs a system close: true once its teardown started, else false with `why` logged. Only an interruption fails it. */
-const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect<unknown, E, R>) => close.pipe(
+const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect<{ id: string } | null, E, R>) => close.pipe(
   Effect.map((attempt) => attempt !== null),
   Effect.scoped,
   Effect.catchCause((cause) => Cause.hasInterrupts(cause)
@@ -54,8 +52,8 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
 );
 
 /** Closes a merged Branch; false when it couldn't, and the Merge stands. */
-export const tryCloseBranch = (environmentId: string) =>
-  tryClose(environmentId, "A merged Branch did not close.", closeBranch(environmentId, "merged"));
+export const tryCloseBranch = (environmentId: string) => tryClose(environmentId, "A merged Branch did not close.",
+  closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => close.admit)));
 
 /** A kept Branch stays after merging and never closes for being idle. */
 export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Actor, input: SetBranchKept) {
@@ -79,16 +77,18 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
  * A close that fails (an unreachable runtime) leaves that Branch for the next sweep and never stops the others.
  */
 export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now: Date) {
+  const database = yield* Database;
   const closed = yield* Effect.forEach(yield* idleBranches(now), (environmentId) => tryClose(
     environmentId,
     "An idle Branch did not close; the next sweep retries it.",
-    // Under the Branch's queue lock (a deploy waits) and its row (Keep and a new Branch of it wait), the rule again.
-    closeBranch(environmentId, "idle", Effect.gen(function* () {
+    closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
+      // Under the Branch's queue lock (a deploy waits) and its row (Keep and a new Branch of it wait), the rule again.
       yield* lockEnvironmentDeploymentQueue(environmentId);
       yield* (yield* Database).drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch)
         .where(eq(schemaEnvironmentBranch.environmentId, environmentId)).for("update");
-      return (yield* idleBranches(now, environmentId)).includes(environmentId);
-    }).pipe(Effect.orDie)),
+      if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;
+      return yield* close.admit;
+    })))),
   ).pipe(Effect.map((done) => (done ? [environmentId] : []))));
   return closed.flat();
 });
@@ -119,13 +119,7 @@ const idleBranches = Effect.fn("Branches.idleBranches")(function* (now: Date, on
     .select({ environmentId: schemaProject.defaultEnvironmentId })
     .from(schemaProject)
     .where(and(isNotNull(schemaProject.defaultEnvironmentId), inArray(schemaProject.defaultEnvironmentId, branchIds)));
-  const closing = new Set((yield* drizzle
-    .select({ environmentId: schemaTeardownAttempt.environmentId })
-    .from(schemaTeardownAttempt)
-    .where(and(
-      inArray(schemaTeardownAttempt.environmentId, branchIds),
-      inArray(schemaTeardownAttempt.status, ["pending", "running"]),
-    ))).map((row) => row.environmentId));
+  const closing = yield* activeTeardownFor(branchIds);
   return dueForIdleClose({
     branches,
     latestAttemptAt: new Map(latest.flatMap((row) => (row.at === null ? [] : [[row.environmentId, row.at]]))),

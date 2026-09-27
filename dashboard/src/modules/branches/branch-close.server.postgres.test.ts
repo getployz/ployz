@@ -7,7 +7,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { dropTeardownCloudRowsActivity } from "#/modules/runtime/teardown-activities.server";
-import { confirmTeardown, loadTeardownDataLoss } from "#/modules/runtime/teardown.server";
+import { admitSystemTeardown, confirmTeardown, loadTeardownDataLoss, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { Conflict } from "#/server/public-error";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -99,9 +99,9 @@ describe("closing a Branch", () => {
   it("closes its Branches first, confirms the runtime's report and records the creator and reason", async () => {
     const logs: unknown[] = [];
     const attempt = await run(provide(closeBranch(fixWebId, "merged").pipe(
+      Effect.flatMap((close) => close.admit),
       Effect.provide(Logger.layer([Logger.make((options) => logs.push(options.message))], { mergeWithExisting: true })),
     )));
-    if (!attempt) throw new Error("The close admitted nothing.");
 
     expect(logs).toContainEqual(["A Branch is closing.", {
       environmentId: fixWebId, reason: "merged", requestedByUserId: creatorId, teardownAttemptId: attempt.id,
@@ -128,9 +128,19 @@ describe("closing a Branch", () => {
     expect(byUser.message).toBe("production is the Default Environment. Choose another Default Environment first.");
 
     await harness.pool.query(`update project set default_environment_id = '${tryCacheId}'`);
-    const bySystem = await run(provide(closeBranch(fixWebId, "idle").pipe(Effect.flip)));
+    const bySystem = await run(provide(closeBranch(fixWebId, "idle").pipe(Effect.flatMap((close) => close.admit), Effect.flip)));
     expect(bySystem).toBeInstanceOf(Conflict);
     expect(bySystem.message).toContain("try-cache is the Default Environment");
+    expect(await attemptRows()).toEqual([]);
+  });
+
+  it("refuses a Default Environment chosen after the close was prepared", async () => {
+    const refused = await run(provide(Effect.gen(function* () {
+      const prepared = yield* prepareSystemTeardown({ organizationId, environmentId: fixWebId });
+      yield* Effect.promise(() => harness.pool.query(`update project set default_environment_id = '${fixWebId}'`));
+      return yield* admitSystemTeardown(prepared, creatorId).pipe(Effect.flip);
+    })));
+    expect(refused).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("fix-web is the Default Environment") });
     expect(await attemptRows()).toEqual([]);
   });
 

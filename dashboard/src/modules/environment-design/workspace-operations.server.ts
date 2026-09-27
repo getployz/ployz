@@ -1,9 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { Effect } from "effect";
-import { and, inArray, sql } from "drizzle-orm";
 import { Database, isUniqueViolation } from "#/server/database.server";
-import { teardownAttempt } from "#/modules/runtime/tables";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Conflict, NotFound } from "#/server/public-error";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
@@ -139,11 +138,7 @@ export const setProjectDefaultEnvironment = Effect.fn(
   // Under the Project row, so an idle close admitting this Environment's teardown either sees the new default or runs first.
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockProjectRow(context.project.id);
-    const [closing] = yield* database.drizzle.select({ id: teardownAttempt.id }).from(teardownAttempt).where(and(
-      inArray(teardownAttempt.status, ["pending", "running"]),
-      sql`${teardownAttempt.targets} -> 'environments' @> ${JSON.stringify([{ environmentId: input.environmentId }])}::jsonb`,
-    )).limit(1);
-    if (closing) return yield* new Conflict({ message: "This environment is being torn down." });
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: "This environment is being torn down." });
     const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
     if (project === null) {
       return yield* new NotFound({ message: "Environment not found in this project." });
