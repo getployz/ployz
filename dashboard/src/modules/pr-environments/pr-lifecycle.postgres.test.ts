@@ -603,8 +603,8 @@ describe("PR Environment lifecycle", () => {
         ...node, config: { ...node.config, managedHostnames: [{ prefix: "api-pr-142", targetPort: 3000 }] },
       })) } as never }).where(eq(schema.environment.id, prId));
 
-      // Opened: nothing here staging lacks yet.
-      expect(await postChecks()).toEqual(["posted"]);
+      // Opened: nothing here staging lacks yet. Its first Working and Saved writes each ask for the check.
+      expect(await postChecks()).toEqual(["posted", "posted"]);
       expect(runOn(first)).toEqual({
         conclusion: "success", reason: "Nothing here that staging doesn’t have",
         detailsUrl: expect.stringMatching(/\/cloud\/acme\/shop\/shop-pr-142\/review$/u),
@@ -654,6 +654,19 @@ describe("PR Environment lifecycle", () => {
       expect(await pullRequest("other", "opened", 9, { head: { ref: "other", sha: "e".repeat(40), repo: { id: repositoryId } } })).toBe("ignored_pull_request");
       expect(await postChecks()).toEqual([]);
       expect(checkRuns).toHaveLength(3);
+    });
+
+    it("re-posts the check as passing when staging takes the PR Environment's change", async () => {
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      const title = () => checkRuns.find((run) => run.body.external_id === `${repositoryId}:142`)?.body;
+      const stripe = { key: "STRIPE_KEY", description: null, exported: false, value: { type: "plain" as const, value: "sk_test" } };
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), ...stripe }));
+      await postChecks();
+      expect(title()).toMatchObject({ conclusion: "action_required" });
+
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(stagingId)), ...stripe }));
+      expect(await postChecks()).toEqual(["posted"]);
+      expect(title()).toMatchObject({ conclusion: "success", output: { title: "Nothing here that staging doesn’t have" } });
     });
 
     describe("when the pull request closes", () => {

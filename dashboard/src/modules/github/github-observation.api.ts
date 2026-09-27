@@ -150,7 +150,7 @@ const pullRequestResponseSchema = Schema.Struct({
   number: githubIdSchema,
   state: Schema.Literals(["open", "closed"]),
   title: Schema.String,
-  user: Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)), type: Schema.String }),
+  user: Schema.NullOr(Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)), type: Schema.String })),
   head: Schema.Struct({ ref: githubBranchNameSchema, sha: githubExactShaSchema }),
   base: Schema.Struct({ ref: githubBranchNameSchema }),
   merged: Schema.Boolean,
@@ -413,7 +413,8 @@ export const fetchInstallationPullRequest = Effect.fn(
   return {
     open: observed.state === "open",
     title: observed.title,
-    author: { login: observed.user.login, isBot: observed.user.type === "Bot" },
+    // A deleted author shows as GitHub's "ghost" user.
+    author: { login: observed.user?.login ?? "ghost", isBot: observed.user?.type === "Bot" },
     headBranch: observed.head.ref,
     headSha: observed.head.sha,
     targetBranch: observed.base.ref,

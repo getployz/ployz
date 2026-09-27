@@ -60,7 +60,8 @@ const encrypted = {
 };
 
 function createManualEnvironmentDeployment(input: Parameters<typeof admitManual>[0]) {
-  return admitManual(input).pipe(Effect.provideService(SecretEncryption, encryption));
+  // No PR Environments here: no check is requested.
+  return admitManual(input).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, undefined as never));
 }
 
 function saveManualEnvironmentStateSnapshot(input: {
@@ -72,7 +73,7 @@ function saveManualEnvironmentStateSnapshot(input: {
   return Effect.match(saveReviewedEnvironmentState(input), {
     onFailure: (error) => ({ status: "error" as const, error }),
     onSuccess: (value) => ({ status: "ok" as const, value }),
-  }).pipe(Effect.provideService(SecretEncryption, encryption));
+  }).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, undefined as never));
 }
 
 describe("manual environment saved-state persistence", () => {

@@ -11,6 +11,7 @@ import type { DiscardEnvironmentChangesInput } from "./working-document-restore"
 
 import { sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
+import { requestPrCheck } from "#/modules/pr-environments/pr-check-request.server";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
 } from "#/modules/deployments/tables";
@@ -163,6 +164,8 @@ const publishEnvironmentSavedState = Effect.fn(
       new Error("Saved State insert returned no revision."),
     );
   }
+  // Saved source tracking feeds the checks of pull requests this may be a Destination of.
+  yield* requestPrCheck(input.environmentId);
   return {
     ...canonical,
     savedStateSnapshotId: inserted.id,

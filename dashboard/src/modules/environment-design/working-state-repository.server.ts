@@ -89,7 +89,7 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
     }).where(and(eq(environment.id, document.id), eq(environment.revision, document.revision))).returning();
     if (!written) return yield* new Conflict({ message: "Working State changed while this edit was being saved." });
     yield* pruneDraftVolumes(written);
-    // A PR Environment's settings feed its pull request's check.
+    // Its state feeds its own pull request's check, or those it may be a Destination of.
     yield* requestPrCheck(written.id);
     return written;
   },
