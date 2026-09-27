@@ -181,6 +181,16 @@ describe("createBranch", () => {
     expect((await attemptsOf(branchId))[0]?.setupCommands).toEqual({});
   });
 
+  it("keeps a root Parent's hostname whole, even when it ends in the root's own suffix", async () => {
+    // production is a root: its web-production prefix is its own name, not a Branch suffix to swap.
+    const intent = { ...parentIntent, services: parentIntent.services.map((node) => node.id === webId
+      ? { ...node, config: { ...node.config, managedHostnames: [{ prefix: "web-production", targetPort: null }] } } : node) };
+    await harness.pool.query("update environment set intent = $1 where id = $2", [JSON.stringify(intent), parentId]);
+    const { data } = await create();
+    const web = data.environment.intent.services.find((node) => node.lineageId === webLineage);
+    expect(web?.config.managedHostnames[0]?.prefix).toBe("web-production-fix-web");
+  });
+
   it("fixes a failed deploy on a branch: the failed change arrives staged and the Parent stays as it was", async () => {
     // production deployed web:1 with db and its Volume; web:2 failed; the owner has since staged web:3.
     // Saved State keeps sealed values' ciphertext.

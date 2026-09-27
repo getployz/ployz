@@ -117,7 +117,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     from: source,
     into: emptyEnvironmentIntent(namespace),
     provided: liveLineages(plan),
-    hostnames: { from: branchHostnameSuffix(project.slug, parent.namespace, parentBranch !== undefined), into: branchHostnameSuffix(project.slug, namespace, true) },
+    hostnames: { from: branchHostnameSuffix(project.slug, parent.namespace, parentBranch !== null), into: branchHostnameSuffix(project.slug, namespace, true) },
     fromKept: false,
     picks: picks.map((lineage) => ({ key: `${lineage}:node` })),
   }));
