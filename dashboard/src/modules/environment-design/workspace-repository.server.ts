@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists } from "drizzle-orm";
+import { asc, and, eq, exists } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -229,12 +229,25 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
 /**
  * Holds a Project's row for the transaction and returns its Default Environment as it is now. Choosing the Default
  * Environment and admitting a teardown in the Project both take it, so neither acts on what the other is changing.
+ *
+ * Lock order. Every path takes these locks in this order, skipping any it doesn't need, so none waits on another in a
+ * cycle: Project rows (by id when several: `lockOrganizationProjects`), then Branch rows (`environment_branch`), then
+ * Environment deployment queues (`lockEnvironmentDeploymentQueue`). Create Branch: Project, Parent's Branch row. Idle
+ * sweep: Project, Branch row, queue. Merge's close: Project, Branch row. Keep: Branch row. Merge and Update: Branch row, then queues. Teardown admission and Default
+ * selection: Project(s) only.
  */
 export const lockProjectDefault = Effect.fn("EnvironmentDesign.lockProjectDefault")(function* (projectId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ defaultEnvironmentId: project.defaultEnvironmentId }).from(project)
     .where(eq(project.id, projectId)).for("update");
   return row?.defaultEnvironmentId ?? null;
+});
+
+/** Holds every Project row of an organization, by id: an organization teardown admits under all of them. */
+export const lockOrganizationProjects = Effect.fn("EnvironmentDesign.lockOrganizationProjects")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.select({ id: project.id }).from(project).where(eq(project.organizationId, organizationId))
+    .orderBy(asc(project.id)).for("update");
 });
 
 /** Null when the Environment belongs to another project: the FK alone doesn't enforce it. */

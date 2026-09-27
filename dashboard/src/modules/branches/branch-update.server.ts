@@ -78,10 +78,11 @@ const onSettledBranch = <E, R>(
   if (context === null) return yield* new NotFound({ message: "The environment was not found." });
   return yield* withMutationResult(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    // The Branch row before its queue (lock order: lockProjectDefault); its base advances when the changes land.
+    const [row] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, input.environmentId)).for("update");
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
     const document = yield* loadEnvironmentDocument(input.environmentId, true);
     yield* requireDocumentRevision(document, input.revision);
-    const [row] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, document.id));
     if (!row) return yield* new Validation({ field: "environmentId", message: "Only a branch updates from its parent." });
     yield* assertBranchSettled(drizzle, document.id);
     const { intent: into } = yield* loadCurrentEnvironmentState(document.id);

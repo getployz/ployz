@@ -88,7 +88,9 @@ export function latestDeploy(deployedAt: Record<string, Date> | undefined): Date
 }
 
 export const rowLineage = (row: { key: string }) => row.key.slice(0, row.key.indexOf(":"));
-const rowPath = (row: ChangeRow) => row.key.slice(row.key.indexOf(":") + 1);
+const rowPath = (row: { key: string }) => row.key.slice(row.key.indexOf(":") + 1);
+/** A variable row's variable name: `API_KEY` from `<lineage>:variables.API_KEY`. */
+export const variableName = (row: { key: string }) => rowPath(row).slice("variables.".length);
 
 /** A row in words: which setting of which node, and its value on each side. */
 export type PresentedRow = { key: string; lineageId: string; node: string; label: string; before: string; after: string };
@@ -102,7 +104,7 @@ export function presentRow(row: ChangeRow, nameOf: (lineage: string) => string):
     : path === "name" ? "Name"
     : path === "data" ? "Data"
     : path.startsWith("mounts.") ? `Mount of ${nameOf(path.slice(7))}`
-    : path.startsWith("variables.") ? path.slice(10)
+    : path.startsWith("variables.") ? variableName(row)
     : presentSettingChange("service", path, null, null).label;
   return { key: row.key, lineageId, node: nameOf(lineageId), label, before: value(row.into), after: value(row.from) };
 }

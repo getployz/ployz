@@ -11,7 +11,8 @@ import { admitSystemTeardown, confirmTeardown, loadTeardownDataLoss, prepareSyst
 import { Conflict } from "#/server/public-error";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
-import { closeBranch, sweepIdleBranches } from "./branch-close.server";
+import { closeBranch, setBranchKept, sweepIdleBranches, tryCloseBranch } from "./branch-close.server";
+import { createBranch } from "./branch-operations.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
 const creatorId = "00000000-0000-4000-8000-000000000902";
@@ -120,6 +121,19 @@ describe("closing a Branch", () => {
     expect((await harness.pool.query("select * from environment_branch")).rowCount).toBe(1);
   });
 
+  it("leaves a Branch kept after its Merge read it open, and Keep refuses a Branch already closing", async () => {
+    // Kept between the Merge's read and the close: the close re-reads it under the Branch row and starts nothing.
+    await harness.pool.query("update environment_branch set kept = true where environment_id = $1", [fixWebId]);
+    expect(await run(provide(tryCloseBranch(fixWebId)))).toBe(false);
+    expect(await attemptRows()).toEqual([]);
+
+    // Once a close is admitted, Keep can't report success for it.
+    await harness.pool.query("update environment_branch set kept = false where environment_id = $1", [fixWebId]);
+    expect(await run(provide(tryCloseBranch(fixWebId)))).toBe(true);
+    const refused = await run(provide(setBranchKept({ userId }, { organizationSlug: "acme", environmentId: fixWebId, kept: true }).pipe(Effect.flip)));
+    expect(refused).toMatchObject({ _tag: "Conflict", message: "This branch is already closing." });
+  });
+
   it("refuses the Default Environment, whoever asks, even as a Branch's descendant", async () => {
     const byUser = await run(provide(confirmTeardown({ userId }, {
       organizationSlug: "acme", scope: "environment", environmentId: productionId, identities: [],
@@ -161,8 +175,8 @@ describe("closing a Branch", () => {
     expect(manual).toMatchObject({ requestedByUserId: userId });
   });
 
-  it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
-    // Everything but production last deployed 8 days ago; fix-web still has try-cache open.
+  /** Everything but production last deployed 8 days ago; fix-web still has try-cache open, so only fix-staging is due. */
+  async function ageBranches() {
     for (const id of [fixWebId, tryCacheId, fixStagingId]) {
       await harness.pool.query(`
         with snapshot as (
@@ -172,6 +186,51 @@ describe("closing a Branch", () => {
         insert into environment_deployment (organization_id, environment_id, trigger_origin, saved_state_snapshot_id, created_at)
         select $1, $2, '{}', id, now() - interval '8 days' from snapshot`, [organizationId, id, creatorId]);
     }
+  }
+
+  it("runs the sweep and a new Branch of the Branch it closes side by side without a deadlock", async () => {
+    await ageBranches();
+    // Hold the Project so the create queues on it first and the sweep second; then let both go. Taking locks out of order
+    // (the sweep's Branch row before the Project) deadlocks here.
+    const holder = await harness.pool.connect();
+    await holder.query("begin");
+    await holder.query("select id from project where id = $1 for update", [projectId]);
+    const created = run(provide(createBranch({ userId }, {
+      organizationSlug: "acme", parentEnvironmentId: fixStagingId, name: "child", focus: [], picks: { preset: "only" },
+      keep: false, deployNow: false, setupCommands: [],
+    }).pipe(Effect.flip)));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const closed = run(provide(sweepIdleBranches(new Date()), "app-try-cache"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await holder.query("commit");
+    holder.release();
+
+    expect(await closed).toEqual([fixStagingId]);
+    // fix-staging has nothing to copy, so the create is refused, or refused as closing; never a lock failure.
+    expect(["Validation", "Conflict"]).toContain((await created)._tag);
+  });
+
+  it("admits an organization teardown only after a Branch being created commits, so its targets include it", async () => {
+    // A create in flight: it holds the Project and has written its Branch, not yet committed.
+    const lateId = "00000000-0000-4000-8000-0000000009f1";
+    const creating = await harness.pool.connect();
+    await creating.query("begin");
+    await creating.query("select id from project where id = $1 for update", [projectId]);
+    await creating.query(`insert into environment (id, project_id, organization_id, name, namespace, intent) values ($1, $2, $3, 'late', 'app-late',
+      '{"version":1,"environmentSlug":"app-late","services":[],"volumes":[]}')`, [lateId, projectId, organizationId]);
+    await creating.query(`insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, created_by_user_id)
+      values ($1, $2, $3, $4, '{}', $5)`, [lateId, organizationId, projectId, stagingId, creatorId]);
+    const teardown = run(provide(confirmTeardown({ userId }, { organizationSlug: "acme", scope: "organization", identities: [] })));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await creating.query("commit");
+    creating.release();
+
+    const attempt = await teardown;
+    expect(attempt.targets.environments.map((target) => target.environmentId)).toContain(lateId);
+  });
+
+  it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
+    await ageBranches();
 
     const closed = await run(provide(sweepIdleBranches(new Date()), "app-try-cache"));
 
