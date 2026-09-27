@@ -34,6 +34,7 @@ import { createService } from "#/modules/environment-design/service-operations.s
 import { createImageServiceSource } from "#/modules/environment-design/services";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import { mergeBranch } from "#/modules/branches/branch-merge.server";
+import { resumeGithubWaitingTriggers } from "#/modules/github/github-ingestion.branch.repository";
 
 const organizationId = "00000000-0000-4000-8000-000000001101";
 const userId = "00000000-0000-4000-8000-000000001102";
@@ -89,6 +90,10 @@ describe("PR Environment lifecycle", () => {
   // What GitHub says about each pull request now.
   const pulls = new Map<number, PullRequest>();
   const heads = new Map<string, string>();
+  // main's commits in order, the paths each changed, and the merged pull requests GitHub has for a commit.
+  const history: string[] = [];
+  const changed = new Map<string, string[]>();
+  const commitPulls = new Map<string, Array<{ number: number; base: { ref: string }; merged_at: string; merge_commit_sha: string }>>();
 
   const inngest = new Inngest({ id: "pr-lifecycle" });
   inngest.send = async (input) => {
@@ -116,6 +121,12 @@ describe("PR Environment lifecycle", () => {
             const ref = decodeURIComponent(request.url.split("/git/ref/")[1] ?? "");
             return { ref: `refs/${ref}`, object: { type: "commit", sha: heads.get(ref.slice("heads/".length)) } };
           }
+          case "compare_commits": {
+            const [base = "", head = ""] = request.url.split("/compare/")[1]?.split("...") ?? [];
+            const ahead = history.includes(base) && history.indexOf(head) > history.indexOf(base);
+            return { status: ahead ? "ahead" : "diverged", base_commit: { sha: base }, files: (changed.get(head) ?? []).map((filename) => ({ filename })) };
+          }
+          case "list_commit_pulls": return commitPulls.get(request.url.split("/commits/")[1]?.split("/")[0] ?? "") ?? [];
           case "list_check_runs": {
             const sha = request.url.split("/commits/")[1]?.split("/")[0];
             return { check_runs: checkRuns.filter((run) => run.headSha === sha).map((run) => ({ id: run.id })) };
@@ -246,6 +257,9 @@ describe("PR Environment lifecycle", () => {
     checksForbidden = false;
     pulls.clear();
     heads.clear();
+    history.length = 0;
+    changed.clear();
+    commitPulls.clear();
     await harness.pool.query(`
       truncate table github_environment_trigger, github_branch_projection, github_webhook_delivery, teardown_attempt, organization, "user" cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -690,6 +704,120 @@ describe("PR Environment lifecycle", () => {
         await pullRequest("merged-again", "closed", 142, merged);
         expect(await saves()).toEqual([expect.objectContaining({ prEnvironmentId: null, mergeCommitSha: "e".repeat(40), landedSavedStateId: null })]);
         expect(await snapshots()).toBe(count);
+      });
+
+      describe("where staging deploys main on push", () => {
+        const mergeSha = "e".repeat(40);
+        /** A commit lands on main touching `paths`, and its push arrives. */
+        async function push(sha: string, paths: string[], onMain = true) {
+          const before = heads.get("main") ?? "0".repeat(40);
+          heads.set("main", sha);
+          if (onMain) history.push(sha);
+          changed.set(sha, paths);
+          await deliver("push", `push-${sha.slice(0, 1)}`, { ref: "refs/heads/main", before, after: sha, created: false, deleted: false, forced: false });
+        }
+        /** CI passes on `sha`, and the sweep resumes waiting triggers. */
+        async function ciPasses(sha: string) {
+          const [delivery] = await harness.db.select().from(schema.githubWebhookDelivery);
+          await harness.db.insert(schema.githubCheckSuiteProjection).values({
+            installationId, repositoryId, checkSuiteId: history.indexOf(sha) + 1, headSha: sha, status: "completed", conclusion: "success",
+            sourceUpdatedAt: new Date(), lastDeliveryId: delivery?.deliveryId ?? "", lastReceiptSequence: delivery?.receiptSequence ?? 0,
+          });
+          await runEffect(resumeGithubWaitingTriggers());
+        }
+        const waitForCi = () => harness.db.update(schema.service).set({ policy: { ...policy, autoDeploy: true, waitForCi: true, imageUpdate: { type: "off" as const } } })
+          .where(eq(schema.service.id, apiId));
+        /** The staging attempt building `sha`, and its Saved revision. */
+        async function attemptAt(sha: string) {
+          const attempt = (await deploymentsOf(stagingId)).find((row) => row.sourcePins[apiId]?.commitSha === sha);
+          const [saved] = attempt ? await harness.db.select().from(schema.environmentSavedStateSnapshot)
+            .where(eq(schema.environmentSavedStateSnapshot.id, attempt.savedStateSnapshotId)) : [];
+          return { attempt, saved: saved?.intent as Intent | undefined };
+        }
+        const triggers = () => harness.db.select().from(schema.githubEnvironmentTrigger).where(eq(schema.githubEnvironmentTrigger.environmentId, stagingId));
+
+        beforeEach(async () => {
+          await harness.db.update(schema.service).set({ policy: { ...policy, autoDeploy: true, imageUpdate: { type: "off" as const } } }).where(eq(schema.service.id, apiId));
+          await push("a".repeat(40), []);
+          await setVariable((await prEnvironment(142))?.environmentId ?? "", "FLAG", "on");
+        });
+
+        it("ships the approved rows and the services they add in the merge commit's deployment, and nothing in one without it", async () => {
+          const prId = (await prEnvironment(142))?.environmentId ?? "";
+          const worker = await runEffect(createService({ userId }, {
+            organizationSlug, environmentId: prId, name: "Worker", source: createImageServiceSource({ image: "acme/worker:1" }), x: 5, y: 6,
+            preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
+          }));
+          await approve(prId, (_, rows) => rows.map((row) => row.role === "move" && row.choice ? { key: row.key, option: "from" as const, value: "" } : { key: row.key, value: "" }));
+          await pullRequest("merged", "closed", 142, merged);
+          const before = (await latestSaved())?.id;
+
+          // A commit on main without the merge commit carries nothing.
+          await push("b".repeat(40), ["api/main.ts"], false);
+          expect((await attemptAt("b".repeat(40))).saved?.services.map((node) => node.lineageId)).toEqual([apiLineage, dbLineage]);
+          expect((await latestSaved())?.id).toBe(before);
+          expect(await saves()).toHaveLength(1);
+
+          history.push("b".repeat(40));
+          await push(mergeSha, ["api/main.ts"]);
+          const { attempt, saved } = await attemptAt(mergeSha);
+          expect(attempt?.savedStateSnapshotId).toBe((await latestSaved())?.id);
+          expect(variableIn(saved, "FLAG")).toEqual(plain("on"));
+          expect(saved?.services.some((node) => node.lineageId === worker.data.service.lineageId)).toBe(true);
+          expect(await saves()).toEqual([]);
+        });
+
+        it("lands at the merge commit's push when it comes before the closed delivery, by asking GitHub", async () => {
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          commitPulls.set(mergeSha, [{ number: 142, base: { ref: "main" }, merged_at: new Date().toISOString(), merge_commit_sha: mergeSha }]);
+          await push(mergeSha, ["api/main.ts"]);
+          expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+
+          const count = (await harness.db.select().from(schema.environmentSavedStateSnapshot)).length;
+          await pullRequest("merged", "closed", 142, merged);
+          expect((await harness.db.select().from(schema.environmentSavedStateSnapshot)).length).toBe(count);
+        });
+
+        it("waits with a trigger waiting for CI, and lands with a descendant when the merge commit's trigger is superseded", async () => {
+          await waitForCi();
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await pullRequest("merged", "closed", 142, merged);
+          const before = (await latestSaved())?.id;
+          await push(mergeSha, ["api/main.ts"]);
+          await push("f".repeat(40), ["api/next.ts"]);
+          expect((await latestSaved())?.id).toBe(before);
+          expect(await saves()).toHaveLength(1);
+
+          await ciPasses("f".repeat(40));
+          expect((await triggers()).filter((row) => row.headSha === mergeSha).map((row) => row.admissionState)).toEqual(["superseded"]);
+          expect(variableIn((await attemptAt("f".repeat(40))).saved, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+        });
+
+        it("lands through a trigger already waiting for CI when the closed delivery arrives", async () => {
+          await waitForCi();
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          // GitHub doesn't yet know the commit merged the pull request.
+          await push(mergeSha, ["api/main.ts"]);
+          expect((await triggers()).find((row) => row.headSha === mergeSha)?.conditionalSaveIds).toEqual([]);
+          await pullRequest("merged", "closed", 142, merged);
+          const [save] = await saves();
+          expect((await triggers()).find((row) => row.headSha === mergeSha)?.conditionalSaveIds).toEqual([save?.id]);
+
+          await ciPasses(mergeSha);
+          expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+        });
+
+        it("saves the held changes at a merge commit's push that deploys nothing", async () => {
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await pullRequest("merged", "closed", 142, merged);
+          await push(mergeSha, ["docs/readme.md"]);
+          expect((await attemptAt(mergeSha)).attempt).toBeUndefined();
+          expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+        });
       });
     });
   });

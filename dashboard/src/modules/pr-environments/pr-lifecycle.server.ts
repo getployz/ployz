@@ -7,7 +7,7 @@ import { fetchInstallationPullRequest } from "#/modules/github/github-observatio
 import { environment, environmentBranch } from "#/modules/project/tables";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
-import { landAtMerge, settleAtClose } from "./land.server";
+import { carryInWaitingTriggers, landAtMerge, settleAtClose } from "./land.server";
 import { fromRepository } from "./pull-request";
 import { conditionalSave, prEnvironmentPlan } from "./tables";
 
@@ -49,8 +49,12 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
 
   if (!live.open) {
     // Approvals freeze or drop before any teardown; Destinations that don't deploy on push take theirs now.
-    yield* settleAtClose(existing.map((row) => row.environmentId), live.mergeCommitSha);
-    if (live.mergeCommitSha) yield* landAtMerge({ repositoryId: input.repositoryId, number: input.number });
+    yield* settleAtClose(existing.map((row) => row.environmentId),
+      live.mergeCommitSha ? { commitSha: live.mergeCommitSha, targetBranch: live.targetBranch } : null);
+    if (live.mergeCommitSha) {
+      yield* landAtMerge(input);
+      yield* carryInWaitingTriggers(input);
+    }
     for (const row of existing) {
       // No plan row reads as the defaults: removed when it closes.
       const removeOnClose = plans.find((plan) => plan.projectId === row.projectId)?.removeOnClose ?? true;

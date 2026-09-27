@@ -443,6 +443,8 @@ export const githubEnvironmentTrigger = pgTable(
     admissionState: text("admission_state").$type<"waiting" | "admitted" | "superseded">().notNull().default("waiting"),
     changedPaths: jsonb("changed_paths").$type<string[]>().notNull().default([]),
     serviceIds: text("service_ids").array().notNull(),
+    // The frozen Conditional Saves this trigger lands when admitted: its commit is, or descends from, their merge commit.
+    conditionalSaveIds: uuid("conditional_save_ids").array().notNull().default([]),
     selectionMode: text("selection_mode")
       .notNull()
       .$type<GithubTriggerSelectionMode>(),

@@ -1,0 +1,1 @@
+ALTER TABLE "github_environment_trigger" ADD COLUMN "conditional_save_ids" uuid[] DEFAULT '{}'::uuid[] NOT NULL;

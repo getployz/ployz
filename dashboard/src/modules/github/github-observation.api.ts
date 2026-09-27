@@ -57,6 +57,7 @@ export type GithubObservationOperation =
   | "fetch_run"
   | "fetch_installation"
   | "fetch_pull_request"
+  | "list_commit_pulls"
   | "list_check_runs"
   | "create_check_run"
   | "update_check_run";
@@ -155,6 +156,12 @@ const pullRequestResponseSchema = Schema.Struct({
   merged: Schema.Boolean,
   merge_commit_sha: Schema.NullOr(githubExactShaSchema),
 });
+const commitPullsResponseSchema = Schema.Array(Schema.Struct({
+  number: githubIdSchema,
+  base: Schema.Struct({ ref: githubBranchNameSchema }),
+  merged_at: Schema.NullOr(Schema.String),
+  merge_commit_sha: Schema.NullOr(githubExactShaSchema),
+}));
 const installationTokenResponseSchema = Schema.Struct({
   token: Schema.String.check(Schema.isMinLength(1)),
   expires_at: githubTimestampSchema,
@@ -412,6 +419,24 @@ export const fetchInstallationPullRequest = Effect.fn(
     // Only a merged pull request's is its merge commit.
     mergeCommitSha: observed.merged ? observed.merge_commit_sha : null,
   };
+});
+/** The merged pull requests a commit belongs to, each with its target Git branch and merge commit. */
+export const listInstallationCommitMergedPullRequests = Effect.fn(
+  "Github.listInstallationCommitMergedPullRequests",
+)(function* (installationId: number, repositoryId: number, sha: string) {
+  const operation = "list_commit_pulls";
+  if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(sha)) {
+    return yield* githubObservationError({ code: "invalid_input", operation, retriable: false });
+  }
+  const api = yield* GithubApi;
+  const observed = yield* api.json({
+    installationId,
+    url: `https://api.github.com/repositories/${repositoryId}/commits/${sha}/pulls`,
+    operation,
+    schema: commitPullsResponseSchema,
+  });
+  return observed.flatMap((pull) => pull.merged_at && pull.merge_commit_sha
+    ? [{ number: pull.number, targetBranch: pull.base.ref, mergeCommitSha: pull.merge_commit_sha }] : []);
 });
 export type GithubPullRequestObservation = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
 

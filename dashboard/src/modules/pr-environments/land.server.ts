@@ -1,12 +1,17 @@
 import "@tanstack/react-start/server-only";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { branchChanges, type BranchPick, type BranchRow } from "@ployz/sdk/config";
 import type { JsonValue } from "#/db/tables";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
-import { project } from "#/modules/project/tables";
+import { environmentBranch, project } from "#/modules/project/tables";
+import { githubEnvironmentTrigger } from "#/modules/github/tables";
+import {
+  compareInstallationRepositoryCommits, isGithubObservationNotFound, listInstallationCommitMergedPullRequests, resolveGithubRepository,
+  type GithubResolvedRepository,
+} from "#/modules/github/github-observation.api";
 import { service } from "#/modules/environment-design/tables";
 import { parseDashboardEnvironmentIntent, withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { loadCurrentEnvironmentState, loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
@@ -139,11 +144,98 @@ export const landAtMerge = Effect.fn("PrEnvironments.landAtMerge")(function* (pu
   }
 });
 
+/** A frozen Conditional Save a push carries to its Destination. */
+export type CarriedSave = { id: string; destinationEnvironmentId: string };
+
+/** Whether `sha` is, or descends from, `ancestor`. */
+const descendsFrom = (installationId: number, repository: GithubResolvedRepository, ancestor: string, sha: string) => ancestor === sha
+  ? Effect.succeed(true)
+  : compareInstallationRepositoryCommits(installationId, repository, ancestor, sha).pipe(
+    Effect.map(({ status }) => status === "ahead" || status === "identical"),
+    Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(false)),
+  );
+
+/**
+ * The frozen Conditional Saves a push of `headSha` to `ref` carries: those whose merge commit it is, or descends from.
+ * A pull request that merged by this commit before its closed delivery arrived freezes its approvals here first. Asks
+ * GitHub, so call it before the admission transaction.
+ */
+export const heldChangesCarriedBy = Effect.fn("PrEnvironments.heldChangesCarriedBy")(function* (push: {
+  installationId: number; repository: GithubResolvedRepository; repositoryId: number; ref: string; headSha: string;
+}) {
+  const { drizzle } = yield* Database;
+  const targetBranch = push.ref.slice("refs/heads/".length);
+  const ofBranch = and(eq(conditionalSave.repositoryId, push.repositoryId), eq(conditionalSave.targetBranch, targetBranch));
+  // Nothing standing: skip the read from GitHub.
+  const [anyStanding] = yield* drizzle.select({ id: conditionalSave.id }).from(conditionalSave)
+    .where(and(ofBranch, isNotNull(conditionalSave.prEnvironmentId))).limit(1);
+  if (anyStanding) {
+    for (const pull of yield* listInstallationCommitMergedPullRequests(push.installationId, push.repositoryId, push.headSha)) {
+      if (pull.targetBranch !== targetBranch) continue;
+      const prEnvironments = yield* drizzle.select({ id: environmentBranch.environmentId }).from(environmentBranch)
+        .where(and(eq(environmentBranch.prRepositoryId, push.repositoryId), eq(environmentBranch.prNumber, pull.number)));
+      yield* settleAtClose(prEnvironments.map((row) => row.id), { commitSha: pull.mergeCommitSha, targetBranch });
+    }
+  }
+  const frozen = yield* drizzle.select().from(conditionalSave)
+    .where(and(ofBranch, isNotNull(conditionalSave.mergeCommitSha), isNull(conditionalSave.landedSavedStateId)));
+  const carried: CarriedSave[] = [];
+  const descends = new Map<string, boolean>();
+  for (const save of frozen) {
+    const merge = save.mergeCommitSha ?? "";
+    if (!descends.has(merge)) descends.set(merge, yield* descendsFrom(push.installationId, push.repository, merge, push.headSha));
+    if (descends.get(merge)) carried.push({ id: save.id, destinationEnvironmentId: save.destinationEnvironmentId });
+  }
+  return carried;
+});
+
+/**
+ * Lands the frozen Conditional Saves among `ids` held on `document`, a Destination whose queue lock and document the
+ * caller holds. Returns whether any landed.
+ */
+export const landCarried = Effect.fn("PrEnvironments.landCarried")(function* (ids: readonly string[], document: Document) {
+  if (ids.length === 0) return false;
+  const { drizzle } = yield* Database;
+  const saves = yield* drizzle.select().from(conditionalSave).where(and(inArray(conditionalSave.id, [...ids]),
+    eq(conditionalSave.destinationEnvironmentId, document.id), isNotNull(conditionalSave.mergeCommitSha), isNull(conditionalSave.landedSavedStateId)))
+    .orderBy(asc(conditionalSave.approvedAt)).for("update");
+  for (const save of saves) yield* landConditionalSave(save, document);
+  return saves.length > 0;
+});
+
+/**
+ * A trigger already waiting for CI on the merged pull request's target Git branch carries its frozen Conditional Saves
+ * for its Destination, when its commit is, or descends from, the merge commit. Asks GitHub, outside any transaction.
+ */
+export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTriggers")(function* (pullRequest: {
+  installationId: number; repositoryId: number; number: number;
+}) {
+  const { drizzle } = yield* Database;
+  const frozen = yield* drizzle.select().from(conditionalSave).where(and(eq(conditionalSave.repositoryId, pullRequest.repositoryId),
+    eq(conditionalSave.prNumber, pullRequest.number), isNotNull(conditionalSave.mergeCommitSha), isNull(conditionalSave.landedSavedStateId)));
+  let repository: GithubResolvedRepository | undefined;
+  for (const save of frozen) {
+    const waiting = yield* drizzle.select().from(githubEnvironmentTrigger).where(and(
+      eq(githubEnvironmentTrigger.repositoryId, save.repositoryId), eq(githubEnvironmentTrigger.ref, `refs/heads/${save.targetBranch}`),
+      eq(githubEnvironmentTrigger.environmentId, save.destinationEnvironmentId), eq(githubEnvironmentTrigger.admissionState, "waiting")));
+    for (const trigger of waiting) {
+      if (trigger.conditionalSaveIds.includes(save.id)) continue;
+      repository ??= yield* resolveGithubRepository(pullRequest.installationId, pullRequest.repositoryId);
+      if (!(yield* descendsFrom(pullRequest.installationId, repository, save.mergeCommitSha ?? "", trigger.headSha))) continue;
+      // ponytail: admitted in between, it lands nothing; the next push that descends from the merge commit does.
+      yield* drizzle.update(githubEnvironmentTrigger).set({ conditionalSaveIds: sql`array_append(${githubEnvironmentTrigger.conditionalSaveIds}, ${save.id}::uuid)` })
+        .where(and(eq(githubEnvironmentTrigger.id, trigger.id), eq(githubEnvironmentTrigger.admissionState, "waiting")));
+    }
+  }
+});
+
 /**
  * The pull request closed: each PR Environment's Conditional Saves freeze with the merge commit if it merged and they
  * still stand, and drop otherwise. Frozen ones leave the PR Environment, so its teardown keeps them. Call before it.
  */
-export const settleAtClose = Effect.fn("PrEnvironments.settleAtClose")(function* (prEnvironmentIds: string[], mergeCommitSha: string | null) {
+export const settleAtClose = Effect.fn("PrEnvironments.settleAtClose")(function* (
+  prEnvironmentIds: string[], merge: { commitSha: string; targetBranch: string } | null,
+) {
   const database = yield* Database;
   for (const prEnvironmentId of prEnvironmentIds) {
     yield* database.transaction(Effect.gen(function* () {
@@ -151,9 +243,9 @@ export const settleAtClose = Effect.fn("PrEnvironments.settleAtClose")(function*
       // Its document, so no settings edit slips in between the check and the freeze.
       const document = yield* loadEnvironmentDocument(prEnvironmentId, true);
       const ofPr = eq(conditionalSave.prEnvironmentId, prEnvironmentId);
-      if (mergeCommitSha) {
-        yield* drizzle.update(conditionalSave).set({ mergeCommitSha, prEnvironmentId: null })
-          .where(and(ofPr, eq(conditionalSave.workingRevision, document.revision)));
+      if (merge) {
+        yield* drizzle.update(conditionalSave).set({ mergeCommitSha: merge.commitSha, prEnvironmentId: null })
+          .where(and(ofPr, eq(conditionalSave.workingRevision, document.revision), eq(conditionalSave.targetBranch, merge.targetBranch)));
       }
       yield* drizzle.delete(conditionalSave).where(ofPr);
     }));
