@@ -1,11 +1,12 @@
 import { useContext, type ReactNode } from "react";
 import { useLoaderData, useParams } from "@tanstack/react-router";
-import { GitPullRequestIcon } from "lucide-react";
+import { CircleCheckIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { listNames } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView, type PullRequest } from "#/modules/branches/use-branch-review";
+import { PR_CHECK_NAME, type PrCheck } from "#/modules/pr-environments/pr-check";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { StagedReviewSlot } from "../canvas/BottomBar";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
@@ -47,6 +48,7 @@ export function BranchReviewPanel() {
               {review.goesTo.map((landing) => (
                 <GoesToSection key={landing.destination.id} review={review} pr={pr} landing={landing} name={name} environmentId={environmentId} />
               ))}
+              {review.check ? <CheckSection check={review.check} pr={pr} /> : null}
             </>
           ) : <MergeSection review={review} branch={{ id: environmentId, name }} />}
           <UpdateSection review={review} environmentId={environmentId} />
@@ -94,6 +96,26 @@ function CodeSection({ review, pr }: { review: BranchReviewView; pr: PullRequest
             </ItemDescription>
           </ItemContent>
           <ItemActions className="text-sm text-muted-foreground">Merges on GitHub</ItemActions>
+        </Item>
+      </ItemGroup>
+    </ReviewSection>
+  );
+}
+
+/** The check Ployz posts on the pull request, as GitHub shows it. */
+function CheckSection({ check, pr }: { check: PrCheck; pr: PullRequest }) {
+  return (
+    <ReviewSection title="On GitHub" help={`Ployz posts this check on #${pr.number}. Make it required in GitHub if merges should wait for it.`}>
+      <ItemGroup>
+        <Item variant="outline" size="sm">
+          <ItemMedia variant="icon">{check.passing ? <CircleCheckIcon className="text-success" /> : <TriangleAlertIcon className="text-warning" />}</ItemMedia>
+          <ItemContent className="min-w-0">
+            <ItemTitle>{PR_CHECK_NAME}</ItemTitle>
+            <ItemDescription className="wrap-anywhere">{check.reason}</ItemDescription>
+          </ItemContent>
+          <ItemActions>
+            <Badge variant={check.passing ? "success" : "warning"}>{check.passing ? "Passing" : "Action required"}</Badge>
+          </ItemActions>
         </Item>
       </ItemGroup>
     </ReviewSection>

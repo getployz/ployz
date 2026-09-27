@@ -67,6 +67,8 @@ const stagingIntent = {
 
 type PullRequest = { number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } }; base?: { ref: string }; draft: boolean };
 
+type CheckRunBody = { head_sha?: string; conclusion: string; details_url: string; output: { title: string; summary: string } };
+
 type PushDelivery = { ref: string; before: string; after: string; created: boolean; deleted: boolean; forced: boolean };
 type PullRequestDelivery = {
   action: string;
@@ -87,7 +89,7 @@ describe("PR Environment lifecycle", () => {
     return { ids: [] };
   };
   // The check runs GitHub has, and whether the installation refuses to write them.
-  const checkRuns: Array<{ id: number; headSha: string; body: Record<string, unknown> }> = [];
+  const checkRuns: Array<{ id: number; headSha: string; body: CheckRunBody }> = [];
   let checksForbidden = false;
   const githubApi = {
     archive: () => Effect.die("unused"),
@@ -95,7 +97,7 @@ describe("PR Environment lifecycle", () => {
       if (checksForbidden && request.method) {
         return Effect.fail(new GithubObservationError({ code: "request_failed", operation: request.operation, status: 403, retriable: false, message: "Forbidden" }));
       }
-      const body = request.body as Record<string, unknown>;
+      const body = request.body as CheckRunBody;
       const response = (() => {
         switch (request.operation) {
           case "fetch_pull_request": {
@@ -112,7 +114,7 @@ describe("PR Environment lifecycle", () => {
             return { check_runs: checkRuns.filter((run) => run.headSha === sha).map((run) => ({ id: run.id })) };
           }
           case "create_check_run": {
-            const run = { id: checkRuns.length + 1, headSha: String(body["head_sha"]), body };
+            const run = { id: checkRuns.length + 1, headSha: String(body.head_sha), body };
             checkRuns.push(run);
             return { id: run.id };
           }
@@ -511,8 +513,8 @@ describe("PR Environment lifecycle", () => {
       const runOn = (sha: string) => {
         const runs = checkRuns.filter((run) => run.headSha === sha);
         expect(runs).toHaveLength(1);
-        const body = runs[0]?.body as { conclusion: string; details_url: string; output: { title: string; summary: string } };
-        return { conclusion: body.conclusion, reason: body.output.title, detailsUrl: body.details_url, summary: body.output.summary };
+        const body = runs[0]?.body;
+        return { conclusion: body?.conclusion, reason: body?.output.title, detailsUrl: body?.details_url, summary: body?.output.summary };
       };
       // Its web addresses: api's managed hostname on the Organization's Cluster Domain.
       await harness.pool.query(`insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at)

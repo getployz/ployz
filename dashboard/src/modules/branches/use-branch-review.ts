@@ -2,11 +2,12 @@ import { useEnvironmentChangeStatesIfReady } from "#/modules/deployments/environ
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinationCandidates, destinations } from "#/modules/pr-environments/destinations";
-import { useStandingSaves } from "#/modules/pr-environments/conditional-save.collection";
+import { useConditionalSaves } from "#/modules/pr-environments/conditional-save.collection";
+import { prCheck, type PrCheck } from "#/modules/pr-environments/pr-check";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { branchHostnameSuffix } from "./branch-plan";
 import { useLineageNames } from "./use-lineage-names";
-import { branchReview, goesTo, latestDeploy, liveUpdates, usedLive, type BranchReview, type GoesTo, type LiveUpdate } from "./branch-review";
+import { branchReview, goesTo, latestDeploy, liveUpdates, usedLive, variableName, type BranchReview, type GoesTo, type LiveUpdate } from "./branch-review";
 
 export type PullRequest = { number: number; title: string; author: string; headBranch: string; targetBranch: string };
 
@@ -23,6 +24,8 @@ export type BranchReviewView = BranchReview & {
   goesTo: Array<GoesTo & { destination: EnvironmentName; approval: ConditionalSaveRow | null }>;
   /** A PR Environment whose every Destination with changes has a standing approval. */
   approved: boolean;
+  /** A PR Environment's "Ployz · ready to merge" check, as Ployz posts it on the pull request; null for any other Branch. */
+  check: PrCheck | null;
   /** "N changes": what would merge, or on a PR Environment what goes to its Destinations. */
   changes: number;
   /** "N updates": the Parent's deployed changes the Branch lacks, plus Live Nodes redeployed since. */
@@ -50,7 +53,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
     return environment && project ? branchHostnameSuffix(project.slug, environment.namespace, branchById.has(environmentId)) : "";
   };
   const lineageName = useLineageNames(organizationSlug);
-  const saves = useStandingSaves(organizationSlug);
+  const saves = useConditionalSaves(organizationSlug);
 
   return (environmentId) => {
     const row = branchById.get(environmentId);
@@ -74,9 +77,11 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       environments: destinationCandidates(project, branches, states), repositoryId: row.prRepositoryId, targetBranch: pr.targetBranch,
     }).flatMap((id) => {
       const destination = environmentById.get(id);
+      const save = saves.find((candidate) => candidate.prEnvironmentId === environmentId && candidate.destinationEnvironmentId === id) ?? null;
       return destination ? [{
         destination,
-        approval: saves.find((save) => save.prEnvironmentId === environmentId && save.destinationEnvironmentId === id) ?? null,
+        save,
+        approval: save?.standing ? save : null,
         ...goesTo({
           base: row.base, kept: false, branch: branch.intent, parent: destination.intent,
           parentApplied: stateById.get(parent.id)?.applied.intent ?? null,
@@ -84,8 +89,16 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
         }),
       }] : [];
     }) : [];
+    const check = pr && prCheck(landings.map(({ destination, rows, save }) => ({
+      name: destination.name,
+      changes: rows.length,
+      approval: save && {
+        standing: save.standing, changes: save.rows.length, approvedBy: save.approvedBy,
+        missing: save.rows.filter((held) => held.missing).map((held) => variableName(held.row)),
+      },
+    })));
     return {
-      ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings,
+      ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings, check,
       approved: landings.some((landing) => landing.rows.length) && landings.every((landing) => !landing.rows.length || landing.approval),
       changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.merge.length,
       updates: review.update.length + live.length,

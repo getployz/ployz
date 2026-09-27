@@ -191,10 +191,10 @@ it("on a Branch, then shows what would merge into its Parent, else what's new th
 });
 
 it("on a PR Environment, says whether it's approved; on a Destination, what waits for a pull request once nothing else shows", async () => {
-  const pullRequest = (approved: boolean) => asTestDouble<branchReviews.BranchReviewView>()({
+  const pullRequest = (approved: boolean, check: branchReviews.BranchReviewView["check"] = null) => asTestDouble<branchReviews.BranchReviewView>()({
     ...branchReview([], 0), pullRequest: { number: 142, title: "Discounts", author: "maya", headBranch: "discounts", targetBranch: "main" },
     goesTo: [{ destination: { id: "env-0", name: "production", namespace: "shop-production" }, rows: [imageRow("web:2")], review: "r", approval: null }],
-    approved, changes: 1,
+    approved, changes: 1, check,
   });
   branch = pullRequest(false);
   open(canvasUrl);
@@ -209,6 +209,11 @@ it("on a PR Environment, says whether it's approved; on a Destination, what wait
   expect(approved.getByText("Approved")).toBeTruthy();
   expect(approved.getByText("Lands when #142 merges")).toBeTruthy();
   expect(approved.getByRole("link", { name: "Review" })).toBeTruthy();
+  cleanup();
+  // Approved, but the check still wants something: the bar says what.
+  branch = pullRequest(true, { passing: false, reason: "STRIPE_KEY needs a value for production" });
+  open(canvasUrl);
+  expect((await bar()).getByText("STRIPE_KEY needs a value for production")).toBeTruthy();
   cleanup();
 
   held = [asTestDouble<ConditionalSaveRow>()({ id: "save", prNumber: 142, approvedBy: "maya", rows: [{ row: imageRow("web:2"), missing: false }] })];
