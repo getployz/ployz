@@ -56,18 +56,13 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
     : Effect.logWarning(why, { environmentId, cause }).pipe(Effect.as(false))),
 );
 
-/**
- * Holds a closing Branch in lock order (lockProjectDefault): its Project, then its Branch row, which Keep also takes. Null
- * when the Branch is gone.
- */
-const lockClosingBranch = (projectId: string, environmentId: string) => lockBranchScope(projectId, environmentId, "update");
 
 /** Closes a merged Branch unless it was kept meanwhile; false when it doesn't close, and the Merge stands. */
 export const tryCloseBranch = (environmentId: string) => Effect.gen(function* () {
   const database = yield* Database;
   return yield* tryClose(environmentId, "A merged Branch did not close.",
     closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
-      const row = yield* lockClosingBranch(close.projectId, environmentId);
+      const row = yield* lockBranchScope(close.projectId, environmentId, "update");
       return !row || row.kept ? null : yield* close.admit;
     })))));
 });
@@ -112,7 +107,7 @@ export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now:
     closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       // The rule again, in lock order (lockProjectDefault): the Project (a new Branch of it and a Default change wait),
       // the Branch row (Keep, Merge and Update wait), then its queue (a deploy waits).
-      yield* lockClosingBranch(close.projectId, environmentId);
+      yield* lockBranchScope(close.projectId, environmentId, "update");
       yield* lockEnvironmentDeploymentQueue(environmentId);
       if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;
       return yield* close.admit;
