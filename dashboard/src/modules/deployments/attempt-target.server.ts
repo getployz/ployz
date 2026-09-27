@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
+import type { JsonObject } from "#/db/tables";
 import { asRecord, asString } from "#/lib/json";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { compareNodeSettings } from "#/modules/environment-design/environment-change-set";
@@ -10,7 +11,7 @@ import { Database } from "#/server/database.server";
 import type { TargetNodeList } from "./deployment-contract";
 import { environmentDeployment } from "./tables";
 
-type Node = { nodeType: "service" | "volume"; nodeId: string; config: unknown };
+type Node = { nodeType: "service" | "volume"; nodeId: string; config: JsonObject };
 
 /**
  * A snapshot's node facts for the target node list. Raw JSON reads: an applied config may predate today's config schema.
