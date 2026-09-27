@@ -21,7 +21,7 @@ import { assertBranchSettled } from "./branch-guard.server";
 import { tryCloseBranch } from "./branch-close.server";
 import { core, landChanges } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
-import { mergeInput, rowLineage } from "./branch-review";
+import { mergeInput, rowLineage, variableName } from "./branch-review";
 import type { MergeBranch } from "./branch-schemas";
 
 /**
@@ -69,7 +69,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     // 4. Apply the picks with core; new values are sealed here, never in the browser.
     // A new value, secret or not, lands; an empty one would leave the change behind in a Branch that may close.
     const empty = input.picks.find((pick) => pick.option === "new" && pick.value === "");
-    if (empty) return yield* new Validation({ field: "picks", message: `Enter a new value for ${empty.key.slice(empty.key.indexOf(".") + 1)}.` });
+    if (empty) return yield* new Validation({ field: "picks", message: `Enter a new value for ${variableName(empty)}.` });
     const refs = environmentVariableReferences(into);
     const picks = input.picks.map((pick): BranchPick => {
       if (pick.option !== "new") return pick.option ? { key: pick.key, choice: { option: pick.option } } : { key: pick.key };
