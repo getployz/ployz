@@ -1,16 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import { PloyzMark } from "./icons/ployz-logo";
 import type { DashboardNavItem } from "./dashboard-navigation-model";
-import { Button } from "./ui/button";
+import { buttonVariants } from "./ui/button-variants";
 import { cn } from "#/lib/utils";
 
 /** The logo opens Projects. */
 export function HomeLink({ organizationSlug, className }: { organizationSlug: string; className?: string }) {
   return (
-    <Button variant="ghost" size="icon-lg" className={className} aria-label="Projects" title="Projects"
-      render={<Link to="/cloud/$organizationSlug/~" params={{ organizationSlug }} />}>
+    <Link to="/cloud/$organizationSlug/~" params={{ organizationSlug }} aria-label="Projects" title="Projects"
+      className={cn(buttonVariants({ variant: "ghost", size: "icon-lg" }), className)}>
       <PloyzMark decorative className="size-7" />
-    </Button>
+    </Link>
   );
 }
 
@@ -22,10 +22,10 @@ export function Rail({ organizationSlug, places, account }: {
 }) {
   return (
     <nav aria-label="Dashboard navigation"
-      className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r bg-background py-2 min-wf-nav:flex">
+      className="hidden w-18 shrink-0 flex-col items-center gap-1 border-r bg-background py-2 min-wf-nav:flex">
       <HomeLink organizationSlug={organizationSlug} className="mb-3" />
       {places.map((place) => <Place key={place.section} place={place}
-        className="w-14 flex-col gap-1 rounded-lg py-2 text-[0.625rem]" />)}
+        className="w-16 flex-col gap-1 rounded-lg py-2 text-[0.625rem] whitespace-nowrap" />)}
       <div className="mt-auto">{account}</div>
     </nav>
   );

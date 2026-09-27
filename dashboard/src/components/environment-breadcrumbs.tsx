@@ -65,18 +65,26 @@ export function Crumbs({ items }: { items: ReactNode[] }) {
           </BreadcrumbItem>
           <BreadcrumbSeparator className="min-wf-nav:hidden">/</BreadcrumbSeparator>
         </> : null}
-        {items.map((item, index) => {
-          const hiddenOnPhones = index < collapsed.length ? "hidden min-wf-nav:inline-flex" : undefined;
-          return <Crumb key={index} className={hiddenOnPhones} separator={index > 0}>{item}</Crumb>;
-        })}
+        {items.map((item, index) => (
+          // The "…" menu brings its own separator, so the first visible crumb's is desktop-only too.
+          <Crumb key={index} className={index < collapsed.length ? phonesHidden : undefined}
+            separator={index > 0} separatorClassName={index <= collapsed.length ? phonesHidden : undefined}>{item}</Crumb>
+        ))}
       </BreadcrumbList>
     </Breadcrumb>
   );
 }
 
-function Crumb({ className, separator, children }: { className?: string; separator: boolean; children: ReactNode }) {
+const phonesHidden = "hidden min-wf-nav:inline-flex";
+
+function Crumb({ className, separator, separatorClassName, children }: {
+  className?: string | undefined;
+  separator: boolean;
+  separatorClassName?: string | undefined;
+  children: ReactNode;
+}) {
   return <>
-    {separator ? <BreadcrumbSeparator className={className}>/</BreadcrumbSeparator> : null}
+    {separator ? <BreadcrumbSeparator className={separatorClassName}>/</BreadcrumbSeparator> : null}
     <BreadcrumbItem className={className ?? "min-w-0"}>{children}</BreadcrumbItem>
   </>;
 }
