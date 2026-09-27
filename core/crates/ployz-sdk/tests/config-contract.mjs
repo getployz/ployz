@@ -57,6 +57,12 @@ const resolved = api.resolveVariables({
 assert.equal(resolved.status, 'resolved');
 assert.equal(resolved.secret, true);
 assert.equal(resolved.value, 'private-value');
+const live = api.liveValues({
+  owner: { namespace: 'shop', producers: [{ ownerScope: 'service', ownerId: 'api', ownerLineageId: 'lineage', key: 'PLOYZ_PRIVATE_DOMAIN', value: { kind: 'literal', value: 'api.internal' } }] },
+  lineages: [{ lineageId: 'lineage', keys: ['PLOYZ_PRIVATE_DOMAIN', 'UNSET'] }],
+});
+assert.equal(live.producers[0].value.value, 'api.shop.internal');
+assert.deepEqual(live.missing, [{ lineageId: 'lineage', key: 'UNSET' }]);
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const { env, mounts, ...settings } = baseline;
 const intent = api.parseEnvironmentIntent({

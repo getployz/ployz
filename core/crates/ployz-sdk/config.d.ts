@@ -10,6 +10,7 @@ export function compareServiceSettings(current: ServiceConfig, baseline: Service
 export function restoreServiceSetting(current: ServiceConfig, baseline: ServiceConfig, path: string): ServiceConfig;
 
 export function resolveVariables(value: import('./generated/payloads').ResolveVariablesInput): import('./generated/payloads').ResolveVariablesResult;
+export function liveValues(value: import('./generated/payloads').LiveValuesInput): import('./generated/payloads').LiveValues;
 
 export function parseEnvironmentIntent(value: unknown): import('./generated/payloads').SavedEnvironmentIntent;
 export function canonicalizeEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
