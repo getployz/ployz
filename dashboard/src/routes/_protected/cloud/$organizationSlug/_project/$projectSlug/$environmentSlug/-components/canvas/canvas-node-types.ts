@@ -2,6 +2,7 @@ import type { Node } from "@xyflow/react";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
 import { LoadingNode, ServiceNode } from "./ServiceNode";
 import { VolumeNode } from "./VolumeNode";
+import { LiveServiceNode } from "./LiveServiceNode";
 
 export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
   id: "loading-placeholder",
@@ -15,5 +16,6 @@ export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
 export const canvasNodeTypes = {
   service: ServiceNode,
   volume: VolumeNode,
+  live: LiveServiceNode,
   loading: LoadingNode,
 };

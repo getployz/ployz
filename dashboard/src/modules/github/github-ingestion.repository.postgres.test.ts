@@ -58,7 +58,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
     operation: Effect.Effect<
       Success,
       Failure,
-      import("#/server/database.server").Database | InngestClient
+      import("#/server/database.server").Database | InngestClient | import("#/utils/encrypted-secret.server").SecretEncryption
     >,
   ) =>
     harness.runEffect(Effect.result(operation.pipe(Effect.provideService(InngestClient, inngest))));

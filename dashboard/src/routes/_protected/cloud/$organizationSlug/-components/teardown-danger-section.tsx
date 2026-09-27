@@ -45,6 +45,8 @@ export function TeardownDangerSection({
   confirmPhrase,
   title,
   description,
+  closes = [],
+  disabledReason,
   actionLabel,
   headingId,
   onCompleted,
@@ -56,6 +58,10 @@ export function TeardownDangerSection({
   confirmPhrase: string;
   title: string;
   description: string;
+  /** Branches the teardown closes first. */
+  closes?: readonly string[];
+  /** Why the teardown can't start, which disables it. */
+  disabledReason?: string;
   actionLabel: string;
   headingId: string;
   onCompleted?: () => void;
@@ -138,11 +144,19 @@ export function TeardownDangerSection({
               <p className="mt-1 text-sm text-foreground">
                 {resolvedDescription}
               </p>
+              {closes.length > 0 && (
+                <p className="mt-1 text-sm text-foreground">
+                  It closes {closes.length === 1 ? "its branch" : "its branches"} first: {closes.join(", ")}.
+                </p>
+              )}
+              {disabledReason && (
+                <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>
+              )}
             </div>
             <Button
               variant="destructive"
               className="shrink-0"
-              disabled={busy}
+              disabled={busy || disabledReason !== undefined}
               onClick={() => setOpen(true)}
             >
               <Trash2Icon data-icon="inline-start" />

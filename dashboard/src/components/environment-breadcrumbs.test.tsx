@@ -5,6 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider, useParams } from "@tanstack/react-router";
 import { getEnvironmentSummariesCollection } from "#/collections/collections";
+import * as branchReviews from "#/modules/branches/use-branch-review";
+import { asTestDouble } from "#/lib/test-double";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
 
 beforeEach(() => {
@@ -33,6 +35,16 @@ async function renderAt(path: string) {
     { createdAt: new Date(1), id: "store-staging", projectId: "store", namespace: "staging", name: "Staging" },
     { createdAt: new Date(1), id: "docs-production", projectId: "docs", namespace: "production", name: "Docs production" },
     { createdAt: new Date(0), id: "docs-preview", projectId: "docs", namespace: "preview", name: "Docs preview" },
+    { createdAt: new Date(2), id: "store-fix-web", projectId: "store", namespace: "fix-web", name: "fix-web" },
+  ]));
+  queryClient.setQueryData(key("environment_branch"), orgStoreSeed([
+    { environmentId: "store-fix-web", parentEnvironmentId: "store-production" },
+  ]));
+  queryClient.setQueryData(key("environment_deployment"), orgStoreSeed([
+    { id: "attempt", environmentId: "store-production" },
+    { id: "attempt-staging", environmentId: "store-staging" },
+    { id: "attempt-docs", environmentId: "docs-preview" },
+    { id: "attempt-docs-production", environmentId: "docs-production" },
   ]));
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }), component: Outlet });
@@ -83,11 +95,34 @@ it("switches between this project's Environments and keeps the place", async () 
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/logs"));
 });
 
-it("opens the create dialog from New environment", async () => {
+it("lists Environments as a tree, each Branch under its Parent, noting the default and what was never deployed", async () => {
   await using _app = await renderAt("/cloud/acme/store/production/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
-  fireEvent.click(await screen.findByRole("option", { name: "New environment" }));
-  expect(await screen.findByRole("dialog", { name: "Add environment" })).toBeTruthy();
+  await screen.findByRole("option", { name: "Production, default" });
+  expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
+    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "New branch of Production", "Manage environments",
+  ]);
+  expect(screen.queryByRole("option", { name: /New environment/u })).toBeNull();
+});
+
+it("offers New branch of the current Environment, which opens the panel over its canvas", async () => {
+  await using app = await renderAt("/cloud/acme/store/production/logs");
+  fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
+  fireEvent.click(await screen.findByRole("option", { name: "New branch of Production" }));
+  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/production/new-branch"));
+});
+
+it("reads project / Parent ⑂ Branch on a Branch, and the Parent's crumb opens the Parent in the same place", async () => {
+  await using app = await renderAt("/cloud/acme/store/fix-web/logs");
+  expect(screen.getByRole("button", { name: "Environment: fix-web" })).toBeTruthy();
+  // Phones fold all but the last two crumbs into a menu: the Branch's own crumb stays out of it.
+  fireEvent.click(screen.getByRole("button", { name: "More breadcrumbs" }));
+  const menu = await screen.findByRole("dialog", { name: "More breadcrumbs" });
+  expect(within(menu).getByRole("link", { name: "Parent: Production" })).toBeTruthy();
+  expect(within(menu).queryByRole("button", { name: "Environment: fix-web" })).toBeNull();
+  fireEvent.click(within(menu).getByRole("link", { name: "Parent: Production" }));
+  await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/production/logs"));
+  expect(screen.queryByRole("link", { name: /Parent/u })).toBeNull();
 });
 
 it("keeps every crumb but the last two in a More menu", async () => {
@@ -103,4 +138,15 @@ it("notes the Default Environment and opens the Project settings from Manage env
   expect(await screen.findByRole("option", { name: "Production, default" })).toBeTruthy();
   fireEvent.click(screen.getByRole("option", { name: "Manage environments" }));
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
+});
+
+it("notes each Branch's changes and updates, and offers Review of the current Branch", async () => {
+  const review = asTestDouble<branchReviews.BranchReviewView>()({ changes: 2, updates: 1 });
+  vi.spyOn(branchReviews, "useBranchReviews").mockReturnValue((id) => id === "store-fix-web" ? review : null);
+  await using app = await renderAt("/cloud/acme/store/fix-web/logs");
+  fireEvent.click(screen.getByRole("button", { name: "Environment: fix-web" }));
+  expect(await screen.findByRole("option", { name: "fix-web, branch of Production, not deployed, 2 changes, 1 update" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("option", { name: "Review fix-web" }));
+  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/fix-web/review"));
+  vi.restoreAllMocks();
 });

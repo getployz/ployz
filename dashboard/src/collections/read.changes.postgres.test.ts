@@ -221,6 +221,7 @@ describe("every Org Store collection reads its changes from the Organization cha
   const userId = randomUUID();
   const projectId = randomUUID();
   const environmentId = randomUUID();
+  const branchId = randomUUID();
   const deploymentId = randomUUID();
   const slug = `every-${randomUUID().slice(0, 8)}`;
 
@@ -249,6 +250,14 @@ describe("every Org Store collection reads its changes from the Organization cha
       )
       insert into service (organization_id, project_id, environment_id, lineage_id, name) select $1, $2, $3, id, 'web' from lineage
     `, [organizationId, projectId, environmentId]);
+    await sql(
+      "insert into environment (id, organization_id, project_id, name, namespace, intent) values ($1, $2, $3, 'fix-web', 'fix-web', '{}')",
+      [branchId, organizationId, projectId],
+    );
+    const sealedBase = { services: [{ variables: [{ name: "TOKEN", value: { kind: "secret", encryptedValue: { ciphertext: "sealed-ciphertext" } } }] }] };
+    await sql(`insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, setup_commands, created_by_user_id)
+      values ($1, $2, $3, $4, $5, '[{"lineageId": "web", "command": "pnpm seed"}]', $6)`,
+    [branchId, organizationId, projectId, environmentId, JSON.stringify(sealedBase), userId]);
     await sql("insert into resource_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values ($1, $2, $3, 'data', 'data')",
       [lineageId, organizationId, projectId]);
     await sql("insert into environment_resource (organization_id, project_id, environment_id, lineage_id, implementation_type) values ($1, $2, $3, $4, 'volume')",
@@ -292,6 +301,16 @@ describe("every Org Store collection reads its changes from the Organization cha
       expect(changes, source).toMatchObject({ full: false, deleted: [] });
       expect(serialized(changes.rows), source).toEqual(serialized(full.rows));
     }
+  });
+
+  it("reads a Branch's row with its Parent and Setup Commands, and no sealed ciphertext in its base", async () => {
+    const { rows } = await read("environment_branch");
+    expect(rows).toMatchObject([{
+      environmentId: branchId, parentEnvironmentId: environmentId, kept: false, createdByUserId: userId,
+      setupCommands: [{ lineageId: "web", command: "pnpm seed" }],
+      base: { services: [{ variables: [{ name: "TOKEN", value: { kind: "secret" } }] }] },
+    }]);
+    expect(JSON.stringify(rows)).not.toMatch(/encryptedValue|sealed-ciphertext/u);
   });
 
   it("moves a deployment's progress when an event is logged", async () => {

@@ -71,8 +71,9 @@ pub fn parse_live_values_input(value: Value) -> Result<LiveValuesInput, ConfigEr
 
 /// Rescope the owner's producers: used lineages keep their id so the Branch finds them; every
 /// other owner lineage moves under the owner's namespace so the Branch's Own Copies of the
-/// same lineage neither capture nor shadow them. Private addresses gain the owner's Project.
-/// Secrets pass through untouched.
+/// same lineage neither capture nor shadow them. Private addresses gain the owner's Project,
+/// unless they already name one (the owner uses that node live itself). Secrets pass through
+/// untouched.
 #[must_use]
 pub fn live_values(input: LiveValuesInput) -> LiveValues {
     let LiveValuesInput { owner, lineages } = input;
@@ -110,9 +111,12 @@ pub fn live_values(input: LiveValuesInput) -> LiveValues {
             let value = match producer.value {
                 SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
                     SavedVariableValue::Literal {
+                        // An address the owner itself uses live already names its Project.
                         value: match value.strip_suffix(".internal") {
-                            Some(host) => format!("{host}.{namespace}.internal"),
-                            None => value,
+                            Some(host) if !host.contains('.') => {
+                                format!("{host}.{namespace}.internal")
+                            }
+                            _ => value,
                         },
                     }
                 }

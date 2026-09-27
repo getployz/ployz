@@ -62,6 +62,16 @@ export const admitActiveDeploymentAttempt = Effect.fn(
   }
 });
 
+/**
+ * Several Environments' deployment queues, sorted by id, as the lock order requires (lockProjectDefault). Re-taking a
+ * queue the transaction already holds doesn't wait.
+ */
+export const lockEnvironmentDeploymentQueues = Effect.fn("Deployments.lockEnvironmentDeploymentQueues")(
+  function* (environmentIds: readonly string[]) {
+    for (const id of [...new Set(environmentIds)].sort()) yield* lockEnvironmentDeploymentQueue(id);
+  },
+);
+
 export const lockEnvironmentDeploymentQueue = Effect.fn(
   "Deployments.lockEnvironmentDeploymentQueue",
 )(function* (environmentId: string) {

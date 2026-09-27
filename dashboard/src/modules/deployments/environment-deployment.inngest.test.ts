@@ -1,3 +1,4 @@
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { asTestDouble } from "#/lib/test-double";
 import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -424,6 +425,8 @@ describe("process environment deployment", () => {
           Effect.provideService(InngestClient, undefined as never),
           // SAFETY: The deployment cancellation branch never calls GitHub.
           Effect.provideService(GithubApi, undefined as never),
+          // SAFETY: The deployment cancellation branch never admits a deployment.
+          Effect.provideService(SecretEncryption, undefined as never),
         )),
     );
 

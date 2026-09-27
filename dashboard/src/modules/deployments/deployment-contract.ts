@@ -6,6 +6,7 @@ import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { VolumeConfig } from "#/modules/environment-design/volume-config";
+import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
 import { reviewedEnvironmentPublicationSchema } from "#/modules/environment-design/working-state-review";
 import {
@@ -136,6 +137,7 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   sourcePins: deploymentSourcePinsSchema,
   targetNodes: targetNodeListSchema,
+  missingLiveValues: Schema.Array(Schema.Struct({ serviceId: Uuid, from: Schema.String, key: Schema.String })),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),
@@ -169,6 +171,10 @@ export type EnvironmentChangeStateProjection = {
   applied: {
     token: string;
     nodes: EnvironmentChangeStateNodeProjection[];
+    /** When each Applied node last deployed, by node lineage. */
+    deployedAt: Record<string, Date>;
+    /** Applied State in authored form, redacted, for a Parent of Branches; null for any other Environment, or before its first deploy. */
+    intent: SavedEnvironmentIntent | null;
   };
   deploymentEvidence: {
     id: string;

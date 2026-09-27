@@ -17,12 +17,13 @@ import type {
 import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
 import { strictParseOptions } from "#/modules/environment-design/schema";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { redactSavedEnvironmentIntent, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
-import { environment, project } from "#/modules/project/tables";
+import { environment, environmentBranch, project } from "#/modules/project/tables";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
@@ -101,9 +102,20 @@ function parseEvidenceChangeStateNode(input: {
     : parseEnvironmentChangeStateNode(input);
 }
 
+/**
+ * A Parent's Applied State in authored form, redacted, for its Branches' reviews in the browser; null for an Environment
+ * with no Branches (`namespace` undefined) or before its first deploy.
+ */
+const appliedIntentOfParent = Effect.fn("Deployments.appliedIntentOfParent")(function* (
+  projection: EnvironmentSnapshotProjection, state: EnvironmentSnapshotProjection["explicitStates"][number], namespace: string | undefined,
+) {
+  if (namespace === undefined || state.applied.nodes.length === 0) return null;
+  return redactSavedEnvironmentIntent(yield* loadAppliedIntent(state.environmentId, namespace, projection));
+});
+
 const projectEnvironmentChangeStateRecords = Effect.fn(
   "Deployments.projectEnvironmentChangeStateRecords",
-)(function* (projection: EnvironmentSnapshotProjection) {
+)(function* (projection: EnvironmentSnapshotProjection, parents: ReadonlyMap<string, string>) {
   return yield* Effect.forEach(projection.explicitStates, (state) =>
     Effect.gen(function* () {
       const savedNodes = yield* Effect.forEach(
@@ -121,7 +133,10 @@ const projectEnvironmentChangeStateRecords = Effect.fn(
       return {
         environmentId: state.environmentId,
         saved: state.saved ? { ...state.saved, nodes: savedNodes } : null,
-        applied: { ...state.applied, nodes: appliedNodes },
+        applied: {
+          ...state.applied, nodes: appliedNodes,
+          intent: yield* appliedIntentOfParent(projection, state, parents.get(state.environmentId)),
+        },
         deploymentEvidence: state.deploymentEvidence
           ? { ...state.deploymentEvidence, nodes: evidenceNodes }
           : null,
@@ -141,7 +156,11 @@ export const listLatestOrganizationEnvironmentChangeStates = Effect.fn(
       kind: "organization",
       organizationId: organization.id,
     });
-  return yield* projectEnvironmentChangeStateRecords(projection);
+  const { drizzle } = yield* Database;
+  const parents = yield* drizzle.selectDistinct({ id: environment.id, namespace: environment.namespace }).from(environment)
+    .innerJoin(environmentBranch, eq(environmentBranch.parentEnvironmentId, environment.id))
+    .where(eq(environmentBranch.organizationId, organization.id));
+  return yield* projectEnvironmentChangeStateRecords(projection, new Map(parents.map((row) => [row.id, row.namespace])));
 });
 
 const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {

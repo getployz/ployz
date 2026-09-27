@@ -1,3 +1,4 @@
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import {
@@ -22,6 +23,8 @@ describe("GitHub ingestion terminal lifecycle", () => {
         Effect.provideService(InngestClient, undefined as never),
         // SAFETY: This runner is asserted unused when the run id is absent.
         Effect.provideService(GithubApi, undefined as never),
+        // SAFETY: This runner is asserted unused when the run id is absent.
+        Effect.provideService(SecretEncryption, undefined as never),
       ));
     };
 

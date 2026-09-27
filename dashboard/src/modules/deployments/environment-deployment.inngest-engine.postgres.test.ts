@@ -1,5 +1,5 @@
 import { InngestTestEngine, mockCtx } from "@inngest/test";
-import type { BuildOptions, BuildOutcome, BuildReceipt, BuildReceipts, Client, PreparationInput, PreparedDeploy } from "@ployz/sdk";
+import type { BuildOptions, BuildOutcome, BuildReceipt, BuildReceipts, Client, DeployIntent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -7,7 +7,7 @@ import { gzipSync } from "node:zlib";
 import { Header } from "tar";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createGitServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
+import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createGitServiceSource, createImageServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
@@ -232,7 +232,18 @@ describe("deployment Inngest durable smoke", () => {
       /** Holds each build until its signal aborts. */
       hold: boolean;
       prepared: BuildReceipts[];
+      /** What an image-only deploy lowered and handed the runtime. */
+      previewed?: DeployIntent[];
     };
+    function preparedDeploy(buildReceipts: BuildReceipts) {
+      const outcome = { type: "success" as const, completed: [] };
+      return asTestDouble<PreparedDeploy>()({
+        project_name: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
+        buildReceipts, pruneTargets: [], close: () => undefined,
+        confirm: () => ({ abort: () => undefined, finished: Promise.resolve(outcome),
+          async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; } }),
+      });
+    }
     function fakeClient(fake: Fake) {
       return asTestDouble<Client>()({
         build: (input: PreparationInput, options?: BuildOptions) => {
@@ -259,14 +270,11 @@ describe("deployment Inngest durable smoke", () => {
         },
         prepare: (input: PreparationInput) => {
           fake.prepared.push(input.build_receipts ?? {});
-          const outcome = { type: "success" as const, completed: [] };
-          const prepared = asTestDouble<PreparedDeploy>()({
-            project_name: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
-            buildReceipts: input.build_receipts ?? {}, pruneTargets: [], close: () => undefined,
-            confirm: () => ({ abort: () => undefined, finished: Promise.resolve(outcome),
-              async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; } }),
-          });
-          return { abort: () => undefined, finished: Promise.resolve(prepared), async *[Symbol.asyncIterator]() { yield* []; } };
+          return { abort: () => undefined, finished: Promise.resolve(preparedDeploy(input.build_receipts ?? {})), async *[Symbol.asyncIterator]() { yield* []; } };
+        },
+        preview: async (intent: DeployIntent) => {
+          fake.previewed?.push(intent);
+          return preparedDeploy({});
         },
         close: async () => undefined,
       });
@@ -379,6 +387,54 @@ describe("deployment Inngest durable smoke", () => {
       expect(output.result).toEqual({ environmentDeploymentId: targetDeploymentId, status: "cancelled", skipped: true });
       expect((await imageBuildRows(targetDeploymentId)).map(({ status }) => status)).toEqual(["cancelled", "cancelled"]);
       expect(fake.prepared).toEqual([]);
+    }, 20_000);
+
+    it("runs a Branch's Setup Commands on its first deploys only, in order, and never stores them in intent", async () => {
+      await harness.db.update(schema.environmentDeployment).set({ status: "applied", finishedAt: new Date() })
+        .where(eq(schema.environmentDeployment.id, activeDeploymentId));
+      const parentId = "00000000-0000-4000-8000-000000000721";
+      await harness.db.insert(schema.environment).values({ id: parentId, projectId, organizationId, name: "Parent", namespace: "parent", intent: emptySavedIntent });
+      // The first command ends in a comment and the second opens a quote: neither may swallow the next.
+      const migrate = "pnpm db:migrate # schema first";
+      const seed = "pnpm db:seed --name 'demo'";
+      await harness.db.insert(schema.environmentBranch).values({
+        environmentId, organizationId, projectId, parentEnvironmentId: parentId, base: emptySavedIntent, createdByUserId: userId,
+        setupCommands: [{ lineageId: webId, command: migrate }, { lineageId: webId, command: seed }],
+      });
+      const image = (privateDns: string) => projectServiceDeploymentConfig({
+        source: createImageServiceSource({ image: `ghcr.io/acme/${privateDns}:1` }), privateDns, preDeployCommand: "pnpm prisma generate",
+        startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy(),
+      });
+      const admit = async () => {
+        const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+          environmentId, savedStateSnapshotId: savedId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+        }));
+        await harness.db.insert(schema.environmentNodeConfigSnapshot).values([["api", apiId], ["web", webId]].map(([name, id]) => ({
+          organizationId, environmentDeploymentId: admitted.id, environmentId, nodeType: "service" as const,
+          nodeId: id ?? "", nodeLineageId: id ?? "", config: image(name ?? ""),
+        })));
+        return admitted.id;
+      };
+
+      const first = await admit();
+      expect((await attempt(first))?.setupCommands).toEqual({ [webId]: [migrate, seed] });
+      const fake: Fake = { builds: [], failImage: null, hold: false, prepared: [], previewed: [] };
+      await engine(fake, first, "setup-run").execute();
+      await vi.waitFor(async () => expect(await attempt(first)).toMatchObject({ status: "applied" }), { timeout: 10_000 });
+      // Lowering ran web's own pre-deploy command, then both Setup Commands, each its own shell argument; api ran only its own.
+      const hooks = Object.fromEntries((fake.previewed?.[0]?.target ?? []).map((spec) => [spec.name, spec.pre_deploy?.command]));
+      expect(hooks["web"]).toEqual(["/bin/sh", "-c", 'for c do /bin/sh -c "$c" || exit; done', "sh", "pnpm prisma generate", migrate, seed]);
+      expect(hooks["api"]).toEqual(["/bin/sh", "-c", "pnpm prisma generate"]);
+
+      // web has deployed once, so the next attempt runs none.
+      const second = await admit();
+      expect((await attempt(second))?.setupCommands).toEqual({});
+      const stored = JSON.stringify([
+        await harness.db.select().from(schema.environment),
+        await harness.db.select().from(schema.environmentSavedStateSnapshot),
+        await harness.db.select().from(schema.environmentNodeConfigSnapshot),
+      ]);
+      expect(stored).not.toContain("db:migrate");
     }, 20_000);
 
     describe("one building attempt, one pending attempt", () => {

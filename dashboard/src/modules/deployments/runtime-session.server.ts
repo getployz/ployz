@@ -54,6 +54,7 @@ export function compileRuntimeIntent(context: DeploymentContext) {
       ...snapshot,
       config: clusterDomain === null ? snapshot.config : expandManagedHostnames(snapshot.config, clusterDomain),
       resolvedEnv: resolvedEnv.get(snapshot.serviceId),
+      setupCommands: context.deployment.setupCommands?.[snapshot.serviceId],
     }));
     return yield* Effect.try({
       try: () =>

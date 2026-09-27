@@ -33,6 +33,7 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
+import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
@@ -62,6 +63,7 @@ describe("Inngest function policies", () => {
       createProcessVolumeRemove(inngest),
       createCancelVolumeRemove(inngest),
       createPruneOrganizationChangeLog(inngest),
+      createSweepIdleBranches(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
     ];
@@ -92,6 +94,7 @@ describe("Inngest function policies", () => {
       { id: "process-volume-remove", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "sweep-idle-branches", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
     ]);

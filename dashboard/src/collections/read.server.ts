@@ -58,6 +58,10 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return yield* database.drizzle.select().from(tables.project).where(scoped(tables.project));
       case "environment":
         return yield* database.drizzle.select().from(tables.environment).where(scoped(tables.environment));
+      // A base is core's redacted configuration; stripping again keeps sealed ciphertext on the server regardless.
+      case "environment_branch":
+        return (yield* database.drizzle.select().from(tables.environmentBranch)
+          .where(scoped(tables.environmentBranch))).map((row) => ({ ...row, base: withoutSealedCiphertext(row.base) }));
       case "service":
         return yield* database.drizzle.select().from(tables.service).where(scoped(tables.service));
       case "resource_lineage":

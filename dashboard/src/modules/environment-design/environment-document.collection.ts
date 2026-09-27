@@ -31,3 +31,9 @@ export function useEnvironmentDocument(organizationSlug: string, environmentId: 
   return useLiveQuery({ queryKey: ['environment-document', collection.id, environmentId], query: (q) => q.from({ document: collection })
     .where(({ document }) => eq(document.id, environmentId ?? "")).findOne() }).data;
 }
+
+/** Every Environment's document in the organization. */
+export function useEnvironmentDocuments(organizationSlug: string) {
+  const collection = getEnvironmentDocumentsCollection(organizationSlug, useCollectionScope());
+  return useLiveQuery({ queryKey: ['environment-documents', collection.id], query: (q) => q.from({ document: collection }) }).data;
+}

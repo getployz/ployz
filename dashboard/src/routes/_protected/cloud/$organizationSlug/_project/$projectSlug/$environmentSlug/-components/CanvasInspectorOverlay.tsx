@@ -18,8 +18,9 @@ export function CanvasInspectorOverlay({
   /**
    * `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear.
    * `returnTo`: the service whose panel opened this one; closing goes back to its Deployments tab.
+   * `picking`: the canvas is where you pick (New branch), so it stays clickable and the panel narrows.
    */
-  selection: { key: string; nodeId: string; lit?: boolean; returnTo?: string | null } | null;
+  selection: { key: string; nodeId: string; lit?: boolean; returnTo?: string | null; picking?: boolean } | null;
 }) {
   const navigate = useNavigate();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -68,20 +69,21 @@ export function CanvasInspectorOverlay({
     >
       {canvas}
       {selection ? <>
-        <button
+        {!selection.picking && <button
           className="canvas-inspector-shade"
           data-clear={selection.lit || undefined}
           type="button"
           tabIndex={-1}
           aria-label="Close inspector and return to Canvas"
           onClick={closeInspector}
-        />
+        />}
         <section
           ref={inspectorRef}
           aria-label="Resource inspector"
           tabIndex={-1}
           data-canvas-inspector-pane
           data-takeover={takeover}
+          data-picking={selection.picking || undefined}
           className={cn("canvas-inspector-pane", isHydrated && "canvas-inspector-enter")}
           onKeyDown={(event) => {
             if (event.key !== "Escape" || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
