@@ -11,8 +11,8 @@ export function StartingPointSettingsSection(target: {
   return (
     <section aria-labelledby="deployment-heading" className="flex flex-col gap-4">
       <h2 id="deployment-heading" className="text-lg font-semibold">Deployment</h2>
-      <Field orientation="horizontal">
-        <FieldContent>
+      <Field orientation="horizontal" className="flex-wrap">
+        <FieldContent className="min-w-60">
           <FieldLabel>Not deployed</FieldLabel>
           <FieldDescription>Nothing runs here. Branches of it start from everything it describes.</FieldDescription>
           {deploy.isError && <FieldError>{deploy.error.message}</FieldError>}

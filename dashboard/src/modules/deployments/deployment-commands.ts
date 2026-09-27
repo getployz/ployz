@@ -58,9 +58,11 @@ export function useDeployQueuedNow(deployment: EnvironmentDeploymentSummary) {
  * "Deploy this environment": a starting point's first deployment, the manual deploy path over its Working State. It has
  * no saved state and nothing deployed to remove. Opens the new attempt's Deployment Page.
  */
-export function useDeployStartingPoint(target: { organizationSlug: string; projectSlug: string; environmentSlug: string; environmentId: string }) {
-  const { environmentId, ...environment } = target;
-  const document = useEnvironmentDocument(target.organizationSlug, environmentId);
+export function useDeployStartingPoint({ organizationSlug, projectSlug, environmentSlug, environmentId }: {
+  organizationSlug: string; projectSlug: string; environmentSlug: string; environmentId: string;
+}) {
+  const environment = { organizationSlug, projectSlug, environmentSlug };
+  const document = useEnvironmentDocument(organizationSlug, environmentId);
   const scope = useCollectionScope();
   const navigate = useNavigate();
   return useMutation({
@@ -72,7 +74,7 @@ export function useDeployStartingPoint(target: { organizationSlug: string; proje
         destructiveServiceIds: [],
         destructiveVolumeReviews: [],
       } } });
-      await reconcileDeploymentCollections(target.organizationSlug, scope);
+      await reconcileDeploymentCollections(organizationSlug, scope);
       return result;
     },
     onSuccess: (result) => {

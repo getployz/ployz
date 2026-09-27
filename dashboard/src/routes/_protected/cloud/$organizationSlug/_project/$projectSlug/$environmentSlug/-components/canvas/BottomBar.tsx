@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { MoreVerticalIcon } from "lucide-react";
+import { CircleDashedIcon, GitBranchPlusIcon, MoreVerticalIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
@@ -106,8 +106,10 @@ export function BottomBar({
   });
 
   const bar = startingPoint ? (
-    <Bar title={`${startingPoint.name} isn't deployed`} detail="A starting point for branches">
-      <Link to={"/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"} params={params} className={buttonVariants({ size: "sm" })}>New branch</Link>
+    <Bar icon={<CircleDashedIcon className="size-4 text-muted-foreground" />} title={`${startingPoint.name} isn't deployed`} detail="A starting point for branches">
+      <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch" params={params} className={buttonVariants({ size: "sm" })}>
+        <GitBranchPlusIcon data-icon="inline-start" />New branch
+      </Link>
     </Bar>
   ) : hasChanges ? (
     <Bar staged title={totalChanges > 0 ? `${totalChanges} ${totalChanges === 1 ? "change" : "changes"}` : "Unpublished changes"} detail={stagedDetail(groups, totalChanges)}>
