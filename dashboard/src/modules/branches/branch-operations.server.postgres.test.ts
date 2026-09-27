@@ -161,6 +161,56 @@ describe("createBranch", () => {
     expect(inngest.send).toHaveBeenCalledTimes(1);
   });
 
+  it("fixes a failed deploy on a branch: the failed change arrives staged and the Parent stays as it was", async () => {
+    // production deployed web:1 with db and its Volume; web:2 failed; the owner has since staged web:3.
+    // Saved State keeps sealed values' ciphertext.
+    const withImage = (image: string) => ({ ...parentIntent, services: parentIntent.services.map((node) => node.id === webId ? {
+      ...node, config: { ...node.config, source: { ...node.config.source, image } },
+      variables: node.variables.map((variable) => variable.value.kind === "secret" ? { ...variable, value: { kind: "secret", encryptedValue: encrypted } } : variable),
+    } : node) });
+    const [appliedSaved, failedSaved] = await harness.db.insert(schema.environmentSavedStateSnapshot).values([
+      { organizationId, environmentId: parentId, actorId: userId, intent: withImage("web:1"), volumeDeletionAuthorizations: [], createdAt: new Date(1_000) },
+      { organizationId, environmentId: parentId, actorId: userId, intent: withImage("web:2"), volumeDeletionAuthorizations: [], createdAt: new Date(2_000) },
+    ]).returning();
+    const appliedId = randomUUID();
+    const failedId = randomUUID();
+    const attempt = (id: string, savedStateSnapshotId: string, status: "applied" | "failed", at: number) => ({
+      id, organizationId, environmentId: parentId, savedStateSnapshotId, status,
+      triggerOrigin: { origin: "manual" as const, actorId: userId }, createdAt: new Date(at), finishedAt: new Date(at),
+    });
+    await harness.db.insert(schema.environmentDeployment).values([
+      attempt(appliedId, appliedSaved?.id ?? "", "applied", 1_000), attempt(failedId, failedSaved?.id ?? "", "failed", 2_000),
+    ]);
+    await harness.db.insert(schema.environmentNodeConfigSnapshot).values([
+      { nodeType: "service" as const, nodeId: webId, nodeLineageId: webLineage, config: { ...parentIntent.services[0]?.config } },
+      { nodeType: "service" as const, nodeId: dbId, nodeLineageId: dbLineage, config: { ...parentIntent.services[1]?.config } },
+      { nodeType: "volume" as const, nodeId: dataId, nodeLineageId: dataLineage, config: { version: 2, name: "data" } },
+    ].map((node) => ({ organizationId, environmentId: parentId, environmentDeploymentId: appliedId, ...node })));
+    const staged = { ...parentIntent, services: parentIntent.services.map((node) => node.id === webId
+      ? { ...node, config: { ...node.config, source: { ...node.config.source, image: "web:3" } } } : node) };
+    await harness.pool.query("update environment set intent = $1 where id = $2", [JSON.stringify(staged), parentId]);
+    const imageOf = (intent: { services: Array<{ lineageId: string; config: { source: unknown } }> } | undefined) =>
+      (intent?.services.find((node) => node.lineageId === webLineage)?.config.source as { image?: string } | undefined)?.image;
+
+    const { data } = await create({ fix: { deploymentId: failedId, serviceId: webId } });
+    // web gets its own copy with the failed configuration; db is used live, so the base is Applied web without db.
+    expect(data.environment.intent.services.map((node) => node.lineageId)).toEqual([webLineage]);
+    expect(imageOf(data.environment.intent)).toBe("web:2");
+    const [branch] = await harness.db.select().from(schema.environmentBranch).where(eq(schema.environmentBranch.environmentId, data.environment.id));
+    expect(branch?.base.services.map((node) => node.lineageId)).toEqual([webLineage]);
+    expect(imageOf(branch?.base)).toBe("web:1");
+
+    // The Parent's Working and Saved State are untouched.
+    const [parent] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, parentId));
+    expect(imageOf(parent?.intent)).toBe("web:3");
+    expect(await harness.db.select().from(schema.environmentSavedStateSnapshot).where(eq(schema.environmentSavedStateSnapshot.environmentId, parentId))).toHaveLength(2);
+
+    // Only a failed attempt, and only when the failed service gets its own copy.
+    await expect(create({ name: "again", fix: { deploymentId: appliedId, serviceId: webId } })).rejects.toMatchObject({ _tag: "Validation", field: "fix" });
+    await expect(create({ name: "again", focus: [dbLineage], fix: { deploymentId: failedId, serviceId: webId } }))
+      .rejects.toMatchObject({ _tag: "Validation", field: "fix" });
+  });
+
   it("refuses a taken or too-long name, and nothing to copy, before writing anything", async () => {
     await create();
     await expect(create()).rejects.toMatchObject({ _tag: "Conflict" });
