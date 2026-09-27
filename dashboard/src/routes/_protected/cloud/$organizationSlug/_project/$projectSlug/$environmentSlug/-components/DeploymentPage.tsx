@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { GitBranchPlusIcon } from "lucide-react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { parseServiceConfig } from "@ployz/sdk/config";
@@ -24,6 +25,7 @@ import {
   type DeploymentNodeView, type TargetNode,
 } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { ApplyChangeRow } from "./canvas/ApplyChangeRow";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import type { deploymentPageSearchSchema } from "./deployment-page";
@@ -80,7 +82,7 @@ export function DeploymentPage({ deploymentId, search }: { deploymentId: string;
           </p>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <h2 className="min-w-0 text-base font-medium break-words">{deployment.message ?? "Deployment"}</h2>
-            <DeploymentActions deployment={deployment} />
+            <DeploymentActions deployment={deployment} failed={focused?.view.outcome === "failed" ? focused.node : undefined} />
           </div>
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground [&_svg]:size-3.5">
             <span className="inline-flex items-center gap-1 text-foreground"><DeploymentStatusIcon status={view.status} />{deploymentStatusLabel(view)}</span>
@@ -213,10 +215,14 @@ function Duration({ deployment }: { deployment: EnvironmentDeploymentSummary }) 
 
 /**
  * Retry on a failed attempt, Deploy now on one queued for the next trigger, Cancel on a queued or running one; all keep their
- * existing semantics. Nothing redeploys a finished attempt yet, so Redeploy shows greyed out with Soon.
+ * existing semantics. Nothing redeploys a finished attempt yet, so Redeploy shows greyed out with Soon. A failed attempt's
+ * focused failed service can be fixed on a branch, while the Environment still has it.
  */
-function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
-  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+function DeploymentActions({ deployment, failed }: { deployment: EnvironmentDeploymentSummary; failed: TargetNode | undefined }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { organizationSlug } = params;
+  const document = useEnvironmentDocument(organizationSlug, deployment.environmentId);
+  const failedLineage = deployment.status === "failed" ? document?.intent.services.find((node) => node.id === failed?.nodeId)?.lineageId : undefined;
   const attempts = useEnvironmentDeployments(organizationSlug, deployment.environmentId);
   const [retry, isRetrying] = useRetryDeployment(deployment);
   const [deployNow, isDispatching] = useDeployQueuedNow(deployment);
@@ -227,6 +233,12 @@ function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSu
   const building = attempts.some(({ deployment: other }) => other.status === "queued" && other.inngestRunId !== null && other.id !== deployment.id);
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
+      {failedLineage ? (
+        <Button size="sm" variant="outline" nativeButton={false} render={<Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"
+          params={params} search={{ focus: failedLineage, fix: deployment.id }} />}>
+          <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
+        </Button>
+      ) : null}
       {deployment.canRetry ? <Button size="sm" variant="outline" disabled={isRetrying} onClick={() => void retry()}>Retry</Button> : null}
       {/* Queued with no dispatch requested: it waits for the environment's next trigger. */}
       {deployment.status === "queued" && !deployment.dispatchRequestedAt ? (building

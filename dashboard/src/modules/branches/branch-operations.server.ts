@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { branchChanges } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
@@ -15,6 +15,9 @@ import { captureEnvironmentNodeIntroduction } from "#/modules/environment-design
 import { emptyEnvironmentIntent, parseDashboardEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "#/modules/environment-design/working-state-fingerprint.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
+import { environmentDeployment } from "#/modules/deployments/tables";
+import { loadEnvironmentSavedIntentById } from "#/modules/environment-design/saved-state-repository.server";
+import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { createManualEnvironmentDeployment } from "#/modules/deployments/deployment-command.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages, planBranchOf } from "./branch-plan";
@@ -68,14 +71,23 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   actor: Actor; project: ProjectRow; parent: EnvironmentRow; input: CreateBranch;
 }) {
   const { drizzle } = yield* Database;
-  const { intent: from } = yield* loadCurrentEnvironmentState(parent.id);
-  const applied = (yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: parent.id }))
-    .explicitStates.find((state) => state.environmentId === parent.id)?.applied.nodes ?? [];
+  const { intent: working } = yield* loadCurrentEnvironmentState(parent.id);
+  const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: parent.id });
+  const applied = projection.explicitStates.find((state) => state.environmentId === parent.id)?.applied.nodes ?? [];
   const plan = yield* core("picks", () => planBranchOf({
-    parent: from, deployed: applied.map((node) => node.nodeLineageId), focus: input.focus, picks: input.picks,
+    parent: working, deployed: applied.map((node) => node.nodeLineageId), focus: input.focus, picks: input.picks,
   }));
   const own = ownLineages(plan);
   if (own.length === 0) return yield* new Validation({ field: "picks", message: "Pick something to copy." });
+
+  // Fix it on a branch: the failed configuration of that service stands in for the Parent's; the Parent stays as it is.
+  const failed = input.fix ? yield* loadFailedService(parent.id, input.fix) : null;
+  if (failed && !(own.includes(failed.lineageId) && working.services.some((node) => node.lineageId === failed.lineageId))) {
+    return yield* new Validation({ field: "fix", message: "The failed service must get its own copy." });
+  }
+  const from = failed
+    ? { ...working, services: working.services.map((node) => node.lineageId === failed.lineageId ? failed : node) }
+    : working;
 
   // The browser checks these first; the unique index settles a race.
   const namespace = branchNamespace(project.slug, input.name);
@@ -84,16 +96,21 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   const [parentBranch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, parent.id));
 
   // 1. Core derives the Branch's configuration: fresh ids, the Parent's lineages, secrets with their values.
-  const changes = yield* core("picks", () => branchChanges({
+  const create = (source: typeof from, picks: string[]) => core("picks", () => branchChanges({
     base: null,
-    from,
+    from: source,
     into: emptyEnvironmentIntent(namespace),
     provided: liveLineages(plan),
     hostnames: { from: parentBranch ? branchHostnameSuffix(project.slug, parent.namespace) : "", into: branchHostnameSuffix(project.slug, namespace) },
     fromKept: false,
-    picks: own.map((lineage) => ({ key: `${lineage}:node` })),
+    picks: picks.map((lineage) => ({ key: `${lineage}:node` })),
   }));
+  const changes = yield* create(from, own);
   const next = parseDashboardEnvironmentIntent(changes.next);
+  // A fix's base is the Parent's Applied State (minus what it uses live), so the failed change shows as staged.
+  const base = failed
+    ? (yield* create(yield* loadAppliedIntent(parent.id, parent.namespace, projection), [])).base
+    : changes.base;
 
   // 2. The Environment row; a taken namespace fails the unique index.
   const document = yield* createEnvironmentRecord({
@@ -141,13 +158,26 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   for (const node of next.volumes) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "volume", nodeId: node.resourceId });
 
   // 5. The Branch row, with the base core returned.
-  if (!changes.base) return yield* Effect.die("Core returned no base for a new Branch.");
+  if (!base) return yield* Effect.die("Core returned no base for a new Branch.");
   const [branch] = yield* drizzle.insert(environmentBranch).values({
     environmentId: document.id, organizationId: project.organizationId, projectId: project.id,
     parentEnvironmentId: parent.id, kept: input.keep,
-    base: parseDashboardEnvironmentIntent(changes.base),
+    base: parseDashboardEnvironmentIntent(base),
     createdByUserId: actor.userId,
   }).returning();
   if (!branch) return yield* Effect.die("PostgreSQL did not return the Branch row.");
   return { environment: written, branch };
+});
+
+/** The failed attempt's Saved configuration of one service. */
+const loadFailedService = Effect.fn("Branches.loadFailedService")(function* (parentId: string, fix: NonNullable<CreateBranch["fix"]>) {
+  const { drizzle } = yield* Database;
+  const [attempt] = yield* drizzle.select({ status: environmentDeployment.status, savedStateSnapshotId: environmentDeployment.savedStateSnapshotId })
+    .from(environmentDeployment)
+    .where(and(eq(environmentDeployment.id, fix.deploymentId), eq(environmentDeployment.environmentId, parentId)));
+  if (attempt?.status !== "failed") return yield* new Validation({ field: "fix", message: "Only a failed deployment can be fixed on a branch." });
+  const saved = yield* loadEnvironmentSavedIntentById({ environmentId: parentId, savedStateSnapshotId: attempt.savedStateSnapshotId });
+  const node = saved?.intent.services.find((candidate) => candidate.id === fix.serviceId);
+  if (!node) return yield* new Validation({ field: "fix", message: "The failed service is not in that deployment." });
+  return node;
 });
