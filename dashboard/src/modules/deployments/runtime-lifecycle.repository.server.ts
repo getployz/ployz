@@ -181,7 +181,8 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
 /**
  * Drops the frozen Setup Commands of services an earlier attempt has since first deployed. Admission froze them for every
  * never-deployed service, so an attempt queued behind ("Deploy next") the one that first deploys it would run them again;
- * they repeat only until they succeed once. Called as the attempt starts, before its builds, so builds and deploy agree.
+ * they repeat only until they succeed once. Called once the attempt holds the Environment's planning slot, so its
+ * predecessor has finished; Setup Commands are runtime-only, so the Image Builds already started still match.
  */
 const dropDeployedSetupCommands = Effect.fn("Deployments.dropDeployedSetupCommands")(function* (environmentDeploymentId: string) {
   const { drizzle } = yield* Database;
@@ -216,7 +217,6 @@ export const recordInngestRun = Effect.fn("Deployments.recordInngestRun")(
         ),
       )
       .returning({ id: schemaEnvironmentDeployment.id });
-    if (claimed.length === 1) yield* dropDeployedSetupCommands(input.environmentDeploymentId);
     return claimed.length === 1;
   },
 );
@@ -413,6 +413,7 @@ export const beginEnvironmentDeploymentPlanning = Effect.fn(
     if (environmentId) {
       const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId });
       yield* writeTargetNodeList(input.environmentDeploymentId, projection.appliedSavedNodeByKey);
+      yield* dropDeployedSetupCommands(input.environmentDeploymentId);
     }
     return true;
   })).pipe(
