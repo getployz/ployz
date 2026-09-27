@@ -33,7 +33,7 @@ export function BranchReviewPanel() {
             {/* The bottom bar owns the change actions and renders the staged-changes review here. */}
             <div ref={setSlot} />
           </ReviewSection>
-          <MergeSection review={review} />
+          <MergeSection review={review} branch={{ id: environmentId, name }} />
           <UpdateSection review={review} />
           <DifferSection review={review} />
         </div>

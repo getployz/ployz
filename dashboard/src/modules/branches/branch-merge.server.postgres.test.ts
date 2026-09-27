@@ -174,7 +174,7 @@ describe("mergeBranch", () => {
       organizationSlug: "acme", branchEnvironmentId: branchId, destinationRevision: seen.revision, review: seen.review, picks, thenClose,
     }));
   const defaults = (rows: Awaited<ReturnType<typeof review>>["rows"]): MergePick[] =>
-    rows.map((row) => ({ key: row.key, ...row.choice ? { option: row.choice.default } : {} }));
+    rows.map((row) => row.choice ? { key: row.key, option: row.choice.default, value: "" } : { key: row.key, value: "" });
 
   it("stages the picked changes in the Destination, seals a new secret, deletes nothing, deploys nothing, and closes the Branch", async () => {
     await deploy(parentId);

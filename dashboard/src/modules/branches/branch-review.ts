@@ -31,18 +31,20 @@ export type BranchReview = {
   update: ChangeRow[];
   /** Settings each side keeps as its own, from the merge comparison. */
   differ: ChangeRow[];
+  /** Core's review string of the merge rows; Merge sends it, and the server refuses it once the rows moved. */
+  mergeReview: string;
 };
 
 const moves = (rows: ChangeRow[]) => rows.filter((row) => row.role === "move");
 
 /**
- * The review page's rows, from core's branchChanges (compare only, no picks). #1159 reruns the merge comparison with picks
- * and #1160 the update one; both take the same inputs.
+ * The review page's rows, from core's branchChanges (compare only, no picks). The server reruns the same comparison
+ * from authoritative states before applying picks.
  */
 export function branchReview(input: BranchReviewInput): BranchReview {
-  const merge = branchChanges(mergeInput(input)).rows;
+  const { rows: merge, review: mergeReview } = branchChanges(mergeInput(input));
   const update = input.parentApplied ? branchChanges(updateInput(input, input.parentApplied)).rows : [];
-  return { merge: moves(merge), update: moves(update), differ: merge.filter((row) => row.role === "differ") };
+  return { merge: moves(merge), update: moves(update), differ: merge.filter((row) => row.role === "differ"), mergeReview };
 }
 
 export const mergeInput = (input: BranchReviewInput) => ({

@@ -30,11 +30,14 @@ export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
 /**
  * Where a Branch's review page shows its staged changes ("Not deployed here yet"). The page sets the slot; the bar, which
- * owns the change actions, portals the staged-changes review into it.
+ * owns the change actions, portals the staged-changes review into it and reports whether anything is staged.
  */
-export const StagedReviewSlot = createContext<{ slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void }>({
-  slot: null, setSlot: () => {},
-});
+export const StagedReviewSlot = createContext<{
+  slot: HTMLElement | null;
+  setSlot: (slot: HTMLElement | null) => void;
+  staged: boolean;
+  setStaged: (staged: boolean) => void;
+}>({ slot: null, setSlot: () => {}, staged: false, setStaged: () => {} });
 
 const BRANCH_REVIEW_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";
 
@@ -73,7 +76,7 @@ export function BottomBar({
   onDiscardRow,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
-  const reviewSlot = useContext(StagedReviewSlot).slot;
+  const { slot: reviewSlot, setStaged } = useContext(StagedReviewSlot);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const review = useBranchReview(params.organizationSlug, environmentId);
   const viewedId = useCanvasInspectorSelection().deploymentId;
@@ -88,6 +91,7 @@ export function BottomBar({
   const startingPoint = useStartingPoint(params.organizationSlug, environmentId);
   const hasChanges = !startingPoint && (totalChanges > 0 || canSaveWithoutDeploying);
   const deployable = hasChanges && canDeploy && totalChanges > 0;
+  useEffect(() => setStaged(hasChanges), [hasChanges, setStaged]);
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
 
   function deploy() {

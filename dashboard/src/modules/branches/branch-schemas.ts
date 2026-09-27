@@ -39,11 +39,14 @@ export const SetBranchSetupDefaults = Schema.Struct({
 });
 export type SetBranchSetupDefaults = typeof SetBranchSetupDefaults.Type;
 
-/** One ticked merge row; `value` is a new value in plain text, sealed on the server when the row is a secret. */
+/**
+ * One ticked merge row. A variable row names its option; `value` is a new value in plain text ("" for none), sealed on
+ * the server when the row is a secret.
+ */
 export const MergePickSchema = Schema.Struct({
   key: Schema.String,
   option: Schema.optional(Schema.Literals(["from", "parent", "new", "leave_out"])),
-  value: Schema.optional(Schema.String),
+  value: Schema.String,
 });
 export type MergePick = typeof MergePickSchema.Type;
 

@@ -68,7 +68,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     // 4. Apply the picks with core; new values are sealed here, never in the browser.
     const refs = environmentVariableReferences(into);
     const picks = input.picks.map((pick): BranchPick => {
-      if (pick.option !== "new" || pick.value === undefined) return { key: pick.key, ...pick.option ? { choice: { option: pick.option } } : {} };
+      if (pick.option !== "new" || pick.value === "") return pick.option ? { key: pick.key, choice: { option: pick.option } } : { key: pick.key };
       const row = rows.rows.find((candidate) => candidate.key === pick.key);
       const secret = row?.role === "move" && row.choice?.secret === true;
       const variable = savedVariableIntent({
