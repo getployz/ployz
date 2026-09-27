@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Kbd } from "#/components/ui/kbd";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { useIsMobile } from "#/hooks/use-mobile";
-import { useEnvironmentDeployments, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
@@ -121,7 +121,7 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Bar>
-  ) : shown ? <AttemptState attempt={shown} /> : null;
+  ) : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} /> : null;
 
   return (
     <>
@@ -154,9 +154,15 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
   return groups.map((group) => group.nodeName).join(", ");
 }
 
-/** A running or queued attempt: its status and message, where it is, and Logs to open its Deployment Page. */
-function AttemptState({ attempt: { deployment, nodes, view } }: { attempt: DeploymentAttempt }) {
+/**
+ * A running or queued attempt: its status and message, where it is, and Logs to open its Deployment Page. Read like the
+ * page reads it (with its build tail), so both name the same status.
+ */
+function AttemptState({ environmentId, deploymentId }: { environmentId: string; deploymentId: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { attempt } = useDeploymentAttempt(params.organizationSlug, environmentId, deploymentId, { buildLog: true });
+  if (!attempt) return null;
+  const { deployment, nodes, view } = attempt;
   const step = activeStep(deployment.runtimeProgress, nodes, view);
   return (
     <Bar icon={<DeploymentStatusIcon status={view.status} />} title={`${deploymentStatusLabel(view)} · ${deployment.message ?? "Deployment"}`} detail={step?.text ?? null}>

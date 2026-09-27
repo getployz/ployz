@@ -24,12 +24,16 @@ const replicas: CanvasEnvironmentChangeGroup = asTestDouble<CanvasEnvironmentCha
 const cache = asTestDouble<CanvasEnvironmentChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
 const onDeploy = vi.fn();
 const onDiscardAll = vi.fn(async () => true);
-let attempts: unknown[] = [];
+let attempts: ReturnType<typeof attempt>[] = [];
 
 beforeEach(() => {
   attempts = [];
   vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
     asTestDouble<ReturnType<typeof deploymentCollections.useEnvironmentDeployments>>()(attempts));
+  vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockImplementation((_organization, _environment, id) =>
+    asTestDouble<ReturnType<typeof deploymentCollections.useDeploymentAttempt>>()({
+      attempt: attempts.find((candidate) => candidate.deployment.id === id), pending: false,
+    }));
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); });
