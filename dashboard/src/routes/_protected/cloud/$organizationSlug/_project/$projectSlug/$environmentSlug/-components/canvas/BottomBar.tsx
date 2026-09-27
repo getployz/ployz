@@ -15,6 +15,7 @@ import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deplo
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { presentRow } from "#/modules/branches/branch-review";
+import { listNames } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
@@ -176,17 +177,21 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
   return groups.map((group) => group.nodeName).join(", ");
 }
 
-/** A Branch with nothing staged or running: what would merge into its Parent, else what's new there. */
+/**
+ * A Branch with nothing staged or running: what would merge into its Parent (on a PR Environment, what goes to its
+ * Destinations), else what's new there.
+ */
 function BranchState({ review }: { review: BranchReviewView }) {
   const isMobile = useIsMobile();
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-  const [first] = review.merge;
+  const [first] = review.pullRequest ? review.goesTo.flatMap((landing) => landing.rows) : review.merge;
   if (first) {
     const row = presentRow(first, review.nameOf);
+    const to = review.pullRequest ? listNames(review.goesTo.map((landing) => landing.destination.name)) : review.parent.name;
     return (
-      <Bar title={`${plural(review.changes, "change")} for ${review.parent.name}`}
+      <Bar title={`${plural(review.changes, "change")} for ${to}`}
         detail={`${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
-        <ReviewLink label={isMobile ? "Review" : "Review and merge"} />
+        <ReviewLink label={isMobile || review.pullRequest ? "Review" : "Review and merge"} />
       </Bar>
     );
   }
