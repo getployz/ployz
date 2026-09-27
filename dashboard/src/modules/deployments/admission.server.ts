@@ -29,6 +29,7 @@ import {
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { EnvironmentDeploymentServiceActionPolicy, MissingLiveValue } from "#/modules/deployments/tables";
 import { branchAdmission } from "#/modules/branches/branch-admission.server";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import {
   organizationIdForDeployment,
   organizationIdForEnvironment,
@@ -509,6 +510,10 @@ export const admitEnvironmentDeployment = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
+    // Teardown admission takes this queue lock too, so a teardown admitted first is seen here.
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
+      return yield* new Conflict({ message: "This environment is being torn down." });
+    }
     const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
     return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
   }));

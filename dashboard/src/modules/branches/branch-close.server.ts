@@ -11,6 +11,8 @@ import { environmentBranch as schemaEnvironmentBranch, project as schemaProject 
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
+import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { branchUnsettled } from "./branch-guard.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -56,19 +58,20 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
     : Effect.logWarning(why, { environmentId, cause }).pipe(Effect.as(false))),
 );
 
-/**
- * Holds a closing Branch in lock order (lockProjectDefault): its Project, then its Branch row, which Keep also takes. Null
- * when the Branch is gone.
- */
-const lockClosingBranch = (projectId: string, environmentId: string) => lockBranchScope(projectId, environmentId, "update");
 
 /** Closes a merged Branch unless it was kept meanwhile; false when it doesn't close, and the Merge stands. */
 export const tryCloseBranch = (environmentId: string) => Effect.gen(function* () {
   const database = yield* Database;
   return yield* tryClose(environmentId, "A merged Branch did not close.",
     closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
-      const row = yield* lockClosingBranch(close.projectId, environmentId);
-      return !row || row.kept ? null : yield* close.admit;
+      const row = yield* lockBranchScope(close.projectId, environmentId, "update");
+      if (!row || row.kept) return null;
+      // Anything staged or deploying since the Merge stays: under the Branch's queue and document locks, which a deploy and
+      // an edit take, the Branch must still run exactly its Working State.
+      const { drizzle } = yield* Database;
+      yield* lockEnvironmentDeploymentQueue(environmentId);
+      yield* loadEnvironmentDocument(environmentId, true);
+      return (yield* branchUnsettled(drizzle, environmentId)) ? null : yield* close.admit;
     })))));
 });
 
@@ -112,7 +115,7 @@ export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now:
     closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       // The rule again, in lock order (lockProjectDefault): the Project (a new Branch of it and a Default change wait),
       // the Branch row (Keep, Merge and Update wait), then its queue (a deploy waits).
-      yield* lockClosingBranch(close.projectId, environmentId);
+      yield* lockBranchScope(close.projectId, environmentId, "update");
       yield* lockEnvironmentDeploymentQueue(environmentId);
       if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;
       return yield* close.admit;

@@ -18,6 +18,7 @@ import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { mergeBranch } from "./branch-merge.server";
+import { tryCloseBranch } from "./branch-close.server";
 import { createBranch } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
 import { mergeInput } from "./branch-review";
@@ -259,6 +260,48 @@ describe("mergeBranch", () => {
 
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:1" });
     expect(await teardowns()).toEqual([]);
+  });
+
+  it("doesn't close a merged Branch that has changes staged since the Merge", async () => {
+    const branch = await create("late-edit");
+    await settle(branch.id);
+    await edit(branch.id, setImage("web:6"));
+    await deploy(branch.id);
+    const seen = await review(branch.id);
+    // Merged without closing, then edited before the close runs: the close re-checks under the Branch's locks.
+    expect((await merge(branch.id, seen, defaults(seen.rows), false)).data.closed).toBe(false);
+    await edit(branch.id, setImage("web:7"));
+    expect(await provide(tryCloseBranch(branch.id))).toBe(false);
+    expect(await teardowns()).toEqual([]);
+    // Once it runs its Working State again, it closes.
+    await deploy(branch.id);
+    expect(await provide(tryCloseBranch(branch.id))).toBe(true);
+  });
+
+  it("merges while an author adds a service to the Destination, without a deadlock", async () => {
+    await deploy(parentId);
+    const branch = await create("authoring");
+    await settle(branch.id);
+    await edit(branch.id, setImage("web:8"));
+    await deploy(branch.id);
+    const seen = await review(branch.id);
+    // An author holds production's document, as authoring does, while the Merge takes the Project and then waits for it.
+    const author = await harness.pool.connect();
+    let merged: ReturnType<typeof merge> | undefined;
+    try {
+      await author.query("begin");
+      await author.query("select id from environment where id = $1 for update", [parentId]);
+      merged = merge(branch.id, seen, defaults(seen.rows), false);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Adding a service takes a KEY SHARE on the Project through its foreign key: the Merge's Project lock mustn't block it.
+      await author.query(`insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
+        values ($1, $2, $3, $4, $5, 'Cron')`, [randomUUID(), projectId, parentId, organizationId, workerLineage]);
+      await author.query("commit");
+    } finally {
+      author.release();
+    }
+    expect((await merged)?.data.closed).toBe(false);
+    expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:8" });
   });
 
   it("keeps a Kept Branch, advancing its base; a close that can't start leaves the Merge standing", async () => {
